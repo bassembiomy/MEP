@@ -2,14 +2,16 @@ import React from 'react';
 import { Toolbar } from './components/Toolbar';
 import { FloorPlanCanvas } from './canvas/FloorPlanCanvas';
 import { ZonePropertiesPanel } from './panels/ZonePropertiesPanel';
+import { OptimizerStudioPanel } from './panels/OptimizerStudioPanel';
+import { StaticPressurePanel } from './panels/StaticPressurePanel';
 import { SystemComparisonTable } from './panels/SystemComparisonTable';
 import { LoadSummaryPanel } from './panels/LoadSummaryPanel';
 import { useProjectStore } from './store/projectStore';
 import Versions from './components/Versions';
-import { Wind, LayoutGrid, Info } from 'lucide-react';
+import { Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table } from 'lucide-react';
 
 function App(): React.JSX.Element {
-  const { project, setProject } = useProjectStore();
+  const { project, setProject, activeTab, setActiveTab } = useProjectStore();
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans selection:bg-blue-600/30 selection:text-blue-200">
@@ -25,7 +27,7 @@ function App(): React.JSX.Element {
           </div>
           <div>
             <h1 className="text-base font-bold tracking-wider text-neutral-100 uppercase">MEP HVAC Designer</h1>
-            <p className="text-[10px] text-neutral-500 font-medium">Automatic load calculation & duct router</p>
+            <p className="text-[10px] text-neutral-500 font-medium">Deterministic System Optimizer & Aerodynamic Static Pressure Solver</p>
           </div>
         </div>
 
@@ -81,33 +83,83 @@ function App(): React.JSX.Element {
               <div className="bg-neutral-900/40 border border-neutral-850 px-4 py-3 rounded-2xl flex items-center gap-2.5 text-xs text-neutral-400">
                 <Info size={16} className="text-blue-500 shrink-0" />
                 <span>
-                  <strong>Tip:</strong> Draw closed zones using the polyline tool. Once created, select a zone to customize internal design parameters and view live load schedules.
+                  <strong>Tip:</strong> Use the polyline draw tool to define rooms. The engine deterministically sizes thermal supply airflow, verifies fan static pressure, and selects diffusers.
                 </span>
               </div>
             </div>
           </div>
 
-          {/* Lower Aggregate Panels: Systems Recommendation & Load Schedule */}
-          <SystemComparisonTable />
-          <LoadSummaryPanel />
+          {/* Lower Workspace Tab Selector */}
+          <div className="flex items-center gap-2 border-b border-neutral-850 pb-2">
+            <button
+              onClick={() => setActiveTab('optimizer')}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                activeTab === 'optimizer'
+                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
+                  : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-850'
+              }`}
+            >
+              <Sparkles size={14} />
+              Optimizer Studio
+            </button>
+            <button
+              onClick={() => setActiveTab('static-pressure')}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                activeTab === 'static-pressure'
+                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
+                  : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-850'
+              }`}
+            >
+              <Gauge size={14} />
+              Static Pressure & Fan Curve
+            </button>
+            <button
+              onClick={() => setActiveTab('comparison')}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                activeTab === 'comparison'
+                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
+                  : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-850'
+              }`}
+            >
+              <Award size={14} />
+              System Catalog Comparison
+            </button>
+            <button
+              onClick={() => setActiveTab('schedule')}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                activeTab === 'schedule'
+                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
+                  : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-850'
+              }`}
+            >
+              <Table size={14} />
+              Building Load Schedule
+            </button>
+          </div>
+
+          {/* Lower Workspace Content Panels */}
+          {activeTab === 'optimizer' && <OptimizerStudioPanel />}
+          {activeTab === 'static-pressure' && <StaticPressurePanel />}
+          {activeTab === 'comparison' && <SystemComparisonTable />}
+          {activeTab === 'schedule' && <LoadSummaryPanel />}
         </div>
 
         {/* Sidebar Parameters Workspace (Right Column - Spans 1/4) */}
         <div className="flex flex-col gap-6">
           <ZonePropertiesPanel />
           
-          {/* Quick instructions / Info panel */}
+          {/* Reference Guides */}
           <div className="bg-neutral-900 border border-neutral-850 p-5 rounded-2xl flex flex-col gap-3">
             <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-300 uppercase tracking-wider">
               <LayoutGrid size={14} className="text-blue-500" />
-              Reference Guides
+              Engineering Standards
             </div>
             <div className="text-[11px] text-neutral-500 leading-relaxed flex flex-col gap-2">
               <p>
-                <strong>Duct Sizing:</strong> Based on the Huebscher equivalent rectangular diameter formulation, adopting a target equal friction drop of 0.10 in. wg per 100 ft.
+                <strong>Airflow & Ventilation:</strong> ASHRAE 62.1-2019 breathing zone ventilation ($V_{'{'}bz{'}'}$) combined with thermal sensible sensible heat ratio.
               </p>
               <p>
-                <strong>Ventilation rates:</strong> Complies with ASHRAE 62.1 requirements.
+                <strong>Duct & Static Pressure:</strong> Darcy-Weisbach friction & K-factor dynamic losses along connected critical paths.
               </p>
             </div>
           </div>
@@ -124,4 +176,3 @@ function App(): React.JSX.Element {
 }
 
 export default App;
-

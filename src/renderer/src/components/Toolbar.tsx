@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { parseDxfText } from '../engine/dxfParser';
 import { parseDwgBuffer } from '../engine/dwgParser';
-import { MousePointer, PenTool, Hand, RefreshCw, Trash2, ShieldAlert, Upload, X, CheckCircle } from 'lucide-react';
+import { MousePointer, PenTool, Hand, RefreshCw, Trash2, ShieldAlert, Upload, X, CheckCircle, LayoutGrid } from 'lucide-react';
 
 export const Toolbar: React.FC = () => {
   const {
@@ -16,7 +16,8 @@ export const Toolbar: React.FC = () => {
     deleteZone,
     dxfEntities,
     setDxfData,
-    clearDxfData
+    clearDxfData,
+    loadDemoSystems
   } = useProjectStore();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -125,6 +126,14 @@ export const Toolbar: React.FC = () => {
         >
           <Hand size={16} />
           Pan Canvas
+        </button>
+
+        <button
+          onClick={loadDemoSystems}
+          className="flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-blue-600 to-teal-500 hover:from-blue-500 hover:to-teal-400 text-white shadow-lg shadow-blue-500/10 hover:shadow-blue-500/25 transition-all duration-300 border border-blue-500/20"
+        >
+          <LayoutGrid size={16} />
+          Load 4 Systems Demo
         </button>
       </div>
 

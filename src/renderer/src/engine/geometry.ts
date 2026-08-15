@@ -148,3 +148,193 @@ export function getGridPointsInPolygon(points: number[], spacing: number): { x: 
 export function snapToGrid(value: number, interval: number): number {
   return Math.round(value / interval) * interval;
 }
+
+/**
+ * Calculates the optimal placement for the outdoor unit (ODU) on the closest exterior wall.
+ */
+export function calculateOptimalOutdoorUnitPos(
+  points: number[],
+  allZones: any[],
+  dxfBoundingBox: any
+): { x: number; y: number } {
+  if (points.length < 6) return { x: 0, y: 0 };
+
+  // 1. Determine the building bounding envelope
+  let envMinX = Infinity;
+  let envMaxX = -Infinity;
+  let envMinY = Infinity;
+  let envMaxY = -Infinity;
+
+  if (dxfBoundingBox) {
+    envMinX = dxfBoundingBox.minX;
+    envMaxX = dxfBoundingBox.maxX;
+    envMinY = dxfBoundingBox.minY;
+    envMaxY = dxfBoundingBox.maxY;
+  } else if (allZones && allZones.length > 0) {
+    // If no CAD underlay, use all zones combined
+    allZones.forEach((z) => {
+      const numPts = z.points.length / 2;
+      for (let i = 0; i < numPts; i++) {
+        const px = z.points[i * 2];
+        const py = z.points[i * 2 + 1];
+        if (px < envMinX) envMinX = px;
+        if (px > envMaxX) envMaxX = px;
+        if (py < envMinY) envMinY = py;
+        if (py > envMaxY) envMaxY = py;
+      }
+    });
+  } else {
+    // Single zone fallback
+    const numPts = points.length / 2;
+    for (let i = 0; i < numPts; i++) {
+      const px = points[i * 2];
+      const py = points[i * 2 + 1];
+      if (px < envMinX) envMinX = px;
+      if (px > envMaxX) envMaxX = px;
+      if (py < envMinY) envMinY = py;
+      if (py > envMaxY) envMaxY = py;
+    }
+  }
+
+  // Fallback if coordinates are invalid
+  if (envMinX === Infinity) {
+    envMinX = 0; envMaxX = 600; envMinY = 0; envMaxY = 400;
+  }
+
+  // 2. Calculate centroid of this zone
+  const centroid = getPolygonCentroid(points);
+
+  // 3. Find which side of the building envelope is closest to the centroid
+  const distToLeft = Math.abs(centroid.x - envMinX);
+  const distToRight = Math.abs(envMaxX - centroid.x);
+  const distToTop = Math.abs(centroid.y - envMinY);
+  const distToBottom = Math.abs(envMaxY - centroid.y);
+
+  const minDist = Math.min(distToLeft, distToRight, distToTop, distToBottom);
+
+  // 4. Place ODU outside the corresponding boundary vertex of this zone
+  let optimalPos = { x: 0, y: 0 };
+  const offset = 40; // 4 feet outside
+  const numPoints = points.length / 2;
+
+  if (minDist === distToLeft) {
+    // Left exterior wall: Find left-most vertex of this zone
+    let minX = Infinity;
+    let targetY = centroid.y;
+    for (let i = 0; i < numPoints; i++) {
+      const px = points[i * 2];
+      if (px < minX) {
+        minX = px;
+        targetY = points[i * 2 + 1];
+      }
+    }
+    optimalPos = { x: minX - offset, y: targetY };
+  } else if (minDist === distToRight) {
+    // Right exterior wall: Find right-most vertex of this zone
+    let maxX = -Infinity;
+    let targetY = centroid.y;
+    for (let i = 0; i < numPoints; i++) {
+      const px = points[i * 2];
+      if (px > maxX) {
+        maxX = px;
+        targetY = points[i * 2 + 1];
+      }
+    }
+    optimalPos = { x: maxX + offset, y: targetY };
+  } else if (minDist === distToTop) {
+    // Top exterior wall: Find top-most vertex of this zone
+    let minY = Infinity;
+    let targetX = centroid.x;
+    for (let i = 0; i < numPoints; i++) {
+      const py = points[i * 2 + 1];
+      if (py < minY) {
+        minY = py;
+        targetX = points[i * 2];
+      }
+    }
+    optimalPos = { x: targetX, y: minY - offset };
+  } else {
+    // Bottom exterior wall: Find bottom-most vertex of this zone
+    let maxY = -Infinity;
+    let targetX = centroid.x;
+    for (let i = 0; i < numPoints; i++) {
+      const py = points[i * 2 + 1];
+      if (py > maxY) {
+        maxY = py;
+        targetX = points[i * 2];
+      }
+    }
+    optimalPos = { x: targetX, y: maxY + offset };
+  }
+
+  // Snap to 10px grid
+  return {
+    x: Math.round(optimalPos.x / 10) * 10,
+    y: Math.round(optimalPos.y / 10) * 10
+  };
+}
+
+/**
+ * Calculates the optimal placement for the indoor unit (FCU/Wall IU)
+ * on an interior wall or furthest from the exterior walls (near corridor/entrance).
+ */
+export function calculateOptimalIndoorUnitPos(
+  points: number[],
+  outdoorUnitPos?: { x: number; y: number }
+): { x: number; y: number } {
+  if (points.length < 6) return { x: 0, y: 0 };
+
+  const centroid = getPolygonCentroid(points);
+  const numPoints = points.length / 2;
+
+  let targetX = points[0];
+  let targetY = points[1];
+
+  if (outdoorUnitPos && (outdoorUnitPos.x !== 0 || outdoorUnitPos.y !== 0)) {
+    // Find the vertex furthest from the outdoor unit (interior / corridor wall)
+    let maxDist = -1;
+    for (let i = 0; i < numPoints; i++) {
+      const px = points[i * 2];
+      const py = points[i * 2 + 1];
+      const dist = Math.pow(px - outdoorUnitPos.x, 2) + Math.pow(py - outdoorUnitPos.y, 2);
+      if (dist > maxDist) {
+        maxDist = dist;
+        targetX = px;
+        targetY = py;
+      }
+    }
+  } else {
+    // Fallback: pick the top-leftmost vertex
+    let minScore = Infinity;
+    for (let i = 0; i < numPoints; i++) {
+      const px = points[i * 2];
+      const py = points[i * 2 + 1];
+      const score = px + py;
+      if (score < minScore) {
+        minScore = score;
+        targetX = px;
+        targetY = py;
+      }
+    }
+  }
+
+  // Shift inside the zone towards the centroid so FCU is neatly inside the ceiling
+  const vx = centroid.x - targetX;
+  const vy = centroid.y - targetY;
+  const len = Math.sqrt(vx * vx + vy * vy) || 1;
+
+  const offset = Math.min(30, len * 0.35);
+  let optimalX = targetX + (vx / len) * offset;
+  let optimalY = targetY + (vy / len) * offset;
+
+  // Make sure it is inside the polygon
+  if (!isPointInPolygon(optimalX, optimalY, points)) {
+    optimalX = (targetX + centroid.x) / 2;
+    optimalY = (targetY + centroid.y) / 2;
+  }
+
+  return {
+    x: Math.round(optimalX / 10) * 10,
+    y: Math.round(optimalY / 10) * 10
+  };
+}

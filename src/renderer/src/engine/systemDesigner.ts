@@ -1,206 +1,421 @@
-export interface SystemRecommendation {
+import {
+  SystemDesignCandidate,
+  OptimizationWeights,
+  DiagnosticItem,
+  CriticalPathResult
+} from './types';
+import {
+  STANDARD_EQUIPMENT_CATALOG,
+  STANDARD_DIFFUSER_CATALOG,
+  STANDARD_DUCT_TYPES
+} from './hvacCatalogs';
+import {
+  solveDirectedNetworkStaticPressure,
+  evaluateFanOperatingPoint,
+  calculateBranchBalancingSchedule
+} from './staticPressureCalc';
+import { selectBestDiffuserFromCatalog } from './diffuserPlacer';
+import { DuctSegment } from '../store/projectStore';
+import { DiffuserPos } from './diffuserPlacer';
+
+export const DEFAULT_OPTIMIZATION_WEIGHTS: OptimizationWeights = {
+  wComfort: 0.20,
+  wEnergy: 0.20,
+  wCost: 0.20,
+  wNoise: 0.15,
+  wPressure: 0.10,
+  wSpace: 0.05,
+  wPreference: 0.10
+};
+
+export interface RecommendationSummary {
+  candidates: SystemDesignCandidate[];
+  bestOverall: SystemDesignCandidate | null;
+  bestEnergy: SystemDesignCandidate | null;
+  lowestCost: SystemDesignCandidate | null;
+  lowestNoise: SystemDesignCandidate | null;
+  rejectedCount: number;
+  diagnostics: DiagnosticItem[];
+}
+
+export interface LegacySystemRecommendation {
   type: 'high-wall' | 'cassette' | 'concealed' | 'packaged' | 'vrf' | 'ahu';
   name: string;
-  score: number; // 0 to 100
+  score: number;
   reason: string;
   pros: string[];
   cons: string[];
   estUnits: number;
-  unitCapacity: number; // Btu/h
+  unitCapacity: number;
   estCost: 'Low' | 'Medium' | 'Medium-High' | 'High' | 'Very High';
   estEfficiency: 'Standard' | 'High' | 'Very High';
+  reference?: string;
+  modelLabel?: string;
+  esp?: string;
+  cfm?: number;
+  sourceFile?: string;
 }
 
+function clamp(val: number, min: number = 0, max: number = 100): number {
+  return Math.min(max, Math.max(min, val));
+}
+
+/**
+ * Generates and evaluates bounded HVAC system candidates
+ */
+export function generateSystemCandidates(
+  totalLoadBtuPerHour: number,
+  _sensibleLoadBtuPerHour: number,
+  supplyCfm: number,
+  spaceTypeId: string,
+  areaSqFt: number,
+  isImperial: boolean = true,
+  userWeights: Partial<OptimizationWeights> = {},
+  selectedSystemTypes?: string[],
+  _loadedCatalogs?: {
+    decorative: { highWall: any[]; cassette: any[] } | null;
+    ducted: any[] | null;
+  } | null,
+  ductSegments: DuctSegment[] = [],
+  diffusers: DiffuserPos[] = []
+): RecommendationSummary {
+  const weights: OptimizationWeights = { ...DEFAULT_OPTIMIZATION_WEIGHTS, ...userWeights };
+  const weightSum = weights.wComfort + weights.wEnergy + weights.wCost + weights.wNoise + weights.wPressure + weights.wSpace + weights.wPreference || 1.0;
+  const nw = {
+    wComfort: weights.wComfort / weightSum,
+    wEnergy: weights.wEnergy / weightSum,
+    wCost: weights.wCost / weightSum,
+    wNoise: weights.wNoise / weightSum,
+    wPressure: weights.wPressure / weightSum,
+    wSpace: weights.wSpace / weightSum,
+    wPreference: weights.wPreference / weightSum
+  };
+
+  const loadBtu = isImperial ? totalLoadBtuPerHour : totalLoadBtuPerHour * 3.412;
+  const cfm = supplyCfm > 0 ? supplyCfm : (loadBtu / 12000) * 400;
+
+  let spaceNcLimit = 35;
+  if (spaceTypeId === 'conference' || spaceTypeId === 'classroom') spaceNcLimit = 28;
+  if (spaceTypeId === 'office') spaceNcLimit = 32;
+  if (spaceTypeId === 'lobby' || spaceTypeId === 'retail') spaceNcLimit = 40;
+
+  const catalog = STANDARD_EQUIPMENT_CATALOG;
+  const typesToTest = selectedSystemTypes || ['concealed', 'cassette', 'high-wall', 'vrf', 'packaged', 'ahu'];
+
+  const candidates: SystemDesignCandidate[] = [];
+  let rejectedCount = 0;
+  const allDiagnostics: DiagnosticItem[] = [];
+
+  for (const sysType of typesToTest) {
+    const matchingEquip = catalog.filter(e => e.systemType === sysType);
+
+    for (const equip of matchingEquip) {
+      const diagnostics: DiagnosticItem[] = [];
+
+      const qtyByTotalCap = Math.ceil(loadBtu / equip.totalCapacityBtuPerHour);
+      const qtyByCfm = Math.ceil(cfm / equip.nominalCfm);
+      const qty = Math.max(1, qtyByTotalCap, qtyByCfm);
+      const installedCap = qty * equip.totalCapacityBtuPerHour;
+
+      const oversizingRatio = installedCap / (loadBtu || 1);
+      if (oversizingRatio < 0.98) {
+        diagnostics.push({
+          code: 'ERR_CAPACITY_DEFICIT',
+          severity: 'error',
+          componentId: equip.id,
+          message: `Installed capacity (${installedCap.toLocaleString()} Btu/h) is less than design load (${Math.round(loadBtu).toLocaleString()} Btu/h).`,
+          remediation: `Increase unit quantity to ${qty + 1} or select a larger tonnage unit.`
+        });
+      }
+
+      const terminalCount = equip.capabilities.supportsExternalDiffusers
+        ? Math.max(1, Math.ceil(cfm / 300))
+        : qty;
+      const flowPerTerminal = Math.round(cfm / terminalCount);
+      const diffuserSelection = selectBestDiffuserFromCatalog(flowPerTerminal, spaceNcLimit);
+
+      if (diffuserSelection.actualNc > spaceNcLimit) {
+        diagnostics.push({
+          code: 'WARN_NOISE_CRITERIA_EXCEEDED',
+          severity: 'warning',
+          componentId: diffuserSelection.diffuser.id,
+          message: `Diffuser noise level (NC ${diffuserSelection.actualNc}) exceeds space limit (NC ${spaceNcLimit}).`,
+          remediation: 'Use larger face size diffusers or increase diffuser quantity to lower neck velocity.'
+        });
+      }
+
+      let criticalPath: CriticalPathResult = {
+        pathId: 'none',
+        terminalId: '',
+        supplySegments: [],
+        returnSegments: [],
+        totalSupplyDeltaPInWg: 0,
+        totalReturnDeltaPInWg: 0,
+        diffuserDeltaPInWg: 0,
+        accessoriesDeltaPInWg: 0,
+        totalLossInWg: 0,
+        marginInWg: 0,
+        espRequiredInWg: 0
+      };
+      let balancingDampers: any[] = [];
+      let fanResult = {
+        isValid: true,
+        operatingCfm: cfm,
+        operatingEspInWg: 0,
+        fanMarginInWg: 0,
+        percentageOverDesignCfm: 0,
+        powerKwEstimate: equip.electricalKw * 0.15,
+        warningMessages: [] as string[]
+      };
+
+      const defaultDuctType = STANDARD_DUCT_TYPES[0];
+
+      if (equip.capabilities.supportsDuctNetwork) {
+        if (ductSegments.length > 0 && diffusers.length > 0) {
+          criticalPath = solveDirectedNetworkStaticPressure(
+            ductSegments,
+            diffusers,
+            STANDARD_DIFFUSER_CATALOG,
+            defaultDuctType
+          );
+          balancingDampers = calculateBranchBalancingSchedule(criticalPath, diffusers);
+        } else {
+          const synthDuctLoss = 0.08 + (areaSqFt / 1000) * 0.04;
+          const synthDiffuserLoss = diffuserSelection.deltaPInWg || 0.035;
+          const synthReturnLoss = 0.04;
+          const synthRawLoss = synthDuctLoss + synthDiffuserLoss + synthReturnLoss;
+          const synthMargin = synthRawLoss * 0.15;
+          criticalPath = {
+            pathId: `synth-${equip.id}`,
+            terminalId: `term-1`,
+            supplySegments: [],
+            returnSegments: [],
+            totalSupplyDeltaPInWg: Math.round(synthDuctLoss * 1000) / 1000,
+            totalReturnDeltaPInWg: Math.round(synthReturnLoss * 1000) / 1000,
+            diffuserDeltaPInWg: Math.round(synthDiffuserLoss * 1000) / 1000,
+            accessoriesDeltaPInWg: 0.15,
+            totalLossInWg: Math.round(synthRawLoss * 1000) / 1000,
+            marginInWg: Math.round(synthMargin * 1000) / 1000,
+            espRequiredInWg: Math.round((synthRawLoss + synthMargin) * 1000) / 1000
+          };
+        }
+
+        fanResult = evaluateFanOperatingPoint(equip, Math.round(cfm / qty), criticalPath.espRequiredInWg);
+
+        if (!fanResult.isValid) {
+          diagnostics.push({
+            code: 'ERR_FAN_ESP_DEFICIT',
+            severity: 'error',
+            componentId: equip.id,
+            message: `Fan available external static pressure (${equip.maxRatedEspInWg} in.wg) is below required system ESP (${criticalPath.espRequiredInWg.toFixed(2)} in.wg).`,
+            remediation: 'Select high-static duct indoor model or upsize duct cross-sections to reduce aerodynamic friction.'
+          });
+        }
+      }
+
+      const isValid = !diagnostics.some(d => d.severity === 'error');
+      if (!isValid) rejectedCount++;
+
+      const targetThrow = Math.max(8, Math.sqrt(areaSqFt / terminalCount) * 0.5);
+      const throwDiff = Math.abs(diffuserSelection.throwT50Ft - targetThrow);
+      const sComfort = clamp(100 - (throwDiff / targetThrow) * 80);
+
+      const seerVal = equip.efficiency.seer || (equip.efficiency.copCooling ? equip.efficiency.copCooling * 3.412 : 15);
+      const sEnergy = clamp(50 + ((seerVal - 14) / 8) * 50);
+
+      const baseCost = equip.costIndex * qty;
+      const sCost = clamp(100 - ((baseCost - 20) / 160) * 100);
+
+      const noiseMargin = spaceNcLimit - diffuserSelection.actualNc;
+      const sNoise = clamp(50 + noiseMargin * 8);
+
+      let sPressure = 90;
+      if (equip.capabilities.supportsDuctNetwork) {
+        const marginRatio = fanResult.fanMarginInWg / (equip.maxRatedEspInWg || 0.4);
+        sPressure = clamp(100 - Math.abs(marginRatio - 0.20) * 200);
+      }
+
+      const plenumHeight = 24;
+      const ductHeight = 10;
+      const sSpace = clamp((1 - ductHeight / plenumHeight) * 100);
+
+      let sPreference = 70;
+      if (sysType === 'concealed') sPreference = 95;
+      if (sysType === 'vrf') sPreference = 85;
+      if (sysType === 'cassette' && areaSqFt >= 300) sPreference = 90;
+
+      const rawTotal =
+        nw.wComfort * sComfort +
+        nw.wEnergy * sEnergy +
+        nw.wCost * sCost +
+        nw.wNoise * sNoise +
+        nw.wPressure * sPressure +
+        nw.wSpace * sSpace +
+        nw.wPreference * sPreference;
+
+      const totalScore = isValid ? Math.round(clamp(rawTotal)) : Math.min(25, Math.round(rawTotal * 0.3));
+
+      let tradeOffSummary = `Solid ${equip.systemType.toUpperCase()} solution with ${qty} × ${equip.model} unit(s).`;
+      if (sEnergy >= 85) tradeOffSummary += ' High energy efficiency reduces seasonal operating costs.';
+      if (sCost >= 80) tradeOffSummary += ' Low initial capital investment with standard installation.';
+      if (sNoise >= 85) tradeOffSummary += ' Ultra-quiet acoustics ideal for noise-sensitive occupants.';
+
+      allDiagnostics.push(...diagnostics);
+
+      candidates.push({
+        id: `cand-${equip.id}-${qty}`,
+        systemType: equip.systemType,
+        equipment: equip,
+        quantity: qty,
+        diffusers: {
+          diffuserRecord: diffuserSelection.diffuser,
+          quantity: terminalCount,
+          cfmPerUnit: flowPerTerminal,
+          actualNc: diffuserSelection.actualNc,
+          throwT50Ft: diffuserSelection.throwT50Ft,
+          deltaPInWg: diffuserSelection.deltaPInWg
+        },
+        ductwork: equip.capabilities.supportsDuctNetwork
+          ? {
+              ductType: defaultDuctType,
+              totalDuctLengthFt: Math.round(areaSqFt * 0.08),
+              maxVelocityFpm: 1100,
+              criticalPath,
+              balancingDampers
+            }
+          : undefined,
+        fanOperatingPoint: fanResult,
+        isValid,
+        diagnostics,
+        subscores: {
+          sComfort: Math.round(sComfort),
+          sEnergy: Math.round(sEnergy),
+          sCost: Math.round(sCost),
+          sNoise: Math.round(sNoise),
+          sPressure: Math.round(sPressure),
+          sSpace: Math.round(sSpace),
+          sPreference: Math.round(sPreference),
+          totalScore
+        },
+        tradeOffSummary
+      });
+    }
+  }
+
+  candidates.sort((a, b) => {
+    if (a.isValid !== b.isValid) return a.isValid ? -1 : 1;
+    return b.subscores.totalScore - a.subscores.totalScore;
+  });
+
+  const validCandidates = candidates.filter(c => c.isValid);
+
+  const bestOverall = validCandidates[0] || null;
+  const bestEnergy = [...validCandidates].sort((a, b) => b.subscores.sEnergy - a.subscores.sEnergy)[0] || null;
+  const lowestCost = [...validCandidates].sort((a, b) => b.subscores.sCost - a.subscores.sCost)[0] || null;
+  const lowestNoise = [...validCandidates].sort((a, b) => b.subscores.sNoise - a.subscores.sNoise)[0] || null;
+
+  if (bestOverall) bestOverall.categoryRankings = { ...bestOverall.categoryRankings, isBestOverall: true };
+  if (bestEnergy) bestEnergy.categoryRankings = { ...bestEnergy.categoryRankings, isBestEnergy: true };
+  if (lowestCost) lowestCost.categoryRankings = { ...lowestCost.categoryRankings, isLowestCost: true };
+  if (lowestNoise) lowestNoise.categoryRankings = { ...lowestNoise.categoryRankings, isLowestNoise: true };
+
+  return {
+    candidates: candidates.slice(0, 16),
+    bestOverall,
+    bestEnergy,
+    lowestCost,
+    lowestNoise,
+    rejectedCount,
+    diagnostics: allDiagnostics
+  };
+}
+
+/**
+ * Backward-compatible helper for legacy recommendation panel
+ */
 export function recommendSystemsForZone(
   areaSqFt: number,
   totalLoadBtu: number,
   spaceTypeId: string,
-  isImperial: boolean
-): SystemRecommendation[] {
-  const recommendations: SystemRecommendation[] = [];
-  const loadBtu = isImperial ? totalLoadBtu : totalLoadBtu * 3.412; // Convert Watts to Btu/h
-  const area = isImperial ? areaSqFt : areaSqFt * 10.764; // Convert sqm to sqft
+  isImperial: boolean,
+  supplyCfm?: number,
+  loadedCatalogs?: any
+): LegacySystemRecommendation[] {
+  const result = generateSystemCandidates(
+    totalLoadBtu,
+    totalLoadBtu * 0.75,
+    supplyCfm || 0,
+    spaceTypeId,
+    areaSqFt,
+    isImperial,
+    {},
+    undefined,
+    loadedCatalogs
+  );
 
-  // 1. High Wall Split Unit
-  // Sized based on Cairo DWG: 12K (12,050), 18K (18,000), 24K (22,800), 30K (29,300)
-  let hwScore = 0;
-  let hwReason = '';
-  let hwUnits = 1;
-  let hwCap = 12050;
-  
-  if (loadBtu <= 30000 && area <= 400 && spaceTypeId !== 'toilet-public' && spaceTypeId !== 'computer-lab') {
-    hwScore = 90;
-    hwReason = 'Highly suitable for small, single-zone applications. Cost-effective and simple installation.';
-    if (loadBtu <= 12050) hwCap = 12050;
-    else if (loadBtu <= 18000) hwCap = 18000;
-    else if (loadBtu <= 22800) hwCap = 22800;
-    else hwCap = 29300;
-  } else if (loadBtu > 30000 && loadBtu <= 90000) {
-    hwScore = 55;
-    hwUnits = Math.ceil(loadBtu / 29300);
-    hwCap = 29300;
-    hwReason = `Requires installing ${hwUnits} High Wall Split units to satisfy load. Good redundancy, but higher wall space usage.`;
-  } else {
-    hwScore = 15;
-    hwReason = 'Not recommended due to excessive cooling load or space size.';
-  }
-  recommendations.push({
-    type: 'high-wall',
-    name: 'High Wall Split System',
-    score: hwScore,
-    reason: hwReason,
-    pros: ['Lowest initial equipment cost', 'Very easy installation & maintenance', 'No ductwork required'],
-    cons: ['Visible wall-mounted indoor units', 'Limited air throw/coverage', 'Poorer ventilation integration'],
-    estUnits: hwUnits,
-    unitCapacity: hwCap,
-    estCost: 'Low',
-    estEfficiency: 'Standard'
+  return result.candidates.map(cand => {
+    const estCost: 'Low' | 'Medium' | 'Medium-High' | 'High' | 'Very High' =
+      cand.equipment.costIndex <= 35 ? 'Low' : cand.equipment.costIndex <= 60 ? 'Medium' : cand.equipment.costIndex <= 75 ? 'Medium-High' : cand.equipment.costIndex <= 90 ? 'High' : 'Very High';
+
+    const estEfficiency: 'Standard' | 'High' | 'Very High' =
+      cand.subscores.sEnergy >= 85 ? 'Very High' : cand.subscores.sEnergy >= 65 ? 'High' : 'Standard';
+
+    return {
+      type: cand.systemType,
+      name: `${cand.equipment.manufacturer} ${cand.equipment.model} (${cand.systemType.toUpperCase()})`,
+      score: cand.subscores.totalScore,
+      reason: cand.tradeOffSummary,
+      pros: [
+        `Installed Capacity: ${(cand.quantity * cand.equipment.totalCapacityBtuPerHour).toLocaleString()} Btu/h`,
+        cand.equipment.capabilities.hasExternalStaticPressure
+          ? `Rated ESP: ${cand.equipment.maxRatedEspInWg.toFixed(2)} in.wg`
+          : 'Direct quiet air distribution without duct resistance'
+      ],
+      cons: cand.isValid ? [] : ['Fails engineering validation constraints'],
+      estUnits: cand.quantity,
+      unitCapacity: cand.equipment.totalCapacityBtuPerHour,
+      estCost,
+      estEfficiency,
+      reference: cand.equipment.provenance.source,
+      modelLabel: cand.equipment.model,
+      cfm: cand.quantity * cand.equipment.nominalCfm,
+      esp: cand.equipment.capabilities.hasExternalStaticPressure ? `${cand.equipment.maxRatedEspInWg.toFixed(2)} in.wg` : undefined,
+      sourceFile: cand.equipment.provenance.source
+    };
   });
+}
 
-  // 2. Cassette Split Unit
-  // Sized based on Cairo DWG: 24K (24,000), 36K (34,000), 48K (42,500)
-  let casScore = 0;
-  let casReason = '';
-  let casUnits = 1;
-  let casCap = 34000;
+/**
+ * Backward-compatible helper for legacy zone property queries
+ */
+export function getCatalogSizingForZone(
+  systemType: string | undefined,
+  loadBtu: number,
+  supplyCfm: number,
+  loadedCatalogs?: any
+): { qty: number; model: string; esp?: string } {
+  const result = generateSystemCandidates(
+    loadBtu,
+    loadBtu * 0.75,
+    supplyCfm,
+    'office',
+    400,
+    true,
+    {},
+    systemType ? [systemType] : undefined,
+    loadedCatalogs
+  );
 
-  if (area >= 300 && area <= 1000 && loadBtu <= 42500) {
-    casScore = 88;
-    casReason = 'Excellent for open-plan offices, lobbies, or conference rooms with suspended false ceilings.';
-    if (loadBtu <= 24000) casCap = 24000;
-    else if (loadBtu <= 34000) casCap = 34000;
-    else casCap = 42500;
-  } else if (loadBtu > 42500 && loadBtu <= 130000) {
-    casScore = 70;
-    casUnits = Math.ceil(loadBtu / 42500);
-    casCap = 42500;
-    casReason = `Good choice utilizing ${casUnits} Cassette Split units to provide even, 4-way distributed cooling.`;
-  } else {
-    casScore = 30;
-    casReason = 'Not ideal for very small rooms or spaces lacking suspended ceilings.';
-  }
-  recommendations.push({
-    type: 'cassette',
-    name: 'Cassette Split System',
-    score: casScore,
-    reason: casReason,
-    pros: ['Under-ceiling flush mount looks premium', '4-way airflow distribution', 'Quiet operation'],
-    cons: ['Requires ceiling void spacing', 'Slightly higher cost than high wall', 'Condensate drain pump maintenance'],
-    estUnits: casUnits,
-    unitCapacity: casCap,
-    estCost: 'Medium',
-    estEfficiency: 'High'
-  });
-
-  // 3. Concealed Ducted Split System
-  // Sized based on Cairo Plans selection: 18K (17,470), 24K (22,355), 30K (26,450), 42K (35,590), 60K (47,005)
-  let ductScore = 0;
-  let ductReason = '';
-  let ductUnits = 1;
-  let ductCap = 35590;
-
-  const isQuietOffice = spaceTypeId === 'conference' || spaceTypeId === 'office' || spaceTypeId === 'classroom';
-  
-  if (isQuietOffice) {
-    ductScore = 95;
-    ductReason = 'Top recommended choice. Standard ceiling concealed ducted split unit provides silent, uniform air distribution and easy fresh-air integration.';
-  } else {
-    ductScore = 80;
-    ductReason = 'Solid engineering choice. Hidden ceiling units offer excellent aesthetic appeal and high external static pressure (ESP).';
+  const best = result.bestOverall || result.candidates[0];
+  if (best) {
+    return {
+      qty: best.quantity,
+      model: best.equipment.model,
+      esp: best.equipment.capabilities.hasExternalStaticPressure
+        ? `${best.equipment.maxRatedEspInWg.toFixed(2)} in.wg`
+        : undefined
+    };
   }
 
-  // Sizing and unit selection logic matching the Cairo Office plans
-  if (loadBtu <= 17470) {
-    ductCap = 17470;
-  } else if (loadBtu <= 22355) {
-    ductCap = 22355;
-  } else if (loadBtu <= 26450) {
-    ductCap = 26450;
-  } else if (loadBtu <= 35590) {
-    ductCap = 35590;
-  } else if (loadBtu <= 47005) {
-    ductCap = 47005;
-  } else {
-    // If the load exceeds one 60K unit, we split it
-    ductUnits = Math.ceil(loadBtu / 47005);
-    ductCap = 47005;
-  }
-
-  recommendations.push({
-    type: 'concealed',
-    name: 'Concealed Ducted Split',
-    score: ductScore,
-    reason: ductReason,
-    pros: ['Completely hidden inside ceiling', 'Uniform air distribution via diffusers', 'Can integrate fresh air intake'],
-    cons: ['Requires sheet metal ductwork design', 'Higher installation costs', 'Needs static pressure calculation (ESP)'],
-    estUnits: ductUnits,
-    unitCapacity: ductCap,
-    estCost: 'Medium-High',
-    estEfficiency: 'Standard'
-  });
-
-  // 4. VRF System (Variable Refrigerant Flow)
-  let vrfScore = 80; // Always a strong premium recommendation
-  let vrfReason = 'Premium choice for multi-zone spaces. Highly efficient, saves ceiling space, and allows precise zone control.';
-  recommendations.push({
-    type: 'vrf',
-    name: 'Variable Refrigerant Flow (VRF)',
-    score: vrfScore,
-    reason: vrfReason,
-    pros: ['Extremely high seasonal energy efficiency', 'Simultaneous heating & cooling possible', 'Long piping/elevation limits'],
-    cons: ['Highest initial equipment cost', 'Complex installation & programming', 'Requires specialized maintenance'],
-    estUnits: Math.ceil(loadBtu / 48000), // Assumes 4-HP indoor units
-    unitCapacity: 48000,
-    estCost: 'High',
-    estEfficiency: 'Very High'
-  });
-
-  // 5. Packaged Rooftop Unit
-  // Sized in 5 TR, 7.5 TR, 10 TR, 15 TR, 20 TR (60k, 90k, 120k, 180k, 240k Btu/h)
-  let pkgScore = 0;
-  let pkgReason = '';
-  if (loadBtu >= 60000) {
-    pkgScore = 75;
-    pkgReason = 'Excellent for single-volume large spaces or multiple zones using constant volume (VAV).';
-  } else {
-    pkgScore = 40;
-    pkgReason = 'Low load makes a dedicated rooftop packaged unit cost-ineffective.';
-  }
-  recommendations.push({
-    type: 'packaged',
-    name: 'Packaged Rooftop Unit',
-    score: pkgScore,
-    reason: pkgReason,
-    pros: ['No indoor equipment space required', 'All maintenance happens outdoors/rooftop', 'Factory charged and tested'],
-    cons: ['Heavy weight requiring roof support', 'Large external duct penetrations', 'Higher fan power consumption'],
-    estUnits: 1,
-    unitCapacity: Math.ceil(loadBtu / 12000) * 12000,
-    estCost: 'Medium-High',
-    estEfficiency: 'Standard'
-  });
-
-  // 6. Central Air Handling Unit (AHU) / Chilled Water
-  let ahuScore = 0;
-  let ahuReason = '';
-  if (loadBtu >= 120000 || spaceTypeId === 'hospital' || spaceTypeId === 'computer-lab') {
-    ahuScore = 85;
-    ahuReason = 'Best option for large floors, cleanrooms, and facilities requiring high ventilation & HEPA filtration.';
-  } else {
-    ahuScore = 30;
-    ahuReason = 'Oversized and expensive for small commercial spaces.';
-  }
-  recommendations.push({
-    type: 'ahu',
-    name: 'Central Air Handling Unit (AHU)',
-    score: ahuScore,
-    reason: ahuReason,
-    pros: ['Excellent ventilation and air quality control', 'Very long system life', 'Centralized water cooling plant'],
-    cons: ['Requires dedicated mechanical room space', 'High initial piping/valving plant cost', 'Complex operations'],
-    estUnits: 1,
-    unitCapacity: loadBtu,
-    estCost: 'Very High',
-    estEfficiency: 'Very High'
-  });
-
-  return recommendations.sort((a, b) => b.score - a.score);
+  return { qty: 1, model: '' };
 }
