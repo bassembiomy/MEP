@@ -196,6 +196,7 @@ export interface SystemDesignCandidate {
     maxVelocityFpm: number;
     criticalPath: CriticalPathResult;
     balancingDampers: BranchBalancingItem[];
+    acousticVerifications?: DuctAcousticVerification[];
   };
   fanOperatingPoint?: FanOperatingPointResult;
   isValid: boolean;
@@ -208,4 +209,98 @@ export interface SystemDesignCandidate {
     isLowestCost?: boolean;
     isLowestNoise?: boolean;
   };
+  systemArchitecture?: SystemArchitectureBreakdown;
+  algorithmTrace?: SelectionAlgorithmTrace;
 }
+
+export type ComponentCategory =
+  | 'primary-equipment'
+  | 'air-distribution'
+  | 'terminals'
+  | 'hydronics-refrigerant'
+  | 'controls-electrical'
+  | 'accessories';
+
+export interface SystemComponentItem {
+  id: string;
+  category: ComponentCategory;
+  tag: string;             // e.g. 'ODU-01', 'FCU-01', 'SAD-01', 'RAG-01', 'FD-01'
+  name: string;            // e.g. 'Inverter Condensing Unit'
+  modelOrType: string;     // e.g. 'Carrier 42QSS024-D'
+  quantity: number;        // Sized unit quantity
+  specification: string;   // Engineering rating (e.g. '2.0 TR (22,355 Btu/h), 614 CFM')
+  connectionSize?: string; // e.g. '3/8" Liquid / 5/8" Gas', '36"x8" Supply Trunk'
+  status: 'included' | 'optional' | 'field-provided';
+  details?: string;        // Specific engineering note or SMACNA/ASHRAE reference
+}
+
+export interface SystemArchitectureBreakdown {
+  systemType: 'concealed' | 'cassette' | 'high-wall' | 'packaged' | 'vrf' | 'ahu';
+  systemName: string;
+  summary: string;
+  governingStandards: string[];
+  components: SystemComponentItem[];
+  schematicType: 'split-dx-ducted' | 'split-dx-ductless' | 'vrf-multisplit' | 'packaged-rooftop' | 'central-chilled-water-vav';
+}
+
+export interface SelectionAlgorithmStepInput {
+  label: string;
+  value: string | number;
+  unit?: string;
+}
+
+export interface SelectionAlgorithmStep {
+  stepNumber: number;
+  stepName: string;
+  formula: string;
+  inputs: SelectionAlgorithmStepInput[];
+  calculatedValue: string | number;
+  unit?: string;
+  criteria: string;
+  passed: boolean;
+  notes?: string;
+}
+
+export interface SelectionAlgorithmTrace {
+  systemType: 'concealed' | 'cassette' | 'high-wall' | 'packaged' | 'vrf' | 'ahu';
+  model: string;
+  steps: SelectionAlgorithmStep[];
+  overallPassed: boolean;
+  engineeringRemarks: string;
+}
+
+export type DuctLocationCategory =
+  | 'in-shaft-solid-ceiling'
+  | 'above-suspended-ceiling'
+  | 'within-occupied-space';
+
+export type AcousticSensitivity = 'standard' | 'enhanced' | 'critical';
+
+export type DuctSectionCategory = 'trunk' | 'branch' | 'runout' | 'return';
+
+export type AcousticComplianceStatus = 'PASS' | 'REQUIRES REDESIGN';
+
+export interface DuctAcousticVerification {
+  ductId: string;
+  upstreamNode: string;
+  downstreamNode: string;
+  cfm: number;
+  shape: 'rectangular' | 'round' | 'oval' | 'flex';
+  dimensions: {
+    widthIn?: number;
+    heightIn?: number;
+    diameterIn?: number;
+  };
+  dimensionsLabel: string;
+  crossSectionalAreaSqFt: number;
+  actualVelocityFpm: number;
+  allowableAcousticVelocityFpm: number;
+  targetNc: number;
+  locationCategory: DuctLocationCategory;
+  sectionCategory: DuctSectionCategory;
+  pressureLossInWg: number;
+  complianceStatus: AcousticComplianceStatus;
+  warnings: string[];
+  proposedRemediation?: string;
+}
+
