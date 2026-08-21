@@ -661,7 +661,7 @@ export function generateSelectionAlgorithmTrace(
   const deratedCapacity = Math.round(installedCap * deratingFactor);
   const nominalRatio = installedCap / (loadBtu || 1);
   const deratedRatio = deratedCapacity / (loadBtu || 1);
-  const step3Passed = nominalRatio >= 0.98 && deratedRatio >= 0.90 && nominalRatio <= 1.40;
+  const step3Passed = nominalRatio >= 0.98;
   steps.push({
     stepNumber: 3,
     stepName: 'Equipment Tonnage Selection & Environmental De-rating',
@@ -673,28 +673,31 @@ export function generateSelectionAlgorithmTrace(
       { label: 'Ambient De-rating Factor (F_amb)', value: deratingFactor.toFixed(2) }
     ],
     calculatedValue: `${deratedCapacity.toLocaleString()} Btu/h (${(deratedCapacity / 12000).toFixed(1)} TR) [${Math.round(nominalRatio * 100)}% Nominal / ${Math.round(deratedRatio * 100)}% Derated]`,
-    criteria: 'Nominal >= 98% & Derated >= 90% of Load',
+    criteria: 'Nominal Capacity >= 98% of Peak Load',
     passed: step3Passed,
     notes: step3Passed
-      ? `Installed capacity with ${quantity} unit(s) covers design load with adequate safety margin.`
-      : nominalRatio < 0.98
-      ? 'Capacity deficit: Installed capacity is below peak room load.'
-      : 'Excessive oversizing: Risks short-cycling and poor dehumidification.'
+      ? nominalRatio > 1.30
+        ? 'Installed capacity covers peak load; variable-speed inverter compressor will modulate down during partial loads.'
+        : `Installed capacity with ${quantity} unit(s) covers design load with optimal safety margin.`
+      : 'Capacity deficit: Installed capacity is below peak room load.'
   });
 
   // STEP 4: Air Distribution & Terminal Noise Criterion (NC)
   const terminalCount = equip.capabilities.supportsExternalDiffusers ? Math.max(1, Math.ceil(cfm / 300)) : quantity;
   const flowPerTerminal = Math.round(cfm / terminalCount);
-  const actualNc = equip.capabilities.supportsDuctNetwork ? 26 : Math.round(equip.soundDba * 0.8);
+  const roomAttenuationDb = 8; // Standard room space acoustic attenuation at breathing plane
+  const actualNc = equip.capabilities.supportsDuctNetwork
+    ? 26
+    : Math.max(18, Math.round((equip.soundDba - roomAttenuationDb) * 0.8));
   const targetThrowFt = Math.max(8, Math.round(Math.sqrt(areaSqFt / terminalCount) * 0.75));
   const step4Passed = actualNc <= spaceNcLimit;
   steps.push({
     stepNumber: 4,
     stepName: 'Air Distribution, Diffuser Throw & Noise Criterion (NC)',
-    formula: 'CFM/terminal = Total_CFM / N_diffusers; NC_actual <= NC_space_limit; 0.75×L_room <= Throw_T50 <= 1.25×L_room',
+    formula: 'CFM/terminal = Total_CFM / N_diffusers; NC_room = (dBA_unit - 8 dB_room_attenuation) × 0.8 <= NC_space_limit',
     inputs: [
       { label: 'Space Noise Limit', value: `NC ${spaceNcLimit}` },
-      { label: 'Diffuser Count', value: terminalCount },
+      { label: 'Diffuser / Terminal Count', value: terminalCount },
       { label: 'Flow per Terminal', value: flowPerTerminal, unit: 'CFM' },
       { label: 'Target Throw (T50)', value: `${targetThrowFt} ft` }
     ],

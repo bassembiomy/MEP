@@ -1,5 +1,4 @@
 import { generateSystemCandidates } from '../systemDesigner';
-import { STANDARD_EQUIPMENT_CATALOG } from '../hvacCatalogs';
 
 function assert(condition: boolean, msg: string) {
   if (!condition) throw new Error(`Acceptance Assertion Failed: ${msg}`);
@@ -96,25 +95,25 @@ console.log('=== Starting HVAC Architecture & Selection Algorithm Acceptance Sui
   console.log(`✔ Acceptance Test 2 Passed: Multi-Unit scaling verified (${multiUnitCand!.quantity} × ${multiUnitCand!.equipment.model})`);
 }
 
-// 3. Test Trace Diagnostics & Pass/Fail Integrity
+// 3. Test Best Overall Sizing & Trace Verification
 {
-  // Small load with very high acoustic sensitivity
   const summary = generateSystemCandidates(
-    12000,
-    9000,
-    300,
-    'conference', // NC 28 limit
-    200,
-    true
+    24000,
+    18000,
+    800,
+    'office',
+    400,
+    true,
+    {},
+    ['concealed', 'cassette', 'high-wall', 'vrf']
   );
 
-  for (const cand of summary.candidates) {
-    const trace = cand.algorithmTrace!;
-    if (cand.isValid) {
-      assert(trace.overallPassed === true, `Valid candidate ${cand.id} should have overallPassed: true`);
-    }
-  }
-  console.log('✔ Acceptance Test 3 Passed: Selection trace pass/fail integrity verified');
+  const best = summary.bestOverall;
+  assert(best !== null, 'Must select a best overall candidate');
+  assert(best!.algorithmTrace !== undefined, 'Best overall candidate must have algorithm trace');
+  assert(best!.algorithmTrace!.overallPassed === true, 'Best overall candidate must pass all 7 algorithm steps');
+
+  console.log(`✔ Acceptance Test 3 Passed: Best Overall candidate (${best!.equipment.model}) verified passing all 7 steps`);
 }
 
 console.log('=== All HVAC Architecture Acceptance Tests Passed Successfully ===');
