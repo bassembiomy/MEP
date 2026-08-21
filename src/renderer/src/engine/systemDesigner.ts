@@ -17,13 +17,20 @@ import {
 import { selectBestDiffuserFromCatalog } from './diffuserPlacer';
 import { DuctSegment } from '../store/projectStore';
 import { DiffuserPos } from './diffuserPlacer';
+import { verifyDuctSectionAcoustics } from './acousticDuctEngine';
+import {
+  generateSystemArchitecture,
+  generateSelectionAlgorithmTrace
+} from './hvacArchitecture';
 
+// Design Optimization Priority:
+// Required Room CFM -> Thermal Comfort -> Acoustic Noise Criterion -> Maximum Air Velocity & Pressure Loss -> Fan Static Pressure -> Duct Space & Cost
 export const DEFAULT_OPTIMIZATION_WEIGHTS: OptimizationWeights = {
-  wComfort: 0.20,
-  wEnergy: 0.20,
-  wCost: 0.20,
-  wNoise: 0.15,
-  wPressure: 0.10,
+  wComfort: 0.25,
+  wNoise: 0.20,
+  wPressure: 0.15,
+  wEnergy: 0.15,
+  wCost: 0.10,
   wSpace: 0.05,
   wPreference: 0.10
 };
@@ -262,6 +269,33 @@ export function generateSystemCandidates(
 
       allDiagnostics.push(...diagnostics);
 
+      const systemArchitecture = generateSystemArchitecture(
+        equip,
+        qty,
+        cfm,
+        areaSqFt,
+        loadBtu,
+        isImperial,
+        {
+          quantity: terminalCount,
+          diffuserRecord: diffuserSelection.diffuser,
+          actualNc: diffuserSelection.actualNc
+        }
+      );
+
+      const algorithmTrace = generateSelectionAlgorithmTrace(
+        equip,
+        qty,
+        cfm,
+        areaSqFt,
+        loadBtu,
+        _sensibleLoadBtuPerHour || loadBtu * 0.75,
+        spaceNcLimit,
+        criticalPath,
+        fanResult,
+        isImperial
+      );
+
       candidates.push({
         id: `cand-${equip.id}-${qty}`,
         systemType: equip.systemType,
@@ -281,7 +315,14 @@ export function generateSystemCandidates(
               totalDuctLengthFt: Math.round(areaSqFt * 0.08),
               maxVelocityFpm: 1100,
               criticalPath,
-              balancingDampers
+              balancingDampers,
+              acousticVerifications: ductSegments.map((d) =>
+                d.acousticVerification ||
+                verifyDuctSectionAcoustics(d, {
+                  zoneName: 'Candidate Zone',
+                  targetNc: spaceNcLimit
+                })
+              )
             }
           : undefined,
         fanOperatingPoint: fanResult,
@@ -297,7 +338,9 @@ export function generateSystemCandidates(
           sPreference: Math.round(sPreference),
           totalScore
         },
-        tradeOffSummary
+        tradeOffSummary,
+        systemArchitecture,
+        algorithmTrace
       });
     }
   }
