@@ -3,6 +3,9 @@ import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoad } from '../engine/loadCalc';
 import { generateSystemCandidates } from '../engine/systemDesigner';
 import { createDeploymentPreview } from '../engine/deploymentManager';
+import { SelectionTraceViewer } from '../components/SelectionTraceViewer';
+import { ArchitectureInspectorModal } from '../components/ArchitectureInspectorModal';
+import { SystemDesignCandidate } from '../engine/types';
 import {
   Sparkles,
   Award,
@@ -14,7 +17,11 @@ import {
   Eye,
   Undo2,
   Redo2,
-  CheckCircle2
+  CheckCircle2,
+  Layers,
+  Calculator,
+  Boxes,
+  Maximize2
 } from 'lucide-react';
 
 export const OptimizerStudioPanel: React.FC = () => {
@@ -41,6 +48,17 @@ export const OptimizerStudioPanel: React.FC = () => {
     status: 'idle' | 'success' | 'error';
     message?: string;
   }>({ status: 'idle' });
+
+  const [cardTabs, setCardTabs] = useState<Record<string, 'overview' | 'components' | 'algorithm'>>({});
+  const [inspectingCandidate, setInspectingCandidate] = useState<SystemDesignCandidate | null>(null);
+
+  const getCardTab = (candId: string): 'overview' | 'components' | 'algorithm' => {
+    return cardTabs[candId] || 'overview';
+  };
+
+  const setCardTab = (candId: string, tab: 'overview' | 'components' | 'algorithm') => {
+    setCardTabs((prev) => ({ ...prev, [candId]: tab }));
+  };
 
   const selectedZone = zones.find((z) => z.id === selectedZoneId) || zones[0];
 
@@ -342,6 +360,7 @@ export const OptimizerStudioPanel: React.FC = () => {
               : 'text-neutral-500 bg-neutral-500/10 border-neutral-500/30';
 
           const isPreviewing = activePreview?.candidate.id === cand.id;
+          const activeCardTab = getCardTab(cand.id);
 
           return (
             <div
@@ -386,83 +405,190 @@ export const OptimizerStudioPanel: React.FC = () => {
                   </span>
                 </div>
 
-                {/* Trade-off summary */}
-                <p className="text-[10px] text-neutral-400 mt-2 leading-relaxed">{cand.tradeOffSummary}</p>
-
-                {/* Subscores Bar Meter */}
-                <div className="grid grid-cols-4 gap-2 mt-3 bg-neutral-900/60 p-2.5 rounded-lg border border-neutral-850 text-[9px]">
-                  <div>
-                    <span className="text-neutral-500 block">Comfort</span>
-                    <strong className="text-blue-400 font-mono">{cand.subscores.sComfort}/100</strong>
-                  </div>
-                  <div>
-                    <span className="text-neutral-500 block">Energy</span>
-                    <strong className="text-emerald-400 font-mono">{cand.subscores.sEnergy}/100</strong>
-                  </div>
-                  <div>
-                    <span className="text-neutral-500 block">Cost Index</span>
-                    <strong className="text-amber-400 font-mono">{cand.subscores.sCost}/100</strong>
-                  </div>
-                  <div>
-                    <span className="text-neutral-500 block">Noise (NC)</span>
-                    <strong className="text-purple-400 font-mono">{cand.subscores.sNoise}/100</strong>
-                  </div>
+                {/* Candidate Card Sub-Navigation */}
+                <div className="flex items-center gap-1.5 mt-3 border-b border-neutral-850 pb-2 text-[10px]">
+                  <button
+                    onClick={() => setCardTab(cand.id, 'overview')}
+                    className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                      activeCardTab === 'overview'
+                        ? 'bg-neutral-800 text-white border border-neutral-700 shadow-sm'
+                        : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+                    }`}
+                  >
+                    <Sliders size={11} />
+                    Overview
+                  </button>
+                  <button
+                    onClick={() => setCardTab(cand.id, 'components')}
+                    className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                      activeCardTab === 'components'
+                        ? 'bg-blue-600/20 text-blue-300 border border-blue-500/40 shadow-sm'
+                        : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+                    }`}
+                  >
+                    <Layers size={11} />
+                    Components ({cand.systemArchitecture?.components.length || 0})
+                  </button>
+                  <button
+                    onClick={() => setCardTab(cand.id, 'algorithm')}
+                    className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                      activeCardTab === 'algorithm'
+                        ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 shadow-sm'
+                        : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+                    }`}
+                  >
+                    <Calculator size={11} />
+                    Algorithm Trace (7 Steps)
+                  </button>
                 </div>
 
-                {/* Engineering Sizing Specifications */}
-                <div className="mt-3 flex flex-col gap-1 text-[10px] text-neutral-400">
-                  <div className="flex justify-between border-b border-neutral-900 pb-1">
-                    <span>Installed Capacity / Flow:</span>
-                    <strong className="text-neutral-200 font-mono">
-                      {(cand.quantity * cand.equipment.totalCapacityBtuPerHour).toLocaleString()} Btu/h | {cand.quantity * cand.equipment.nominalCfm} CFM
-                    </strong>
-                  </div>
-                  {cand.ductwork && (
-                    <div className="flex justify-between border-b border-neutral-900 pb-1">
-                      <span>Calculated Static Pressure:</span>
-                      <strong className="text-blue-400 font-mono font-semibold">
-                        {cand.ductwork.criticalPath.espRequiredInWg.toFixed(3)} in.wg (Max Fan ESP: {cand.equipment.maxRatedEspInWg.toFixed(2)})
-                      </strong>
-                    </div>
-                  )}
-                  <div className="flex justify-between">
-                    <span>Diffuser Configuration:</span>
-                    <strong className="text-teal-400 font-mono">
-                      {cand.diffusers.quantity} × {cand.diffusers.diffuserRecord.faceSizeIn.width}"x{cand.diffusers.diffuserRecord.faceSizeIn.height}" (NC {cand.diffusers.actualNc})
-                    </strong>
-                  </div>
-                </div>
+                {/* TAB 1: Overview & Metrics */}
+                {activeCardTab === 'overview' && (
+                  <div className="flex flex-col gap-2 mt-2">
+                    {/* Trade-off summary */}
+                    <p className="text-[10px] text-neutral-400 leading-relaxed">{cand.tradeOffSummary}</p>
 
-                {/* Diagnostics / Violations */}
-                {cand.diagnostics.length > 0 && (
-                  <div className="mt-3 flex flex-col gap-1">
-                    {cand.diagnostics.map((diag, i) => (
-                      <div
-                        key={i}
-                        className={`text-[9px] p-2 rounded flex items-start gap-1.5 ${
-                          diag.severity === 'error' ? 'bg-red-950/30 text-red-400 border border-red-800/40' : 'bg-amber-950/20 text-amber-400 border border-amber-800/30'
-                        }`}
-                      >
-                        <AlertOctagon size={12} className="shrink-0 mt-0.5" />
-                        <div>
-                          <strong>{diag.message}</strong>
-                          <p className="opacity-80 mt-0.5 font-sans">{diag.remediation}</p>
-                        </div>
+                    {/* Subscores Bar Meter */}
+                    <div className="grid grid-cols-4 gap-2 mt-1 bg-neutral-900/60 p-2.5 rounded-lg border border-neutral-850 text-[9px]">
+                      <div>
+                        <span className="text-neutral-500 block">Comfort</span>
+                        <strong className="text-blue-400 font-mono">{cand.subscores.sComfort}/100</strong>
                       </div>
-                    ))}
+                      <div>
+                        <span className="text-neutral-500 block">Energy</span>
+                        <strong className="text-emerald-400 font-mono">{cand.subscores.sEnergy}/100</strong>
+                      </div>
+                      <div>
+                        <span className="text-neutral-500 block">Cost Index</span>
+                        <strong className="text-amber-400 font-mono">{cand.subscores.sCost}/100</strong>
+                      </div>
+                      <div>
+                        <span className="text-neutral-500 block">Noise (NC)</span>
+                        <strong className="text-purple-400 font-mono">{cand.subscores.sNoise}/100</strong>
+                      </div>
+                    </div>
+
+                    {/* Engineering Sizing Specifications */}
+                    <div className="mt-1 flex flex-col gap-1 text-[10px] text-neutral-400">
+                      <div className="flex justify-between border-b border-neutral-900 pb-1">
+                        <span>Installed Capacity / Flow:</span>
+                        <strong className="text-neutral-200 font-mono">
+                          {(cand.quantity * cand.equipment.totalCapacityBtuPerHour).toLocaleString()} Btu/h | {cand.quantity * cand.equipment.nominalCfm} CFM
+                        </strong>
+                      </div>
+                      {cand.ductwork && (
+                        <div className="flex justify-between border-b border-neutral-900 pb-1">
+                          <span>Calculated Static Pressure:</span>
+                          <strong className="text-blue-400 font-mono font-semibold">
+                            {cand.ductwork.criticalPath.espRequiredInWg.toFixed(3)} in.wg (Max Fan ESP: {cand.equipment.maxRatedEspInWg.toFixed(2)})
+                          </strong>
+                        </div>
+                      )}
+                      <div className="flex justify-between">
+                        <span>Diffuser Configuration:</span>
+                        <strong className="text-teal-400 font-mono">
+                          {cand.diffusers.quantity} × {cand.diffusers.diffuserRecord.faceSizeIn.width}"x{cand.diffusers.diffuserRecord.faceSizeIn.height}" (NC {cand.diffusers.actualNc})
+                        </strong>
+                      </div>
+                    </div>
+
+                    {/* Diagnostics / Violations */}
+                    {cand.diagnostics.length > 0 && (
+                      <div className="mt-2 flex flex-col gap-1">
+                        {cand.diagnostics.map((diag, i) => (
+                          <div
+                            key={i}
+                            className={`text-[9px] p-2 rounded flex items-start gap-1.5 ${
+                              diag.severity === 'error' ? 'bg-red-950/30 text-red-400 border border-red-800/40' : 'bg-amber-950/20 text-amber-400 border border-amber-800/30'
+                            }`}
+                          >
+                            <AlertOctagon size={12} className="shrink-0 mt-0.5" />
+                            <div>
+                              <strong>{diag.message}</strong>
+                              <p className="opacity-80 mt-0.5 font-sans">{diag.remediation}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB 2: Bill of Components */}
+                {activeCardTab === 'components' && (
+                  <div className="flex flex-col gap-2 mt-2">
+                    <div className="flex justify-between items-center bg-neutral-900/60 p-2 rounded-lg border border-neutral-850">
+                      <span className="text-[10px] font-bold text-neutral-300">
+                        {cand.systemArchitecture?.systemName}
+                      </span>
+                      <button
+                        onClick={() => setInspectingCandidate(cand)}
+                        className="text-[9px] font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1 cursor-pointer"
+                      >
+                        <Maximize2 size={10} /> Full Inspector
+                      </button>
+                    </div>
+
+                    <div className="max-h-60 overflow-y-auto rounded-lg border border-neutral-850 bg-neutral-950/70 text-[10px]">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-neutral-900 border-b border-neutral-800 text-[9px] text-neutral-500 uppercase font-semibold">
+                            <th className="p-2">Tag</th>
+                            <th className="p-2">Item</th>
+                            <th className="p-2 text-center">Qty</th>
+                            <th className="p-2">Specification / Size</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-900">
+                          {cand.systemArchitecture?.components.map((c) => (
+                            <tr key={c.id} className="hover:bg-neutral-900/30">
+                              <td className="p-2 font-mono font-bold text-teal-400">{c.tag}</td>
+                              <td className="p-2 font-medium text-neutral-200">
+                                {c.name}
+                                <span className="block text-[9px] text-neutral-500 font-mono">{c.modelOrType}</span>
+                              </td>
+                              <td className="p-2 text-center font-mono text-neutral-300">{c.quantity}</td>
+                              <td className="p-2 text-neutral-300">
+                                <span>{c.specification}</span>
+                                {c.connectionSize && (
+                                  <span className="block text-[9px] text-neutral-500 font-mono">Conn: {c.connectionSize}</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 3: Selection Algorithm Trace */}
+                {activeCardTab === 'algorithm' && (
+                  <div className="mt-2">
+                    <SelectionTraceViewer trace={cand.algorithmTrace} />
                   </div>
                 )}
               </div>
 
               {/* Action Buttons */}
-              <div className="mt-4 pt-3 border-t border-neutral-900 flex justify-between items-center">
-                <button
-                  onClick={() => handlePreviewCandidate(cand)}
-                  className="flex items-center gap-1 bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800 px-2.5 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer"
-                >
-                  <Eye size={12} />
-                  {isPreviewing ? 'Viewing Preview' : 'Preview Layout'}
-                </button>
+              <div className="mt-4 pt-3 border-t border-neutral-900 flex justify-between items-center gap-2">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => handlePreviewCandidate(cand)}
+                    className="flex items-center gap-1 bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800 px-2.5 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer"
+                  >
+                    <Eye size={12} />
+                    {isPreviewing ? 'Viewing Preview' : 'Preview Layout'}
+                  </button>
+                  <button
+                    onClick={() => setInspectingCandidate(cand)}
+                    className="flex items-center gap-1 bg-neutral-900 hover:bg-neutral-800 text-teal-300 border border-neutral-800 px-2.5 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer"
+                    title="Inspect complete system architecture, standards & bill of materials"
+                  >
+                    <Layers size={12} />
+                    Inspect Architecture
+                  </button>
+                </div>
                 <button
                   onClick={() => handleApplyCandidate(cand)}
                   disabled={!cand.isValid}
@@ -475,6 +601,14 @@ export const OptimizerStudioPanel: React.FC = () => {
           );
         })}
       </div>
+
+      {/* Full Architecture Inspector Modal */}
+      {inspectingCandidate && (
+        <ArchitectureInspectorModal
+          candidate={inspectingCandidate}
+          onClose={() => setInspectingCandidate(null)}
+        />
+      )}
     </div>
   );
 };
