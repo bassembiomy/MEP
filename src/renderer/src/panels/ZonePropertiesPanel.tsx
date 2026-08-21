@@ -7,7 +7,23 @@ import { routeDucts } from '../engine/ductRouter';
 import { calculateOptimalOutdoorUnitPos, calculateOptimalIndoorUnitPos } from '../engine/geometry';
 import { getCatalogSizingForZone } from '../engine/systemDesigner';
 import { STANDARD_DUCT_TYPES } from '../engine/hvacCatalogs';
-import { Settings, BarChart4, Thermometer, Lock, Unlock, Shield } from 'lucide-react';
+import {
+  DEFAULT_SPACE_NC_TARGETS,
+  calculateAllowableAcousticVelocity,
+  verifyDuctSectionAcoustics
+} from '../engine/acousticDuctEngine';
+import {
+  Settings,
+  BarChart4,
+  Thermometer,
+  Lock,
+  Unlock,
+  Shield,
+  Volume2,
+  CheckCircle2,
+  AlertTriangle
+} from 'lucide-react';
+import { DuctLocationCategory } from '../engine/types';
 
 export const ZonePropertiesPanel: React.FC = () => {
   const { selectedZoneId, zones, updateZone, project, dxfEntities, loadedCatalogs } = useProjectStore();
@@ -29,11 +45,48 @@ export const ZonePropertiesPanel: React.FC = () => {
   const isImperial = project.units === 'imperial';
   const loadResult = calculateZoneLoad(selectedZone, project);
 
-  const isDucted = selectedZone.systemType === 'concealed' || selectedZone.systemType === 'packaged' || selectedZone.systemType === 'ahu' || selectedZone.systemType === 'vrf';
+  const isDucted =
+    selectedZone.systemType === 'concealed' ||
+    selectedZone.systemType === 'packaged' ||
+    selectedZone.systemType === 'ahu' ||
+    selectedZone.systemType === 'vrf';
+
+  const defaultSpaceTarget = DEFAULT_SPACE_NC_TARGETS[selectedZone.spaceTypeId] || {
+    nc: 32,
+    name: 'General Space',
+    sensitivity: 'standard'
+  };
+  const currentTargetNc = selectedZone.targetNc ?? defaultSpaceTarget.nc;
+  const currentLocCategory: DuctLocationCategory =
+    selectedZone.ductLocationCategory || 'above-suspended-ceiling';
+  const isEnhanced = selectedZone.enhancedAcousticPerformance || false;
+
+  // Compute live acoustic verification summary across zone ducts
+  const ductVerifications = selectedZone.ducts.map((d) =>
+    d.acousticVerification ||
+    verifyDuctSectionAcoustics(d, {
+      zoneName: selectedZone.name,
+      targetNc: currentTargetNc,
+      locationCategory: currentLocCategory,
+      enhancedPerformance: isEnhanced
+    })
+  );
+
+  const hasAcousticFailure = ductVerifications.some((v) => v.complianceStatus === 'REQUIRES REDESIGN');
+  const maxActualVelocity = ductVerifications.length > 0
+    ? Math.max(...ductVerifications.map((v) => v.actualVelocityFpm))
+    : 0;
+  const mainAllowableVelocity = calculateAllowableAcousticVelocity(
+    currentLocCategory,
+    currentTargetNc,
+    'rectangular',
+    'trunk',
+    isEnhanced
+  );
 
   const handleOptimizePlacement = () => {
     const optOdu = calculateOptimalOutdoorUnitPos(selectedZone.points, zones, dxfEntities);
-    
+
     const sizing = getCatalogSizingForZone(
       selectedZone.systemType,
       loadResult.totalLoad,
@@ -62,7 +115,7 @@ export const ZonePropertiesPanel: React.FC = () => {
             loadResult.totalLoad,
             sizing.qty,
             sizing.model,
-            selectedZone.maxSpaceNcLimit || 32
+            currentTargetNc
           )
         : selectedZone.diffusers;
     } else if (isDucted && !selectedZone.isDiffusersLocked) {
@@ -77,7 +130,7 @@ export const ZonePropertiesPanel: React.FC = () => {
         loadResult.totalLoad,
         sizing.qty,
         sizing.model,
-        selectedZone.maxSpaceNcLimit || 32
+        currentTargetNc
       );
     } else {
       diffusers = selectedZone.diffusers;
@@ -92,7 +145,13 @@ export const ZonePropertiesPanel: React.FC = () => {
         selectedZone.id,
         optIu,
         selectedZone.systemType || 'concealed',
-        optOdu
+        optOdu,
+        {
+          targetNc: currentTargetNc,
+          locationCategory: currentLocCategory,
+          enhancedPerformance: isEnhanced,
+          zoneName: selectedZone.name
+        }
       );
       finalDucts = routed.ducts;
     } else {
@@ -106,15 +165,30 @@ export const ZonePropertiesPanel: React.FC = () => {
       ducts: finalDucts,
       catalogQty: sizing.qty,
       catalogModel: sizing.model,
-      catalogEsp: sizing.esp
+      catalogEsp: sizing.esp,
+      targetNc: currentTargetNc,
+      ductLocationCategory: currentLocCategory
     });
   };
 
   const handleUpdate = (field: keyof Zone, value: any) => {
-    const updatedZone: Zone = {
+    let updatedZone: Zone = {
       ...selectedZone,
       [field]: value
     };
+
+    // If changing space type, auto-update target NC to default for that room function
+    if (field === 'spaceTypeId') {
+      const spaceDefaults = DEFAULT_SPACE_NC_TARGETS[value as string];
+      if (spaceDefaults) {
+        updatedZone.targetNc = spaceDefaults.nc;
+        updatedZone.maxSpaceNcLimit = spaceDefaults.nc;
+      }
+    }
+
+    const zoneTargetNc = updatedZone.targetNc ?? (DEFAULT_SPACE_NC_TARGETS[updatedZone.spaceTypeId]?.nc || 32);
+    const zoneLocCategory: DuctLocationCategory = updatedZone.ductLocationCategory || 'above-suspended-ceiling';
+    const zoneEnhanced = updatedZone.enhancedAcousticPerformance || false;
 
     const newLoads = calculateZoneLoad(updatedZone, project);
     const sizing = getCatalogSizingForZone(
@@ -124,7 +198,11 @@ export const ZonePropertiesPanel: React.FC = () => {
       loadedCatalogs
     );
 
-    const isSystemDucted = updatedZone.systemType === 'concealed' || updatedZone.systemType === 'packaged' || updatedZone.systemType === 'ahu' || updatedZone.systemType === 'vrf';
+    const isSystemDucted =
+      updatedZone.systemType === 'concealed' ||
+      updatedZone.systemType === 'packaged' ||
+      updatedZone.systemType === 'ahu' ||
+      updatedZone.systemType === 'vrf';
 
     let finalOutdoorUnitPos = updatedZone.outdoorUnitPos;
     if (!finalOutdoorUnitPos) {
@@ -148,7 +226,7 @@ export const ZonePropertiesPanel: React.FC = () => {
             newLoads.totalLoad,
             sizing.qty,
             sizing.model,
-            updatedZone.maxSpaceNcLimit || 32
+            zoneTargetNc
           )
         : updatedZone.diffusers;
     } else if (isSystemDucted && !updatedZone.isDiffusersLocked) {
@@ -163,7 +241,7 @@ export const ZonePropertiesPanel: React.FC = () => {
         newLoads.totalLoad,
         sizing.qty,
         sizing.model,
-        updatedZone.maxSpaceNcLimit || 32
+        zoneTargetNc
       );
     } else {
       diffusers = updatedZone.diffusers;
@@ -184,7 +262,13 @@ export const ZonePropertiesPanel: React.FC = () => {
           selectedZone.id,
           finalUnitPos,
           updatedZone.systemType || 'concealed',
-          finalOutdoorUnitPos
+          finalOutdoorUnitPos,
+          {
+            targetNc: zoneTargetNc,
+            locationCategory: zoneLocCategory,
+            enhancedPerformance: zoneEnhanced,
+            zoneName: updatedZone.name
+          }
         );
         finalDucts = routed.ducts;
         finalUnitPos = routed.unitPos;
@@ -253,6 +337,104 @@ export const ZonePropertiesPanel: React.FC = () => {
             </option>
           ))}
         </select>
+      </div>
+
+      {/* Acoustic Criteria & Duct Location Section */}
+      <div className="bg-neutral-950 border border-neutral-850 p-3.5 rounded-xl flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 flex items-center gap-1.5">
+            <Volume2 size={13} className="text-purple-400" />
+            Acoustic & Noise Criteria
+          </span>
+          <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-purple-950/40 border border-purple-800/40 text-purple-300 font-bold">
+            Target NC {currentTargetNc}
+          </span>
+        </div>
+
+        {/* Duct Location Category */}
+        <div className="flex flex-col gap-1">
+          <label className="text-[9px] text-neutral-500 font-medium">Duct Location Relative to Space</label>
+          <select
+            value={currentLocCategory}
+            onChange={(e) => handleUpdate('ductLocationCategory', e.target.value as DuctLocationCategory)}
+            className="bg-neutral-900 border border-neutral-800 text-neutral-300 text-xs px-2.5 py-1.5 rounded-lg focus:border-purple-500 focus:outline-none"
+          >
+            <option value="above-suspended-ceiling">Above Suspended Acoustic Ceiling</option>
+            <option value="in-shaft-solid-ceiling">In Shaft / Above Solid Ceiling</option>
+            <option value="within-occupied-space">Within Occupied Space (Exposed)</option>
+          </select>
+        </div>
+
+        {/* NC Target Input & Presets */}
+        <div className="flex flex-col gap-1.5">
+          <div className="flex justify-between items-center text-[9px] text-neutral-500">
+            <span>Design Room NC Target</span>
+            <span className="font-mono text-neutral-400">Limit: {mainAllowableVelocity} FPM (Main)</span>
+          </div>
+          <div className="flex gap-1.5 items-center">
+            <input
+              type="number"
+              min="20"
+              max="55"
+              step="1"
+              value={currentTargetNc}
+              onChange={(e) => handleUpdate('targetNc', parseInt(e.target.value) || 32)}
+              className="w-16 bg-neutral-900 border border-neutral-800 text-neutral-200 text-xs px-2.5 py-1 rounded-lg font-mono text-center"
+            />
+            <div className="grid grid-cols-4 gap-1 flex-1 text-[9px]">
+              {[25, 28, 32, 35].map((ncVal) => (
+                <button
+                  key={ncVal}
+                  type="button"
+                  onClick={() => handleUpdate('targetNc', ncVal)}
+                  className={`py-1 rounded border text-center transition-all ${
+                    currentTargetNc === ncVal
+                      ? 'bg-purple-600/30 border-purple-500/60 text-purple-200 font-bold'
+                      : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:bg-neutral-850'
+                  }`}
+                >
+                  NC{ncVal}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Enhanced Acoustic Sensitivity Toggle */}
+        <label className="flex items-center justify-between text-[10px] text-neutral-400 cursor-pointer pt-1 border-t border-neutral-850">
+          <span>Enhanced Acoustic Performance (-3 NC Margin)</span>
+          <input
+            type="checkbox"
+            checked={isEnhanced}
+            onChange={(e) => handleUpdate('enhancedAcousticPerformance', e.target.checked)}
+            className="rounded border-neutral-800 bg-neutral-900 text-purple-600 focus:ring-0 cursor-pointer"
+          />
+        </label>
+
+        {/* Live Acoustic Compliance Status Badge */}
+        {isDucted && selectedZone.ducts.length > 0 && (
+          <div
+            className={`p-2.5 rounded-lg border flex items-center justify-between text-[10px] ${
+              !hasAcousticFailure
+                ? 'bg-emerald-950/30 border-emerald-800/40 text-emerald-300'
+                : 'bg-red-950/40 border-red-800/60 text-red-300'
+            }`}
+          >
+            <div className="flex items-center gap-1.5">
+              {!hasAcousticFailure ? (
+                <CheckCircle2 size={13} className="text-emerald-400" />
+              ) : (
+                <AlertTriangle size={13} className="text-red-400" />
+              )}
+              <span className="font-bold">
+                {!hasAcousticFailure ? 'PASS (Acoustically Compliant)' : 'REQUIRES REDESIGN'}
+              </span>
+            </div>
+            <span className="font-mono text-[9px] opacity-80">
+              Max {maxActualVelocity} FPM
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Field: HVAC System Type */}

@@ -3,7 +3,11 @@ import { calculateZoneLoad } from '../engine/loadCalc';
 import { generateSystemCandidates, DEFAULT_OPTIMIZATION_WEIGHTS } from '../engine/systemDesigner';
 import {
   OptimizationWeights,
-  SystemDesignCandidate
+  SystemDesignCandidate,
+  DuctLocationCategory,
+  AcousticSensitivity,
+  DuctSectionCategory,
+  DuctAcousticVerification
 } from '../engine/types';
 import {
   DeploymentPreview,
@@ -34,6 +38,11 @@ export interface DuctSegment {
   cfm: number;
   sizeLabel: string;
   velocityFpm?: number;
+  shape?: 'rectangular' | 'round' | 'oval' | 'flex';
+  diameterIn?: number;
+  areaSqFt?: number;
+  sectionCategory?: DuctSectionCategory;
+  acousticVerification?: DuctAcousticVerification;
 }
 
 export interface DxfEntity {
@@ -70,6 +79,10 @@ export interface Zone {
   diffuserTypeId?: string;
   maxVelocityLimitFpm?: number;
   maxSpaceNcLimit?: number;
+  ductLocationCategory?: DuctLocationCategory;
+  targetNc?: number;
+  acousticSensitivity?: AcousticSensitivity;
+  enhancedAcousticPerformance?: boolean;
   isEquipmentLocked?: boolean;
   isDuctLocked?: boolean;
   isDiffusersLocked?: boolean;
