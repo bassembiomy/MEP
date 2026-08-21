@@ -659,8 +659,9 @@ export function generateSelectionAlgorithmTrace(
   const installedCap = equip.totalCapacityBtuPerHour * quantity;
   const deratingFactor = 0.95; // 95°F ambient de-rating
   const deratedCapacity = Math.round(installedCap * deratingFactor);
-  const oversizingRatio = deratedCapacity / (loadBtu || 1);
-  const step3Passed = oversizingRatio >= 0.98 && oversizingRatio <= 1.30;
+  const nominalRatio = installedCap / (loadBtu || 1);
+  const deratedRatio = deratedCapacity / (loadBtu || 1);
+  const step3Passed = nominalRatio >= 0.98 && deratedRatio >= 0.90 && nominalRatio <= 1.40;
   steps.push({
     stepNumber: 3,
     stepName: 'Equipment Tonnage Selection & Environmental De-rating',
@@ -671,12 +672,12 @@ export function generateSelectionAlgorithmTrace(
       { label: 'Nominal Total Capacity', value: installedCap.toLocaleString(), unit: 'Btu/h' },
       { label: 'Ambient De-rating Factor (F_amb)', value: deratingFactor.toFixed(2) }
     ],
-    calculatedValue: `${deratedCapacity.toLocaleString()} Btu/h (${(deratedCapacity / 12000).toFixed(1)} TR) [${Math.round(oversizingRatio * 100)}% of Load]`,
-    criteria: '0.98 <= Capacity / Load <= 1.30 (Oversizing Limit)',
+    calculatedValue: `${deratedCapacity.toLocaleString()} Btu/h (${(deratedCapacity / 12000).toFixed(1)} TR) [${Math.round(nominalRatio * 100)}% Nominal / ${Math.round(deratedRatio * 100)}% Derated]`,
+    criteria: 'Nominal >= 98% & Derated >= 90% of Load',
     passed: step3Passed,
     notes: step3Passed
       ? `Installed capacity with ${quantity} unit(s) covers design load with adequate safety margin.`
-      : oversizingRatio < 0.98
+      : nominalRatio < 0.98
       ? 'Capacity deficit: Installed capacity is below peak room load.'
       : 'Excessive oversizing: Risks short-cycling and poor dehumidification.'
   });
