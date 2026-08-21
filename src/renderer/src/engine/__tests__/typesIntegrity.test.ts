@@ -1,10 +1,8 @@
 import {
-  ComponentCategory,
   SystemComponentItem,
   SystemArchitectureBreakdown,
   SelectionAlgorithmStep,
-  SelectionAlgorithmTrace,
-  SystemDesignCandidate
+  SelectionAlgorithmTrace
 } from '../types';
 
 function assert(condition: boolean, msg: string) {

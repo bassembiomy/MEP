@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { SystemArchitectureBreakdown, SystemDesignCandidate } from '../engine/types';
+import { SystemDesignCandidate } from '../engine/types';
 import {
   X,
   Layers,
@@ -7,10 +7,8 @@ import {
   Cpu,
   Boxes,
   ShieldCheck,
-  CheckCircle2,
   Copy,
   Check,
-  ExternalLink,
   Sliders,
   Sparkles
 } from 'lucide-react';

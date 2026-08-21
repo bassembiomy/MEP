@@ -16,8 +16,8 @@ export function generateSystemArchitecture(
   quantity: number,
   totalCfm: number,
   areaSqFt: number,
-  totalLoadBtu: number,
-  isImperial: boolean = true,
+  _totalLoadBtu: number,
+  _isImperial: boolean = true,
   diffusers?: any,
   _ductwork?: any
 ): SystemArchitectureBreakdown {

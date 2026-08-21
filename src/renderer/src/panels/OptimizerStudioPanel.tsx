@@ -20,7 +20,6 @@ import {
   CheckCircle2,
   Layers,
   Calculator,
-  Boxes,
   Maximize2
 } from 'lucide-react';
 

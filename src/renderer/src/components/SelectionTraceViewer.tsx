@@ -4,10 +4,9 @@ import { CheckCircle2, AlertTriangle, ChevronDown, ChevronUp, Calculator, Shield
 
 interface SelectionTraceViewerProps {
   trace?: SelectionAlgorithmTrace;
-  compact?: boolean;
 }
 
-export const SelectionTraceViewer: React.FC<SelectionTraceViewerProps> = ({ trace, compact = false }) => {
+export const SelectionTraceViewer: React.FC<SelectionTraceViewerProps> = ({ trace }) => {
   const [expandedSteps, setExpandedSteps] = useState<number[]>([1, 2, 3, 5]);
 
   if (!trace || !trace.steps || trace.steps.length === 0) {
