@@ -571,6 +571,7 @@ export function planDuctedAirDistribution(
         y: snapY,
         cfm: flowPerDiffuser,
         size: `${diffuserSelection.diffuser.faceSizeIn.width}"x${diffuserSelection.diffuser.faceSizeIn.height}"`,
+        type: 'supply',
         actualNc: diffuserSelection.actualNc,
         throwT50Ft: diffuserSelection.throwT50Ft,
         deltaPInWg: diffuserSelection.deltaPInWg
@@ -582,11 +583,41 @@ export function planDuctedAirDistribution(
     if (diffusers.length >= numDiffusers) break;
   }
 
-  // Route ducts from unit outlet port to diffusers
+  // Add Return Air Grille(s)
+  const numReturns = Math.max(1, Math.ceil(totalCfm / 800));
+  const returnCfmPerGrille = Math.round((totalCfm * 0.9) / numReturns);
+  for (let rIdx = 0; rIdx < numReturns; rIdx++) {
+    const rx = numReturns === 1
+      ? Math.round(bbox.minX + bbox.width * 0.15)
+      : Math.round(bbox.minX + bbox.width * (0.15 + (rIdx * 0.7) / (numReturns - 1)));
+    const ry = Math.round(bbox.minY + bbox.height * 0.85);
+    let snapRx = Math.round(rx / 10) * 10;
+    let snapRy = Math.round(ry / 10) * 10;
+    if (!isPointInPolygon(snapRx, snapRy, points)) {
+      const centroid = getPolygonCentroid(points);
+      snapRx = Math.round(((snapRx + centroid.x) / 2) / 10) * 10;
+      snapRy = Math.round(((snapRy + centroid.y) / 2) / 10) * 10;
+    }
+    diffusers.push({
+      id: `dif-ret-${zoneId}-${rIdx}`,
+      x: snapRx,
+      y: snapRy,
+      cfm: returnCfmPerGrille,
+      size: returnCfmPerGrille > 400 ? '24"x24"' : '18"x18"',
+      type: 'return',
+      actualNc: Math.max(18, diffuserSelection.actualNc - 4),
+      throwT50Ft: 0,
+      deltaPInWg: 0.025
+    });
+  }
+
+  const supplyDiffusers = diffusers.filter((d) => d.type === 'supply' || !d.type);
+
+  // Route ducts from unit outlet port to supply diffusers
   const unitPos = indoorUnitComp.position;
-  let furthestDif = diffusers[0];
+  let furthestDif = supplyDiffusers[0] || diffusers[0];
   let maxDist = -1;
-  for (const dif of diffusers) {
+  for (const dif of supplyDiffusers) {
     const dist = Math.pow(dif.x - unitPos.x, 2) + Math.pow(dif.y - unitPos.y, 2);
     if (dist > maxDist) {
       maxDist = dist;
@@ -600,7 +631,7 @@ export function planDuctedAirDistribution(
   const vy = B.y - A.y;
   const lenSq = vx * vx + vy * vy || 1;
 
-  const projectedDiffusers = diffusers.map((dif) => {
+  const projectedDiffusers = supplyDiffusers.map((dif) => {
     const ux = dif.x - A.x;
     const uy = dif.y - A.y;
     let t = (ux * vx + uy * vy) / lenSq;

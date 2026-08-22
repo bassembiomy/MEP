@@ -37,14 +37,14 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-odu`,
         category: 'primary-equipment',
-        tag: quantity > 1 ? `ODU-01..0${quantity}` : 'ODU-01',
-        name: 'Outdoor Condensing Unit (DX Inverter)',
-        modelOrType: `${equip.manufacturer} ${equip.model}-ODU`,
+        tag: quantity > 1 ? `ACU-01..0${quantity}` : 'ACU-01',
+        name: 'Outdoor Air-Cooled Condensing Unit (ACU)',
+        modelOrType: `${equip.manufacturer} ${equip.model.replace('42QSS', '38QUS').replace('42CE', '38CE')}-ACU`,
         quantity,
         specification: `${equip.nominalTons} TR per unit (${equip.totalCapacityBtuPerHour.toLocaleString()} Btu/h, SEER ${equip.efficiency.seer || 16})`,
         connectionSize: `${liquidLine} Liq / ${gasLine} Suct`,
         status: 'included',
-        details: 'Variable-speed rotary/scroll compressor with R-410A refrigerant.'
+        details: 'Variable-speed inverter rotary/scroll compressor with R-410A refrigerant and axial condensing fan.'
       });
       components.push({
         id: `comp-${equip.id}-fcu`,

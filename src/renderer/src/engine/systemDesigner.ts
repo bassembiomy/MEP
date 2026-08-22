@@ -46,7 +46,7 @@ export interface RecommendationSummary {
 }
 
 export interface LegacySystemRecommendation {
-  type: 'high-wall' | 'cassette' | 'concealed' | 'packaged' | 'vrf' | 'ahu';
+  type: 'high-wall' | 'cassette' | 'concealed' | 'packaged' | 'vrf' | 'ahu' | 'fcu';
   name: string;
   score: number;
   reason: string;

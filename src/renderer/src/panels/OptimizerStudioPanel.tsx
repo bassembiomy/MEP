@@ -377,7 +377,12 @@ export const OptimizerStudioPanel: React.FC = () => {
                 <div className="flex justify-between items-start gap-2">
                   <div>
                     <div className="flex items-center gap-2">
-                      <h3 className="text-xs font-bold text-neutral-200">{cand.equipment.model}</h3>
+                      <h3 className="text-xs font-bold text-neutral-200">
+                        {cand.equipment.model}
+                        {cand.equipment.systemType === 'concealed' || cand.equipment.systemType === 'high-wall' || cand.equipment.systemType === 'cassette' || cand.equipment.systemType === 'fcu'
+                          ? ` + Outdoor ACU (${cand.equipment.model.replace('42QSS', '38QUS').replace('42CE', '38CE')})`
+                          : ''}
+                      </h3>
                       {cand.categoryRankings?.isBestOverall && (
                         <span className="flex items-center gap-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded">
                           <Award size={10} /> Best Overall
@@ -396,6 +401,7 @@ export const OptimizerStudioPanel: React.FC = () => {
                     </div>
                     <span className="text-[10px] text-neutral-400 capitalize">
                       {cand.quantity} × {cand.systemType} ({cand.equipment.nominalTons} TR)
+                      {cand.equipment.systemType === 'concealed' ? ` + ${cand.quantity} × Air-Cooled Condensing Unit (ACU)` : ''}
                     </span>
                   </div>
 

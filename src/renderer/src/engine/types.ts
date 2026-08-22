@@ -42,7 +42,7 @@ export interface EquipmentCatalogItem {
   id: string;
   manufacturer: string;
   model: string;
-  systemType: 'concealed' | 'cassette' | 'high-wall' | 'packaged' | 'vrf' | 'ahu';
+  systemType: 'concealed' | 'cassette' | 'high-wall' | 'packaged' | 'vrf' | 'ahu' | 'fcu';
   capabilities: EquipmentCapabilities;
   nominalTons: number;
   totalCapacityBtuPerHour: number;
@@ -179,7 +179,7 @@ export interface DiagnosticItem {
 
 export interface SystemDesignCandidate {
   id: string;
-  systemType: 'concealed' | 'cassette' | 'high-wall' | 'packaged' | 'vrf' | 'ahu';
+  systemType: 'concealed' | 'cassette' | 'high-wall' | 'packaged' | 'vrf' | 'ahu' | 'fcu';
   equipment: EquipmentCatalogItem;
   quantity: number;
   diffusers: {
@@ -235,7 +235,7 @@ export interface SystemComponentItem {
 }
 
 export interface SystemArchitectureBreakdown {
-  systemType: 'concealed' | 'cassette' | 'high-wall' | 'packaged' | 'vrf' | 'ahu';
+  systemType: 'concealed' | 'cassette' | 'high-wall' | 'packaged' | 'vrf' | 'ahu' | 'fcu';
   systemName: string;
   summary: string;
   governingStandards: string[];
@@ -262,7 +262,7 @@ export interface SelectionAlgorithmStep {
 }
 
 export interface SelectionAlgorithmTrace {
-  systemType: 'concealed' | 'cassette' | 'high-wall' | 'packaged' | 'vrf' | 'ahu';
+  systemType: 'concealed' | 'cassette' | 'high-wall' | 'packaged' | 'vrf' | 'ahu' | 'fcu';
   model: string;
   steps: SelectionAlgorithmStep[];
   overallPassed: boolean;

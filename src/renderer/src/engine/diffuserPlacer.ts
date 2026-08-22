@@ -70,7 +70,7 @@ export function selectBestDiffuserFromCatalog(
 export function findCadTerminalPositions(
   zonePoints: number[],
   dxfEntities: any[],
-  systemType: 'concealed' | 'packaged' | 'cassette' | 'high-wall' | 'vrf' | 'ahu',
+  systemType: 'concealed' | 'packaged' | 'cassette' | 'high-wall' | 'vrf' | 'ahu' | 'fcu',
   maxAllowedTerminals: number = 8
 ): { x: number; y: number; label?: string }[] {
   if (!dxfEntities || dxfEntities.length === 0 || zonePoints.length < 6) {
@@ -209,7 +209,7 @@ export function placeDiffusers(
   _spacingFt: number = 10,
   _scale: number = 10,
   dxfEntities: any[] = [],
-  systemType: 'concealed' | 'packaged' | 'cassette' | 'high-wall' | 'vrf' | 'ahu' = 'concealed',
+  systemType: 'concealed' | 'packaged' | 'cassette' | 'high-wall' | 'vrf' | 'ahu' | 'fcu' = 'concealed',
   totalLoadBtu?: number,
   catalogQty?: number,
   catalogModel?: string,
@@ -341,6 +341,42 @@ export function placeDiffusers(
       if (terminals.length >= numTerminals) break;
     }
     if (terminals.length >= numTerminals) break;
+  }
+
+  // Generate Return Air Grilles / Diffusers for Ducted Systems
+  const isDuctedSystem = systemType === 'concealed' || systemType === 'packaged' || systemType === 'vrf' || systemType === 'ahu';
+  if (isDuctedSystem && terminals.length > 0) {
+    const numReturns = Math.max(1, Math.ceil(cfm / 800));
+    const returnCfmPerGrille = Math.round((cfm * 0.9) / numReturns);
+
+    // Place return diffusers along the perimeter opposite to supply centroid or near return corner
+    for (let rIdx = 0; rIdx < numReturns; rIdx++) {
+      // Offset return position towards boundary/corners away from supply terminals
+      const rx = numReturns === 1
+        ? Math.round(minX + width * 0.15)
+        : Math.round(minX + width * (0.15 + (rIdx * 0.7) / (numReturns - 1)));
+      const ry = Math.round(minY + height * 0.85);
+
+      let snapRx = rx;
+      let snapRy = ry;
+      if (!isPointInPolygon(snapRx, snapRy, points)) {
+        const centroid = getPolygonCentroid(points);
+        snapRx = Math.round((snapRx + centroid.x) / 2);
+        snapRy = Math.round((snapRy + centroid.y) / 2);
+      }
+
+      terminals.push({
+        id: `ret-grille-${Date.now()}-${rIdx}`,
+        x: snapRx,
+        y: snapRy,
+        cfm: returnCfmPerGrille,
+        size: returnCfmPerGrille > 400 ? '24"x24"' : '18"x18"',
+        type: 'return',
+        actualNc: Math.max(18, selection.actualNc - 4),
+        throwT50Ft: 0,
+        deltaPInWg: 0.025
+      });
+    }
   }
 
   return terminals;

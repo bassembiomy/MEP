@@ -5,8 +5,9 @@ import { snapToGrid, getPolygonCentroid } from '../engine/geometry';
 import { calculateZoneLoad } from '../engine/loadCalc';
 import { routeDucts } from '../engine/ductRouter';
 import { routeOrthogonalRefrigerantPiping } from '../engine/spatialPlanner';
+import { CadLayerManagerModal } from '../components/CadLayerManagerModal';
 import Konva from 'konva';
-import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Target } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Target, Layers } from 'lucide-react';
 
 export const FloorPlanCanvas: React.FC = () => {
   const {
@@ -23,6 +24,8 @@ export const FloorPlanCanvas: React.FC = () => {
     setProject,
     dxfEntities,
     dxfBoundingBox,
+    dxfLayers,
+    annotationVisibility,
     activePreview
   } = useProjectStore();
 
@@ -31,6 +34,8 @@ export const FloorPlanCanvas: React.FC = () => {
   const [stageScale, setStageScale] = useState<number>(1);
   const [stagePos, setStagePos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState<boolean>(false);
+  const [isSpacePressed, setIsSpacePressed] = useState<boolean>(false);
+  const [isLayerManagerOpen, setIsLayerManagerOpen] = useState<boolean>(false);
   const lastPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // Determine Level of Detail (LOD) tier from scale
@@ -161,14 +166,37 @@ export const FloorPlanCanvas: React.FC = () => {
     }
   }, [dxfBoundingBox, handleFitDesign, zones.length]);
 
-  // Global mouseup listener for middle click panning
+  // Global keyboard listener for Spacebar panning
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) {
+        e.preventDefault();
+        setIsSpacePressed(true);
+      }
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setIsSpacePressed(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
+  // Global mouseup listener for middle click & spacebar panning
   useEffect(() => {
     const handleGlobalMouseUp = (e: MouseEvent) => {
-      if (e.button === 1) {
-        setIsPanning(false);
-        const container = stageRef.current?.container();
-        if (container) {
-          container.style.cursor = drawMode === 'pan' ? 'grab' : 'crosshair';
+      if (e.button === 1 || e.button === 0) {
+        if (isPanning) {
+          setIsPanning(false);
+          const container = stageRef.current?.container();
+          if (container) {
+            container.style.cursor = drawMode === 'pan' || isSpacePressed ? 'grab' : drawMode === 'polyline' ? 'crosshair' : 'default';
+          }
         }
       }
     };
@@ -176,7 +204,7 @@ export const FloorPlanCanvas: React.FC = () => {
     return () => {
       window.removeEventListener('mouseup', handleGlobalMouseUp);
     };
-  }, [drawMode]);
+  }, [drawMode, isPanning, isSpacePressed]);
 
   const gridSpacing = project.units === 'imperial' ? 10 : 10;
 
@@ -206,7 +234,8 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (e.evt.button === 1) {
+    // Middle click pan OR Left click when Spacebar is held OR Left click in 'pan' mode
+    if (e.evt.button === 1 || (e.evt.button === 0 && (isSpacePressed || drawMode === 'pan'))) {
       e.evt.preventDefault();
       setIsPanning(true);
       lastPosRef.current = { x: e.evt.clientX, y: e.evt.clientY };
@@ -218,7 +247,7 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   const handleContentClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (e.evt.button !== 0) return;
+    if (e.evt.button !== 0 || isSpacePressed || drawMode === 'pan') return;
 
     if (drawMode === 'polyline') {
       const sx = mousePos.x;
@@ -234,13 +263,12 @@ export const FloorPlanCanvas: React.FC = () => {
     }
   };
 
-  // Cursor-anchored wheel zooming
+  // Continuous smooth exponential cursor-anchored zooming
   const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
     const stage = stageRef.current;
     if (!stage) return;
 
-    const scaleBy = 1.12;
     const oldScale = stageScale;
     const pointer = stage.getPointerPosition();
     if (!pointer) return;
@@ -250,8 +278,11 @@ export const FloorPlanCanvas: React.FC = () => {
       y: (pointer.y - stagePos.y) / oldScale,
     };
 
-    let newScale = e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy;
-    newScale = Math.min(Math.max(newScale, 0.04), 25.0);
+    // Sub-pixel continuous zoom response for wheels and trackpads
+    const delta = e.evt.deltaY;
+    const zoomFactor = Math.exp(-delta * 0.0018);
+    let newScale = oldScale * zoomFactor;
+    newScale = Math.min(Math.max(newScale, 0.01), 50.0);
 
     setStageScale(newScale);
     setStagePos({
@@ -329,7 +360,7 @@ export const FloorPlanCanvas: React.FC = () => {
     }
   };
 
-  const handleUnitDrag = (zoneId: string, newX: number, newY: number) => {
+  const handleIndoorUnitDrag = (zoneId: string, newX: number, newY: number) => {
     const zone = zones.find(z => z.id === zoneId);
     if (!zone) return;
 
@@ -372,7 +403,7 @@ export const FloorPlanCanvas: React.FC = () => {
 
   // Draw background grid lines with scale adjustment
   const drawGridLines = () => {
-    if (lodTier === 1) return null; // Declutter grid at far zoom
+    if (!annotationVisibility.grid || lodTier === 1) return null; // Declutter grid at far zoom or if hidden
     const lines: React.ReactNode[] = [];
     const size = 3000;
     const step = gridSpacing * 5;
@@ -389,6 +420,8 @@ export const FloorPlanCanvas: React.FC = () => {
     return lines;
   };
 
+  const isPanActive = drawMode === 'pan' || isSpacePressed;
+
   return (
     <div className="relative w-full h-[65vh] bg-[#0c0c0c] border border-neutral-800 rounded-3xl overflow-hidden shadow-inner flex flex-col">
       <Stage
@@ -399,7 +432,7 @@ export const FloorPlanCanvas: React.FC = () => {
         scaleY={stageScale}
         x={stagePos.x}
         y={stagePos.y}
-        draggable={drawMode === 'pan'}
+        draggable={isPanActive}
         onWheel={handleWheel}
         onMouseMove={handleMouseMove}
         onMouseDown={handleMouseDown}
@@ -410,13 +443,53 @@ export const FloorPlanCanvas: React.FC = () => {
         }}
         onClick={handleContentClick}
         onDblClick={handleDoubleClick}
-        style={{ cursor: drawMode === 'pan' ? 'grab' : 'crosshair' }}
+        style={{ cursor: isPanActive ? (isPanning ? 'grabbing' : 'grab') : drawMode === 'polyline' ? 'crosshair' : 'default' }}
       >
         <Layer>
           {drawGridLines()}
 
-          {/* DXF CAD Underlay Geometry */}
-          {dxfEntities.length > 0 && (
+          {/* DXF CAD Underlay Geometry (Layer-by-Layer with Visibility & Native CAD Colors) */}
+          {Object.entries(dxfLayers).length > 0 ? (
+            Object.entries(dxfLayers).map(([layerName, layerInfo]) => {
+              if (!layerInfo.visible) return null;
+              const layerEntities = dxfEntities.filter((e) => (e.layer || '0') === layerName);
+              if (layerEntities.length === 0) return null;
+
+              return (
+                <Shape
+                  key={`dxf-layer-${layerName}`}
+                  stroke={layerInfo.color || '#94a3b8'}
+                  strokeWidth={getStrokeWidth(0.8, 1.0)}
+                  sceneFunc={(context, shape) => {
+                    context.save();
+                    context.beginPath();
+
+                    for (const ent of layerEntities) {
+                      if (ent.type === 'LINE') {
+                        context.moveTo(ent.x || 0, ent.y || 0);
+                        context.lineTo(ent.points?.[0] || 0, ent.points?.[1] || 0);
+                      } else if ((ent.type === 'LWPOLYLINE' || ent.type === 'POLYLINE') && ent.points) {
+                        const pts = ent.points;
+                        if (pts.length >= 4) {
+                          context.moveTo(pts[0], pts[1]);
+                          for (let i = 2; i < pts.length; i += 2) {
+                            context.lineTo(pts[i], pts[i + 1]);
+                          }
+                        }
+                      } else if ((ent.type === 'CIRCLE' || ent.type === 'ARC') && typeof ent.radius === 'number') {
+                        context.moveTo((ent.x || 0) + ent.radius, ent.y || 0);
+                        context.arc(ent.x || 0, ent.y || 0, ent.radius, 0, Math.PI * 2);
+                      }
+                    }
+                    context.fillStrokeShape(shape);
+                    context.restore();
+                  }}
+                  hitFunc={() => {}}
+                  opacity={0.65}
+                />
+              );
+            })
+          ) : dxfEntities.length > 0 ? (
             <Shape
               stroke="#525252"
               strokeWidth={getStrokeWidth(0.8, 1.0)}
@@ -447,26 +520,27 @@ export const FloorPlanCanvas: React.FC = () => {
               hitFunc={() => {}}
               opacity={0.45}
             />
-          )}
+          ) : null}
 
-          {/* DXF CAD Text elements (LOD Tier 2+) */}
-          {dxfEntities.length > 0 && lodTier >= 2 && (
+          {/* DXF CAD Text elements (LOD Tier 2+ and visibility controlled) */}
+          {annotationVisibility.dxfText && dxfEntities.length > 0 && lodTier >= 2 && (
             <Shape
               sceneFunc={(context) => {
                 context.save();
-                context.fillStyle = '#666666';
-                const fontSize = Math.max(6, 9 / stageScale);
+                context.fillStyle = '#94a3b8';
+                const fontSize = Math.max(7, 9 / stageScale);
                 context.font = `${fontSize}px sans-serif`;
 
                 for (const ent of dxfEntities) {
-                  if ((ent.type === 'TEXT' || ent.type === 'MTEXT') && ent.text) {
+                  const isLayerVis = !ent.layer || dxfLayers[ent.layer]?.visible !== false;
+                  if (isLayerVis && (ent.type === 'TEXT' || ent.type === 'MTEXT') && ent.text) {
                     context.fillText(ent.text, ent.x || 0, ent.y || 0);
                   }
                 }
                 context.restore();
               }}
               hitFunc={() => {}}
-              opacity={0.45}
+              opacity={0.65}
             />
           )}
 
@@ -475,7 +549,6 @@ export const FloorPlanCanvas: React.FC = () => {
             const isSelected = zone.id === selectedZoneId;
             const centroid = getPolygonCentroid(zone.points);
             const load = calculateZoneLoad(zone, project);
-            const isDucted = zone.systemType === 'concealed' || zone.systemType === 'packaged' || zone.systemType === 'ahu';
 
             // Calculate zone span to dynamically adapt component sizes to room geometry
             let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -506,89 +579,119 @@ export const FloorPlanCanvas: React.FC = () => {
                   onTap={() => selectZone(zone.id)}
                 />
 
-                {/* Orthogonal Solid Copper Refrigerant Line Set & Yellow MEP Callout Tag */}
-                {zone.outdoorUnitPos && (zone.unitPos || zone.diffusers.length > 0) && (() => {
-                  const targets = zone.systemType === 'cassette'
-                    ? zone.diffusers.map((d) => ({ x: d.x, y: d.y }))
+                {/* Orthogonal Solid Copper Refrigerant Line Sets & Master Yellow MEP Engineering Callout */}
+                {(() => {
+                  const unitList = zone.unitPositions && zone.unitPositions.length > 0
+                    ? zone.unitPositions
                     : zone.unitPos
                     ? [zone.unitPos]
-                    : zone.diffusers.length > 0
-                    ? [{ x: zone.diffusers[0].x, y: zone.diffusers[0].y }]
                     : [];
 
-                  if (targets.length === 0) return null;
+                  const outdoorList = zone.outdoorUnitPositions && zone.outdoorUnitPositions.length > 0
+                    ? zone.outdoorUnitPositions
+                    : zone.outdoorUnitPos
+                    ? [zone.outdoorUnitPos]
+                    : [];
 
-                  const piping = routeOrthogonalRefrigerantPiping(zone.outdoorUnitPos, targets);
+                  if (unitList.length === 0 && outdoorList.length === 0) return null;
 
                   const totalBtu = load.totalLoad;
-                  const qty = zone.catalogQty || (zone.systemType === 'cassette' ? zone.diffusers.length : 1);
+                  const qty = zone.catalogQty || unitList.length || 1;
                   const btuPerUnit = Math.round(totalBtu / Math.max(1, qty));
-                  const cfmPerUnit = Math.round((zone.diffusers.length > 0 ? zone.diffusers.reduce((s, d) => s + d.cfm, 0) : load.supplyCfm) / Math.max(1, qty));
+                  const supplyDiffusers = zone.diffusers.filter((d) => d.type !== 'return');
+                  const returnDiffusers = zone.diffusers.filter((d) => d.type === 'return');
+                  const cfmPerUnit = Math.round((zone.diffusers.length > 0 ? supplyDiffusers.reduce((s, d) => s + d.cfm, 0) : load.supplyCfm) / Math.max(1, qty));
+                  const supplyDiffuserCfmEach = supplyDiffusers.length > 0 ? supplyDiffusers[0].cfm : Math.round(load.supplyCfm / 12);
+                  const freshAirCfm = Math.round(load.supplyCfm * 0.15);
+
                   const sysLabel = zone.systemType === 'cassette'
-                    ? `${qty > 1 ? `${qty}-` : ''}CASSETTE SPLIT`
+                    ? 'CASSETTE SPLIT'
                     : zone.systemType === 'high-wall'
-                    ? `${qty > 1 ? `${qty}-` : ''}HIGH WALL SPLIT`
-                    : `${qty > 1 ? `${qty}-` : ''}CONCEALED DUCTED`;
+                    ? 'HIGH WALL SPLIT'
+                    : zone.systemType === 'packaged'
+                    ? 'PACKAGE UNIT'
+                    : zone.systemType === 'ahu'
+                    ? 'CENTRAL AHU'
+                    : zone.systemType === 'fcu'
+                    ? 'DUCTED FCU'
+                    : 'CONCEALED SPLIT';
 
                   return (
                     <Group>
-                      {/* Orthogonal Solid Bright Orange Copper Pipe Segments */}
-                      {piping.segments.map((seg, sIdx) => (
-                        <Line
-                          key={`ref-seg-${zone.id}-${sIdx}`}
-                          points={seg}
-                          stroke="#f97316"
-                          strokeWidth={getStrokeWidth(2.5 * Math.min(1.8, symScale), 2.5)}
-                          lineCap="round"
-                          lineJoin="round"
-                        />
-                      ))}
+                      {/* Copper Line Set for each pair of indoor unit and outdoor ACU */}
+                      {annotationVisibility.refrigerantPiping && unitList.map((uPos, uIdx) => {
+                        const oPos = outdoorList[uIdx] || outdoorList[0] || { x: uPos.x + 35, y: uPos.y + 35 };
+                        const piping = routeOrthogonalRefrigerantPiping(oPos, [uPos]);
 
-                      {/* Yellow Circular Isolator Tag (R) along pipe */}
-                      {piping.isolatorPos && (
-                        <Group x={piping.isolatorPos.x} y={piping.isolatorPos.y}>
-                          <Circle
-                            x={0}
-                            y={0}
-                            radius={5.5 * Math.min(1.8, symScale)}
-                            fill="#facc15"
-                            stroke="#000000"
-                            strokeWidth={getStrokeWidth(0.8, 0.8)}
-                          />
-                          <Text
-                            x={-3 * Math.min(1.8, symScale)}
-                            y={-4 * Math.min(1.8, symScale)}
-                            text="R"
-                            fontSize={6 * Math.min(1.8, symScale)}
-                            fill="#000000"
-                            fontStyle="bold"
-                          />
-                        </Group>
-                      )}
+                        return (
+                          <Group key={`piping-set-${zone.id}-${uIdx}`}>
+                            {piping.segments.map((seg, sIdx) => (
+                              <Line
+                                key={`ref-seg-${zone.id}-${uIdx}-${sIdx}`}
+                                points={seg}
+                                stroke="#f97316"
+                                strokeWidth={getStrokeWidth(2.6 * Math.min(1.8, symScale), 2.5)}
+                                lineCap="round"
+                                lineJoin="round"
+                              />
+                            ))}
 
-                      {/* Yellow Engineering Callout Tag with Leader Line (Matching Reference CAD Drawing) */}
-                      {lodTier >= 2 && (
-                        <Group x={zone.outdoorUnitPos.x + 24 * symScale} y={zone.outdoorUnitPos.y - 36 * symScale}>
-                          <Line
-                            points={[-6 * symScale, 20 * symScale, -18 * symScale, 30 * symScale]}
-                            stroke="#facc15"
-                            strokeWidth={getStrokeWidth(1.0, 1.0)}
-                          />
-                          <Text
-                            x={0}
-                            y={0}
-                            text={`${sysLabel}\n${btuPerUnit.toLocaleString()} BTU/HR${qty > 1 ? '-EACH' : ''}\n${cfmPerUnit} CFM${qty > 1 ? '-EACH' : ''}`}
-                            fontSize={Math.min(13, Math.max(7, (8 * symScale) / stageScale))}
-                            fill="#facc15"
-                            fontStyle="bold"
-                          />
-                        </Group>
-                      )}
+                            {/* Yellow Circular Isolator Tag (R) along pipe */}
+                            {piping.isolatorPos && (
+                              <Group x={piping.isolatorPos.x} y={piping.isolatorPos.y}>
+                                <Circle
+                                  x={0}
+                                  y={0}
+                                  radius={5.5 * Math.min(1.8, symScale)}
+                                  fill="#facc15"
+                                  stroke="#000000"
+                                  strokeWidth={getStrokeWidth(0.8, 0.8)}
+                                />
+                                <Text
+                                  x={-3 * Math.min(1.8, symScale)}
+                                  y={-4 * Math.min(1.8, symScale)}
+                                  text="R"
+                                  fontSize={6 * Math.min(1.8, symScale)}
+                                  fill="#000000"
+                                  fontStyle="bold"
+                                />
+                              </Group>
+                            )}
+                          </Group>
+                        );
+                      })}
+
+                      {/* Master Yellow Engineering Callout Tag with Leader Line (Matching Reference CAD Drawing) */}
+                      {annotationVisibility.leaderCallout && (() => {
+                        const calloutOrigin = unitList[0] || { x: maxX, y: minY };
+                        const leaderStartX = calloutOrigin.x - 20 * symScale;
+                        const leaderStartY = calloutOrigin.y - 10 * symScale;
+                        const calloutX = Math.max(maxX - 80, leaderStartX + 30);
+                        const calloutY = Math.min(minY - 35, leaderStartY - 40);
+
+                        return (
+                          <Group>
+                            <Line
+                              points={[calloutX - 5, calloutY + 20, leaderStartX, leaderStartY]}
+                              stroke="#facc15"
+                              strokeWidth={getStrokeWidth(1.2, 1.2)}
+                            />
+                            <Text
+                              x={calloutX}
+                              y={calloutY}
+                              text={`${qty}-${sysLabel}\n${btuPerUnit.toLocaleString()} BTU/HR-EACH\n${cfmPerUnit} CFM-EACH\n${supplyDiffusers.length || 12}-S.C.D 12"X12"\n${supplyDiffuserCfmEach} CFM-EACH\n${returnDiffusers.length || 12}-R.C.D 12"X12"\nFA ${freshAirCfm} CFM`}
+                              fontSize={Math.max(12 * symScale, 11 / stageScale)}
+                              fill="#facc15"
+                              fontStyle="bold"
+                            />
+                          </Group>
+                        );
+                      })()}
                     </Group>
                   );
                 })()}
 
-                {/* Duct Network (Double-Line Physical Walls, Flow Arrows & Air Distribution Badges) */}
+                {/* Duct Network (Double-Line Physical Walls, Flow Arrows & Inline CFM Badges) */}
                 {zone.ducts.map((d) => {
                   const x1 = d.points[0];
                   const y1 = d.points[1];
@@ -605,9 +708,9 @@ export const FloorPlanCanvas: React.FC = () => {
                   const isReturn = d.type === 'return';
                   const isTrunk = d.type === 'trunk';
 
-                  const casingColor = isReturn ? '#64748b' : isTrunk ? '#2563eb' : '#3b82f6';
-                  const fillColor = isReturn ? 'rgba(100, 116, 139, 0.22)' : 'rgba(37, 99, 235, 0.22)';
-                  const centerColor = isReturn ? '#94a3b8' : '#60a5fa';
+                  const casingColor = isReturn ? '#64748b' : isTrunk ? '#06b6d4' : '#38bdf8';
+                  const fillColor = isReturn ? 'rgba(100, 116, 139, 0.18)' : 'rgba(6, 182, 212, 0.18)';
+                  const centerColor = isReturn ? '#94a3b8' : '#22d3ee';
 
                   const mx = (x1 + x2) / 2;
                   const my = (y1 + y2) / 2;
@@ -620,72 +723,98 @@ export const FloorPlanCanvas: React.FC = () => {
                   const arrowLen = Math.min(12 * symScale, len * 0.25);
 
                   const vel = d.velocityFpm || Math.round(d.cfm / Math.max(0.1, (d.widthIn * d.heightIn) / 144));
-                  const ductTag = `${d.sizeLabel} | ${d.cfm} CFM | ${vel} FPM`;
 
                   return (
                     <Group key={d.id}>
                       {/* Filled Duct Body Polygon */}
-                      <Line
-                        points={[
-                          x1 + nx * hw, y1 + ny * hw,
-                          x2 + nx * hw, y2 + ny * hw,
-                          x2 - nx * hw, y2 - ny * hw,
-                          x1 - nx * hw, y1 - ny * hw
-                        ]}
-                        closed
-                        fill={fillColor}
-                        stroke={casingColor}
-                        strokeWidth={getStrokeWidth(1.4, 1.4)}
-                      />
+                      {annotationVisibility.ducts && (
+                        <>
+                          <Line
+                            points={[
+                              x1 + nx * hw, y1 + ny * hw,
+                              x2 + nx * hw, y2 + ny * hw,
+                              x2 - nx * hw, y2 - ny * hw,
+                              x1 - nx * hw, y1 - ny * hw
+                            ]}
+                            closed
+                            fill={fillColor}
+                            stroke={casingColor}
+                            strokeWidth={getStrokeWidth(1.6, 1.6)}
+                          />
+                          {/* Transition Flange Lines at start and end */}
+                          <Line
+                            points={[x1 + nx * (hw + 1), y1 + ny * (hw + 1), x1 - nx * (hw + 1), y1 - ny * (hw + 1)]}
+                            stroke={casingColor}
+                            strokeWidth={getStrokeWidth(1.4, 1.4)}
+                          />
+                          <Line
+                            points={[x2 + nx * (hw + 1), y2 + ny * (hw + 1), x2 - nx * (hw + 1), y2 - ny * (hw + 1)]}
+                            stroke={casingColor}
+                            strokeWidth={getStrokeWidth(1.4, 1.4)}
+                          />
+                        </>
+                      )}
 
                       {/* Centerline Axis */}
-                      <Line
-                        points={[x1, y1, x2, y2]}
-                        stroke={centerColor}
-                        strokeWidth={getStrokeWidth(1.0, 1.0)}
-                        dash={[5, 4]}
-                        opacity={0.8}
-                      />
+                      {annotationVisibility.ductCenterlines && (
+                        <Line
+                          points={[x1, y1, x2, y2]}
+                          stroke={centerColor}
+                          strokeWidth={getStrokeWidth(1.0, 1.0)}
+                          dash={[6, 4]}
+                        />
+                      )}
 
-                      {/* Directional Flow Chevron Arrow */}
-                      {len > 20 && (
+                      {/* Directional Flow Chevron Arrow (along duct centerline) */}
+                      {annotationVisibility.ducts && len > 25 && (
                         <Line
                           points={[
-                            ax - ux * arrowLen + nx * (hw * 0.5),
-                            ay - uy * arrowLen + ny * (hw * 0.5),
+                            ax - ux * arrowLen - ny * (arrowLen * 0.45),
+                            ay - uy * arrowLen + nx * (arrowLen * 0.45),
                             ax,
                             ay,
-                            ax - ux * arrowLen - nx * (hw * 0.5),
-                            ay - uy * arrowLen - ny * (hw * 0.5)
+                            ax - ux * arrowLen + ny * (arrowLen * 0.45),
+                            ay - uy * arrowLen - nx * (arrowLen * 0.45)
                           ]}
-                          stroke={isReturn ? '#cbd5e1' : '#ffffff'}
+                          stroke="#ffffff"
                           strokeWidth={getStrokeWidth(1.4, 1.4)}
                           lineCap="round"
                           lineJoin="round"
                         />
                       )}
 
-                      {/* Air Distribution Callout Badge */}
-                      {lodTier >= 2 && (
-                        <Group x={mx} y={my}>
+                      {/* Bright Yellow CFM Callout directly along duct branch (Matching CAD Reference Drawing) */}
+                      {annotationVisibility.ductCfm && (
+                        <Text
+                          x={mx - 25 * symScale}
+                          y={my - (hw + 12 * symScale)}
+                          text={`${d.cfm} CFM`}
+                          fontSize={Math.max(8.5 * symScale, 9 / stageScale)}
+                          fill="#facc15"
+                          fontStyle="bold"
+                        />
+                      )}
+
+                      {/* Detailed Air Distribution Callout Badge with CFM & Size (LOD Tier 2+) */}
+                      {annotationVisibility.ductSizeBadges && lodTier >= 2 && len > 45 && (
+                        <Group x={mx} y={my + hw + 10 * symScale}>
                           <Rect
-                            x={-42 * Math.min(1.5, symScale)}
-                            y={-9 * Math.min(1.5, symScale)}
-                            width={84 * Math.min(1.5, symScale)}
-                            height={18 * Math.min(1.5, symScale)}
-                            fill="rgba(15, 23, 42, 0.85)"
+                            x={-35 * Math.min(1.5, symScale)}
+                            y={-8 * Math.min(1.5, symScale)}
+                            width={70 * Math.min(1.5, symScale)}
+                            height={16 * Math.min(1.5, symScale)}
+                            fill="rgba(15, 23, 42, 0.92)"
                             stroke={casingColor}
                             strokeWidth={getStrokeWidth(0.8, 0.8)}
-                            cornerRadius={4}
+                            cornerRadius={3}
                           />
                           <Text
-                            x={-40 * Math.min(1.5, symScale)}
+                            x={-33 * Math.min(1.5, symScale)}
                             y={-6 * Math.min(1.5, symScale)}
-                            width={80 * Math.min(1.5, symScale)}
-                            text={ductTag}
-                            fontSize={Math.min(10, Math.max(5.5, (6.5 * Math.min(1.5, symScale)) / stageScale))}
-                            fill={isReturn ? '#cbd5e1' : '#93c5fd'}
-                            fontStyle="bold"
+                            width={66 * Math.min(1.5, symScale)}
+                            text={`${d.sizeLabel} • ${vel} FPM`}
+                            fontSize={Math.max(7.5 * symScale, 8 / stageScale)}
+                            fill="#94a3b8"
                             align="center"
                           />
                         </Group>
@@ -703,118 +832,158 @@ export const FloorPlanCanvas: React.FC = () => {
                     draggable={lodTier >= 2}
                     onDragMove={(e) => handleDiffuserDrag(zone.id, dif.id, e.target.x(), e.target.y())}
                   >
-                    {zone.systemType === 'cassette' ? (
+                    {dif.type === 'return' ? (
                       <Group>
-                        {/* Cassette Square Box (Prominently Scaled) */}
-                        <Rect
-                          x={-16 * symScale}
-                          y={-16 * symScale}
-                          width={32 * symScale}
-                          height={32 * symScale}
-                          fill="rgba(15, 23, 42, 0.65)"
-                          stroke="#38bdf8"
-                          strokeWidth={getStrokeWidth(1.8, 1.8)}
-                          cornerRadius={3}
-                        />
-                        {/* 4 Corner Flange Mounting Tabs */}
-                        <Line points={[-16 * symScale, -13 * symScale, -16 * symScale, -16 * symScale, -13 * symScale, -16 * symScale]} stroke="#ffffff" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-                        <Line points={[16 * symScale, -13 * symScale, 16 * symScale, -16 * symScale, 13 * symScale, -16 * symScale]} stroke="#ffffff" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-                        <Line points={[-16 * symScale, 13 * symScale, -16 * symScale, 16 * symScale, -13 * symScale, 16 * symScale]} stroke="#ffffff" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-                        <Line points={[16 * symScale, 13 * symScale, 16 * symScale, 16 * symScale, 13 * symScale, 16 * symScale]} stroke="#ffffff" strokeWidth={getStrokeWidth(1.4, 1.4)} />
+                        {/* Return Air Grille (RG-1) Engineering Symbol */}
+                        {annotationVisibility.diffusers && (
+                          <>
+                            <Rect
+                              x={-14 * symScale}
+                              y={-14 * symScale}
+                              width={28 * symScale}
+                              height={28 * symScale}
+                              fill="rgba(88, 28, 135, 0.35)"
+                              stroke="#c084fc"
+                              strokeWidth={getStrokeWidth(1.8, 1.8)}
+                              cornerRadius={2}
+                            />
+                            {/* Inner Return Intake Box */}
+                            <Rect
+                              x={-10 * symScale}
+                              y={-10 * symScale}
+                              width={20 * symScale}
+                              height={20 * symScale}
+                              stroke="#c084fc"
+                              strokeWidth={getStrokeWidth(1.0, 1.0)}
+                              fill="rgba(192, 132, 252, 0.1)"
+                            />
+                            {/* Single Diagonal Slash across Return Grille (standard MEP symbol) */}
+                            <Line
+                              points={[-14 * symScale, -14 * symScale, 14 * symScale, 14 * symScale]}
+                              stroke="#c084fc"
+                              strokeWidth={getStrokeWidth(1.6, 1.6)}
+                            />
+                            {/* Return Air Inward Chevrons */}
+                            <Line points={[-6 * symScale, -3 * symScale, 0, 0, -6 * symScale, 3 * symScale]} stroke="#e879f9" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                            <Line points={[6 * symScale, -3 * symScale, 0, 0, 6 * symScale, 3 * symScale]} stroke="#e879f9" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                          </>
+                        )}
 
-                        {/* Center Return Grille Square with Mesh */}
-                        <Rect
-                          x={-8 * symScale}
-                          y={-8 * symScale}
-                          width={16 * symScale}
-                          height={16 * symScale}
-                          stroke="#94a3b8"
-                          strokeWidth={getStrokeWidth(1.0, 1.0)}
-                          fill="rgba(30, 41, 59, 0.5)"
-                        />
-                        <Line points={[-8 * symScale, 0, 8 * symScale, 0]} stroke="#64748b" strokeWidth={getStrokeWidth(0.8, 0.8)} />
-                        <Line points={[0, -8 * symScale, 0, 8 * symScale]} stroke="#64748b" strokeWidth={getStrokeWidth(0.8, 0.8)} />
+                        {/* Yellow CFM Tag (Always visible per CAD Reference) */}
+                        {annotationVisibility.diffuserCfm && (
+                          <Text
+                            x={-15 * symScale}
+                            y={16 * symScale}
+                            text={`${dif.cfm} CFM`}
+                            fontSize={Math.max(8.5 * symScale, 9 / stageScale)}
+                            fill="#facc15"
+                            fontStyle="bold"
+                          />
+                        )}
 
-                        {/* 4-Way Directional Outward Flow Discharge Chevrons */}
-                        <Line points={[-3 * symScale, -11 * symScale, 0, -15 * symScale, 3 * symScale, -11 * symScale]} stroke="#38bdf8" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-                        <Line points={[-3 * symScale, 11 * symScale, 0, 15 * symScale, 3 * symScale, 11 * symScale]} stroke="#38bdf8" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-                        <Line points={[-11 * symScale, -3 * symScale, -15 * symScale, 0, -11 * symScale, 3 * symScale]} stroke="#38bdf8" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-                        <Line points={[11 * symScale, -3 * symScale, 15 * symScale, 0, 11 * symScale, 3 * symScale]} stroke="#38bdf8" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-
-                        {/* Yellow Circular Tag (F) */}
-                        <Group x={18 * symScale} y={18 * symScale}>
-                          <Circle x={0} y={0} radius={5 * Math.min(1.8, symScale)} fill="#facc15" stroke="#000000" strokeWidth={0.8} />
-                          <Text x={-3 * Math.min(1.8, symScale)} y={-4 * Math.min(1.8, symScale)} text="F" fontSize={6 * Math.min(1.8, symScale)} fill="#000000" fontStyle="bold" />
-                        </Group>
+                        {/* Standard MEP Return Grille Tag (LOD Tier 2+) */}
+                        {annotationVisibility.diffuserTags && lodTier >= 2 && (
+                          <Group x={16 * symScale} y={-10 * symScale}>
+                            <Text
+                              x={0}
+                              y={0}
+                              text={`RG-1 (${dif.size || '24"x12"'})`}
+                              fontSize={Math.max(9 * symScale, 9.5 / stageScale)}
+                              fill="#facc15"
+                              fontStyle="bold"
+                            />
+                          </Group>
+                        )}
                       </Group>
                     ) : zone.systemType === 'high-wall' ? (
                       <Group>
                         {/* High Wall Indoor Unit */}
-                        <Rect
-                          x={-18 * symScale}
-                          y={-5 * symScale}
-                          width={36 * symScale}
-                          height={10 * symScale}
-                          fill="#6366f1"
-                          stroke="#818cf8"
-                          strokeWidth={getStrokeWidth(1.6, 1.6)}
-                          cornerRadius={2}
-                        />
-                        <Line points={[-14 * symScale, 2 * symScale, 14 * symScale, 2 * symScale]} stroke="#ffffff" strokeWidth={getStrokeWidth(1.0, 1.0)} />
-                        {/* 3 Radial Air Throw Rays */}
-                        <Line points={[-10 * symScale, 5 * symScale, -15 * symScale, 15 * symScale]} stroke="#f97316" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-                        <Line points={[0, 5 * symScale, 0, 17 * symScale]} stroke="#f97316" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-                        <Line points={[10 * symScale, 5 * symScale, 15 * symScale, 15 * symScale]} stroke="#f97316" strokeWidth={getStrokeWidth(1.4, 1.4)} />
+                        {annotationVisibility.diffusers && (
+                          <>
+                            <Rect
+                              x={-18 * symScale}
+                              y={-5 * symScale}
+                              width={36 * symScale}
+                              height={10 * symScale}
+                              fill="#6366f1"
+                              stroke="#818cf8"
+                              strokeWidth={getStrokeWidth(1.6, 1.6)}
+                              cornerRadius={2}
+                            />
+                            <Line points={[-14 * symScale, 2 * symScale, 14 * symScale, 2 * symScale]} stroke="#ffffff" strokeWidth={getStrokeWidth(1.0, 1.0)} />
+                            {/* 3 Radial Air Throw Rays */}
+                            <Line points={[-10 * symScale, 5 * symScale, -15 * symScale, 15 * symScale]} stroke="#f97316" strokeWidth={getStrokeWidth(1.4, 1.4)} />
+                            <Line points={[0, 5 * symScale, 0, 17 * symScale]} stroke="#f97316" strokeWidth={getStrokeWidth(1.4, 1.4)} />
+                            <Line points={[10 * symScale, 5 * symScale, 15 * symScale, 15 * symScale]} stroke="#f97316" strokeWidth={getStrokeWidth(1.4, 1.4)} />
+                          </>
+                        )}
                       </Group>
                     ) : (
                       <Group>
-                        {/* Square Ceiling Diffuser (CD-1) Engineering Symbol (Prominently Scaled) */}
-                        <Rect
-                          x={-12 * symScale}
-                          y={-12 * symScale}
-                          width={24 * symScale}
-                          height={24 * symScale}
-                          fill="rgba(15, 23, 42, 0.7)"
-                          stroke="#38bdf8"
-                          strokeWidth={getStrokeWidth(1.6, 1.6)}
-                        />
-                        {/* Inner Round Neck Circle */}
-                        <Circle
-                          x={0}
-                          y={0}
-                          radius={7 * symScale}
-                          stroke="#38bdf8"
-                          strokeWidth={getStrokeWidth(1.2, 1.2)}
-                        />
-                        {/* 4 Diagonal Corner Cross Lines (from circle to outer square corners) */}
-                        <Line points={[-4.8 * symScale, -4.8 * symScale, -12 * symScale, -12 * symScale]} stroke="#38bdf8" strokeWidth={getStrokeWidth(1.2, 1.2)} />
-                        <Line points={[4.8 * symScale, -4.8 * symScale, 12 * symScale, -12 * symScale]} stroke="#38bdf8" strokeWidth={getStrokeWidth(1.2, 1.2)} />
-                        <Line points={[-4.8 * symScale, 4.8 * symScale, -12 * symScale, 12 * symScale]} stroke="#38bdf8" strokeWidth={getStrokeWidth(1.2, 1.2)} />
-                        <Line points={[4.8 * symScale, 4.8 * symScale, 12 * symScale, 12 * symScale]} stroke="#38bdf8" strokeWidth={getStrokeWidth(1.2, 1.2)} />
-                        {/* Center Connection Node Dot */}
-                        <Circle x={0} y={0} radius={2 * Math.min(1.8, symScale)} fill="#38bdf8" />
+                        {/* Square Ceiling Diffuser (CD-1) Engineering Symbol */}
+                        {annotationVisibility.diffusers && (
+                          <>
+                            <Rect
+                              x={-12 * symScale}
+                              y={-12 * symScale}
+                              width={24 * symScale}
+                              height={24 * symScale}
+                              fill="rgba(5, 150, 105, 0.35)"
+                              stroke="#10b981"
+                              strokeWidth={getStrokeWidth(1.8, 1.8)}
+                              cornerRadius={2}
+                            />
+                            {/* Inner Concentric Core Square */}
+                            <Rect
+                              x={-7 * symScale}
+                              y={-7 * symScale}
+                              width={14 * symScale}
+                              height={14 * symScale}
+                              stroke="#10b981"
+                              strokeWidth={getStrokeWidth(1.2, 1.2)}
+                              fill="rgba(16, 185, 129, 0.15)"
+                            />
+                            {/* 4-Way Radial Airflow Discharge Arrows */}
+                            <Line points={[0, -7 * symScale, 0, -12 * symScale, -3 * symScale, -9 * symScale, 0, -12 * symScale, 3 * symScale, -9 * symScale]} stroke="#34d399" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                            <Line points={[0, 7 * symScale, 0, 12 * symScale, -3 * symScale, 9 * symScale, 0, 12 * symScale, 3 * symScale, 9 * symScale]} stroke="#34d399" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                            <Line points={[-7 * symScale, 0, -12 * symScale, 0, -9 * symScale, -3 * symScale, -12 * symScale, 0, -9 * symScale, 3 * symScale]} stroke="#34d399" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                            <Line points={[7 * symScale, 0, 12 * symScale, 0, 9 * symScale, -3 * symScale, 12 * symScale, 0, 9 * symScale, 3 * symScale]} stroke="#34d399" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                          </>
+                        )}
 
-                        {/* Standard MEP Diffuser Tag: CD-1 / line / CFM */}
-                        {lodTier >= 2 && (
+                        {/* Yellow CFM Tag (Always visible per CAD Reference) */}
+                        {annotationVisibility.diffuserCfm && (
+                          <Text
+                            x={-15 * symScale}
+                            y={16 * symScale}
+                            text={`${dif.cfm} CFM`}
+                            fontSize={Math.max(8.5 * symScale, 9 / stageScale)}
+                            fill="#facc15"
+                            fontStyle="bold"
+                          />
+                        )}
+
+                        {/* Standard MEP Diffuser Tag: CD-1 (Size) / line / CFM • NC (LOD Tier 2+) */}
+                        {annotationVisibility.diffuserTags && lodTier >= 2 && (
                           <Group x={15 * symScale} y={-10 * symScale}>
                             <Text
                               x={0}
                               y={0}
-                              text={`CD-1`}
-                              fontSize={Math.min(12, Math.max(6.5, (7.5 * symScale) / stageScale))}
+                              text={`CD-1 (${dif.size || '12"x12"'})`}
+                              fontSize={Math.max(9 * symScale, 9.5 / stageScale)}
                               fill="#facc15"
                               fontStyle="bold"
                             />
                             <Line
-                              points={[0, 11 * Math.min(1.5, symScale), 28 * Math.min(1.5, symScale), 11 * Math.min(1.5, symScale)]}
+                              points={[0, 11 * Math.min(1.5, symScale), 48 * Math.min(1.5, symScale), 11 * Math.min(1.5, symScale)]}
                               stroke="#facc15"
                               strokeWidth={getStrokeWidth(0.9, 0.9)}
                             />
                             <Text
                               x={0}
                               y={13 * Math.min(1.5, symScale)}
-                              text={`${dif.cfm}`}
-                              fontSize={Math.min(12, Math.max(6.5, (7.5 * symScale) / stageScale))}
+                              text={`${dif.cfm} CFM${dif.actualNc ? ` • NC ${dif.actualNc}` : ''}`}
+                              fontSize={Math.max(8.5 * symScale, 9 / stageScale)}
                               fill="#facc15"
                               fontStyle="bold"
                             />
@@ -822,12 +991,12 @@ export const FloorPlanCanvas: React.FC = () => {
                         )}
 
                         {/* LOD Tier 3+: Throw radius ring */}
-                        {lodTier >= 3 && (
+                        {annotationVisibility.throwRings && lodTier >= 3 && (
                           <Circle
                             x={0}
                             y={0}
-                            radius={28 * symScale}
-                            stroke="rgba(56, 189, 248, 0.2)"
+                            radius={(dif.throwT50Ft || 12) * (project.scale / 10) * (symScale * 0.7)}
+                            stroke="rgba(16, 185, 129, 0.25)"
                             strokeWidth={getStrokeWidth(0.6, 0.8)}
                             dash={[4, 3]}
                           />
@@ -837,144 +1006,148 @@ export const FloorPlanCanvas: React.FC = () => {
                   </Group>
                 ))}
 
-                {/* High-Wall Indoor Unit (Mounted along wall inside room with 3 radial discharge rays) */}
-                {zone.unitPos && zone.systemType === 'high-wall' && (
-                  <Group
-                    x={zone.unitPos.x}
-                    y={zone.unitPos.y}
-                    draggable={lodTier >= 2}
-                    onDragMove={(e) => handleUnitDrag(zone.id, e.target.x(), e.target.y())}
-                  >
-                    {/* Unit casing body */}
-                    <Rect
-                      x={-18 * symScale}
-                      y={-5 * symScale}
-                      width={36 * symScale}
-                      height={10 * symScale}
-                      fill="#6366f1"
-                      stroke="#818cf8"
-                      strokeWidth={getStrokeWidth(1.6, 1.6)}
-                      cornerRadius={2}
-                    />
-                    <Line points={[-14 * symScale, 2 * symScale, 14 * symScale, 2 * symScale]} stroke="#ffffff" strokeWidth={getStrokeWidth(1.0, 1.0)} />
+                {/* Multiple Indoor Units (FCU / Concealed Split / AHU / RTU) */}
+                {annotationVisibility.indoorUnits && (() => {
+                  const unitList = zone.unitPositions && zone.unitPositions.length > 0
+                    ? zone.unitPositions
+                    : zone.unitPos
+                    ? [zone.unitPos]
+                    : [];
 
-                    {/* 3 Radial Air Discharge Throw Rays radiating into room space */}
-                    <Line points={[-10 * symScale, 5 * symScale, -15 * symScale, 15 * symScale]} stroke="#f97316" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-                    <Line points={[0, 5 * symScale, 0, 17 * symScale]} stroke="#f97316" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-                    <Line points={[10 * symScale, 5 * symScale, 15 * symScale, 15 * symScale]} stroke="#f97316" strokeWidth={getStrokeWidth(1.4, 1.4)} />
-
-                    {/* Yellow Circular Tag (P) */}
-                    <Group x={20 * symScale} y={-5 * symScale}>
-                      <Circle x={0} y={0} radius={5 * Math.min(1.8, symScale)} fill="#facc15" stroke="#000000" strokeWidth={0.8} />
-                      <Text x={-3 * Math.min(1.8, symScale)} y={-4 * Math.min(1.8, symScale)} text="P" fontSize={6 * Math.min(1.8, symScale)} fill="#000000" fontStyle="bold" />
+                  return unitList.map((pos, uIdx) => (
+                    <Group
+                      key={`unit-${zone.id}-${uIdx}`}
+                      x={pos.x}
+                      y={pos.y}
+                      draggable={lodTier >= 2}
+                      onDragMove={(e) => {
+                        if (uIdx === 0) handleIndoorUnitDrag(zone.id, e.target.x(), e.target.y());
+                      }}
+                    >
+                      {zone.systemType === 'packaged' ? (
+                        <Group>
+                          <Rect
+                            x={-32 * symScale}
+                            y={-18 * symScale}
+                            width={64 * symScale}
+                            height={36 * symScale}
+                            fill="rgba(245, 158, 11, 0.3)"
+                            stroke="#f59e0b"
+                            strokeWidth={getStrokeWidth(2.0, 2.0)}
+                            cornerRadius={4}
+                          />
+                          <Line points={[-4 * symScale, -18 * symScale, -4 * symScale, 18 * symScale]} stroke="#f59e0b" strokeWidth={getStrokeWidth(1.2, 1.2)} dash={[4, 3]} />
+                          <Circle x={-18 * symScale} y={-5 * symScale} radius={6 * symScale} stroke="#fbbf24" strokeWidth={getStrokeWidth(1.0, 1.0)} />
+                          <Circle x={-18 * symScale} y={7 * symScale} radius={6 * symScale} stroke="#fbbf24" strokeWidth={getStrokeWidth(1.0, 1.0)} />
+                          <Rect x={8 * symScale} y={-14 * symScale} width={20 * symScale} height={28 * symScale} stroke="#fbbf24" strokeWidth={getStrokeWidth(1.0, 1.0)} fill="rgba(251, 191, 36, 0.1)" />
+                          <Circle x={18 * symScale} y={0} radius={8 * symScale} stroke="#fbbf24" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                          <Text x={-30 * symScale} y={-8 * symScale} text={`RTU-${uIdx + 1}`} fontSize={Math.max(9.5 * symScale, 10 / stageScale)} fill="#fbbf24" fontStyle="bold" />
+                        </Group>
+                      ) : (
+                        <Group>
+                          {/* Concealed Indoor Split Unit (Red / Green Industrial Theme Matching Reference Drawing) */}
+                          <Rect
+                            x={-24 * symScale}
+                            y={-14 * symScale}
+                            width={48 * symScale}
+                            height={28 * symScale}
+                            fill="rgba(239, 68, 68, 0.25)"
+                            stroke="#ef4444"
+                            strokeWidth={getStrokeWidth(2.0, 2.0)}
+                            cornerRadius={3}
+                          />
+                          {/* Cooling coil rows */}
+                          <Line points={[-14 * symScale, -10 * symScale, -7 * symScale, 10 * symScale]} stroke="#facc15" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                          <Line points={[-7 * symScale, -10 * symScale, 0, 10 * symScale]} stroke="#facc15" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                          <Line points={[0, -10 * symScale, 7 * symScale, 10 * symScale]} stroke="#facc15" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                          {/* Centrifugal Blower Scroll */}
+                          <Circle x={14 * symScale} y={0} radius={8 * symScale} stroke="#ef4444" strokeWidth={getStrokeWidth(1.4, 1.4)} />
+                          <Text
+                            x={-22 * symScale}
+                            y={-6 * symScale}
+                            text={`FCU-0${uIdx + 1}`}
+                            fontSize={Math.max(9.5 * symScale, 10 / stageScale)}
+                            fill="#fecaca"
+                            fontStyle="bold"
+                          />
+                        </Group>
+                      )}
                     </Group>
-                  </Group>
-                )}
+                  ));
+                })()}
 
-                {/* Detailed Indoor Unit FCU / AHU (Ducted Systems) */}
-                {zone.unitPos && isDucted && (
-                  <Group
-                    x={zone.unitPos.x}
-                    y={zone.unitPos.y}
-                    draggable={lodTier >= 2}
-                    onDragMove={(e) => handleUnitDrag(zone.id, e.target.x(), e.target.y())}
-                  >
-                    {/* FCU Housing Box */}
-                    <Rect
-                      x={-24 * symScale}
-                      y={-12 * symScale}
-                      width={48 * symScale}
-                      height={24 * symScale}
-                      fill="rgba(16, 185, 129, 0.3)"
-                      stroke="#10b981"
-                      strokeWidth={getStrokeWidth(1.8, 1.8)}
-                      cornerRadius={3}
-                    />
-                    {/* Cooling coil diagonal hatch */}
-                    <Line points={[-14 * symScale, -9 * symScale, -7 * symScale, 9 * symScale]} stroke="#34d399" strokeWidth={getStrokeWidth(1.0, 1.0)} />
-                    <Line points={[-7 * symScale, -9 * symScale, 0, 9 * symScale]} stroke="#34d399" strokeWidth={getStrokeWidth(1.0, 1.0)} />
-                    <Line points={[0, -9 * symScale, 7 * symScale, 9 * symScale]} stroke="#34d399" strokeWidth={getStrokeWidth(1.0, 1.0)} />
-                    {/* Fan blower scroll circle */}
-                    <Circle x={14 * symScale} y={0} radius={7 * symScale} stroke="#10b981" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                {/* Multiple Outdoor Units (ACU) along bottom wall */}
+                {annotationVisibility.outdoorUnits && (() => {
+                  const outdoorList = zone.outdoorUnitPositions && zone.outdoorUnitPositions.length > 0
+                    ? zone.outdoorUnitPositions
+                    : zone.outdoorUnitPos
+                    ? [zone.outdoorUnitPos]
+                    : [];
 
-                    <Text
-                      x={-22 * symScale}
-                      y={-6 * symScale}
-                      text={`FCU x${zone.catalogQty || 1} (${zone.diffusers.length > 0 ? zone.diffusers.reduce((s, d) => s + d.cfm, 0) : load.supplyCfm} CFM)`}
-                      fontSize={Math.min(12, Math.max(6.5, (7.5 * symScale) / stageScale))}
-                      fill="#10b981"
-                      fontStyle="bold"
-                    />
-                    {zone.catalogModel && lodTier >= 2 && (
-                      <Text
-                        x={-22 * symScale}
-                        y={16 * symScale}
-                        text={`Model: ${zone.catalogModel}`}
-                        fontSize={Math.min(11, Math.max(6, (7 * symScale) / stageScale))}
-                        fill="#a7f3d0"
-                        fontStyle="bold"
+                  return outdoorList.map((oPos, oIdx) => (
+                    <Group
+                      key={`odu-${zone.id}-${oIdx}`}
+                      x={oPos.x}
+                      y={oPos.y}
+                      draggable={lodTier >= 2}
+                      onDragMove={(e) => {
+                        if (oIdx === 0) handleOutdoorUnitDrag(zone.id, e.target.x(), e.target.y());
+                      }}
+                    >
+                      {/* Outdoor Air-Cooled Condenser Unit (ACU) Housing */}
+                      <Rect
+                        x={-18 * symScale}
+                        y={-10 * symScale}
+                        width={36 * symScale}
+                        height={20 * symScale}
+                        fill="rgba(6, 182, 212, 0.35)"
+                        stroke="#06b6d4"
+                        strokeWidth={getStrokeWidth(1.8, 1.8)}
+                        cornerRadius={3}
                       />
-                    )}
-                  </Group>
-                )}
+                      {/* Dual Condenser Fan Blades */}
+                      <Circle x={-8 * symScale} y={0} radius={6 * symScale} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
+                      <Line points={[-12 * symScale, 0, -4 * symScale, 0]} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
+                      <Line points={[-8 * symScale, -4 * symScale, -8 * symScale, 4 * symScale]} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
 
-                {/* Detailed Outdoor Unit ODU Symbol (Matching Reference Drawing) */}
-                {zone.outdoorUnitPos && (
-                  <Group
-                    x={zone.outdoorUnitPos.x}
-                    y={zone.outdoorUnitPos.y}
-                    draggable={lodTier >= 2}
-                    onDragMove={(e) => handleOutdoorUnitDrag(zone.id, e.target.x(), e.target.y())}
-                  >
-                    {/* ODU Condenser Box */}
-                    <Rect
-                      x={-18 * symScale}
-                      y={-10 * symScale}
-                      width={36 * symScale}
-                      height={20 * symScale}
-                      fill="rgba(6, 182, 212, 0.3)"
-                      stroke="#06b6d4"
-                      strokeWidth={getStrokeWidth(1.8, 1.8)}
-                      cornerRadius={3}
-                    />
-                    {/* Dual Condenser Fan Blades */}
-                    <Circle x={-8 * symScale} y={0} radius={6 * symScale} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
-                    <Line points={[-12 * symScale, 0, -4 * symScale, 0]} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
-                    <Line points={[-8 * symScale, -4 * symScale, -8 * symScale, 4 * symScale]} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
+                      <Circle x={8 * symScale} y={0} radius={6 * symScale} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
+                      <Line points={[4 * symScale, 0, 12 * symScale, 0]} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
+                      <Line points={[8 * symScale, -4 * symScale, 8 * symScale, 4 * symScale]} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
 
-                    <Circle x={8 * symScale} y={0} radius={6 * symScale} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
-                    <Line points={[4 * symScale, 0, 12 * symScale, 0]} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
-                    <Line points={[8 * symScale, -4 * symScale, 8 * symScale, 4 * symScale]} stroke="#22d3ee" strokeWidth={getStrokeWidth(1.0, 1.0)} />
-
-                    {/* Yellow Circular Tag (P) on outdoor unit */}
-                    <Group x={20 * symScale} y={-8 * symScale}>
-                      <Circle x={0} y={0} radius={5 * Math.min(1.8, symScale)} fill="#facc15" stroke="#000000" strokeWidth={0.8} />
-                      <Text x={-3 * Math.min(1.8, symScale)} y={-4 * Math.min(1.8, symScale)} text="P" fontSize={6 * Math.min(1.8, symScale)} fill="#000000" fontStyle="bold" />
+                      {/* Yellow Circular Tag (P) on outdoor ACU */}
+                      <Group x={20 * symScale} y={-8 * symScale}>
+                        <Circle x={0} y={0} radius={5 * Math.min(1.8, symScale)} fill="#facc15" stroke="#000000" strokeWidth={0.8} />
+                        <Text x={-3 * Math.min(1.8, symScale)} y={-4 * Math.min(1.8, symScale)} text="P" fontSize={Math.max(6 * symScale, 7 / stageScale)} fill="#000000" fontStyle="bold" />
+                      </Group>
                     </Group>
-                  </Group>
-                )}
+                  ));
+                })()}
 
                 {/* Centroid Labels */}
-                <Text
-                  x={centroid.x - 50 / stageScale}
-                  y={centroid.y - 12 / stageScale}
-                  text={zone.name}
-                  fontSize={10 / stageScale}
-                  fontStyle="bold"
-                  fill={isSelected ? '#3b82f6' : '#d4d4d4'}
-                  align="center"
-                  width={100 / stageScale}
-                />
-                <Text
-                  x={centroid.x - 50 / stageScale}
-                  y={centroid.y + 2 / stageScale}
-                  text={`${zone.diffusers.length > 0 ? zone.diffusers.reduce((s, d) => s + d.cfm, 0) : load.supplyCfm} ${project.units === 'imperial' ? 'CFM' : 'L/s'} (${zone.systemType || 'concealed'})`}
-                  fontSize={9 / stageScale}
-                  fontStyle="bold"
-                  fill="#10b981"
-                  align="center"
-                  width={100 / stageScale}
-                />
+                {annotationVisibility.zoneLabels && (
+                  <>
+                    <Text
+                      x={centroid.x - 70 / stageScale}
+                      y={centroid.y - 14 / stageScale}
+                      text={zone.name}
+                      fontSize={Math.max(13, 13 / stageScale)}
+                      fontStyle="bold"
+                      fill={isSelected ? '#3b82f6' : '#d4d4d4'}
+                      align="center"
+                      width={140 / stageScale}
+                    />
+                    <Text
+                      x={centroid.x - 70 / stageScale}
+                      y={centroid.y + 3 / stageScale}
+                      text={`${zone.diffusers.length > 0 ? zone.diffusers.reduce((s, d) => s + d.cfm, 0) : load.supplyCfm} ${project.units === 'imperial' ? 'CFM' : 'L/s'} (${zone.systemType || 'concealed'})`}
+                      fontSize={Math.max(11, 11 / stageScale)}
+                      fontStyle="bold"
+                      fill="#10b981"
+                      align="center"
+                      width={140 / stageScale}
+                    />
+                  </>
+                )}
 
                 {/* Interactive Editable Vertices (Selected Zone only) */}
                 {isSelected &&
@@ -1176,7 +1349,32 @@ export const FloorPlanCanvas: React.FC = () => {
             ))}
           </div>
         </div>
+
+        {/* CAD Layers & Annotations Visibility Toggle Button */}
+        <button
+          onClick={() => setIsLayerManagerOpen(!isLayerManagerOpen)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer ${
+            isLayerManagerOpen
+              ? 'bg-blue-600 text-white shadow-blue-500/25 border border-blue-400'
+              : 'bg-neutral-900/90 hover:bg-neutral-800 text-neutral-200 hover:text-white border border-neutral-750'
+          }`}
+          title="Toggle DXF Layers and MEP Drawing Annotations"
+        >
+          <Layers size={13} className={isLayerManagerOpen ? 'text-white' : 'text-blue-400'} />
+          <span>Layers & Annotations</span>
+          {Object.values(dxfLayers).length > 0 && (
+            <span className="bg-blue-500/20 text-blue-300 text-[9px] px-1.5 py-0.2 rounded-full font-mono border border-blue-400/30">
+              {Object.values(dxfLayers).filter((l) => l.visible).length}/{Object.values(dxfLayers).length}
+            </span>
+          )}
+        </button>
       </div>
+
+      {/* Floating CAD Layer & Annotation Manager Popover Modal */}
+      <CadLayerManagerModal
+        isOpen={isLayerManagerOpen}
+        onClose={() => setIsLayerManagerOpen(false)}
+      />
 
       {/* Viewport Floating Zoom Navigation Controls */}
       <div className="absolute bottom-4 right-4 flex items-center gap-1.5 bg-neutral-900/90 border border-neutral-800 p-1.5 rounded-2xl backdrop-blur-md shadow-2xl">

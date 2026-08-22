@@ -28,7 +28,10 @@ export function routeDucts(
     return { ducts: [], unitPos: customUnitPos || { x: 0, y: 0 } };
   }
 
-  if (points.length < 6 || diffusers.length === 0) {
+  const supplyDiffusers = diffusers.filter((d) => d.type === 'supply' || !d.type);
+  const returnDiffusers = diffusers.filter((d) => d.type === 'return');
+
+  if (points.length < 6 || (supplyDiffusers.length === 0 && returnDiffusers.length === 0)) {
     return { ducts: [], unitPos: { x: 0, y: 0 } };
   }
 
@@ -40,7 +43,7 @@ export function routeDucts(
     ductShape = 'rectangular'
   } = acousticOptions;
 
-  // 1. Determine Indoor Unit Position (FCU / RTU Entry)
+  // 1. Determine Indoor Unit Position (FCU / AHU / RTU Entry)
   let unitPos = customUnitPos;
   if (!unitPos || (unitPos.x === 0 && unitPos.y === 0)) {
     unitPos = calculateOptimalIndoorUnitPos(points, outdoorUnitPos);
@@ -48,10 +51,10 @@ export function routeDucts(
 
   const centroid = getPolygonCentroid(points);
 
-  // 2. Find the furthest diffuser from the Indoor Unit to orient the main trunk
+  // 2. Find the furthest supply diffuser from the Indoor Unit to orient the main trunk
   let maxDist = -1;
-  let furthestDif = diffusers[0];
-  for (const dif of diffusers) {
+  let furthestDif = supplyDiffusers[0] || diffusers[0];
+  for (const dif of supplyDiffusers) {
     const dist = Math.pow(dif.x - unitPos.x, 2) + Math.pow(dif.y - unitPos.y, 2);
     if (dist > maxDist) {
       maxDist = dist;
@@ -67,8 +70,8 @@ export function routeDucts(
   const vy = B.y - A.y;
   const lenSq = vx * vx + vy * vy || 1;
 
-  // 3. Project each diffuser orthogonally onto the trunk line AB
-  const projectedDiffusers = diffusers.map((dif) => {
+  // 3. Project each supply diffuser orthogonally onto the trunk line AB
+  const projectedDiffusers = supplyDiffusers.map((dif) => {
     const ux = dif.x - A.x;
     const uy = dif.y - A.y;
     let t = (ux * vx + uy * vy) / lenSq;
@@ -253,70 +256,131 @@ export function routeDucts(
     }
   });
 
-  // 6. For Packaged RTU or AHU, add dedicated Return Air duct
-  if (systemType === 'packaged' || systemType === 'ahu') {
-    const totalFlow = diffusers.reduce((sum, d) => sum + d.cfm, 0);
-    const returnFlow = Math.round(totalFlow * 0.9);
+  // 6. For Ducted Systems (Concealed, Packaged, AHU, VRF), add dedicated Return Air ductwork
+  const isDuctedSystem = systemType === 'concealed' || systemType === 'packaged' || systemType === 'ahu' || systemType === 'vrf';
+  if (isDuctedSystem) {
+    if (returnDiffusers.length > 0) {
+      returnDiffusers.forEach((rd, rIdx) => {
+        const returnSizing = sizeDuctAcoustically(rd.cfm, {
+          locationCategory,
+          targetNc,
+          sectionCategory: 'return',
+          shape: ductShape,
+          fixedHeightIn: fixedHeight,
+          enhancedPerformance,
+          frictionRateTarget: 0.08
+        });
 
-    const returnSizing = sizeDuctAcoustically(returnFlow, {
-      locationCategory,
-      targetNc,
-      sectionCategory: 'return',
-      shape: ductShape,
-      fixedHeightIn: fixedHeight,
-      enhancedPerformance,
-      frictionRateTarget: 0.08
-    });
+        const retLabel = ductShape === 'round'
+          ? `Ø${returnSizing.diameterIn}" (R)`
+          : units === 'imperial'
+          ? `${returnSizing.widthIn}"x${returnSizing.heightIn}" (R)`
+          : `${Math.round(returnSizing.widthIn * 25.4)}x${Math.round(returnSizing.heightIn * 25.4)} (R)`;
 
-    const retLabel = ductShape === 'round'
-      ? `Ø${returnSizing.diameterIn}" (R)`
-      : units === 'imperial'
-      ? `${returnSizing.widthIn}"x${returnSizing.heightIn}" (R)`
-      : `${Math.round(returnSizing.widthIn * 25.4)}x${Math.round(returnSizing.heightIn * 25.4)} (R)`;
+        const ductId = `duct-return-${zoneId}-${rIdx}`;
+        const retAreaSqFt = (returnSizing.widthIn * returnSizing.heightIn) / 144;
+        const retVelocity = Math.round(rd.cfm / Math.max(0.1, retAreaSqFt));
 
-    // Place return intake near the FCU/unit entry point inside the room
-    const retEndX = Math.round(unitPos.x + (centroid.x - unitPos.x) * 0.35);
-    const retEndY = Math.round(unitPos.y + (centroid.y - unitPos.y) * 0.35);
+        const retVerification = verifyDuctSectionAcoustics(
+          {
+            id: ductId,
+            type: 'return',
+            widthIn: returnSizing.widthIn,
+            heightIn: returnSizing.heightIn,
+            diameterIn: ductShape === 'round' ? returnSizing.diameterIn : undefined,
+            shape: ductShape,
+            cfm: rd.cfm,
+            velocityFpm: retVelocity,
+            sectionCategory: 'return'
+          },
+          {
+            zoneName,
+            targetNc,
+            locationCategory,
+            enhancedPerformance
+          }
+        );
 
-    const ductId = `duct-return-${zoneId}`;
-    const retAreaSqFt = (returnSizing.widthIn * returnSizing.heightIn) / 144;
-    const retVelocity = Math.round(returnFlow / Math.max(0.1, retAreaSqFt));
+        ducts.push({
+          id: ductId,
+          type: 'return',
+          points: [unitPos.x, unitPos.y, rd.x, rd.y],
+          widthIn: returnSizing.widthIn,
+          heightIn: returnSizing.heightIn,
+          diameterIn: ductShape === 'round' ? returnSizing.diameterIn : undefined,
+          shape: ductShape,
+          areaSqFt: Math.round(retAreaSqFt * 1000) / 1000,
+          cfm: rd.cfm,
+          velocityFpm: retVelocity,
+          sizeLabel: retLabel,
+          sectionCategory: 'return',
+          acousticVerification: retVerification
+        });
+      });
+    } else {
+      const totalFlow = supplyDiffusers.reduce((sum, d) => sum + d.cfm, 0);
+      const returnFlow = Math.round(totalFlow * 0.9);
 
-    const retVerification = verifyDuctSectionAcoustics(
-      {
+      const returnSizing = sizeDuctAcoustically(returnFlow, {
+        locationCategory,
+        targetNc,
+        sectionCategory: 'return',
+        shape: ductShape,
+        fixedHeightIn: fixedHeight,
+        enhancedPerformance,
+        frictionRateTarget: 0.08
+      });
+
+      const retLabel = ductShape === 'round'
+        ? `Ø${returnSizing.diameterIn}" (R)`
+        : units === 'imperial'
+        ? `${returnSizing.widthIn}"x${returnSizing.heightIn}" (R)`
+        : `${Math.round(returnSizing.widthIn * 25.4)}x${Math.round(returnSizing.heightIn * 25.4)} (R)`;
+
+      // Place return intake near the unit entry point inside the room
+      const retEndX = Math.round(unitPos.x + (centroid.x - unitPos.x) * 0.35);
+      const retEndY = Math.round(unitPos.y + (centroid.y - unitPos.y) * 0.35);
+
+      const ductId = `duct-return-${zoneId}`;
+      const retAreaSqFt = (returnSizing.widthIn * returnSizing.heightIn) / 144;
+      const retVelocity = Math.round(returnFlow / Math.max(0.1, retAreaSqFt));
+
+      const retVerification = verifyDuctSectionAcoustics(
+        {
+          id: ductId,
+          type: 'return',
+          widthIn: returnSizing.widthIn,
+          heightIn: returnSizing.heightIn,
+          diameterIn: ductShape === 'round' ? returnSizing.diameterIn : undefined,
+          shape: ductShape,
+          cfm: returnFlow,
+          velocityFpm: retVelocity,
+          sectionCategory: 'return'
+        },
+        {
+          zoneName,
+          targetNc,
+          locationCategory,
+          enhancedPerformance
+        }
+      );
+
+      ducts.push({
         id: ductId,
         type: 'return',
+        points: [unitPos.x, unitPos.y + 15, retEndX, retEndY],
         widthIn: returnSizing.widthIn,
         heightIn: returnSizing.heightIn,
         diameterIn: ductShape === 'round' ? returnSizing.diameterIn : undefined,
         shape: ductShape,
+        areaSqFt: Math.round(retAreaSqFt * 1000) / 1000,
         cfm: returnFlow,
         velocityFpm: retVelocity,
-        sectionCategory: 'return'
-      },
-      {
-        zoneName,
-        targetNc,
-        locationCategory,
-        enhancedPerformance
-      }
-    );
-
-    ducts.push({
-      id: ductId,
-      type: 'return',
-      points: [unitPos.x, unitPos.y + 15, retEndX, retEndY],
-      widthIn: returnSizing.widthIn,
-      heightIn: returnSizing.heightIn,
-      diameterIn: ductShape === 'round' ? returnSizing.diameterIn : undefined,
-      shape: ductShape,
-      areaSqFt: Math.round(retAreaSqFt * 1000) / 1000,
-      cfm: returnFlow,
-      velocityFpm: retVelocity,
-      sizeLabel: retLabel,
-      sectionCategory: 'return',
-      acousticVerification: retVerification
-    });
+        sizeLabel: retLabel,
+        sectionCategory: 'return',
+        acousticVerification: retVerification
+      });
+    }
   }
 
   return { ducts, unitPos };

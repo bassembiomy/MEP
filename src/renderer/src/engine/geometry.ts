@@ -67,6 +67,86 @@ export function isPointInPolygon(x: number, y: number, points: number[]): boolea
   return inside;
 }
 
+// Calculate the horizontal interior span [minX, maxX] of a polygon at a specific Y coordinate
+export function getPolygonScanlineSpan(y: number, points: number[]): { minX: number; maxX: number } | null {
+  if (points.length < 6) return null;
+  const numPoints = points.length / 2;
+  const intersections: number[] = [];
+
+  for (let i = 0, j = numPoints - 1; i < numPoints; j = i++) {
+    const x1 = points[2 * j];
+    const y1 = points[2 * j + 1];
+    const x2 = points[2 * i];
+    const y2 = points[2 * i + 1];
+
+    if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
+      const t = (y - y1) / (y2 - y1);
+      intersections.push(x1 + t * (x2 - x1));
+    }
+  }
+
+  if (intersections.length < 2) return null;
+  intersections.sort((a, b) => a - b);
+  return { minX: intersections[0], maxX: intersections[intersections.length - 1] };
+}
+
+// Calculate the vertical interior span [minY, maxY] of a polygon at a specific X coordinate
+export function getPolygonVerticalSpan(x: number, points: number[]): { minY: number; maxY: number } | null {
+  if (points.length < 6) return null;
+  const numPoints = points.length / 2;
+  const intersections: number[] = [];
+
+  for (let i = 0, j = numPoints - 1; i < numPoints; j = i++) {
+    const x1 = points[2 * j];
+    const y1 = points[2 * j + 1];
+    const x2 = points[2 * i];
+    const y2 = points[2 * i + 1];
+
+    if ((x1 <= x && x2 > x) || (x2 <= x && x1 > x)) {
+      const t = (x - x1) / (x2 - x1);
+      intersections.push(y1 + t * (y2 - y1));
+    }
+  }
+
+  if (intersections.length < 2) return null;
+  intersections.sort((a, b) => a - b);
+  return { minY: intersections[0], maxY: intersections[intersections.length - 1] };
+}
+
+// Clamp any coordinate (x, y) so that it is strictly inside polygon with a safety margin
+export function clampPointInsidePolygon(
+  x: number,
+  y: number,
+  points: number[],
+  margin: number = 1.5
+): { x: number; y: number } {
+  if (isPointInPolygon(x, y, points)) {
+    const span = getPolygonScanlineSpan(y, points);
+    if (span && span.maxX - span.minX > margin * 2) {
+      const clampedX = Math.max(span.minX + margin, Math.min(span.maxX - margin, x));
+      return { x: clampedX, y };
+    }
+    return { x, y };
+  }
+
+  const span = getPolygonScanlineSpan(y, points);
+  if (span && span.maxX - span.minX > margin * 2) {
+    const clampedX = Math.max(span.minX + margin, Math.min(span.maxX - margin, x));
+    return { x: clampedX, y };
+  }
+
+  const c = getPolygonCentroid(points);
+  for (let step = 0.1; step <= 1.0; step += 0.1) {
+    const testX = x + (c.x - x) * step;
+    const testY = y + (c.y - y) * step;
+    if (isPointInPolygon(testX, testY, points)) {
+      return { x: testX, y: testY };
+    }
+  }
+
+  return { x: c.x, y: c.y };
+}
+
 // Get the centroid of a polygon (useful for duct/equipment routing or labelling)
 export function getPolygonCentroid(points: number[]): { x: number; y: number } {
   if (points.length < 6) return { x: 0, y: 0 };

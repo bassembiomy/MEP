@@ -24,6 +24,7 @@ export interface Diffuser {
   y: number;
   cfm: number;
   size: string;
+  type?: 'supply' | 'return' | 'exhaust' | 'cassette' | 'high-wall';
   actualNc?: number;
   throwT50Ft?: number;
   deltaPInWg?: number;
@@ -74,7 +75,7 @@ export interface Zone {
   equipmentOverride?: number;
   manualCfmOverride?: number;
   manualCoolingOverride?: number;
-  systemType?: 'high-wall' | 'cassette' | 'concealed' | 'packaged' | 'vrf' | 'ahu';
+  systemType?: 'high-wall' | 'cassette' | 'concealed' | 'packaged' | 'vrf' | 'ahu' | 'fcu';
   ductTypeId?: string;
   diffuserTypeId?: string;
   maxVelocityLimitFpm?: number;
@@ -89,11 +90,56 @@ export interface Zone {
   diffusers: Diffuser[];
   ducts: DuctSegment[];
   unitPos?: { x: number; y: number };
+  unitPositions?: { x: number; y: number }[];
   outdoorUnitPos?: { x: number; y: number };
+  outdoorUnitPositions?: { x: number; y: number }[];
   catalogQty?: number;
   catalogModel?: string;
   catalogEsp?: string;
 }
+
+export interface DxfLayerInfo {
+  name: string;
+  color?: string;
+  visible: boolean;
+  count: number;
+}
+
+export interface AnnotationVisibility {
+  grid: boolean;
+  diffusers: boolean;
+  diffuserCfm: boolean;
+  diffuserTags: boolean;
+  throwRings: boolean;
+  ducts: boolean;
+  ductCfm: boolean;
+  ductSizeBadges: boolean;
+  ductCenterlines: boolean;
+  indoorUnits: boolean;
+  outdoorUnits: boolean;
+  refrigerantPiping: boolean;
+  leaderCallout: boolean;
+  zoneLabels: boolean;
+  dxfText: boolean;
+}
+
+export const DEFAULT_ANNOTATION_VISIBILITY: AnnotationVisibility = {
+  grid: true,
+  diffusers: true,
+  diffuserCfm: true,
+  diffuserTags: true,
+  throwRings: true,
+  ducts: true,
+  ductCfm: true,
+  ductSizeBadges: true,
+  ductCenterlines: true,
+  indoorUnits: true,
+  outdoorUnits: true,
+  refrigerantPiping: true,
+  leaderCallout: true,
+  zoneLabels: true,
+  dxfText: true,
+};
 
 export interface ProjectMetadata {
   name: string;
@@ -113,6 +159,8 @@ interface ProjectState {
   tempPoints: number[];
   dxfEntities: DxfEntity[];
   dxfBoundingBox: BoundingBox | null;
+  dxfLayers: Record<string, DxfLayerInfo>;
+  annotationVisibility: AnnotationVisibility;
   loadedCatalogs: {
     decorative: { highWall: any[]; cassette: any[] } | null;
     ducted: any[] | null;
@@ -120,7 +168,7 @@ interface ProjectState {
   } | null;
   selectedSystemTypes: string[];
   optimizationWeights: OptimizationWeights;
-  activeTab: 'comparison' | 'optimizer' | 'static-pressure' | 'schedule';
+  activeTab: 'comparison' | 'optimizer' | 'static-pressure' | 'schedule' | 'air-distribution';
   activePreview: DeploymentPreview | null;
   undoStack: WorkspaceSnapshot[];
   redoStack: WorkspaceSnapshot[];
@@ -136,11 +184,15 @@ interface ProjectState {
   clearTempPoints: () => void;
   setDxfData: (entities: DxfEntity[], bbox: BoundingBox) => void;
   clearDxfData: () => void;
+  setDxfLayerVisibility: (layerName: string, visible: boolean) => void;
+  toggleAllDxfLayers: (visible: boolean) => void;
+  setAnnotationVisibility: (key: keyof AnnotationVisibility, visible: boolean) => void;
+  toggleAllAnnotations: (visible: boolean) => void;
   loadDemoSystems: () => void;
   setLoadedCatalogs: (catalogs: { decorative: { highWall: any[]; cassette: any[] } | null; ducted: any[] | null; errors?: string[] } | null) => void;
   setSelectedSystemTypes: (types: string[]) => void;
   setOptimizationWeights: (weights: Partial<OptimizationWeights>) => void;
-  setActiveTab: (tab: 'comparison' | 'optimizer' | 'static-pressure' | 'schedule') => void;
+  setActiveTab: (tab: 'comparison' | 'optimizer' | 'static-pressure' | 'schedule' | 'air-distribution') => void;
   setPreview: (preview: DeploymentPreview | null) => void;
   applyCandidateTransaction: (candidate: SystemDesignCandidate) => { success: boolean; error?: string };
   undo: () => void;
@@ -163,6 +215,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   tempPoints: [],
   dxfEntities: [],
   dxfBoundingBox: null,
+  dxfLayers: {},
+  annotationVisibility: DEFAULT_ANNOTATION_VISIBILITY,
   loadedCatalogs: null,
   selectedSystemTypes: ['concealed', 'cassette', 'high-wall', 'vrf', 'packaged', 'ahu'],
   optimizationWeights: DEFAULT_OPTIMIZATION_WEIGHTS,
@@ -223,9 +277,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
     return {
       zones: [...state.zones, newZone],
-      selectedZoneId: id,
-      drawMode: 'select',
-      activePreview: null
+      selectedZoneId: id
     };
   }),
   
@@ -251,8 +303,62 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   
   clearTempPoints: () => set({ tempPoints: [] }),
   
-  setDxfData: (entities, bbox) => set({ dxfEntities: entities, dxfBoundingBox: bbox }),
-  clearDxfData: () => set({ dxfEntities: [], dxfBoundingBox: null }),
+  setDxfData: (entities, bbox) => {
+    const layers: Record<string, DxfLayerInfo> = {};
+    const autoColors = ['#94a3b8', '#38bdf8', '#34d399', '#fbbf24', '#f87171', '#c084fc', '#f472b6', '#a78bfa', '#4ade80'];
+    let colorIdx = 0;
+
+    for (const ent of entities) {
+      const layerName = ent.layer || '0';
+      if (!layers[layerName]) {
+        layers[layerName] = {
+          name: layerName,
+          color: ent.color || autoColors[colorIdx % autoColors.length],
+          visible: true,
+          count: 0
+        };
+        colorIdx++;
+      }
+      layers[layerName].count++;
+    }
+
+    set({ dxfEntities: entities, dxfBoundingBox: bbox, dxfLayers: layers });
+  },
+
+  clearDxfData: () => set({ dxfEntities: [], dxfBoundingBox: null, dxfLayers: {} }),
+
+  setDxfLayerVisibility: (layerName, visible) => set((state) => ({
+    dxfLayers: {
+      ...state.dxfLayers,
+      [layerName]: {
+        ...state.dxfLayers[layerName],
+        visible
+      }
+    }
+  })),
+
+  toggleAllDxfLayers: (visible) => set((state) => {
+    const updated: Record<string, DxfLayerInfo> = {};
+    for (const [name, info] of Object.entries(state.dxfLayers)) {
+      updated[name] = { ...info, visible };
+    }
+    return { dxfLayers: updated };
+  }),
+
+  setAnnotationVisibility: (key, visible) => set((state) => ({
+    annotationVisibility: {
+      ...state.annotationVisibility,
+      [key]: visible
+    }
+  })),
+
+  toggleAllAnnotations: (visible) => set((state) => {
+    const updated = { ...state.annotationVisibility };
+    for (const key of Object.keys(updated) as (keyof AnnotationVisibility)[]) {
+      updated[key] = visible;
+    }
+    return { annotationVisibility: updated };
+  }),
 
   loadDemoSystems: () => set(() => {
     const zone1Points = [60, 60, 240, 60, 240, 180, 60, 180];

@@ -5,8 +5,31 @@ export interface ParsedDxf {
   bbox: BoundingBox;
 }
 
+// Standard AutoCAD Color Index (ACI 1-9 & common palette) to HEX colors
+export function aciToHexColor(aci: number): string {
+  const aciMap: Record<number, string> = {
+    1: '#ef4444', // Red
+    2: '#eab308', // Yellow
+    3: '#22c55e', // Green
+    4: '#06b6d4', // Cyan
+    5: '#3b82f6', // Blue
+    6: '#d946ef', // Magenta
+    7: '#f8fafc', // White / Light
+    8: '#64748b', // Dark Gray
+    9: '#cbd5e1', // Light Gray
+  };
+
+  if (aciMap[aci]) return aciMap[aci];
+  if (aci >= 10 && aci <= 249) {
+    // Generate harmonious RGB for other standard AutoCAD color indexes
+    const hue = Math.round(((aci - 10) / 240) * 360);
+    return `hsl(${hue}, 70%, 60%)`;
+  }
+  return '#94a3b8';
+}
+
 export function parseDxfText(dxfText: string): ParsedDxf {
-  const lines = dxfText.split(/\r?\n/);
+  const lines = dxfText.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
   const entities: DxfEntity[] = [];
   
   let minX = Infinity;
@@ -27,8 +50,8 @@ export function parseDxfText(dxfText: string): ParsedDxf {
 
   let i = 0;
   while (i < lines.length - 1) {
-    const codeStr = lines[i].trim();
-    const valStr = lines[i + 1].trim();
+    const codeStr = lines[i];
+    const valStr = lines[i + 1];
     i += 2;
 
     const code = parseInt(codeStr);
@@ -47,6 +70,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         // Close last entity if any
         if (currentEntity && currentEntity.type) {
           entities.push(currentEntity as DxfEntity);
+          currentEntity = null;
         }
         inEntitiesSection = false;
       }
@@ -74,7 +98,21 @@ export function parseDxfText(dxfText: string): ParsedDxf {
 
     if (!currentEntity) continue;
 
-    // Parse entity group codes
+    // Common entity group codes
+    if (code === 8) {
+      currentEntity.layer = valStr;
+    } else if (code === 62) {
+      const aci = parseInt(valStr);
+      if (!isNaN(aci)) currentEntity.color = aciToHexColor(Math.abs(aci));
+    } else if (code === 420) {
+      const rgbInt = parseInt(valStr);
+      if (!isNaN(rgbInt)) {
+        const hex = rgbInt.toString(16).padStart(6, '0');
+        currentEntity.color = `#${hex}`;
+      }
+    }
+
+    // Parse entity specific group codes
     switch (currentEntity.type) {
       case 'LINE':
         if (code === 10) currentEntity.x = parseFloat(valStr); // start X
@@ -89,7 +127,6 @@ export function parseDxfText(dxfText: string): ParsedDxf {
           const endY = parseFloat(valStr);
           if (currentEntity.points) currentEntity.points[1] = endY;
         }
-        if (code === 8) currentEntity.layer = valStr;
         break;
 
       case 'LWPOLYLINE':
@@ -103,22 +140,18 @@ export function parseDxfText(dxfText: string): ParsedDxf {
             currentEntity.points.push(parseFloat(valStr));
           }
         }
-        if (code === 8) currentEntity.layer = valStr;
         break;
 
       case 'CIRCLE':
         if (code === 10) currentEntity.x = parseFloat(valStr); // centerX
         if (code === 20) currentEntity.y = parseFloat(valStr); // centerY
         if (code === 40) currentEntity.radius = parseFloat(valStr); // radius
-        if (code === 8) currentEntity.layer = valStr;
         break;
 
       case 'ARC':
         if (code === 10) currentEntity.x = parseFloat(valStr); // centerX
         if (code === 20) currentEntity.y = parseFloat(valStr); // centerY
         if (code === 40) currentEntity.radius = parseFloat(valStr); // radius
-        // 50: start angle, 51: end angle (can store if doing high-fidelity arcs, otherwise circle representation works)
-        if (code === 8) currentEntity.layer = valStr;
         break;
 
       case 'TEXT':
@@ -126,7 +159,6 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         if (code === 10) currentEntity.x = parseFloat(valStr);
         if (code === 20) currentEntity.y = parseFloat(valStr);
         if (code === 1) currentEntity.text = valStr;
-        if (code === 8) currentEntity.layer = valStr;
         break;
     }
   }

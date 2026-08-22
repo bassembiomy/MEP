@@ -6,9 +6,10 @@ import { OptimizerStudioPanel } from './panels/OptimizerStudioPanel';
 import { StaticPressurePanel } from './panels/StaticPressurePanel';
 import { SystemComparisonTable } from './panels/SystemComparisonTable';
 import { LoadSummaryPanel } from './panels/LoadSummaryPanel';
+import { AirDistributionSchedulePanel } from './panels/AirDistributionSchedulePanel';
 import { useProjectStore } from './store/projectStore';
 import Versions from './components/Versions';
-import { Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table } from 'lucide-react';
+import { Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table, FileSpreadsheet } from 'lucide-react';
 
 function App(): React.JSX.Element {
   const { project, setProject, activeTab, setActiveTab } = useProjectStore();
@@ -135,6 +136,17 @@ function App(): React.JSX.Element {
               <Table size={14} />
               Building Load Schedule
             </button>
+            <button
+              onClick={() => setActiveTab('air-distribution')}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                activeTab === 'air-distribution'
+                  ? 'bg-gradient-to-r from-blue-600 to-teal-500 text-white shadow-lg shadow-blue-500/20'
+                  : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-850'
+              }`}
+            >
+              <FileSpreadsheet size={14} />
+              Air Distribution & 9-Point Validation
+            </button>
           </div>
 
           {/* Lower Workspace Content Panels */}
@@ -142,6 +154,7 @@ function App(): React.JSX.Element {
           {activeTab === 'static-pressure' && <StaticPressurePanel />}
           {activeTab === 'comparison' && <SystemComparisonTable />}
           {activeTab === 'schedule' && <LoadSummaryPanel />}
+          {activeTab === 'air-distribution' && <AirDistributionSchedulePanel />}
         </div>
 
         {/* Sidebar Parameters Workspace (Right Column - Spans 1/4) */}
