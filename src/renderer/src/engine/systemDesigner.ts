@@ -1,5 +1,6 @@
 import {
   SystemDesignCandidate,
+  DiffuserDistributionOption,
   OptimizationWeights,
   DiagnosticItem,
   CriticalPathResult
@@ -22,6 +23,7 @@ import {
   generateSystemArchitecture,
   generateSelectionAlgorithmTrace
 } from './hvacArchitecture';
+import { LITERS_PER_SECOND_PER_CFM, WATTS_PER_BTU_PER_HOUR, METERS_PER_FOOT } from './engineeringInputs';
 
 // Design Optimization Priority:
 // Required Room CFM -> Thermal Comfort -> Acoustic Noise Criterion -> Maximum Air Velocity & Pressure Loss -> Fan Static Pressure -> Duct Space & Cost
@@ -68,6 +70,90 @@ function clamp(val: number, min: number = 0, max: number = 100): number {
 }
 
 /**
+ * Generates all valid air distribution & diffuser count configurations for a given total CFM and room area
+ */
+export function generateDiffuserDistributionOptions(
+  totalCfm: number,
+  areaSqFt: number,
+  spaceNcLimit: number = 30,
+  isDucted: boolean = true
+): DiffuserDistributionOption[] {
+  if (!isDucted || totalCfm <= 0) return [];
+
+  // Generate viable count candidates
+  const countCandidates = [1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24].filter(cnt => {
+    const flow = totalCfm / cnt;
+    return flow >= 120 && flow <= 650;
+  });
+
+  const options: DiffuserDistributionOption[] = [];
+  const seenCounts = new Set<number>();
+
+  for (const count of countCandidates) {
+    if (seenCounts.has(count)) continue;
+    seenCounts.add(count);
+
+    const cfmPerDiffuser = Math.round(totalCfm / count);
+    const targetThrow = Math.max(6, Math.min(30, 0.95 * Math.sqrt(Math.max(20, areaSqFt / count))));
+    const selection = selectBestDiffuserFromCatalog(cfmPerDiffuser, spaceNcLimit, undefined, targetThrow);
+
+    const faceSize = selection.diffuser.faceSizeIn
+      ? `${selection.diffuser.faceSizeIn.width}"x${selection.diffuser.faceSizeIn.height}"`
+      : '24"x24"';
+    const neckSize = selection.diffuser.neckSizeIn
+      ? (selection.diffuser.neckSizeIn.diameter ? `Ø${selection.diffuser.neckSizeIn.diameter}"` : `${selection.diffuser.neckSizeIn.width}"x${selection.diffuser.neckSizeIn.height}"`)
+      : '10"x10"';
+
+    let label = 'Standard Commercial';
+    let isRecommended = false;
+
+    if (cfmPerDiffuser >= 280 && cfmPerDiffuser <= 380) {
+      label = `Standard Commercial (${count} @ ${cfmPerDiffuser} CFM)`;
+      isRecommended = true;
+    } else if (cfmPerDiffuser > 380) {
+      label = `High-Capacity Minimal Units (${count} @ ${cfmPerDiffuser} CFM)`;
+    } else if (cfmPerDiffuser >= 200 && cfmPerDiffuser < 280) {
+      label = `Ultra-Quiet Comfort (${count} @ ${cfmPerDiffuser} CFM)`;
+    } else {
+      label = `Dense Low-Velocity (${count} @ ${cfmPerDiffuser} CFM)`;
+    }
+
+    const covEst = Math.min(100, Math.max(90, Math.round(95 + (count >= 4 ? 4 : 0) - (selection.actualNc > spaceNcLimit ? 5 : 0))));
+
+    options.push({
+      diffuserCount: count,
+      cfmPerDiffuser,
+      diffuserRecord: selection.diffuser,
+      faceSizeLabel: faceSize,
+      neckSizeLabel: neckSize,
+      actualNc: selection.actualNc,
+      throwT50Ft: selection.throwT50Ft,
+      deltaPInWg: selection.deltaPInWg,
+      estimatedCoveragePercent: covEst,
+      label,
+      isRecommended
+    });
+  }
+
+  // Ensure at least one is recommended
+  if (options.length > 0 && !options.some(o => o.isRecommended)) {
+    let bestIdx = 0;
+    let minD = Infinity;
+    options.forEach((o, i) => {
+      const d = Math.abs(o.cfmPerDiffuser - 320);
+      if (d < minD) {
+        minD = d;
+        bestIdx = i;
+      }
+    });
+    options[bestIdx].isRecommended = true;
+    options[bestIdx].label = `Recommended Standard (${options[bestIdx].diffuserCount} @ ${options[bestIdx].cfmPerDiffuser} CFM)`;
+  }
+
+  return options;
+}
+
+/**
  * Generates and evaluates bounded HVAC system candidates
  */
 export function generateSystemCandidates(
@@ -98,8 +184,18 @@ export function generateSystemCandidates(
     wPreference: weights.wPreference / weightSum
   };
 
-  const loadBtu = isImperial ? totalLoadBtuPerHour : totalLoadBtuPerHour * 3.412;
-  const cfm = supplyCfm > 0 ? supplyCfm : (loadBtu / 12000) * 400;
+  const loadBtu = totalLoadBtuPerHour / (isImperial ? 1 : WATTS_PER_BTU_PER_HOUR);
+  const sensibleBtu = _sensibleLoadBtuPerHour / (isImperial ? 1 : WATTS_PER_BTU_PER_HOUR);
+  const latentBtu = loadBtu - sensibleBtu;
+  const cfm = supplyCfm / (isImperial ? 1 : LITERS_PER_SECOND_PER_CFM);
+  areaSqFt = areaSqFt / (isImperial ? 1 : METERS_PER_FOOT * METERS_PER_FOOT);
+  if (![loadBtu, sensibleBtu, latentBtu, cfm, areaSqFt].every(Number.isFinite) ||
+      loadBtu < 0 || sensibleBtu < 0 || latentBtu < 0 || cfm < 0 || areaSqFt <= 0) {
+    return { candidates: [], bestOverall: null, bestEnergy: null, lowestCost: null, lowestNoise: null,
+      rejectedCount: 0, diagnostics: [{ code: 'ERR_INVALID_ENGINEERING_INPUT', severity: 'error',
+        message: 'Finite nonnegative loads and airflow, and positive area are required.',
+        remediation: 'Correct the zone inputs before evaluating equipment.' }] };
+  }
 
   let spaceNcLimit = 35;
   if (spaceTypeId === 'conference' || spaceTypeId === 'classroom') spaceNcLimit = 28;
@@ -107,7 +203,9 @@ export function generateSystemCandidates(
   if (spaceTypeId === 'lobby' || spaceTypeId === 'retail') spaceNcLimit = 40;
 
   const catalog = STANDARD_EQUIPMENT_CATALOG;
-  const typesToTest = selectedSystemTypes || ['concealed', 'cassette', 'high-wall', 'vrf', 'packaged', 'ahu'];
+  const typesToTest = selectedSystemTypes && selectedSystemTypes.length > 0
+    ? selectedSystemTypes
+    : ['fcu', 'packaged', 'ahu', 'concealed', 'vrf', 'cassette', 'high-wall'];
 
   const candidates: SystemDesignCandidate[] = [];
   let rejectedCount = 0;
@@ -118,14 +216,19 @@ export function generateSystemCandidates(
 
     for (const equip of matchingEquip) {
       const diagnostics: DiagnosticItem[] = [];
+      const latentCapacity = equip.totalCapacityBtuPerHour - equip.sensibleCapacityBtuPerHour;
+      if (![equip.totalCapacityBtuPerHour, equip.sensibleCapacityBtuPerHour, equip.nominalCfm].every(v => Number.isFinite(v) && v > 0) ||
+          !Number.isFinite(latentCapacity) || latentCapacity < 0 || (latentCapacity === 0 && latentBtu > 0)) continue;
 
       const qtyByTotalCap = Math.ceil(loadBtu / equip.totalCapacityBtuPerHour);
       const qtyByCfm = Math.ceil(cfm / equip.nominalCfm);
-      const qty = Math.max(1, qtyByTotalCap, qtyByCfm);
+      const qtyBySensible = Math.ceil(sensibleBtu / equip.sensibleCapacityBtuPerHour);
+      const qtyByLatent = latentBtu > 0 ? Math.ceil(latentBtu / latentCapacity) : 0;
+      const qty = Math.max(1, qtyByTotalCap, qtyByCfm, qtyBySensible, qtyByLatent);
       const installedCap = qty * equip.totalCapacityBtuPerHour;
 
       const oversizingRatio = installedCap / (loadBtu || 1);
-      if (oversizingRatio < 0.98) {
+      if (oversizingRatio < 1) {
         diagnostics.push({
           code: 'ERR_CAPACITY_DEFICIT',
           severity: 'error',
@@ -135,11 +238,29 @@ export function generateSystemCandidates(
         });
       }
 
-      const terminalCount = equip.capabilities.supportsExternalDiffusers
-        ? Math.max(1, Math.ceil(cfm / 300))
-        : qty;
-      const flowPerTerminal = Math.round(cfm / terminalCount);
-      const diffuserSelection = selectBestDiffuserFromCatalog(flowPerTerminal, spaceNcLimit);
+      const distributionOptions = generateDiffuserDistributionOptions(
+        cfm,
+        areaSqFt,
+        spaceNcLimit,
+        equip.capabilities.supportsExternalDiffusers
+      );
+
+      const recommendedOption = distributionOptions.find(o => o.isRecommended) || distributionOptions[0];
+
+      let terminalCount = recommendedOption
+        ? recommendedOption.diffuserCount
+        : (equip.capabilities.supportsExternalDiffusers ? Math.max(1, Math.ceil(cfm / 335)) : qty);
+      let flowPerTerminal = recommendedOption ? recommendedOption.cfmPerDiffuser : Math.round(cfm / terminalCount);
+      let targetThrowDb = Math.max(
+        6,
+        Math.min(30, 0.9 * Math.sqrt(Math.max(20, areaSqFt / terminalCount)))
+      );
+      let diffuserSelection = recommendedOption ? {
+        diffuser: recommendedOption.diffuserRecord,
+        actualNc: recommendedOption.actualNc,
+        throwT50Ft: recommendedOption.throwT50Ft,
+        deltaPInWg: recommendedOption.deltaPInWg
+      } : selectBestDiffuserFromCatalog(flowPerTerminal, spaceNcLimit, undefined, targetThrowDb);
 
       if (diffuserSelection.actualNc > spaceNcLimit) {
         diagnostics.push({
@@ -269,34 +390,21 @@ export function generateSystemCandidates(
 
       allDiagnostics.push(...diagnostics);
 
-      const systemArchitecture = generateSystemArchitecture(
-        equip,
-        qty,
-        cfm,
-        areaSqFt,
-        loadBtu,
-        isImperial,
-        {
-          quantity: terminalCount,
-          diffuserRecord: diffuserSelection.diffuser,
-          actualNc: diffuserSelection.actualNc
-        }
-      );
+      // Capture closure variables for lazy generation
+      const _lazyEquip = equip;
+      const _lazyQty = qty;
+      const _lazyCfm = cfm;
+      const _lazyAreaSqFt = areaSqFt;
+      const _lazyLoadBtu = loadBtu;
+      const _lazyIsImperial = true; // Lazy engine inputs above are already canonical.
+      const _lazyTerminalCount = terminalCount;
+      const _lazyDiffuserSelection = diffuserSelection;
+      const _lazySensible = sensibleBtu;
+      const _lazySpaceNcLimit = spaceNcLimit;
+      const _lazyCriticalPath = criticalPath;
+      const _lazyFanResult = fanResult;
 
-      const algorithmTrace = generateSelectionAlgorithmTrace(
-        equip,
-        qty,
-        cfm,
-        areaSqFt,
-        loadBtu,
-        _sensibleLoadBtuPerHour || loadBtu * 0.75,
-        spaceNcLimit,
-        criticalPath,
-        fanResult,
-        isImperial
-      );
-
-      candidates.push({
+      const candidateObj: SystemDesignCandidate = {
         id: `cand-${equip.id}-${qty}`,
         systemType: equip.systemType,
         equipment: equip,
@@ -309,6 +417,7 @@ export function generateSystemCandidates(
           throwT50Ft: diffuserSelection.throwT50Ft,
           deltaPInWg: diffuserSelection.deltaPInWg
         },
+        diffuserDistributionOptions: distributionOptions,
         ductwork: equip.capabilities.supportsDuctNetwork
           ? {
               ductType: defaultDuctType,
@@ -339,9 +448,26 @@ export function generateSystemCandidates(
           totalScore
         },
         tradeOffSummary,
-        systemArchitecture,
-        algorithmTrace
-      });
+        // Lazy-initialize architecture and trace only when accessed (avoids O(N) heavy computation for all candidates)
+        get systemArchitecture() {
+          const value = generateSystemArchitecture(
+            _lazyEquip, _lazyQty, _lazyCfm, _lazyAreaSqFt, _lazyLoadBtu, _lazyIsImperial,
+            { quantity: _lazyTerminalCount, diffuserRecord: _lazyDiffuserSelection.diffuser, actualNc: _lazyDiffuserSelection.actualNc }
+          );
+          Object.defineProperty(this, 'systemArchitecture', { value, writable: true, configurable: true });
+          return value;
+        },
+        get algorithmTrace() {
+          const value = generateSelectionAlgorithmTrace(
+            _lazyEquip, _lazyQty, _lazyCfm, _lazyAreaSqFt, _lazyLoadBtu, _lazySensible,
+            _lazySpaceNcLimit, _lazyCriticalPath, _lazyFanResult, _lazyIsImperial
+          );
+          Object.defineProperty(this, 'algorithmTrace', { value, writable: true, configurable: true });
+          return value;
+        }
+      };
+
+      candidates.push(candidateObj);
     }
   }
 

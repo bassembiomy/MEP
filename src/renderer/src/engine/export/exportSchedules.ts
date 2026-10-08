@@ -1,4 +1,5 @@
 import { AirDistributionDesignResult } from '../airDistributionEngine';
+import { STANDARD_DIFFUSER_CATALOG } from '../hvacCatalogs';
 
 export interface AirDistributionScheduleRow {
   roomName: string;
@@ -76,6 +77,16 @@ export function generateMasterSchedules(design: AirDistributionDesignResult): Ma
   const totalLoad = design.serviceZones.reduce((sum, z) => sum + z.totalLoadBtu, 0);
   const avgCfmPerDiffuser = supplyTerminals.length > 0 ? Math.round(totalDeliveredCfm / supplyTerminals.length) : 0;
 
+  // Per-diffuser airflow must sit inside the catalog operating envelope. A value
+  // below the smallest diffuser's practical minimum (80% of its minCfm) means the
+  // layout split the air too thin — flag it regardless of other validation points.
+  const supplyCatalogItems = STANDARD_DIFFUSER_CATALOG.filter(
+    (d) => d.terminalType === 'square-ceiling' || d.terminalType === 'round-ceiling' || d.terminalType === 'linear-slot'
+  );
+  const dbMinCfm = supplyCatalogItems.length > 0 ? Math.min(...supplyCatalogItems.map((d) => d.minCfm)) : 0;
+  const perDiffuserFeasible =
+    avgCfmPerDiffuser === 0 || avgCfmPerDiffuser >= dbMinCfm * 0.8;
+
   // 1. Air Distribution Schedule
   const airDistributionSchedule: AirDistributionScheduleRow[] = [
     {
@@ -86,7 +97,7 @@ export function generateMasterSchedules(design: AirDistributionDesignResult): Ma
       diffuserCount: supplyTerminals.length,
       cfmPerDiffuser: avgCfmPerDiffuser,
       returnCfm: totalReturnCfm,
-      status: design.validationReport.points[0].status
+      status: perDiffuserFeasible ? design.validationReport.points[0].status : 'WARNING'
     }
   ];
 

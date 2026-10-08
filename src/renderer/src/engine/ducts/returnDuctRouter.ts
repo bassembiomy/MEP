@@ -1,38 +1,18 @@
-import { EquipmentServiceZone } from '../zoning/zonePartitioner';
-import { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
-import { SteppedDuctSection } from './steppedDuctRouter';
+import type { EquipmentServiceZone } from '../zoning/zonePartitioner';
+import type { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
+import type { SteppedDuctSection } from './steppedDuctRouter';
 
-export function routeReturnDucts(
-  zone: EquipmentServiceZone,
-  returnTerminals: CoordinatedAirTerminal[] = []
-): SteppedDuctSection[] {
-  const ducts: SteppedDuctSection[] = [];
-  const eqPos = zone.equipmentPosition;
-  const returnCfm = zone.returnCfm || Math.round(zone.supplyCfm * 0.88);
-
-  // In ceiling plenum / ducted return systems, route orthogonal return connection stub
-  ducts.push({
-    id: `RDS-${zone.unitTag}-1`,
-    unitId: zone.id,
-    designControlMode: 'ai',
-    systemType: 'return',
-    role: 'main-trunk',
-    startPoint: { x: parseFloat((eqPos.x - 3).toFixed(2)), y: parseFloat(eqPos.y.toFixed(2)) },
-    endPoint: { x: parseFloat(eqPos.x.toFixed(2)), y: parseFloat(eqPos.y.toFixed(2)) },
-    airflowCfm: returnCfm,
-    shape: 'rectangular',
-    widthIn: 24,
-    heightIn: 12,
-    velocityFpm: 750,
-    allowableVelocityFpm: 850,
-    frictionLossPer100Ft: 0.05,
-    fittingLossInWg: 0.015,
-    totalSectionLossInWg: 0.02,
-    ncRating: 22,
-    connectedDiffuserCount: returnTerminals.length,
-    connectedDiffusers: returnTerminals.map((t) => t.id),
-    childDuctIds: []
-  });
-
-  return ducts;
+/** Preliminary direct grille-to-fan paths; spatial validation must approve every centerline. */
+export function routeReturnDucts(zone: EquipmentServiceZone, terminals: CoordinatedAirTerminal[] = []): SteppedDuctSection[] {
+  if (zone.isDucted === false || zone.returnCfm === 0) return [];
+  return terminals.filter(t => t.unitId === zone.id && t.type === 'return').map((terminal, index) => ({
+    id: `RDS-${zone.unitTag}-${index + 1}`, unitId: zone.id, designControlMode: 'ai',
+    systemType: 'return', role: 'branch',
+    startPoint: { ...terminal.position }, endPoint: { x: zone.equipmentPosition.x, y: zone.equipmentPosition.y },
+    airflowCfm: terminal.cfm, shape: 'rectangular', widthIn: 12, heightIn: 12,
+    velocityFpm: terminal.cfm, allowableVelocityFpm: 850,
+    // Sizing computes pressure from these actual coordinates and flow before validation.
+    frictionLossPer100Ft: 0, fittingLossInWg: 0, totalSectionLossInWg: 0,
+    ncRating: zone.targetNc, connectedDiffuserCount: 1, connectedDiffusers: [terminal.id], childDuctIds: []
+  }));
 }

@@ -186,7 +186,10 @@ const input: MasterValidationInput = {
 const report = executeMasterHvacValidation(input);
 
 // Verify all 9 validation points exist and are evaluated
-assert(report.points.length === 9, `Must evaluate exactly 9 validation points, got ${report.points.length}`);
-assert(report.overallStatus === 'PASS', `Master validation should PASS, got ${report.overallStatus}`);
+for(let index=1;index<=10;index++) assert(report.points.some(p=>p.zoneId===mockZone.id&&p.pointIndex===index), `Missing check ${index}`);
+// This incomplete historical fixture has no return grilles, no component-capacity evidence, and an orphan duct child.
+assert(report.overallStatus === 'FAIL', 'Incomplete physical evidence must fail validation');
+for(const index of [3,7,8]) assert(report.points.some(p=>p.pointIndex===index&&p.status==='FAIL'), `Missing expected evidence failure ${index}`);
+assert(report.issueReady===false, 'Incomplete design must never be ready for engineering issue');
 
 console.log('✔ All Master 9-Point Validation Tests Passed Successfully!');

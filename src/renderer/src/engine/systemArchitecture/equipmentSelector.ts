@@ -14,30 +14,46 @@ export interface SelectedEquipmentResult {
   connectionSizes: { supplyDuct: string; returnDuct: string };
 }
 
+export interface EquipmentSelectionConstraints {
+  requiredSensibleBtu?: number;
+  requiredLatentBtu?: number;
+  requiredEspInWg?: number;
+}
+
 export function selectEquipmentForLoad(
   reqCfm: number,
   reqBtu: number,
   systemType: string = 'concealed',
-  catalog: EquipmentCatalogItem[] = STANDARD_EQUIPMENT_CATALOG
+  catalog: EquipmentCatalogItem[] = STANDARD_EQUIPMENT_CATALOG,
+  constraints: EquipmentSelectionConstraints = {}
 ): SelectedEquipmentResult | null {
+  const { requiredSensibleBtu, requiredLatentBtu, requiredEspInWg } = constraints;
+  if (![reqCfm, reqBtu].every((value) => Number.isFinite(value) && value >= 0)) return null;
+  if ([requiredSensibleBtu, requiredLatentBtu, requiredEspInWg].some(
+    (value) => value !== undefined && (!Number.isFinite(value) || value < 0)
+  )) return null;
+
   // Normalize system type aliases
   let normalizedType = systemType.toLowerCase();
   if (normalizedType === 'concealed-split' || normalizedType === 'split') normalizedType = 'concealed';
   if (normalizedType === 'rtu' || normalizedType === 'rooftop') normalizedType = 'packaged';
-  if (normalizedType === 'chilled-water' || normalizedType === 'cwu') normalizedType = 'ahu';
 
-  // Filter catalog by system type
-  let candidates = catalog.filter((item) => item.systemType === normalizedType);
-  if (candidates.length === 0 && normalizedType === 'fcu') {
-    candidates = catalog.filter((item) => item.systemType === 'concealed');
-  }
-  if (candidates.length === 0) {
-    // Fallback to any ducted system
-    candidates = catalog.filter((item) => item.capabilities?.supportsDuctNetwork);
-  }
-  if (candidates.length === 0) candidates = catalog;
+  // Hard requirements must all be satisfied before ranking a candidate.
+  const candidates = catalog.filter((item) => {
+    const total = item.totalCapacityBtuPerHour;
+    const sensible = item.sensibleCapacityBtuPerHour;
+    const cfm = item.nominalCfm;
+    const esp = item.maxRatedEspInWg;
+    if (item.systemType !== normalizedType ||
+      ![total, sensible, cfm, esp].every((value) => Number.isFinite(value) && value >= 0) ||
+      sensible > total) return false;
 
-  // Find candidate that provides sufficient capacity and CFM with minimum oversizing
+    return total >= reqBtu && cfm >= reqCfm &&
+      (requiredSensibleBtu === undefined || sensible >= requiredSensibleBtu) &&
+      (requiredLatentBtu === undefined || total - sensible >= requiredLatentBtu) &&
+      (requiredEspInWg === undefined || esp >= requiredEspInWg);
+  });
+
   let bestCandidate: EquipmentCatalogItem | null = null;
   let minOversize = Infinity;
 
@@ -45,24 +61,13 @@ export function selectEquipmentForLoad(
     const cap = item.totalCapacityBtuPerHour;
     const cfm = item.nominalCfm;
 
-    // Check capacity match: item must satisfy both capacity and CFM requirements
-    if (cap >= reqBtu * 0.85 && cfm >= reqCfm * 0.85) {
-      const oversizeScore = (cap - reqBtu) + (cfm - reqCfm) * 10;
-      if (oversizeScore >= 0 && oversizeScore < minOversize) {
-        minOversize = oversizeScore;
-        bestCandidate = item;
-      }
+    const capDiff = cap - reqBtu;
+    const cfmDiff = cfm - reqCfm;
+    const score = Math.abs(capDiff) + Math.abs(cfmDiff) * 15;
+    if (!bestCandidate || score < minOversize) {
+      minOversize = score;
+      bestCandidate = item;
     }
-  }
-
-  // Fallback to largest/closest candidate if requirements exceed standard sizing
-  if (!bestCandidate) {
-    const sorted = [...candidates].sort((a, b) => {
-      const diffA = Math.abs(a.totalCapacityBtuPerHour - reqBtu);
-      const diffB = Math.abs(b.totalCapacityBtuPerHour - reqBtu);
-      return diffA - diffB;
-    });
-    bestCandidate = sorted[0];
   }
 
   if (!bestCandidate) return null;

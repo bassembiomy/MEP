@@ -15,6 +15,11 @@ import { solveDirectedNetworkStaticPressure } from './staticPressureCalc';
 import { STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES } from './hvacCatalogs';
 import { Zone, ProjectMetadata, Diffuser, DuctSegment } from '../store/projectStore';
 
+import { calculateCanonicalZoneLoad } from './loadCalc';
+import { METERS_PER_FOOT } from './engineeringInputs';
+import { getZoneDeploymentRevision, getProjectDeploymentRevision, validateAppliedDeployment, getEquipmentFootprintWorld } from './deploymentValidation';
+export { getZoneDeploymentRevision, getProjectDeploymentRevision } from './deploymentValidation';
+
 /**
  * Builds the complete deployment manifest for a candidate design without mutating workspace
  */
@@ -27,6 +32,9 @@ export function buildDeploymentManifest(
   dxfBoundingBox: any = null
 ): DeploymentManifest {
   const diagnostics: DeploymentDiagnostic[] = [];
+  if (!candidate.isValid || candidate.diagnostics.some(d => d.severity === 'error')) {
+    diagnostics.push({ code: 'ERR_DEPLOYMENT_INCOMPLETE', severity: 'error', message: 'Candidate is invalid or has blocking engineering diagnostics.' });
+  }
   const systemId = `sys-${zone.id}-${candidate.equipment.id}`;
   const designRevision = `rev-${Date.now()}`;
 
@@ -34,16 +42,29 @@ export function buildDeploymentManifest(
   const isCassette = candidate.systemType === 'cassette';
   const isHighWall = candidate.systemType === 'high-wall';
 
+  const zoneLoad = calculateCanonicalZoneLoad(zone, project);
+  const zoneTotalCfm = zoneLoad.supplyCfm;
+  const drawingUnitsPerFoot = project.scale * (project.units === 'metric' ? METERS_PER_FOOT : 1);
+  // Legacy spatial placement assumes ten drawing units per foot. Run it in
+  // that physical planning frame, then convert all proposed coordinates back.
+  const planningRatio = 10 / drawingUnitsPerFoot;
+  const planningPoints = zone.points.map(n => n * planningRatio);
+  const requiresOutdoorUnit = !['fcu', 'ahu'].includes(candidate.systemType);
+  if (isDucted) {
+    diagnostics.push({ code: 'WARN_PREVIEW_PRESSURE_PROVISIONAL', severity: 'warning', message: 'Detailed preview pressure trace is provisional. Apply revalidates actual connected per-fan routes independently.' });
+    if (zone.maxAvailableCeilingDepthIn === undefined) diagnostics.push({ code: 'WARN_CEILING_DEPTH_UNVERIFIED', severity: 'warning', message: 'Actual available ceiling depth is unverified; a preliminary 14-inch duct-height envelope is used until depth is declared.' });
+  }
+
   // 1. Plan Outdoor Unit
   const oduPlan = planOutdoorUnitPlacement(
-    zone.points,
-    allZones,
-    dxfBoundingBox,
+    planningPoints,
+    allZones.map(z => ({ ...z, points: z.points.map(n => n * planningRatio) })),
+    dxfBoundingBox ? { minX: dxfBoundingBox.minX * planningRatio, maxX: dxfBoundingBox.maxX * planningRatio, minY: dxfBoundingBox.minY * planningRatio, maxY: dxfBoundingBox.maxY * planningRatio } : null,
     systemId,
     candidate.equipment.model,
     candidate.equipment.nominalTons
   );
-  diagnostics.push(...oduPlan.diagnostics);
+  if (requiresOutdoorUnit) diagnostics.push(...oduPlan.diagnostics);
 
   let indoorUnitComp: MechanicalComponent | undefined = undefined;
   let cassetteComps: MechanicalComponent[] = [];
@@ -53,9 +74,9 @@ export function buildDeploymentManifest(
   // 2. Plan Indoor Equipment / Terminals
   if (isCassette) {
     const cassettePlan = planCassetteDistribution(
-      zone.points,
+      planningPoints,
       candidate.quantity,
-      candidate.quantity * candidate.equipment.nominalCfm,
+      zoneTotalCfm,
       systemId,
       zone.id,
       candidate.equipment.model,
@@ -66,85 +87,161 @@ export function buildDeploymentManifest(
     diagnostics.push(...cassettePlan.diagnostics);
   } else if (isHighWall) {
     const iuPlan = planIndoorUnitPlacement(
-      zone.points,
+      planningPoints,
       oduPlan.component.position,
       systemId,
       zone.id,
       'high-wall',
       candidate.equipment.model,
-      candidate.quantity * candidate.equipment.nominalCfm
+      zoneTotalCfm
     );
     if (iuPlan.component) {
       indoorUnitComp = iuPlan.component;
     }
     diagnostics.push(...iuPlan.diagnostics);
+    if (candidate.quantity !== 1) diagnostics.push({ code: 'ERR_DEPLOYMENT_INCOMPLETE', severity: 'error', message: 'High-wall equipment quantity cannot be represented by this placement.' });
     deployedDiffusers = [];
     deployedDucts = [];
   } else {
     // Ducted Split, Packaged RTU, VRF ducted, AHU
-    const iuPlan = planIndoorUnitPlacement(
-      zone.points,
-      oduPlan.component.position,
-      systemId,
-      zone.id,
-      candidate.systemType,
-      candidate.equipment.model,
-      candidate.quantity * candidate.equipment.nominalCfm
-    );
-    if (iuPlan.component) {
-      indoorUnitComp = iuPlan.component;
-      const ductPlan = planDuctedAirDistribution(
-        zone.points,
-        indoorUnitComp,
-        candidate.quantity * candidate.equipment.nominalCfm,
-        systemId,
-        zone.id,
-        candidate.systemType,
-        zone.maxSpaceNcLimit || 32,
-        project.units,
-        project.scale,
-        candidate.diffusers
-      );
-      deployedDiffusers = ductPlan.diffusers;
-      deployedDucts = ductPlan.ducts;
-      diagnostics.push(...ductPlan.diagnostics);
+    const qty = Math.max(1, candidate.quantity || 1);
+    const cfmPerUnit = Math.round(zoneTotalCfm / qty);
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    const numPoints = planningPoints.length / 2;
+    for (let i = 0; i < numPoints; i++) {
+      const x = planningPoints[2 * i];
+      const y = planningPoints[2 * i + 1];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
     }
-    diagnostics.push(...iuPlan.diagnostics);
+    const roomW = maxX - minX;
+    const roomH = maxY - minY;
+    const isHorizontal = roomW >= roomH;
+
+    for (let k = 0; k < qty; k++) {
+      const subSystemId = `${systemId}-${k + 1}`;
+      let subPoints = planningPoints;
+      let subMinX = minX, subMaxX = maxX, subMinY = minY, subMaxY = maxY;
+
+      if (qty > 1) {
+        if (isHorizontal) {
+          subMinY = Math.round(minY + (k * roomH) / qty);
+          subMaxY = Math.round(minY + ((k + 1) * roomH) / qty);
+        } else {
+          subMinX = Math.round(minX + (k * roomW) / qty);
+          subMaxX = Math.round(minX + ((k + 1) * roomW) / qty);
+        }
+        subPoints = [subMinX, subMinY, subMaxX, subMinY, subMaxX, subMaxY, subMinX, subMaxY];
+      }
+
+      const iuPlan = planIndoorUnitPlacement(
+        subPoints,
+        oduPlan.component.position,
+        subSystemId,
+        `${zone.id}-${k + 1}`,
+        candidate.systemType,
+        candidate.equipment.model,
+        cfmPerUnit
+      );
+
+      if (iuPlan.component) {
+        if (!indoorUnitComp) indoorUnitComp = iuPlan.component;
+        cassetteComps.push(iuPlan.component);
+
+        const diffusersPerUnit = candidate.diffusers
+          ? Math.max(1, Math.round(candidate.diffusers.quantity / qty))
+          : Math.max(1, Math.ceil(cfmPerUnit / 335));
+
+        const ductPlan = planDuctedAirDistribution(
+          subPoints,
+          iuPlan.component,
+          cfmPerUnit,
+          subSystemId,
+          `${zone.id}-${k + 1}`,
+          candidate.systemType,
+          zone.maxSpaceNcLimit || 32,
+          'imperial',
+          10,
+          {
+            quantity: diffusersPerUnit,
+            flowPerDiffuser: Math.round(cfmPerUnit / diffusersPerUnit),
+            diffuserRecord: candidate.diffusers?.diffuserRecord,
+            actualNc: candidate.diffusers?.actualNc || 25,
+            throwT50Ft: candidate.diffusers?.throwT50Ft || 12,
+            deltaPInWg: candidate.diffusers?.deltaPInWg || 0.04
+          }
+        );
+        // The spatial planner's historical 90% return assumption is replaced by
+        // the load calculation's actual mass-balance return demand.
+        const returnPerUnit = zoneLoad.returnCfm / qty;
+        ductPlan.diffusers = ductPlan.diffusers.map(t => t.type === 'return' ? { ...t, cfm: returnPerUnit } : t);
+        ductPlan.ducts = ductPlan.ducts.map(d => d.type === 'return' ? { ...d, cfm: returnPerUnit, velocityFpm: returnPerUnit / (d.widthIn * d.heightIn / 144) } : d);
+
+        deployedDiffusers.push(...ductPlan.diffusers);
+        deployedDucts.push(...ductPlan.ducts);
+        diagnostics.push(...ductPlan.diagnostics);
+      }
+      diagnostics.push(...iuPlan.diagnostics);
+    }
   }
 
   // 3. Plan Piping Networks (Refrigerant & Condensate Drain)
   const refrigerantLines: { id: string; points: number[]; sizeLabel: string }[] = [];
   const condensateDrains: { id: string; points: number[]; slopePercent: number }[] = [];
 
-  const targetIndoorPos = isCassette
-    ? cassetteComps[0]?.position
-    : indoorUnitComp?.position;
+  const targetUnits = cassetteComps.length > 0 ? cassetteComps : (indoorUnitComp ? [indoorUnitComp] : []);
 
-  if (targetIndoorPos && oduPlan.component.position) {
-    refrigerantLines.push({
-      id: `pipe-ref-${systemId}`,
-      points: [
-        oduPlan.component.position.x,
-        oduPlan.component.position.y,
-        targetIndoorPos.x,
-        targetIndoorPos.y
-      ],
-      sizeLabel: '3/8" Liquid & 5/8" Gas'
-    });
+  targetUnits.forEach((iu, idx) => {
+    if (iu.position && oduPlan.component.position) {
+      const oduPos = {
+        x: oduPlan.component.position.x + (idx - (targetUnits.length - 1) / 2) * 40,
+        y: oduPlan.component.position.y
+      };
 
-    condensateDrains.push({
-      id: `pipe-drain-${systemId}`,
-      points: [
-        targetIndoorPos.x,
-        targetIndoorPos.y,
-        targetIndoorPos.x + 15,
-        targetIndoorPos.y + 25
-      ],
-      slopePercent: 1.5
-    });
-  }
+      if (requiresOutdoorUnit) refrigerantLines.push({
+        id: `pipe-ref-${systemId}-${idx}`,
+        points: [
+          oduPos.x,
+          oduPos.y,
+          oduPos.x,
+          iu.position.y,
+          iu.position.x,
+          iu.position.y
+        ],
+        sizeLabel: '3/8" Liquid & 5/8" Gas'
+      });
 
-  // 4. Calculate Static Pressure on Deployed Network
+      condensateDrains.push({
+        id: `pipe-drain-${systemId}-${idx}`,
+        points: [
+          iu.position.x,
+          iu.position.y,
+          iu.position.x + 15,
+          iu.position.y + 25
+        ],
+        slopePercent: 1.5
+      });
+    }
+  });
+
+  const fromPlanning = (p: { x: number; y: number; z?: number }) => ({ ...p, x: p.x / planningRatio, y: p.y / planningRatio });
+  const mapIndoor = (u: MechanicalComponent): MechanicalComponent => {
+    const position = fromPlanning(u.position);
+    const physical = getEquipmentFootprintWorld(candidate.equipment, drawingUnitsPerFoot, u.rotationDeg);
+    return { ...u, position, footprint: { ...physical, minX: position.x - physical.widthWorld / 2, maxX: position.x + physical.widthWorld / 2, minY: position.y - physical.heightWorld / 2, maxY: position.y + physical.heightWorld / 2 }, ports: u.ports.map(p => ({ ...p, position: fromPlanning(p.position) })) };
+  };
+  if (indoorUnitComp) indoorUnitComp = mapIndoor(indoorUnitComp);
+  cassetteComps = cassetteComps.map(mapIndoor);
+  oduPlan.component = { ...oduPlan.component, position: fromPlanning(oduPlan.component.position), footprint: { ...oduPlan.component.footprint, minX: oduPlan.component.footprint.minX / planningRatio, maxX: oduPlan.component.footprint.maxX / planningRatio, minY: oduPlan.component.footprint.minY / planningRatio, maxY: oduPlan.component.footprint.maxY / planningRatio, widthWorld: oduPlan.component.footprint.widthWorld / planningRatio, heightWorld: oduPlan.component.footprint.heightWorld / planningRatio }, ports: oduPlan.component.ports.map(p => ({ ...p, position: fromPlanning(p.position) })) };
+  deployedDiffusers = deployedDiffusers.map(t => ({ ...t, x: t.x / planningRatio, y: t.y / planningRatio }));
+  deployedDucts = deployedDucts.map(d => ({ ...d, points: d.points.map(n => n / planningRatio) }));
+  refrigerantLines.forEach(line => { line.points = line.points.map(n => n / planningRatio); });
+  condensateDrains.forEach(line => { line.points = line.points.map(n => n / planningRatio); });
+
+  // 4. Provisional legacy pressure trace; acceptance uses actual connected paths.
   let criticalPath: CriticalPathResult = {
     pathId: 'none',
     terminalId: '',
@@ -165,18 +262,28 @@ export function buildDeploymentManifest(
       deployedDiffusers,
       STANDARD_DIFFUSER_CATALOG,
       STANDARD_DUCT_TYPES[0],
-      project.scale
+      drawingUnitsPerFoot
     );
   }
 
   // 5. Build Component Collections
-  const componentsToAdd: MechanicalComponent[] = [oduPlan.component];
+  const componentsToAdd: MechanicalComponent[] = requiresOutdoorUnit ? [oduPlan.component] : [];
   if (indoorUnitComp) componentsToAdd.push(indoorUnitComp);
-  componentsToAdd.push(...cassetteComps);
+  componentsToAdd.push(...cassetteComps.filter(c => c.id !== indoorUnitComp?.id));
 
   const hasBlockingError = diagnostics.some((d) => d.severity === 'error');
 
-  return {
+  const manifest: DeploymentManifest = {
+    sourceZoneRevision: getZoneDeploymentRevision(zone),
+    sourceProjectRevision: getProjectDeploymentRevision(project),
+    engineeringEvidence: {
+      equipmentRecord: structuredClone(candidate.equipment), quantity: candidate.quantity,
+      requiredSupplyCfm: zoneTotalCfm, requiredReturnCfm: zoneLoad.returnCfm,
+      requiredTotalBtuPerHour: zoneLoad.totalLoad,
+      requiredSensibleBtuPerHour: zoneLoad.sensibleLoad,
+      requiredLatentBtuPerHour: zoneLoad.latentLoad,
+      drawingUnitsPerFoot, requiresOutdoorUnit
+    },
     manifestId: `manifest-${systemId}-${Date.now()}`,
     candidateId: candidate.id,
     systemId,
@@ -186,7 +293,7 @@ export function buildDeploymentManifest(
     createdAt: Date.now(),
     equipment: {
       indoorUnit: indoorUnitComp,
-      outdoorUnit: oduPlan.component,
+      outdoorUnit: requiresOutdoorUnit ? oduPlan.component : undefined,
       cassetteUnits: cassetteComps
     },
     terminals: deployedDiffusers,
@@ -203,6 +310,14 @@ export function buildDeploymentManifest(
     diagnostics,
     isEligibleToApply: !hasBlockingError
   };
+  if (manifest.isEligibleToApply) {
+    const validation = executeDeploymentTransaction(manifest, [zone], project);
+    if (!validation.success && validation.errorDiagnostic) {
+      manifest.diagnostics.push(validation.errorDiagnostic);
+      manifest.isEligibleToApply = false;
+    }
+  }
+  return manifest;
 }
 
 /**
@@ -256,8 +371,11 @@ export function createDeploymentPreview(
  */
 export function executeDeploymentTransaction(
   manifest: DeploymentManifest,
-  currentZones: Zone[]
+  currentZones: Zone[],
+  currentProject?: ProjectMetadata
 ): { updatedZones: Zone[]; success: boolean; errorDiagnostic?: DeploymentDiagnostic } {
+  const reject = (message: string, code: DeploymentDiagnostic['code'] = 'ERR_APPLY_TRANSACTION_FAILED') => ({ updatedZones: currentZones, success: false, errorDiagnostic: { code, severity: 'error' as const, message } });
+  if (!manifest.isEligibleToApply || manifest.diagnostics.some(d => d.severity === 'error')) return reject('Manifest is blocked by engineering diagnostics.', 'ERR_DEPLOYMENT_INCOMPLETE');
   const targetZone = currentZones.find((z) => z.id === manifest.zoneId);
 
   if (!targetZone) {
@@ -271,6 +389,21 @@ export function executeDeploymentTransaction(
       }
     };
   }
+  if (manifest.sourceZoneRevision !== undefined && manifest.sourceZoneRevision !== getZoneDeploymentRevision(targetZone)) return reject('Zone engineering inputs changed after preview.', 'ERR_DEPLOYMENT_REVISION_STALE');
+  if (manifest.sourceProjectRevision !== undefined && (!currentProject || manifest.sourceProjectRevision !== getProjectDeploymentRevision(currentProject))) return reject(currentProject ? 'Project engineering inputs changed after preview.' : 'Current project is required to validate this manifest.', 'ERR_DEPLOYMENT_REVISION_STALE');
+  if (!manifest.engineeringEvidence) return reject('Manifest lacks required equipment, load and pressure validation evidence.', 'ERR_DEPLOYMENT_INCOMPLETE');
+  const drawingUnitsPerFoot = manifest.engineeringEvidence.drawingUnitsPerFoot;
+  if (manifest.sourceProjectRevision !== undefined && currentProject) {
+    try {
+      const currentLoad = calculateCanonicalZoneLoad(targetZone, currentProject);
+      const evidence = manifest.engineeringEvidence;
+      const expected = [currentLoad.supplyCfm, currentLoad.returnCfm, currentLoad.totalLoad, currentLoad.sensibleLoad, currentLoad.latentLoad, currentProject.scale * (currentProject.units === 'metric' ? METERS_PER_FOOT : 1)];
+      const claimed = [evidence.requiredSupplyCfm, evidence.requiredReturnCfm, evidence.requiredTotalBtuPerHour, evidence.requiredSensibleBtuPerHour, evidence.requiredLatentBtuPerHour, evidence.drawingUnitsPerFoot];
+      if (claimed.some((v, i) => !Number.isFinite(v) || Math.abs(v - expected[i]) > 1e-6)) return reject('Manifest load or drawing scale evidence does not match current engineering inputs.');
+    } catch (error) {
+      return reject(`Current load validation failed: ${(error as Error).message}`);
+    }
+  }
 
   // Preserve user-locked components
   let finalDiffusers = manifest.terminals;
@@ -282,6 +415,26 @@ export function executeDeploymentTransaction(
     ? { x: manifest.equipment.outdoorUnit.position.x, y: manifest.equipment.outdoorUnit.position.y }
     : undefined;
 
+  const allIndoorUnits = manifest.equipment.cassetteUnits && manifest.equipment.cassetteUnits.length > 0
+    ? manifest.equipment.cassetteUnits
+    : manifest.equipment.indoorUnit
+    ? [manifest.equipment.indoorUnit]
+    : [];
+
+  let finalUnitPositions: { x: number; y: number }[] = allIndoorUnits.map((u) => ({
+    x: u.position.x,
+    y: u.position.y
+  }));
+
+  let finalOutdoorPositions: { x: number; y: number }[] = finalOutdoorPos
+    ? (finalUnitPositions.length > 0
+        ? finalUnitPositions.map((_, idx) => ({
+            x: finalOutdoorPos!.x + (idx - (finalUnitPositions.length - 1) / 2) * drawingUnitsPerFoot * 4,
+            y: finalOutdoorPos!.y
+          }))
+        : [finalOutdoorPos])
+    : [];
+
   if (targetZone.isDiffusersLocked) {
     finalDiffusers = targetZone.diffusers;
   }
@@ -289,24 +442,35 @@ export function executeDeploymentTransaction(
     finalDucts = targetZone.ducts;
   }
   if (targetZone.isEquipmentLocked) {
+    if (targetZone.catalogModel !== manifest.engineeringEvidence.equipmentRecord.model || targetZone.catalogQty !== manifest.engineeringEvidence.quantity || targetZone.systemType !== manifest.systemType) return reject('Locked equipment model, quantity or topology is incompatible with the candidate.');
     finalUnitPos = targetZone.unitPos;
     finalOutdoorPos = targetZone.outdoorUnitPos;
+    finalUnitPositions = targetZone.unitPositions?.length ? targetZone.unitPositions : targetZone.unitPos ? [targetZone.unitPos] : [];
+    finalOutdoorPositions = targetZone.outdoorUnitPositions?.length ? targetZone.outdoorUnitPositions : targetZone.outdoorUnitPos ? [targetZone.outdoorUnitPos] : [];
   }
 
   // Assemble committed zone
   const updatedZone: Zone = {
     ...targetZone,
     systemType: manifest.systemType as any,
-    diffusers: finalDiffusers,
-    ducts: finalDucts,
-    unitPos: finalUnitPos,
-    outdoorUnitPos: finalOutdoorPos,
-    catalogQty: manifest.equipment.cassetteUnits?.length || 1,
-    catalogModel: manifest.equipment.indoorUnit?.model || manifest.equipment.outdoorUnit?.model || '',
+    diffusers: structuredClone(finalDiffusers),
+    ducts: structuredClone(finalDucts),
+    unitPos: finalUnitPos || (finalUnitPositions.length > 0 ? finalUnitPositions[0] : undefined),
+    unitPositions: structuredClone(finalUnitPositions),
+    outdoorUnitPos: finalOutdoorPos || (finalOutdoorPositions.length > 0 ? finalOutdoorPositions[0] : undefined),
+    outdoorUnitPositions: structuredClone(finalOutdoorPositions),
+    catalogQty: allIndoorUnits.length || 1,
+    catalogModel: manifest.engineeringEvidence.equipmentRecord.model,
     catalogEsp: manifest.criticalPath.espRequiredInWg > 0
       ? `${manifest.criticalPath.espRequiredInWg.toFixed(2)} in.wg`
       : undefined
   };
+  try {
+    const pressure = validateAppliedDeployment(manifest, updatedZone, allIndoorUnits, currentProject);
+    updatedZone.catalogEsp = pressure > 0 ? `${pressure.toFixed(2)} in.wg` : undefined;
+  } catch (error) {
+    return reject(`Applied engineering validation failed: ${(error as Error).message}`);
+  }
 
   // Post-Commit Verification
   const postCommitCount = updatedZone.diffusers.length + updatedZone.ducts.length + (updatedZone.unitPos ? 1 : 0) + (updatedZone.outdoorUnitPos ? 1 : 0);

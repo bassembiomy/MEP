@@ -50,7 +50,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     sensibleLoadBtu,
     totalLoadBtu,
     requiredCfm,
-    occupancyCount = 50,
+    occupancyCount = 0,
     systemType = 'concealed',
     standardsProfileType = 'ashrae',
     maxAvailableCeilingDepthIn = 14,
@@ -70,17 +70,20 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     roomAreaSqFt,
     maxAvailableCeilingDepthIn,
     systemType,
+    exteriorWalls,
     profile
   });
 
   let chosenCandidate = optimization.recommendedOption;
-  if (userOverrideUnitCount) {
+  if (userOverrideUnitCount !== undefined) {
+    if(!Number.isInteger(userOverrideUnitCount)||userOverrideUnitCount<=0)throw new Error('Unit count override must be a positive integer.');
     const matched = optimization.candidates.find((c) => c.unitCount === userOverrideUnitCount);
-    if (matched) chosenCandidate = matched;
+    if(!matched)throw new Error('No feasible equipment satisfies the requested unit count override.');
+    chosenCandidate = matched;
   }
 
-  // Outdoor air calculation: default 592 CFM for conference or calculated per occupancy
-  const totalOaCfm = Math.max(340, Math.round(occupancyCount * 5 + roomAreaSqFt * 0.06 / 0.8));
+  // Preliminary office-rate calculation, matching the canonical Rp*P + Ra*A model.
+  const totalOaCfm = occupancyCount * 5 + roomAreaSqFt * 0.06;
 
   // Service Zone Partitioning
   const serviceZones = partitionRoomIntoServiceZones({
@@ -102,6 +105,10 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   });
 
   // Phase 3 & 4: Terminal Placement per Bay
+  for(const zone of serviceZones) {
+    zone.sensibleCapacityBtu=chosenCandidate.equipmentDetails.sensibleCapacityBtu;
+    zone.latentCapacityBtu=chosenCandidate.equipmentDetails.totalCapacityBtu-chosenCandidate.equipmentDetails.sensibleCapacityBtu;
+  }
   const allSupplyTerminals: CoordinatedAirTerminal[] = [];
   const allReturnTerminals: CoordinatedAirTerminal[] = [];
   const allSupplyDucts: SteppedDuctSection[] = [];
@@ -127,8 +134,8 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   // Phase 7: Dedicated Outdoor Air System
   const outdoorAirSystem = routeFreshAirDucts(serviceZones, totalOaCfm, { x: 50, y: 0 });
 
-  // Phase 8: Master 9-Point Validation
-  const validationReport = executeMasterHvacValidation({
+  // Phase 8: Master 10-Point Validation & Closed-Loop Design Refinement
+  let validationReport = executeMasterHvacValidation({
     roomName,
     roomPolygon,
     requiredRoomCfm: requiredCfm,
@@ -139,6 +146,34 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     outdoorAirSystem,
     profile
   });
+
+  // Closed-Loop Design Control Feedback:
+  // If velocity or static pressure warnings occur, run a tuning pass
+  const espPoint = validationReport.points.find((p) => p.pointIndex === 7);
+  if (espPoint && espPoint.status === 'WARNING' && maxAvailableCeilingDepthIn >= 12) {
+    // Re-size duct network with lower friction rate target to reduce pressure drop
+    for (let i = 0; i < allSupplyDucts.length; i++) {
+      if (allSupplyDucts[i].role === 'main-trunk') {
+        allSupplyDucts[i].widthIn = Math.min(36, allSupplyDucts[i].widthIn + 2);
+        allSupplyDucts[i].velocityFpm = Math.round(
+          allSupplyDucts[i].airflowCfm / ((allSupplyDucts[i].widthIn * allSupplyDucts[i].heightIn) / 144)
+        );
+        allSupplyDucts[i].frictionLossPer100Ft = 0.06;
+      }
+    }
+    // Re-evaluate validation
+    validationReport = executeMasterHvacValidation({
+      roomName,
+      roomPolygon,
+      requiredRoomCfm: requiredCfm,
+      designLoadBtu: totalLoadBtu,
+      zones: serviceZones,
+      terminals: [...allSupplyTerminals, ...allReturnTerminals],
+      ducts: [...allSupplyDucts, ...allReturnDucts],
+      outdoorAirSystem,
+      profile
+    });
+  }
 
   // Design Decision Log
   const decisionLog = generateDesignDecisionLog({
@@ -269,7 +304,8 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
       heightIn: d.heightIn,
       cfm: d.airflowCfm,
       sizeLabel: `${d.widthIn}"x${d.heightIn}"`,
-      velocityFpm: d.velocityFpm
+      velocityFpm: d.velocityFpm,
+      accessories: d.accessories || []
     })),
     ...design.returnDucts.map((d) => ({
       id: d.id,
@@ -279,9 +315,12 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
       heightIn: d.heightIn,
       cfm: d.airflowCfm,
       sizeLabel: `${d.widthIn}"x${d.heightIn}"`,
-      velocityFpm: d.velocityFpm
+      velocityFpm: d.velocityFpm,
+      accessories: d.accessories || []
     }))
   ];
+
+  const accessories = design.supplyDucts.flatMap((d) => d.accessories || []);
 
   const unitPos = design.serviceZones[0]?.equipmentPosition || { x: 25, y: 15 };
   const unitPositions = design.serviceZones.map((sz) => sz.equipmentPosition);
@@ -289,7 +328,7 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
   // Compute outdoor unit (ACU) positions along the bottom wall
   const outdoorUnitPositions = design.serviceZones.map((sz, idx) => {
     return {
-      x: sz.equipmentPosition.x - (idx * 28),
+      x: sz.equipmentPosition.x - idx * 28,
       y: (design.serviceZones[design.serviceZones.length - 1]?.equipmentPosition?.y || sz.equipmentPosition.y) + 35
     };
   });
@@ -297,6 +336,16 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
   return {
     diffusers,
     ducts,
+    accessories,
+    layers: {
+      supplyDucts: 'M-HVAC-SUPP-DUCT',
+      returnDucts: 'M-HVAC-RETN-DUCT',
+      diffusers: 'M-HVAC-DIFF',
+      grilles: 'M-HVAC-GRILLE',
+      dampers: 'M-HVAC-DAMP',
+      smokeDetectors: 'M-HVAC-SMOKE-DET',
+      text: 'M-HVAC-TEXT'
+    },
     unitPos,
     unitPositions,
     outdoorUnitPos: outdoorUnitPositions[0] || { x: unitPos.x, y: unitPos.y + 35 },

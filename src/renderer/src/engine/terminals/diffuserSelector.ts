@@ -18,9 +18,13 @@ export function selectBestDiffuserFromCatalog(
   terminalType: string = 'square-ceiling',
   catalog: DiffuserCatalogItem[] = STANDARD_DIFFUSER_CATALOG
 ): SelectedDiffuserResult {
-  const candidates = catalog.filter(
-    (d) => d.terminalType === terminalType || d.terminalType === 'square-ceiling' || d.terminalType === 'round-ceiling'
-  );
+  const exactMatches = catalog.filter((d) => d.terminalType === terminalType);
+  const candidates =
+    exactMatches.length > 0
+      ? exactMatches
+      : catalog.filter(
+          (d) => d.terminalType === 'square-ceiling' || d.terminalType === 'round-ceiling'
+        );
 
   let bestMatch = candidates[0] || catalog[0];
   let minDiff = Infinity;
@@ -36,8 +40,9 @@ export function selectBestDiffuserFromCatalog(
         );
         const point = sorted[0];
 
-        if (point.ncRating <= spaceNcLimit + 2) {
-          const diff = Math.abs(point.cfm - cfmPerTerminal);
+        if (point.ncRating <= spaceNcLimit + 5) {
+          const ncPenalty = point.ncRating > spaceNcLimit ? (point.ncRating - spaceNcLimit) * 500 : 0;
+          const diff = Math.abs(point.cfm - cfmPerTerminal) + ncPenalty;
           if (diff < minDiff) {
             minDiff = diff;
             bestMatch = item;

@@ -15,5 +15,8 @@
         "src/renderer/src/*"
       ]
     }
-  }
+  },
+  "exclude": [
+    "src/renderer/src/engine/__tests__/**/*"
+  ]
 }

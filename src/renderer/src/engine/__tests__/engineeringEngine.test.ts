@@ -130,7 +130,7 @@ console.log('=== Starting MEP HVAC Engineering Engine Validation ===');
 
 // 4. Test Equipment Fan Curve Operating Point & Rejection on ESP Deficit
 {
-  const ductedUnit = STANDARD_EQUIPMENT_CATALOG.find(e => e.id === 'eq-ducted-24k')!;
+  const ductedUnit = STANDARD_EQUIPMENT_CATALOG.find(e => e.id === 'eq-miraco-msp-24k')!;
   
   // Test valid operating point
   const validFan = evaluateFanOperatingPoint(ductedUnit, 600, 0.25);

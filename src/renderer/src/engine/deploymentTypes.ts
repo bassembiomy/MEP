@@ -1,4 +1,4 @@
-import { SystemDesignCandidate, CriticalPathResult } from './types';
+import { SystemDesignCandidate, CriticalPathResult, EquipmentCatalogItem } from './types';
 import { Diffuser, DuctSegment, Zone, ProjectMetadata } from '../store/projectStore';
 
 export type ComponentRole =
@@ -66,6 +66,20 @@ export interface MechanicalComponent {
 }
 
 export interface DeploymentManifest {
+  sourceZoneRevision?: string;
+  sourceProjectRevision?: string;
+  /** Canonical engineering evidence; legacy manifests without this are blocked. */
+  engineeringEvidence?: {
+    equipmentRecord: EquipmentCatalogItem;
+    quantity: number;
+    requiredSupplyCfm: number;
+    requiredReturnCfm: number;
+    requiredTotalBtuPerHour: number;
+    requiredSensibleBtuPerHour: number;
+    requiredLatentBtuPerHour: number;
+    drawingUnitsPerFoot: number;
+    requiresOutdoorUnit: boolean;
+  };
   manifestId: string;
   candidateId: string;
   systemId: string;
@@ -108,6 +122,8 @@ export interface DeploymentDiagnostic {
     | 'ERR_APPLY_TRANSACTION_FAILED'
     | 'ERR_POST_COMMIT_MISMATCH'
     | 'WARN_THROW_OVERLAP'
+    | 'WARN_PREVIEW_PRESSURE_PROVISIONAL'
+    | 'WARN_CEILING_DEPTH_UNVERIFIED'
     | 'WARN_MAINTENANCE_CLEARANCE';
   severity: 'error' | 'warning' | 'info';
   componentId?: string;

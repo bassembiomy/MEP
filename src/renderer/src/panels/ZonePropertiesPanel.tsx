@@ -1,11 +1,9 @@
 import React from 'react';
-import { useProjectStore, Zone, DuctSegment } from '../store/projectStore';
+import { useProjectStore, Zone } from '../store/projectStore';
 import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
-import { calculateZoneLoad } from '../engine/loadCalc';
-import { placeDiffusers } from '../engine/diffuserPlacer';
-import { routeDucts } from '../engine/ductRouter';
-import { calculateOptimalOutdoorUnitPos, calculateOptimalIndoorUnitPos } from '../engine/geometry';
-import { getCatalogSizingForZone } from '../engine/systemDesigner';
+import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
+import { calculateZoneDiffuserCoverage } from '../engine/diffuserPlacer';
+import { generateSystemCandidates } from '../engine/systemDesigner';
 import { STANDARD_DUCT_TYPES } from '../engine/hvacCatalogs';
 import {
   DEFAULT_SPACE_NC_TARGETS,
@@ -21,29 +19,60 @@ import {
   Shield,
   Volume2,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Compass,
+  CircleDot
 } from 'lucide-react';
 import { DuctLocationCategory } from '../engine/types';
 
 export const ZonePropertiesPanel: React.FC = () => {
-  const { selectedZoneId, zones, updateZone, project, dxfEntities, loadedCatalogs } = useProjectStore();
+  const { selectedZoneId, zones, updateZone, applyCandidateTransaction, optimizationWeights, project, loadedCatalogs } = useProjectStore();
 
+  const [designFeedback, setDesignFeedback] = React.useState('');
   const selectedZone = zones.find((z) => z.id === selectedZoneId);
+  const isImperial = project.units === 'imperial';
 
-  if (!selectedZone) {
+  const loadEvaluation = React.useMemo(() => {
+    if (!selectedZone) return { load: null };
+    return calculateZoneLoadSafely(selectedZone, project);
+  }, [selectedZone, project]);
+  const loadResult = loadEvaluation.load;
+
+  const zoneCoverage = React.useMemo(() => {
+    if (!selectedZone || selectedZone.diffusers.length === 0 || selectedZone.systemType === 'high-wall') {
+      return { coverageRatio: 0, coveragePercent: 0, isCovered95: false };
+    }
+    return calculateZoneDiffuserCoverage(
+      selectedZone.points,
+      selectedZone.diffusers,
+      project.scale,
+      isImperial
+    );
+  }, [selectedZone?.points, selectedZone?.diffusers, project.scale, isImperial, selectedZone?.systemType]);
+
+  if (!selectedZone || !loadResult) {
     return (
-      <div className="flex flex-col items-center justify-center bg-neutral-900 border border-neutral-800 p-8 rounded-2xl w-80 text-center backdrop-blur-md">
+      <div className="flex flex-col items-center justify-center bg-neutral-900 border border-neutral-800 p-8 rounded-2xl w-full text-center backdrop-blur-md shadow-lg">
         <Settings size={28} className="text-neutral-600 animate-pulse" />
-        <p className="text-sm font-medium text-neutral-400 mt-3">No Zone Selected</p>
+        <p className="text-sm font-medium text-neutral-400 mt-3">{selectedZone ? 'Engineering inputs require correction' : 'No Zone Selected'}</p>
         <p className="text-xs text-neutral-600 mt-1 max-w-[200px]">
-          Select or draw a zone to edit mechanical parameters, component locks, and view live calculations.
+          {loadEvaluation.error ?? 'Select or draw a zone to edit mechanical parameters, component locks, and view live calculations.'}
         </p>
+        {selectedZone && <div className="flex flex-col gap-2 mt-3 text-xs">
+          <label>Ceiling height ({project.units === 'metric' ? 'm' : 'ft'})
+            <input aria-label="Correct ceiling height" type="number" min="0.01" step="0.01" value={selectedZone.ceilingHeight}
+              onChange={e => updateZone(selectedZone.id, { ceilingHeight: e.currentTarget.valueAsNumber })} className="ml-2 bg-neutral-800 p-1" />
+          </label>
+          <label>Occupants
+            <input aria-label="Correct occupant count" type="number" min="0" value={selectedZone.occupants}
+              onChange={e => updateZone(selectedZone.id, { occupants: e.currentTarget.valueAsNumber })} className="ml-2 bg-neutral-800 p-1" />
+          </label>
+          <button onClick={() => updateZone(selectedZone.id, { manualCfmOverride: undefined, manualCoolingOverride: undefined,
+            lightingOverride: undefined, equipmentOverride: undefined })} className="rounded border border-neutral-600 p-2">Clear load and airflow overrides</button>
+        </div>}
       </div>
     );
   }
-
-  const isImperial = project.units === 'imperial';
-  const loadResult = calculateZoneLoad(selectedZone, project);
 
   const isDucted =
     selectedZone.systemType === 'concealed' ||
@@ -85,218 +114,29 @@ export const ZonePropertiesPanel: React.FC = () => {
   );
 
   const handleOptimizePlacement = () => {
-    const optOdu = calculateOptimalOutdoorUnitPos(selectedZone.points, zones, dxfEntities);
-
-    const sizing = getCatalogSizingForZone(
-      selectedZone.systemType,
-      loadResult.totalLoad,
-      loadResult.supplyCfm,
-      loadedCatalogs
-    );
-
-    const optIu = selectedZone.systemType === 'cassette'
-      ? undefined
-      : calculateOptimalIndoorUnitPos(selectedZone.points, optOdu);
-    const spacing = isImperial ? 10 : 3;
-
-    let diffusers: any[] = [];
-    if (selectedZone.systemType === 'high-wall') {
-      diffusers = [];
-    } else if (selectedZone.systemType === 'cassette') {
-      diffusers = !selectedZone.isDiffusersLocked
-        ? placeDiffusers(
-            selectedZone.points,
-            loadResult.supplyCfm,
-            isImperial,
-            spacing,
-            project.scale,
-            dxfEntities,
-            'cassette',
-            loadResult.totalLoad,
-            sizing.qty,
-            sizing.model,
-            currentTargetNc
-          )
-        : selectedZone.diffusers;
-    } else if (isDucted && !selectedZone.isDiffusersLocked) {
-      diffusers = placeDiffusers(
-        selectedZone.points,
-        loadResult.supplyCfm,
-        isImperial,
-        spacing,
-        project.scale,
-        dxfEntities,
-        selectedZone.systemType || 'concealed',
-        loadResult.totalLoad,
-        sizing.qty,
-        sizing.model,
-        currentTargetNc
-      );
-    } else {
-      diffusers = selectedZone.diffusers;
-    }
-
-    let finalDucts: DuctSegment[] = [];
-    if (isDucted && optIu && !selectedZone.isDuctLocked) {
-      const routed = routeDucts(
-        selectedZone.points,
-        diffusers,
-        project.units,
-        selectedZone.id,
-        optIu,
-        selectedZone.systemType || 'concealed',
-        optOdu,
-        {
-          targetNc: currentTargetNc,
-          locationCategory: currentLocCategory,
-          enhancedPerformance: isEnhanced,
-          zoneName: selectedZone.name
-        }
-      );
-      finalDucts = routed.ducts;
-    } else {
-      finalDucts = isDucted ? selectedZone.ducts : [];
-    }
-
-    updateZone(selectedZone.id, {
-      unitPos: optIu,
-      outdoorUnitPos: optOdu,
-      diffusers,
-      ducts: finalDucts,
-      catalogQty: sizing.qty,
-      catalogModel: sizing.model,
-      catalogEsp: sizing.esp,
-      targetNc: currentTargetNc,
-      ductLocationCategory: currentLocCategory
-    });
+    try {
+      const load=calculateCanonicalZoneLoad(selectedZone,project);
+      const recommendations=generateSystemCandidates(load.totalLoad,load.sensibleLoad,load.supplyCfm,
+        selectedZone.spaceTypeId,load.area,true,optimizationWeights,[selectedZone.systemType??'concealed'],loadedCatalogs);
+      if(!recommendations.bestOverall) { setDesignFeedback('No feasible catalog candidate. Review the inputs in Optimizer Studio.'); return; }
+      const result=applyCandidateTransaction(recommendations.bestOverall);
+      setDesignFeedback(result.success ? 'Validated preliminary CAD design applied.' : result.error??'Design is blocked.');
+    } catch(error) { setDesignFeedback(error instanceof Error ? error.message : String(error)); }
   };
 
   const handleUpdate = (field: keyof Zone, value: any) => {
-    let updatedZone: Zone = {
-      ...selectedZone,
-      [field]: value
-    };
-
-    // If changing space type, auto-update target NC to default for that room function
+    const changes: Partial<Zone> = { [field]: value };
     if (field === 'spaceTypeId') {
-      const spaceDefaults = DEFAULT_SPACE_NC_TARGETS[value as string];
-      if (spaceDefaults) {
-        updatedZone.targetNc = spaceDefaults.nc;
-        updatedZone.maxSpaceNcLimit = spaceDefaults.nc;
-      }
+      const defaults=DEFAULT_SPACE_NC_TARGETS[value as string];
+      if(defaults) { changes.targetNc=defaults.nc; changes.maxSpaceNcLimit=defaults.nc; }
     }
-
-    const zoneTargetNc = updatedZone.targetNc ?? (DEFAULT_SPACE_NC_TARGETS[updatedZone.spaceTypeId]?.nc || 32);
-    const zoneLocCategory: DuctLocationCategory = updatedZone.ductLocationCategory || 'above-suspended-ceiling';
-    const zoneEnhanced = updatedZone.enhancedAcousticPerformance || false;
-
-    const newLoads = calculateZoneLoad(updatedZone, project);
-    const sizing = getCatalogSizingForZone(
-      updatedZone.systemType,
-      newLoads.totalLoad,
-      newLoads.supplyCfm,
-      loadedCatalogs
-    );
-
-    const isSystemDucted =
-      updatedZone.systemType === 'concealed' ||
-      updatedZone.systemType === 'packaged' ||
-      updatedZone.systemType === 'ahu' ||
-      updatedZone.systemType === 'vrf';
-
-    let finalOutdoorUnitPos = updatedZone.outdoorUnitPos;
-    if (!finalOutdoorUnitPos) {
-      finalOutdoorUnitPos = calculateOptimalOutdoorUnitPos(selectedZone.points, zones, dxfEntities);
-    }
-
-    const spacing = isImperial ? 10 : 3;
-    let diffusers: any[] = [];
-    if (updatedZone.systemType === 'high-wall') {
-      diffusers = [];
-    } else if (updatedZone.systemType === 'cassette') {
-      diffusers = !updatedZone.isDiffusersLocked
-        ? placeDiffusers(
-            selectedZone.points,
-            newLoads.supplyCfm,
-            isImperial,
-            spacing,
-            project.scale,
-            dxfEntities,
-            'cassette',
-            newLoads.totalLoad,
-            sizing.qty,
-            sizing.model,
-            zoneTargetNc
-          )
-        : updatedZone.diffusers;
-    } else if (isSystemDucted && !updatedZone.isDiffusersLocked) {
-      diffusers = placeDiffusers(
-        selectedZone.points,
-        newLoads.supplyCfm,
-        isImperial,
-        spacing,
-        project.scale,
-        dxfEntities,
-        updatedZone.systemType || 'concealed',
-        newLoads.totalLoad,
-        sizing.qty,
-        sizing.model,
-        zoneTargetNc
-      );
-    } else {
-      diffusers = updatedZone.diffusers;
-    }
-
-    let finalDucts: DuctSegment[] = [];
-    let finalUnitPos = updatedZone.unitPos;
-
-    if (isSystemDucted) {
-      if (!finalUnitPos) {
-        finalUnitPos = calculateOptimalIndoorUnitPos(selectedZone.points, finalOutdoorUnitPos);
-      }
-      if (!updatedZone.isDuctLocked) {
-        const routed = routeDucts(
-          selectedZone.points,
-          diffusers,
-          project.units,
-          selectedZone.id,
-          finalUnitPos,
-          updatedZone.systemType || 'concealed',
-          finalOutdoorUnitPos,
-          {
-            targetNc: zoneTargetNc,
-            locationCategory: zoneLocCategory,
-            enhancedPerformance: zoneEnhanced,
-            zoneName: updatedZone.name
-          }
-        );
-        finalDucts = routed.ducts;
-        finalUnitPos = routed.unitPos;
-      } else {
-        finalDucts = updatedZone.ducts;
-      }
-    } else if (updatedZone.systemType === 'high-wall') {
-      finalDucts = [];
-      finalUnitPos = calculateOptimalIndoorUnitPos(selectedZone.points, finalOutdoorUnitPos);
-    } else {
-      finalDucts = [];
-      finalUnitPos = undefined;
-    }
-
-    updateZone(selectedZone.id, {
-      ...updatedZone,
-      diffusers,
-      ducts: finalDucts,
-      unitPos: finalUnitPos,
-      outdoorUnitPos: finalOutdoorUnitPos,
-      catalogQty: sizing.qty,
-      catalogModel: sizing.model,
-      catalogEsp: sizing.esp
-    });
+    updateZone(selectedZone.id,changes);
+    setDesignFeedback('Inputs changed. Revalidate and apply a candidate in Optimizer Studio.');
   };
 
   return (
-    <div className="flex flex-col gap-5 bg-neutral-900 border border-neutral-800 p-5 rounded-2xl w-80 max-h-[85vh] overflow-y-auto backdrop-blur-md shadow-2xl">
+    <div className="flex flex-col gap-5 bg-neutral-900 border border-neutral-800 p-5 rounded-2xl w-full max-h-[85vh] overflow-y-auto backdrop-blur-md shadow-2xl">
+      <p className="text-xs text-amber-300">{designFeedback || 'Preliminary design. Input changes require revalidation before CAD application.'}</p>
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b border-neutral-800 pb-3">
         <div className="flex items-center gap-2">
@@ -577,6 +417,91 @@ export const ZonePropertiesPanel: React.FC = () => {
 
       <hr className="border-neutral-800" />
 
+      {/* 4. Circular Coverage & Air Distribution Control */}
+      {selectedZone.systemType !== 'high-wall' && (
+        <div className="flex flex-col gap-3 bg-neutral-950 border border-neutral-850 p-3.5 rounded-2xl">
+          <div className="flex items-center justify-between text-neutral-300 text-xs font-bold">
+            <span className="flex items-center gap-1.5 text-teal-400">
+              <Compass size={15} />
+              Circular Coverage Distribution
+            </span>
+            <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+              zoneCoverage.coveragePercent >= 99
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                : zoneCoverage.isCovered95
+                ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
+                : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+            }`}>
+              {zoneCoverage.coveragePercent}% {zoneCoverage.coveragePercent >= 99 ? 'estimated coverage' : 'Covered'}
+            </span>
+          </div>
+
+          {/* Distribution Pattern Selector */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">Distribution Pattern</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleUpdate('distributionPattern','hexagonal')}
+                className={`py-2 px-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                  (selectedZone.distributionPattern || 'hexagonal') === 'hexagonal'
+                    ? 'bg-teal-500/20 border-teal-400 text-teal-300 shadow-sm font-bold'
+                    : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:bg-neutral-850'
+                }`}
+              >
+                <span>⬡</span> Hexagonal Honeycomb
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleUpdate('distributionPattern','orthogonal')}
+                className={`py-2 px-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                  selectedZone.distributionPattern === 'orthogonal'
+                    ? 'bg-teal-500/20 border-teal-400 text-teal-300 shadow-sm font-bold'
+                    : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:bg-neutral-850'
+                }`}
+              >
+                <span>▦</span> Orthogonal Grid
+              </button>
+            </div>
+          </div>
+
+          {/* Target Coverage Goal Slider */}
+          <div className="flex flex-col gap-1.5">
+            <div className="flex justify-between items-center text-[10px]">
+              <span className="font-bold uppercase tracking-wider text-neutral-500">Target Coverage Goal</span>
+              <span className="font-mono font-bold text-amber-400">
+                {selectedZone.coverageTargetPercent || 100}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min="85"
+              max="100"
+              step="1"
+              value={selectedZone.coverageTargetPercent || 100}
+              onChange={(e) => handleUpdate('coverageTargetPercent', e.currentTarget.valueAsNumber)}
+              className="w-full accent-teal-500 bg-neutral-900 h-1.5 rounded-lg appearance-none cursor-pointer"
+            />
+            <div className="flex justify-between text-[9px] text-neutral-500 font-mono">
+              <span>85% Basic</span>
+              <span>95% target</span>
+              <span className="text-teal-400 font-bold">100% Full Blanket</span>
+            </div>
+          </div>
+
+          {/* Quick Action: Redistribute & Maximize Circular Coverage */}
+          <button
+            type="button"
+            onClick={() => handleUpdate('coverageTargetPercent',100)}
+            className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-teal-600/30 to-blue-600/30 hover:from-teal-600/40 hover:to-blue-600/40 border border-teal-500/40 text-teal-200 text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-md active:scale-98"
+          >
+            <CircleDot size={14} className="text-teal-400" />
+            Set 100% estimated coverage target
+          </button>
+        </div>
+      )}
+
       {/* Live Calculations Summary */}
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between text-neutral-400 text-[10px] font-bold uppercase tracking-wider">
@@ -594,16 +519,25 @@ export const ZonePropertiesPanel: React.FC = () => {
           </div>
           <div className="flex justify-between">
             <span className="text-neutral-500">Thermal Supply Flow:</span>
-            <span className="font-semibold text-neutral-300 font-mono">{loadResult.thermalCfm} CFM</span>
+            <span className="font-semibold text-neutral-300 font-mono">{loadResult.thermalCfm} {isImperial ? 'CFM' : 'L/s'}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-neutral-500">ASHRAE 62.1 Fresh Air:</span>
-            <span className="font-semibold text-teal-400 font-mono">{loadResult.vozCfm} CFM</span>
+            <span className="font-semibold text-teal-400 font-mono">{loadResult.vozCfm} {isImperial ? 'CFM' : 'L/s'}</span>
           </div>
           <div className="flex justify-between border-t border-neutral-800 pt-1.5 font-bold">
             <span className="text-neutral-400">Total Design Flow:</span>
-            <span className="text-emerald-400 font-mono">{loadResult.supplyCfm} CFM</span>
+            <span className="text-emerald-400 font-mono">{loadResult.supplyCfm} {isImperial ? 'CFM' : 'L/s'}</span>
           </div>
+
+          {selectedZone.diffusers.length > 0 && selectedZone.systemType !== 'high-wall' && (
+            <div className="flex items-center justify-between border-t border-neutral-800 pt-1.5 text-[11px]">
+              <span className="text-neutral-400">Circular Distribution Coverage:</span>
+              <span className={`font-mono font-bold ${zoneCoverage.coveragePercent >= 99 ? 'text-emerald-400' : zoneCoverage.isCovered95 ? 'text-teal-400' : 'text-amber-400'}`}>
+                {zoneCoverage.coveragePercent}% {zoneCoverage.coveragePercent >= 99 ? '(100% Full Blanket)' : zoneCoverage.isCovered95 ? '(≥95% Pass)' : '(Partial)'}
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </div>

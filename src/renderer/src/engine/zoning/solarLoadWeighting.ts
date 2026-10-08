@@ -27,5 +27,5 @@ export function calculateSolarLoadWeights(input: SolarWeightingInput): number[] 
 
   // Normalize so sum equals 1.0
   const sum = rawWeights.reduce((a, b) => a + b, 0);
-  return rawWeights.map((w) => parseFloat((w / sum).toFixed(3)));
+  return rawWeights.map((w) => w / sum);
 }

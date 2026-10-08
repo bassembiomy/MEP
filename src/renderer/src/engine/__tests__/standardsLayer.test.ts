@@ -43,8 +43,12 @@ assert(calculatedFa === 310, `Calculated FA CFM should be 310, got ${calculatedF
 
 // 4. Diffuser Throw rules
 const throwCriteria = getDiffuserThrowCriteria('4-way-ceiling', ashrae);
-assert(throwCriteria.minThrowRatio === 0.75, 'Min throw ratio should be 0.75');
-assert(throwCriteria.maxThrowRatio === 1.25, 'Max throw ratio should be 1.25');
+assert(throwCriteria.minThrowRatio === ashrae.diffuserThrow.minThrowRatio, 'Throw rules must use the selected project preset');
+assert(throwCriteria.maxThrowRatio === ashrae.diffuserThrow.maxThrowRatio, 'Throw rules must use the selected project preset');
+// These are project criteria, not a verified ASHRAE normative table.
+const explicitProjectCriteria=getDiffuserThrowCriteria('4-way-ceiling', {...ashrae,diffuserThrow:{...ashrae.diffuserThrow,minThrowRatio:0.75,maxThrowRatio:1.25}});
+assert(explicitProjectCriteria.minThrowRatio===0.75&&explicitProjectCriteria.maxThrowRatio===1.25, 'Explicit project throw limits must be honored');
+assert(!ashrae.description.toLowerCase().includes('compliant'), 'Preset name must not certify standards compliance');
 
 // 5. Comfort rules
 const comfortEnvelope = getComfortVelocityEnvelope('sedentary', false, 'cooling', ashrae);

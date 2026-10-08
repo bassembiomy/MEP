@@ -1,5 +1,7 @@
 import { EquipmentServiceZone, DesignControlMode } from '../zoning/zonePartitioner';
 import { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
+import { DuctAccessoryItem } from '../types';
+import { calculateFrictionRatePer100Ft } from './ductPressureCalculator';
 
 export interface SteppedDuctSection {
   id: string;
@@ -24,6 +26,7 @@ export interface SteppedDuctSection {
   connectedDiffusers: string[];
   parentDuctId?: string;
   childDuctIds: string[];
+  accessories?: DuctAccessoryItem[];
 }
 
 export function routeSteppedSupplyDucts(
@@ -55,12 +58,36 @@ export function routeSteppedSupplyDucts(
   let remainingCfm = totalSupplyCfm;
   let currentTrunkPoint = { x: eqPos.x, y: eqPos.y };
   let sectionIndex = 1;
+  let previousTrunkId: string | undefined;
 
   for (let i = 0; i < sortedCols.length; i++) {
     const colX = sortedCols[i];
     const terminalsInCol = colMap.get(colX) || [];
     const isFirstCol = i === 0;
     const isLastCol = i === sortedCols.length - 1;
+
+    const trunkAccessories: DuctAccessoryItem[] = [];
+    const widthIn = remainingCfm >= 1000 ? 24 : remainingCfm >= 600 ? 18 : 14;
+    const heightIn = 10;
+
+    // NFPA 90A §6.4.2.1: Supply smoke detector on main discharge if > 2,000 CFM
+    if (isFirstCol && totalSupplyCfm > 2000) {
+      trunkAccessories.push({
+        id: `DSD-${zone.unitTag}`,
+        type: 'duct-smoke-detector',
+        tag: `DSD-${zone.unitTag}`,
+        position: {
+          x: parseFloat(((currentTrunkPoint.x + colX) / 2).toFixed(2)),
+          y: parseFloat(eqPos.y.toFixed(2))
+        },
+        widthIn,
+        heightIn,
+        deltaPInWg: 0.02,
+        cadSymbol: 'DSD',
+        standardReference: 'NFPA 90A §6.4.2.1',
+        actionOnTrigger: 'Interlock fan shutdown upon smoke alarm'
+      });
+    }
 
     // 1. Centerline horizontal main trunk segment from current point to this column takeoff
     const trunkId = `DS-${zone.unitTag}-${sectionIndex++}`;
@@ -74,8 +101,8 @@ export function routeSteppedSupplyDucts(
       endPoint: { x: parseFloat(colX.toFixed(2)), y: parseFloat(eqPos.y.toFixed(2)) },
       airflowCfm: remainingCfm,
       shape: 'rectangular',
-      widthIn: remainingCfm >= 1000 ? 24 : remainingCfm >= 600 ? 18 : 14,
-      heightIn: 10,
+      widthIn,
+      heightIn,
       velocityFpm: 950,
       allowableVelocityFpm: isFirstCol ? 1200 : 900,
       frictionLossPer100Ft: 0.08,
@@ -84,13 +111,33 @@ export function routeSteppedSupplyDucts(
       ncRating: 25,
       connectedDiffuserCount: terminalsInCol.length,
       connectedDiffusers: terminalsInCol.map((t) => t.id),
-      childDuctIds: []
+      parentDuctId: previousTrunkId,
+      childDuctIds: [],
+      accessories: trunkAccessories.length > 0 ? trunkAccessories : undefined
     });
 
     // 2. Orthogonal vertical takeoff branches running from trunk centerline to each terminal in this column
     for (const term of terminalsInCol) {
-      if (Math.abs(term.position.y - eqPos.y) > 0.5) {
+      if (Math.abs(term.position.y - eqPos.y) > 1e-8) {
         const branchId = `DS-${zone.unitTag}-${sectionIndex++}`;
+        const branchMidY = (eqPos.y + term.position.y) / 2;
+
+        // VCD for branch air balancing
+        const branchAccessories: DuctAccessoryItem[] = [
+          {
+            id: `VCD-${branchId}`,
+            type: 'volume-control-damper',
+            tag: 'VCD',
+            position: { x: parseFloat(colX.toFixed(2)), y: parseFloat(branchMidY.toFixed(2)) },
+            widthIn: 10,
+            heightIn: 8,
+            deltaPInWg: 0.015,
+            cadSymbol: 'VCD',
+            standardReference: 'SMACNA HVAC Duct Systems / NFPA 90A',
+            actionOnTrigger: 'Manual air balancing'
+          }
+        ];
+
         ducts.push({
           id: branchId,
           unitId: zone.id,
@@ -112,7 +159,8 @@ export function routeSteppedSupplyDucts(
           connectedDiffuserCount: 1,
           connectedDiffusers: [term.id],
           parentDuctId: trunkId,
-          childDuctIds: []
+          childDuctIds: [],
+          accessories: branchAccessories
         });
       }
     }
@@ -121,7 +169,19 @@ export function routeSteppedSupplyDucts(
     const colCfm = terminalsInCol.reduce((s, t) => s + t.cfm, 0);
     remainingCfm = Math.max(0, remainingCfm - colCfm);
     currentTrunkPoint = { x: colX, y: eqPos.y };
+    previousTrunkId = trunkId;
   }
 
+  const byId = new Map(ducts.map(d => [d.id, d]));
+  for (const d of ducts) {
+    if (d.parentDuctId) byId.get(d.parentDuctId)?.childDuctIds.push(d.id);
+    const areaSqFt = d.widthIn * d.heightIn / 144;
+    d.velocityFpm = Math.round(d.airflowCfm / areaSqFt);
+    const equivalentDiameter = 1.30 * Math.pow(d.widthIn * d.heightIn, 0.625) / Math.pow(d.widthIn + d.heightIn, 0.25);
+    d.frictionLossPer100Ft = calculateFrictionRatePer100Ft(d.airflowCfm, equivalentDiameter);
+    const coefficient = d.role === 'main-trunk' ? 0.20 : d.role === 'runout' ? 0.35 : 0.15;
+    d.fittingLossInWg = coefficient * Math.pow(d.velocityFpm / 4005, 2);
+    d.totalSectionLossInWg = d.frictionLossPer100Ft * Math.hypot(d.endPoint.x - d.startPoint.x, d.endPoint.y - d.startPoint.y) / 100 + d.fittingLossInWg;
+  }
   return ducts;
 }

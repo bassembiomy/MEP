@@ -1,0 +1,465 @@
+import type { DxfEntity } from '../../store/projectStore'
+import { measureSimplePolygon } from '../engineeringInputs'
+import { isPointInPolygon } from '../geometry'
+import { getCadEntityPath, validateCadEntity } from './nativeGeometry'
+import type {
+  CadRoomCandidate,
+  CadRoomRecognitionOptions,
+  CadRoomRecognitionResult
+} from './semanticTypes'
+
+type Point = { x: number; y: number }
+type Source = { handle: string; layer: string }
+type Segment = { a: Point; b: Point; sources: Source[]; cuts: number[] }
+type Edge = { from: number; to: number; twin: number; sources: Source[] }
+const cross = (a: Point, b: Point): number => a.x * b.y - a.y * b.x
+const subtract = (a: Point, b: Point): Point => ({ x: a.x - b.x, y: a.y - b.y })
+const distance = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y)
+const at = (s: Segment, t: number): Point => ({
+  x: s.a.x + t * (s.b.x - s.a.x),
+  y: s.a.y + t * (s.b.y - s.a.y)
+})
+const sourceKey = (s: Source): string => `${s.handle}\u0000${s.layer}`
+const mergeSources = (a: Source[], b: Source[]): Source[] => [
+  ...new Map([...a, ...b].map((s) => [sourceKey(s), s])).values()
+]
+const WORK_LIMIT = 200_000
+class RecognitionBudgetExceeded extends Error {}
+
+function signedArea(points: Point[]): number {
+  const origin = points[0]
+  let sum = 0
+  for (let i = 0; i < points.length; i++)
+    sum += cross(subtract(points[i], origin), subtract(points[(i + 1) % points.length], origin))
+  return sum / 2
+}
+
+/** Remove collinear subdivisions so the same boundary has the same identity after graph splitting. */
+function simplifyRing(points: Point[]): Point[] {
+  if (
+    points.length > 1 &&
+    points[0].x === points[points.length - 1].x &&
+    points[0].y === points[points.length - 1].y
+  )
+    points = points.slice(0, -1)
+  return points.filter((p, i) => {
+    const before = subtract(p, points[(i + points.length - 1) % points.length])
+    const after = subtract(points[(i + 1) % points.length], p)
+    return (
+      Math.abs(cross(before, after)) >
+        1e-10 * Math.max(1, Math.hypot(before.x, before.y) * Math.hypot(after.x, after.y)) ||
+      before.x * after.x + before.y * after.y < 0
+    )
+  })
+}
+
+function canonicalRing(polygon: number[]): string {
+  const pairs: string[] = []
+  for (let i = 0; i < polygon.length; i += 2)
+    pairs.push(`${polygon[i].toPrecision(15)},${polygon[i + 1].toPrecision(15)}`)
+  const start = pairs.reduce((best, p, i) => (p < pairs[best] ? i : best), 0)
+  const forward = pairs.map((_, i) => pairs[(start + i) % pairs.length]).join(';')
+  const reverse = pairs.map((_, i) => pairs[(start - i + pairs.length) % pairs.length]).join(';')
+  return forward < reverse ? forward : reverse
+}
+
+/** Recognize bounded geometry, never approve semantics or bridge openings. Work is explicitly bounded. */
+export function recognizeCadRooms(
+  entities: DxfEntity[],
+  options: CadRoomRecognitionOptions
+): CadRoomRecognitionResult {
+  const result: CadRoomRecognitionResult = { candidates: [], diagnostics: [] }
+  const diagnostic = (
+    code: string,
+    message: string,
+    severity: 'warning' | 'error' = 'warning'
+  ): number => result.diagnostics.push({ code, severity, message })
+  const scale = options.drawingUnitsPerFoot
+  const tolerance = options.endpointToleranceFt ?? 0.001
+  const minimumArea = options.minAreaSqFt ?? 20
+  const limit = Math.min(options.maxSegments ?? 5000, 5000)
+  if (
+    ![scale, tolerance, minimumArea, limit].every((n) => Number.isFinite(n) && n > 0) ||
+    tolerance > 0.01 ||
+    !Number.isInteger(limit)
+  ) {
+    diagnostic(
+      'invalid-recognition-options',
+      'Drawing units per foot, tolerance, minimum area and segment budget must be finite and positive; tolerance cannot exceed 0.01 ft.',
+      'error'
+    )
+    return result
+  }
+  const selected = options.layers ? new Set(options.layers) : null
+  const eligible = (e: DxfEntity): boolean => !selected || selected.has(e.layer ?? '0')
+  const segments: Segment[] = []
+  const direct: { points: number[]; sources: Source[]; approximate: boolean }[] = []
+  let segmentCount = 0,
+    work = 0
+  const spend = (n = 1): void => {
+    work += n
+    if (work > WORK_LIMIT) throw new RecognitionBudgetExceeded()
+  }
+  let origin: Point | undefined
+  const normalize = (points: number[]): Point[] => {
+    origin ??= { x: points[0], y: points[1] }
+    const normalized: Point[] = []
+    for (let i = 0; i < points.length; i += 2)
+      normalized.push({ x: (points[i] - origin.x) / scale, y: (points[i + 1] - origin.y) / scale })
+    if (!normalized.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y)))
+      throw new RangeError('Physical coordinates are not finite')
+    return normalized
+  }
+  const candidates = new Map<string, CadRoomCandidate>()
+  const addCandidate = (
+    input: Point[],
+    sources: Source[],
+    approximate: boolean,
+    graph: boolean
+  ): void => {
+    const points = simplifyRing(input)
+    if (points.length < 3) return
+    spend(points.length * points.length)
+    const normalized = points.flatMap((p) => [p.x, p.y])
+    let area: number
+    try {
+      area = measureSimplePolygon(normalized).area
+    } catch {
+      diagnostic(
+        'invalid-boundary',
+        'A repeated, self-intersecting or degenerate boundary was suppressed.'
+      )
+      return
+    }
+    if (area < minimumArea) {
+      diagnostic(
+        'small-boundary',
+        `Boundary area ${area.toFixed(3)} ft² is below the ${minimumArea} ft² room threshold.`
+      )
+      return
+    }
+    const polygon = points.flatMap((p) => [origin!.x + p.x * scale, origin!.y + p.y * scale])
+    if (!polygon.every(Number.isFinite)) {
+      diagnostic(
+        'invalid-boundary',
+        'Boundary cannot be represented in source drawing coordinates.'
+      )
+      return
+    }
+    const key = canonicalRing(polygon)
+    const previous = candidates.get(key)
+    if (previous) {
+      previous.sourceHandles = [
+        ...new Set([...previous.sourceHandles, ...sources.map((s) => s.handle)])
+      ].sort()
+      previous.sourceLayers = [
+        ...new Set([...previous.sourceLayers, ...sources.map((s) => s.layer)])
+      ].sort()
+      return
+    }
+    const unresolvedConditions = [
+      'Confirm room boundary, use, height, openings, obstructions and barrier roles. Geometry does not verify engineering or fire compliance.'
+    ]
+    if (graph)
+      unresolvedConditions.push(
+        `Endpoints and junctions are matched within ${tolerance} ft tolerance; review boundary connectivity.`
+      )
+    if (approximate)
+      unresolvedConditions.push(
+        'Native curved boundary is sampled: polygon area is approximate, not the true curved area. Review the source geometry and sampling tolerance/cap.'
+      )
+    candidates.set(key, {
+      // Store the canonical ring itself: collision-free and stable across source duplicates and traversal direction.
+      id: `cad-room:${key}`,
+      name: 'Room',
+      polygon,
+      areaSqFt: area,
+      sourceHandles: [...new Set(sources.map((s) => s.handle))].sort(),
+      sourceLayers: [...new Set(sources.map((s) => s.layer))].sort(),
+      confidence: approximate ? 0.65 : graph ? 0.85 : 0.95,
+      status: 'review-required',
+      evidence: [
+        graph
+          ? 'Bounded face of selected native wall line/polyline segments.'
+          : 'Closed native polyline boundary.',
+        approximate
+          ? 'Native bulges sampled at requested 0.01 ft sagitta, subject to segment cap.'
+          : 'Simple polygon geometry validated in canonical feet.'
+      ],
+      unresolvedConditions
+    })
+  }
+  try {
+    if (entities.length > 100_000) throw new RecognitionBudgetExceeded()
+    for (let index = 0; index < entities.length; index++) {
+      spend()
+      const entity = entities[index]
+      if (!eligible(entity) || !['LINE', 'LWPOLYLINE', 'POLYLINE'].includes(entity.type)) continue
+      const closed = entity.type !== 'LINE' && entity.closed === true
+      if (!closed && (!selected || selected.size === 0)) continue
+      const rawSegments =
+        entity.type === 'LINE' ? 1 : (entity.points?.length ?? 0) / 2 - (closed ? 0 : 1)
+      // Check the structural budget before vertex validation or native curve sampling iterates it.
+      if (segmentCount + rawSegments > limit) throw new RecognitionBudgetExceeded()
+      const invalid = validateCadEntity(entity)
+      if (invalid) {
+        diagnostic('invalid-geometry', `${entity.handle ?? index}: ${invalid}`)
+        continue
+      }
+      if (entity.geometryApproximation) {
+        diagnostic(
+          'approximated-boundary-excluded',
+          `${entity.handle ?? index}: ${entity.geometryApproximation}`
+        )
+        continue
+      }
+      const curved = entity.bulges?.some((b) => b !== 0) ?? false
+      if (curved && !closed) {
+        diagnostic(
+          'curved-open-boundary-excluded',
+          'Open curved polylines require corrected/explicit room geometry.'
+        )
+        continue
+      }
+      const path = getCadEntityPath(entity, {
+        maxSagitta: 0.01 * scale,
+        maxSegments: Math.max(1, Math.floor((limit - segmentCount) / rawSegments))
+      })
+      segmentCount += path.length / 2 - 1
+      if (segmentCount > limit) throw new RecognitionBudgetExceeded()
+      const sources = [
+        {
+          handle: entity.handle ?? entity.sourceHandle ?? `entity-${index}`,
+          layer: entity.layer ?? '0'
+        }
+      ]
+      if (closed) {
+        const ring = path.slice(0, -2)
+        try {
+          const points = normalize(ring)
+          spend(points.length * points.length)
+          measureSimplePolygon(points.flatMap((p) => [p.x, p.y]))
+        } catch (error) {
+          if (error instanceof RecognitionBudgetExceeded) throw error
+          diagnostic('invalid-boundary', `${sources[0].handle}: Invalid closed boundary.`)
+          continue
+        }
+        if (curved || !selected) {
+          direct.push({ points: ring, sources, approximate: curved })
+          continue
+        }
+      }
+      const points = normalize(path)
+      for (let i = 1; i < points.length; i++) {
+        if (distance(points[i - 1], points[i]) <= 1e-12) continue
+        segments.push({ a: points[i - 1], b: points[i], cuts: [0, 1], sources })
+      }
+    }
+    for (const boundary of direct)
+      addCandidate(normalize(boundary.points), boundary.sources, boundary.approximate, false)
+
+    // Sweep the x bounds, with a strict pair-work cap even for pathological coincident geometry.
+    segments.sort((a, b) => Math.min(a.a.x, a.b.x) - Math.min(b.a.x, b.b.x))
+    const addProjection = (point: Point, s: Segment): void => {
+      const v = subtract(s.b, s.a),
+        length2 = v.x * v.x + v.y * v.y
+      const t = ((point.x - s.a.x) * v.x + (point.y - s.a.y) * v.y) / length2
+      if (t > 0 && t < 1 && distance(point, at(s, t)) <= tolerance) s.cuts.push(t)
+    }
+    for (let i = 0; i < segments.length; i++) {
+      const a = segments[i],
+        r = subtract(a.b, a.a),
+        maxX = Math.max(a.a.x, a.b.x)
+      for (let j = i + 1; j < segments.length; j++) {
+        const b = segments[j]
+        if (Math.min(b.a.x, b.b.x) > maxX + tolerance) break
+        spend()
+        if (
+          Math.max(a.a.y, a.b.y) + tolerance < Math.min(b.a.y, b.b.y) ||
+          Math.max(b.a.y, b.b.y) + tolerance < Math.min(a.a.y, a.b.y)
+        )
+          continue
+        const s = subtract(b.b, b.a),
+          q = subtract(b.a, a.a),
+          denominator = cross(r, s)
+        if (Math.abs(denominator) > 1e-12 * Math.hypot(r.x, r.y) * Math.hypot(s.x, s.y)) {
+          const t = cross(q, s) / denominator,
+            u = cross(q, r) / denominator
+          if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+            a.cuts.push(t)
+            b.cuts.push(u)
+          }
+        }
+        // Includes collinear overlaps and endpoint-to-interior T junctions.
+        addProjection(a.a, b)
+        addProjection(a.b, b)
+        addProjection(b.a, a)
+        addProjection(b.b, a)
+      }
+    }
+    const nodes: Point[] = [],
+      outgoing: number[][] = [],
+      edges: Edge[] = []
+    const cells = new Map<string, number[]>(),
+      edgeKeys = new Map<string, number>()
+    const node = (p: Point): number => {
+      const gx = Math.floor(p.x / tolerance),
+        gy = Math.floor(p.y / tolerance)
+      let nearest = -1,
+        nearestDistance = Infinity
+      for (let dx = -1; dx <= 1; dx++)
+        for (let dy = -1; dy <= 1; dy++) {
+          for (const id of cells.get(`${gx + dx},${gy + dy}`) ?? []) {
+            spend()
+            const d = distance(nodes[id], p)
+            if (d <= tolerance && d < nearestDistance) {
+              nearest = id
+              nearestDistance = d
+            }
+          }
+        }
+      if (nearest >= 0) return nearest
+      const id = nodes.length
+      nodes.push(p)
+      outgoing.push([])
+      const key = `${gx},${gy}`,
+        bucket = cells.get(key) ?? []
+      bucket.push(id)
+      cells.set(key, bucket)
+      return id
+    }
+    let splitCount = 0
+    for (const s of segments) {
+      s.cuts.sort((a, b) => a - b)
+      for (let i = 1; i < s.cuts.length; i++) {
+        if (s.cuts[i] - s.cuts[i - 1] <= 1e-12) continue
+        if (++splitCount > limit) throw new RecognitionBudgetExceeded()
+        const from = node(at(s, s.cuts[i - 1])),
+          to = node(at(s, s.cuts[i]))
+        if (from === to) continue
+        const key = from < to ? `${from}:${to}` : `${to}:${from}`
+        const duplicate = edgeKeys.get(key)
+        if (duplicate !== undefined) {
+          edges[duplicate].sources = mergeSources(edges[duplicate].sources, s.sources)
+          edges[edges[duplicate].twin].sources = edges[duplicate].sources
+          continue
+        }
+        const id = edges.length
+        edgeKeys.set(key, id)
+        edges.push(
+          { from, to, twin: id + 1, sources: s.sources },
+          { from: to, to: from, twin: id, sources: s.sources }
+        )
+        outgoing[from].push(id)
+        outgoing[to].push(id + 1)
+      }
+    }
+    const openCount = outgoing.filter((list) => list.length === 1).length
+    if (openCount)
+      diagnostic(
+        'open-boundary',
+        `${openCount} wall endpoints are open; no missing connection or door gap was bridged.`
+      )
+    for (let n = 0; n < nodes.length; n++)
+      outgoing[n].sort(
+        (a, b) =>
+          Math.atan2(nodes[edges[a].to].y - nodes[n].y, nodes[edges[a].to].x - nodes[n].x) -
+          Math.atan2(nodes[edges[b].to].y - nodes[n].y, nodes[edges[b].to].x - nodes[n].x)
+      )
+    const positions = new Map<number, number>()
+    for (const list of outgoing) list.forEach((edge, index) => positions.set(edge, index))
+    const visited = new Set<number>()
+    for (let start = 0; start < edges.length; start++) {
+      if (visited.has(start)) continue
+      let current = start
+      const ring: Point[] = [],
+        sources: Source[] = []
+      do {
+        spend()
+        if (visited.has(current)) break
+        visited.add(current)
+        const edge = edges[current]
+        ring.push(nodes[edge.from])
+        sources.push(...edge.sources)
+        const list = outgoing[edge.to],
+          position = positions.get(edge.twin)!
+        current = list[(position + list.length - 1) % list.length]
+      } while (current !== start)
+      // The exterior is clockwise; keep counter-clockwise bounded faces only.
+      if (current === start && ring.length >= 3 && signedArea(ring) > 1e-10)
+        addCandidate(ring, sources, false, true)
+    }
+    const allCandidates = [...candidates.values()]
+    const strictlyInside = (x: number, y: number, polygon: number[]): boolean => {
+      if (!isPointInPolygon(x, y, polygon)) return false
+      for (let i = 0; i < polygon.length; i += 2) {
+        const j = (i + 2) % polygon.length
+        const a = { x: polygon[i], y: polygon[i + 1] },
+          b = { x: polygon[j], y: polygon[j + 1] }
+        const v = subtract(b, a),
+          length2 = v.x * v.x + v.y * v.y
+        const t = Math.max(0, Math.min(1, ((x - a.x) * v.x + (y - a.y) * v.y) / length2))
+        if (Math.hypot(x - a.x - t * v.x, y - a.y - t * v.y) <= tolerance * scale) return false
+      }
+      return true
+    }
+    for (let i = 0; i < allCandidates.length; i++)
+      for (let j = i + 1; j < allCandidates.length; j++) {
+        const a = allCandidates[i],
+          b = allCandidates[j]
+        spend(a.polygon.length * b.polygon.length)
+        let overlap = false
+        for (let k = 0; k < a.polygon.length && !overlap; k += 2)
+          overlap = strictlyInside(a.polygon[k], a.polygon[k + 1], b.polygon)
+        for (let k = 0; k < b.polygon.length && !overlap; k += 2)
+          overlap = strictlyInside(b.polygon[k], b.polygon[k + 1], a.polygon)
+        if (overlap) {
+          const condition =
+            'Nested or overlapping boundaries may describe an obstacle, hole or separate space; correct the room geometry before approval. Areas do not subtract holes.'
+          a.unresolvedConditions.push(condition)
+          b.unresolvedConditions.push(condition)
+          a.confidence = Math.min(a.confidence, 0.5)
+          b.confidence = Math.min(b.confidence, 0.5)
+          diagnostic('nested-boundaries', condition)
+        }
+      }
+    for (const candidate of allCandidates) {
+      const labels: string[] = []
+      for (const entity of entities) {
+        spend(candidate.polygon.length / 2)
+        if (
+          (entity.type === 'TEXT' || entity.type === 'MTEXT') &&
+          !validateCadEntity(entity) &&
+          isPointInPolygon(entity.x!, entity.y!, candidate.polygon)
+        )
+          labels.push(entity.text!)
+      }
+      const names = [...new Set(labels)].sort()
+      if (names.length) {
+        candidate.name = names[0]
+        candidate.evidence.push(`Interior text label suggestion: ${names.join(' / ')}`)
+      }
+      if (names.length > 1)
+        candidate.unresolvedConditions.push(
+          'Multiple interior text labels; confirm which describes the room.'
+        )
+      result.candidates.push(candidate)
+    }
+    result.candidates.sort((a, b) => a.id.localeCompare(b.id))
+  } catch (error) {
+    result.candidates = []
+    if (error instanceof RecognitionBudgetExceeded)
+      diagnostic(
+        'recognition-budget-exceeded',
+        `Recognition stopped at the ${limit}-segment / ${WORK_LIMIT}-operation budget. Select fewer layers or simplify the source geometry.`,
+        'warning'
+      )
+    else
+      diagnostic(
+        'invalid-geometry',
+        error instanceof Error ? error.message : 'Invalid source geometry',
+        'error'
+      )
+  }
+  return result
+}

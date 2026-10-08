@@ -1,6 +1,6 @@
-import { isPointInPolygon, getPolygonCentroid } from './geometry';
+import { isPointInPolygon, getPolygonCentroid, calculateOptimalIndoorUnitPos, calculatePolygonArea } from './geometry';
 import { sizeDuct } from './ductSizer';
-import { selectBestDiffuserFromCatalog } from './diffuserPlacer';
+import { selectBestDiffuserFromCatalog, placeDiffusersWithCircularOptimization } from './diffuserPlacer';
 import { STANDARD_DIFFUSER_CATALOG } from './hvacCatalogs';
 import {
   ConnectionPort,
@@ -280,7 +280,27 @@ export function planIndoorUnitPlacement(
     }
   }
 
-  const isContained = isPointInPolygon(optimalX, optimalY, points);
+  let isContained = isPointInPolygon(optimalX, optimalY, points);
+  if (!isContained) {
+    // Scan interior points inside bounding box to guarantee an interior position for L-shapes/concave polygons
+    const bbox = getPolygonBoundingBox(points);
+    const stepX = (bbox.width || 100) / 20;
+    const stepY = (bbox.height || 100) / 20;
+    for (let ix = 1; ix < 20; ix++) {
+      const px = bbox.minX + ix * stepX;
+      for (let iy = 1; iy < 20; iy++) {
+        const py = bbox.minY + iy * stepY;
+        if (isPointInPolygon(px, py, points)) {
+          optimalX = px;
+          optimalY = py;
+          isContained = true;
+          break;
+        }
+      }
+      if (isContained) break;
+    }
+  }
+
   if (!isContained) {
     diagnostics.push({
       code: 'ERR_COMPONENT_OUTSIDE_ZONE',
@@ -384,111 +404,104 @@ export function planCassetteDistribution(
   spaceNcLimit: number = 32
 ): { components: MechanicalComponent[]; diffusers: Diffuser[]; diagnostics: DeploymentDiagnostic[] } {
   const diagnostics: DeploymentDiagnostic[] = [];
-  const bbox = getPolygonBoundingBox(points);
   const flowPerUnit = Math.round(totalCfm / Math.max(1, quantity));
-
   const components: MechanicalComponent[] = [];
   const diffusers: Diffuser[] = [];
 
-  const ar = bbox.width / (bbox.height || 1);
-  let rows = Math.round(Math.sqrt(quantity / ar));
-  rows = Math.max(1, rows);
-  let cols = Math.ceil(quantity / rows);
-  cols = Math.max(1, cols);
+  const areaPx = calculatePolygonArea(points);
+  const areaSqFt = Math.max(50, areaPx / 100);
 
-  const colWidth = bbox.width / cols;
-  const rowHeight = bbox.height / rows;
-
-  let count = 0;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      let gx = bbox.minX + (c + 0.5) * colWidth;
-      let gy = bbox.minY + (r + 0.5) * rowHeight;
-
-      if (!isPointInPolygon(gx, gy, points)) {
-        const centroid = getPolygonCentroid(points);
-        gx = (gx + centroid.x) / 2;
-        gy = (gy + centroid.y) / 2;
-      }
-
-      const snapX = Math.round(gx / 10) * 10;
-      const snapY = Math.round(gy / 10) * 10;
-      const componentId = `comp-cassette-${zoneId}-${count}`;
-
-      if (!isPointInPolygon(snapX, snapY, points)) {
-        diagnostics.push({
-          code: 'ERR_COMPONENT_OUTSIDE_ZONE',
-          severity: 'error',
-          message: `Cassette unit #${count + 1} is outside zone boundary.`,
-          remediation: 'Adjust room dimensions or lower cassette quantity.'
-        });
-      }
-
-      const ports: ConnectionPort[] = [
-        {
-          id: `port-${componentId}-ref-gas`,
-          componentId,
-          role: 'refrigerant-suction',
-          position: { x: snapX, y: snapY },
-          direction: { x: 0, y: -1 },
-          size: 0.625,
-          systemType: 'dx-refrigerant',
-          isConnected: false
-        },
-        {
-          id: `port-${componentId}-drain`,
-          componentId,
-          role: 'condensate-drain-out',
-          position: { x: snapX, y: snapY + 15 },
-          direction: { x: 0, y: 1 },
-          size: 0.75,
-          systemType: 'condensate-drain',
-          isConnected: false
-        }
-      ];
-
-      const comp: MechanicalComponent = {
-        id: componentId,
-        systemId,
-        floorId: 'floor-1',
-        zoneId,
-        role: 'cassette-terminal',
-        model,
-        systemType: 'cassette',
-        position: { x: snapX, y: snapY, z: 10 },
-        rotationDeg: 0,
-        elevationFt: 10,
-        footprint: {
-          minX: snapX - 15,
-          maxX: snapX + 15,
-          minY: snapY - 15,
-          maxY: snapY + 15,
-          widthWorld: 30,
-          heightWorld: 30
-        },
-        ports,
-        isLocked: false,
-        metadata: { cfm: flowPerUnit, nc: spaceNcLimit }
-      };
-
-      components.push(comp);
-
-      diffusers.push({
-        id: `dif-${componentId}`,
-        x: snapX,
-        y: snapY,
-        cfm: flowPerUnit,
-        size: model,
-        actualNc: spaceNcLimit,
-        throwT50Ft: 14,
-        deltaPInWg: 0.04
-      });
-
-      count++;
-      if (components.length >= quantity) break;
+  const optimizedCassettes = placeDiffusersWithCircularOptimization(
+    points,
+    totalCfm,
+    true,
+    10,
+    10,
+    [],
+    'cassette',
+    areaSqFt,
+    {
+      coverageTargetPercent: 95,
+      pattern: 'hexagonal',
+      diffuserCountOverride: quantity,
+      spaceNcLimit
     }
-    if (components.length >= quantity) break;
-  }
+  ).filter((d) => d.type !== 'return');
+
+  optimizedCassettes.forEach((p, idx) => {
+    const snapX = Math.round(p.x / 10) * 10;
+    const snapY = Math.round(p.y / 10) * 10;
+    const componentId = `comp-cassette-${zoneId}-${idx}`;
+
+    if (!isPointInPolygon(snapX, snapY, points)) {
+      diagnostics.push({
+        code: 'ERR_COMPONENT_OUTSIDE_ZONE',
+        severity: 'warning',
+        message: `Cassette unit #${idx + 1} position (${snapX}, ${snapY}) is near perimeter boundary.`
+      });
+    }
+
+    const ports: ConnectionPort[] = [
+      {
+        id: `port-${componentId}-ref-gas`,
+        componentId,
+        role: 'refrigerant-suction',
+        position: { x: snapX, y: snapY },
+        direction: { x: 0, y: -1 },
+        size: 0.625,
+        systemType: 'dx-refrigerant',
+        isConnected: false
+      },
+      {
+        id: `port-${componentId}-drain`,
+        componentId,
+        role: 'condensate-drain-out',
+        position: { x: snapX, y: snapY + 15 },
+        direction: { x: 0, y: 1 },
+        size: 0.75,
+        systemType: 'condensate-drain',
+        isConnected: false
+      }
+    ];
+
+    const comp: MechanicalComponent = {
+      id: componentId,
+      systemId,
+      floorId: 'floor-1',
+      zoneId,
+      role: 'cassette-terminal',
+      model,
+      systemType: 'cassette',
+      position: { x: snapX, y: snapY, z: 10 },
+      rotationDeg: 0,
+      elevationFt: 10,
+      footprint: {
+        minX: snapX - 15,
+        maxX: snapX + 15,
+        minY: snapY - 15,
+        maxY: snapY + 15,
+        widthWorld: 30,
+        heightWorld: 30
+      },
+      ports,
+      isLocked: false,
+      metadata: { cfm: flowPerUnit, nc: spaceNcLimit }
+    };
+
+    components.push(comp);
+
+    diffusers.push({
+      id: `dif-${componentId}`,
+      x: snapX,
+      y: snapY,
+      cfm: flowPerUnit,
+      size: model,
+      type: 'cassette',
+      actualNc: p.actualNc || spaceNcLimit,
+      throwT50Ft: p.throwT50Ft || 14,
+      deltaPInWg: p.deltaPInWg || 0.04
+    });
+  });
 
   return { components, diffusers, diagnostics };
 }
@@ -498,7 +511,7 @@ export function planCassetteDistribution(
  */
 export function planDuctedAirDistribution(
   points: number[],
-  indoorUnitComp: MechanicalComponent,
+  indoorUnitComp: MechanicalComponent | null | undefined,
   totalCfm: number,
   _systemId: string,
   zoneId: string,
@@ -508,7 +521,6 @@ export function planDuctedAirDistribution(
   _scale: number = 10,
   candidateDiffusers?: {
     quantity: number;
-    cfmPerUnit?: number;
     flowPerDiffuser?: number;
     diffuserRecord: any;
     actualNc: number;
@@ -517,8 +529,22 @@ export function planDuctedAirDistribution(
   }
 ): { diffusers: Diffuser[]; ducts: DuctSegment[]; diagnostics: DeploymentDiagnostic[] } {
   const diagnostics: DeploymentDiagnostic[] = [];
-  const numDiffusers = candidateDiffusers?.quantity || Math.max(1, Math.ceil(totalCfm / 300));
-  const flowPerDiffuser = candidateDiffusers?.cfmPerUnit || candidateDiffusers?.flowPerDiffuser || Math.round(totalCfm / numDiffusers);
+  const numDiffusers = candidateDiffusers?.quantity || Math.max(1, Math.ceil(totalCfm / 335));
+  const flowPerDiffuser = candidateDiffusers?.flowPerDiffuser || Math.round(totalCfm / numDiffusers);
+
+  // Distribute diffusers symmetrically on an orthogonal grid aligned with room bounds
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  const numPoints = points.length / 2;
+  for (let i = 0; i < numPoints; i++) {
+    const x = points[2 * i];
+    const y = points[2 * i + 1];
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const roomW = maxX - minX;
+  const roomH = maxY - minY;
 
   const diffuserSelection = candidateDiffusers
     ? {
@@ -527,48 +553,42 @@ export function planDuctedAirDistribution(
         throwT50Ft: candidateDiffusers.throwT50Ft,
         deltaPInWg: candidateDiffusers.deltaPInWg
       }
-    : selectBestDiffuserFromCatalog(flowPerDiffuser, spaceNcLimit, STANDARD_DIFFUSER_CATALOG);
+    : selectBestDiffuserFromCatalog(
+        flowPerDiffuser,
+        spaceNcLimit,
+        STANDARD_DIFFUSER_CATALOG,
+        Math.max(6, Math.min(30, 0.9 * Math.sqrt(Math.max(20, (roomW * roomH) / numDiffusers / ((_scale || 10) * (_scale || 10))))))
+      );
 
-  const bbox = getPolygonBoundingBox(points);
+  // Determine grid topology: 2 rows for balanced symmetric top/bottom branch takeoffs
+  const isHorizontal = roomW >= roomH;
+  let rows = 2;
+  let cols = Math.max(1, Math.ceil(numDiffusers / 2));
+  if (numDiffusers === 1) {
+    rows = 1;
+    cols = 1;
+  }
 
-  // Distribute diffusers on uniform grid
+  const colW = roomW / cols;
+  const rowH = roomH / rows;
+  const unitPos = indoorUnitComp ? indoorUnitComp.position : calculateOptimalIndoorUnitPos(points);
+  const trunkY = Math.round(minY + roomH / 2);
+  const trunkX = Math.round(minX + roomW / 2);
+
   const diffusers: Diffuser[] = [];
-  const ar = bbox.width / (bbox.height || 1);
-  let rows = Math.round(Math.sqrt(numDiffusers / ar));
-  rows = Math.max(1, rows);
-  let cols = Math.ceil(numDiffusers / rows);
-  cols = Math.max(1, cols);
+  let pCount = 0;
 
-  const colWidth = bbox.width / cols;
-  const rowHeight = bbox.height / rows;
-
-  let count = 0;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      let gx = bbox.minX + (c + 0.5) * colWidth;
-      let gy = bbox.minY + (r + 0.5) * rowHeight;
+      if (pCount >= numDiffusers) break;
 
-      if (!isPointInPolygon(gx, gy, points)) {
-        const centroid = getPolygonCentroid(points);
-        gx = (gx + centroid.x) / 2;
-        gy = (gy + centroid.y) / 2;
-      }
-
-      const snapX = Math.round(gx / 10) * 10;
-      const snapY = Math.round(gy / 10) * 10;
-
-      if (!isPointInPolygon(snapX, snapY, points)) {
-        diagnostics.push({
-          code: 'ERR_COMPONENT_OUTSIDE_ZONE',
-          severity: 'error',
-          message: `Diffuser #${count + 1} position (${snapX}, ${snapY}) is outside room boundaries.`
-        });
-      }
+      const gx = Math.round(minX + (c + 0.5) * colW);
+      const gy = Math.round(minY + (r + 0.5) * rowH);
 
       diffusers.push({
-        id: `dif-${zoneId}-${count}`,
-        x: snapX,
-        y: snapY,
+        id: `dif-${zoneId}-${pCount}`,
+        x: gx,
+        y: gy,
         cfm: flowPerDiffuser,
         size: `${diffuserSelection.diffuser.faceSizeIn.width}"x${diffuserSelection.diffuser.faceSizeIn.height}"`,
         type: 'supply',
@@ -576,150 +596,201 @@ export function planDuctedAirDistribution(
         throwT50Ft: diffuserSelection.throwT50Ft,
         deltaPInWg: diffuserSelection.deltaPInWg
       });
-
-      count++;
-      if (diffusers.length >= numDiffusers) break;
-    }
-    if (diffusers.length >= numDiffusers) break;
-  }
-
-  // Add Return Air Grille(s)
-  const numReturns = Math.max(1, Math.ceil(totalCfm / 800));
-  const returnCfmPerGrille = Math.round((totalCfm * 0.9) / numReturns);
-  for (let rIdx = 0; rIdx < numReturns; rIdx++) {
-    const rx = numReturns === 1
-      ? Math.round(bbox.minX + bbox.width * 0.15)
-      : Math.round(bbox.minX + bbox.width * (0.15 + (rIdx * 0.7) / (numReturns - 1)));
-    const ry = Math.round(bbox.minY + bbox.height * 0.85);
-    let snapRx = Math.round(rx / 10) * 10;
-    let snapRy = Math.round(ry / 10) * 10;
-    if (!isPointInPolygon(snapRx, snapRy, points)) {
-      const centroid = getPolygonCentroid(points);
-      snapRx = Math.round(((snapRx + centroid.x) / 2) / 10) * 10;
-      snapRy = Math.round(((snapRy + centroid.y) / 2) / 10) * 10;
-    }
-    diffusers.push({
-      id: `dif-ret-${zoneId}-${rIdx}`,
-      x: snapRx,
-      y: snapRy,
-      cfm: returnCfmPerGrille,
-      size: returnCfmPerGrille > 400 ? '24"x24"' : '18"x18"',
-      type: 'return',
-      actualNc: Math.max(18, diffuserSelection.actualNc - 4),
-      throwT50Ft: 0,
-      deltaPInWg: 0.025
-    });
-  }
-
-  const supplyDiffusers = diffusers.filter((d) => d.type === 'supply' || !d.type);
-
-  // Route ducts from unit outlet port to supply diffusers
-  const unitPos = indoorUnitComp.position;
-  let furthestDif = supplyDiffusers[0] || diffusers[0];
-  let maxDist = -1;
-  for (const dif of supplyDiffusers) {
-    const dist = Math.pow(dif.x - unitPos.x, 2) + Math.pow(dif.y - unitPos.y, 2);
-    if (dist > maxDist) {
-      maxDist = dist;
-      furthestDif = dif;
+      pCount++;
     }
   }
 
-  const A = { x: unitPos.x, y: unitPos.y };
-  const B = { x: furthestDif.x, y: furthestDif.y };
-  const vx = B.x - A.x;
-  const vy = B.y - A.y;
-  const lenSq = vx * vx + vy * vy || 1;
-
-  const projectedDiffusers = supplyDiffusers.map((dif) => {
-    const ux = dif.x - A.x;
-    const uy = dif.y - A.y;
-    let t = (ux * vx + uy * vy) / lenSq;
-    t = Math.max(0.05, Math.min(1.0, t));
-    return {
-      diffuser: dif,
-      projX: Math.round(A.x + t * vx),
-      projY: Math.round(A.y + t * vy),
-      t
-    };
-  });
-
-  projectedDiffusers.sort((a, b) => a.t - b.t);
-
+  const supplyDiffusers = diffusers.filter((d) => d.type === 'supply');
   const ducts: DuctSegment[] = [];
   const fixedHeight = units === 'imperial' ? 10 : 8;
-  let currentStart = { x: unitPos.x, y: unitPos.y };
 
-  // Trunk segments
-  for (let i = 0; i < projectedDiffusers.length; i++) {
-    const segmentEnd = {
-      x: projectedDiffusers[i].projX,
-      y: projectedDiffusers[i].projY
-    };
-
-    let downstreamFlow = 0;
-    for (let j = i; j < projectedDiffusers.length; j++) {
-      downstreamFlow += projectedDiffusers[j].diffuser.cfm;
+  // 1. Orthogonal Main Trunk Line
+  if (isHorizontal) {
+    // If unit is offset from central trunk Y-axis, add direct vertical takeoff duct from indoor unit
+    if (Math.abs(unitPos.y - trunkY) > 5) {
+      const feederSize = sizeDuct(totalCfm, 0.10, fixedHeight);
+      const feederVel = Math.round(totalCfm / Math.max(0.1, (feederSize.widthIn * feederSize.heightIn) / 144));
+      ducts.push({
+        id: `duct-feeder-${zoneId}`,
+        type: 'trunk',
+        points: [unitPos.x, unitPos.y, unitPos.x, trunkY],
+        widthIn: feederSize.widthIn,
+        heightIn: feederSize.heightIn,
+        cfm: totalCfm,
+        velocityFpm: feederVel,
+        sizeLabel: `${feederSize.widthIn}"x${feederSize.heightIn}"`
+      });
     }
 
-    const size = sizeDuct(downstreamFlow, 0.10, fixedHeight);
-    const velocityFpm = Math.round(downstreamFlow / Math.max(0.1, (size.widthIn * size.heightIn) / 144));
-    const sizeLabel = `${size.widthIn}"x${size.heightIn}"`;
+    // Unique column X-coordinates sorted from unit outwards
+    const colXList = Array.from(new Set(supplyDiffusers.map((d) => d.x)));
+    // If unit is on right, sort descending; if on left, sort ascending
+    if (unitPos.x > minX + roomW / 2) {
+      colXList.sort((a, b) => b - a);
+    } else {
+      colXList.sort((a, b) => a - b);
+    }
 
-    ducts.push({
-      id: `duct-trunk-${zoneId}-${i}`,
-      type: 'trunk',
-      points: [currentStart.x, currentStart.y, segmentEnd.x, segmentEnd.y],
-      widthIn: size.widthIn,
-      heightIn: size.heightIn,
-      cfm: downstreamFlow,
-      velocityFpm,
-      sizeLabel
-    });
+    let currentTrunkStart = { x: unitPos.x, y: trunkY };
 
-    currentStart = segmentEnd;
-  }
+    colXList.forEach((colX, idx) => {
+      const segmentEnd = { x: colX, y: trunkY };
+      // Calculate downstream flow
+      const remainingCols = colXList.slice(idx);
+      const downstreamDiffusers = supplyDiffusers.filter((d) => remainingCols.includes(d.x));
+      const downstreamFlow = downstreamDiffusers.reduce((sum, d) => sum + d.cfm, 0);
 
-  // Branch segments
-  projectedDiffusers.forEach((pd, idx) => {
-    const dif = pd.diffuser;
-    const branchStart = { x: pd.projX, y: pd.projY };
-    const branchEnd = { x: dif.x, y: dif.y };
-
-    const branchDist = Math.hypot(branchEnd.x - branchStart.x, branchEnd.y - branchStart.y);
-    if (branchDist > 4) {
-      const size = sizeDuct(dif.cfm, 0.10, fixedHeight);
-      const velocityFpm = Math.round(dif.cfm / Math.max(0.1, (size.widthIn * size.heightIn) / 144));
+      const size = sizeDuct(downstreamFlow, 0.10, fixedHeight);
+      const velocityFpm = Math.round(downstreamFlow / Math.max(0.1, (size.widthIn * size.heightIn) / 144));
 
       ducts.push({
-        id: `duct-branch-${zoneId}-${idx}`,
-        type: 'branch',
-        points: [branchStart.x, branchStart.y, branchEnd.x, branchEnd.y],
+        id: `duct-trunk-${zoneId}-${idx}`,
+        type: 'trunk',
+        points: [currentTrunkStart.x, currentTrunkStart.y, segmentEnd.x, segmentEnd.y],
         widthIn: size.widthIn,
         heightIn: size.heightIn,
-        cfm: dif.cfm,
+        cfm: downstreamFlow,
         velocityFpm,
         sizeLabel: `${size.widthIn}"x${size.heightIn}"`
       });
+
+      currentTrunkStart = segmentEnd;
+    });
+
+    // 2. Perpendicular Branch Runouts
+    supplyDiffusers.forEach((dif, idx) => {
+      const branchStart = { x: dif.x, y: trunkY };
+      const branchEnd = { x: dif.x, y: dif.y };
+      const branchDist = Math.abs(branchEnd.y - branchStart.y);
+
+      if (branchDist > 5) {
+        const size = sizeDuct(dif.cfm, 0.10, fixedHeight);
+        const velocityFpm = Math.round(dif.cfm / Math.max(0.1, (size.widthIn * size.heightIn) / 144));
+
+        ducts.push({
+          id: `duct-branch-${zoneId}-${idx}`,
+          type: 'branch',
+          points: [branchStart.x, branchStart.y, branchEnd.x, branchEnd.y],
+          widthIn: size.widthIn,
+          heightIn: size.heightIn,
+          cfm: dif.cfm,
+          velocityFpm,
+          sizeLabel: `${size.widthIn}"x${size.heightIn}"`
+        });
+      }
+    });
+  } else {
+    // If unit is offset from central trunk X-axis, add direct horizontal takeoff duct from indoor unit
+    if (Math.abs(unitPos.x - trunkX) > 5) {
+      const feederSize = sizeDuct(totalCfm, 0.10, fixedHeight);
+      const feederVel = Math.round(totalCfm / Math.max(0.1, (feederSize.widthIn * feederSize.heightIn) / 144));
+      ducts.push({
+        id: `duct-feeder-${zoneId}`,
+        type: 'trunk',
+        points: [unitPos.x, unitPos.y, trunkX, unitPos.y],
+        widthIn: feederSize.widthIn,
+        heightIn: feederSize.heightIn,
+        cfm: totalCfm,
+        velocityFpm: feederVel,
+        sizeLabel: `${feederSize.widthIn}"x${feederSize.heightIn}"`
+      });
     }
-  });
 
-  // Return duct for Packaged RTU or AHU
-  if (systemType === 'packaged' || systemType === 'ahu') {
-    const totalFlow = diffusers.reduce((sum, d) => sum + d.cfm, 0);
-    const returnSize = sizeDuct(totalFlow * 0.9, 0.08, fixedHeight);
-    const centroid = getPolygonCentroid(points);
-    const retEndX = Math.round(unitPos.x + (centroid.x - unitPos.x) * 0.35);
-    const retEndY = Math.round(unitPos.y + (centroid.y - unitPos.y) * 0.35);
+    // Vertical Trunk
+    const rowYList = Array.from(new Set(supplyDiffusers.map((d) => d.y)));
+    if (unitPos.y > minY + roomH / 2) {
+      rowYList.sort((a, b) => b - a);
+    } else {
+      rowYList.sort((a, b) => a - b);
+    }
 
+    let currentTrunkStart = { x: trunkX, y: unitPos.y };
+
+    rowYList.forEach((rowY, idx) => {
+      const segmentEnd = { x: trunkX, y: rowY };
+      const remainingRows = rowYList.slice(idx);
+      const downstreamDiffusers = supplyDiffusers.filter((d) => remainingRows.includes(d.y));
+      const downstreamFlow = downstreamDiffusers.reduce((sum, d) => sum + d.cfm, 0);
+
+      const size = sizeDuct(downstreamFlow, 0.10, fixedHeight);
+      const velocityFpm = Math.round(downstreamFlow / Math.max(0.1, (size.widthIn * size.heightIn) / 144));
+
+      ducts.push({
+        id: `duct-trunk-${zoneId}-${idx}`,
+        type: 'trunk',
+        points: [currentTrunkStart.x, currentTrunkStart.y, segmentEnd.x, segmentEnd.y],
+        widthIn: size.widthIn,
+        heightIn: size.heightIn,
+        cfm: downstreamFlow,
+        velocityFpm,
+        sizeLabel: `${size.widthIn}"x${size.heightIn}"`
+      });
+
+      currentTrunkStart = segmentEnd;
+    });
+
+    supplyDiffusers.forEach((dif, idx) => {
+      const branchStart = { x: trunkX, y: dif.y };
+      const branchEnd = { x: dif.x, y: dif.y };
+      const branchDist = Math.abs(branchEnd.x - branchStart.x);
+
+      if (branchDist > 5) {
+        const size = sizeDuct(dif.cfm, 0.10, fixedHeight);
+        const velocityFpm = Math.round(dif.cfm / Math.max(0.1, (size.widthIn * size.heightIn) / 144));
+
+        ducts.push({
+          id: `duct-branch-${zoneId}-${idx}`,
+          type: 'branch',
+          points: [branchStart.x, branchStart.y, branchEnd.x, branchEnd.y],
+          widthIn: size.widthIn,
+          heightIn: size.heightIn,
+          cfm: dif.cfm,
+          velocityFpm,
+          sizeLabel: `${size.widthIn}"x${size.heightIn}"`
+        });
+      }
+    });
+  }
+
+  // 3. Dedicated Return Duct & Return Grille for all ducted systems
+  const isDuctedSystem = systemType === 'concealed' || systemType === 'packaged' || systemType === 'ahu' || systemType === 'vrf' || systemType === 'fcu';
+  if (isDuctedSystem) {
+    const returnFlow = Math.round(totalCfm * 0.9);
+    const returnSize = sizeDuct(returnFlow, 0.08, fixedHeight);
+    const retOffset = Math.min(roomW * 0.15, _scale > 50 ? _scale * 2 : 50);
+
+    const retStartX = unitPos.x;
+    const retStartY = unitPos.y;
+
+    const retEndX = isHorizontal
+      ? (unitPos.x > minX + roomW / 2 ? unitPos.x - retOffset : unitPos.x + retOffset)
+      : unitPos.x;
+    const retEndY = isHorizontal
+      ? unitPos.y + (unitPos.y > minY + roomH / 2 ? -retOffset * 0.5 : retOffset * 0.5)
+      : (unitPos.y > minY + roomH / 2 ? unitPos.y - retOffset : unitPos.y + retOffset);
+
+    // Return Grille Terminal
+    diffusers.push({
+      id: `rg-${zoneId}-0`,
+      x: Math.round(retEndX),
+      y: Math.round(retEndY),
+      cfm: returnFlow,
+      size: `${returnSize.widthIn}"x${returnSize.heightIn}"`,
+      type: 'return',
+      actualNc: spaceNcLimit,
+      throwT50Ft: 0,
+      deltaPInWg: 0.04
+    });
+
+    // Return Duct
     ducts.push({
       id: `duct-return-${zoneId}`,
       type: 'return',
-      points: [unitPos.x, unitPos.y + 15, retEndX, retEndY],
+      points: [Math.round(retStartX), Math.round(retStartY), Math.round(retEndX), Math.round(retEndY)],
       widthIn: returnSize.widthIn,
       heightIn: returnSize.heightIn,
-      cfm: Math.round(totalFlow * 0.9),
-      velocityFpm: Math.round((totalFlow * 0.9) / Math.max(0.1, (returnSize.widthIn * returnSize.heightIn) / 144)),
+      cfm: returnFlow,
+      velocityFpm: Math.round(returnFlow / Math.max(0.1, (returnSize.widthIn * returnSize.heightIn) / 144)),
       sizeLabel: `${returnSize.widthIn}"x${returnSize.heightIn}" (R)`
     });
   }

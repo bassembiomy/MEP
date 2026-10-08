@@ -8,15 +8,46 @@ export interface DiffuserThrowCriteria {
   maxNeckVelocityFpm: number;
 }
 
+/**
+ * Lecture 07 Table 4: Maximum Permissible CFM per Diffuser based on Ceiling Height
+ */
+export const CEILING_HEIGHT_MAX_CFM_TABLE: { ceilingHeightFt: number; maxCfm: number; maxTempDiffF: number }[] = [
+  { ceilingHeightFt: 8, maxCfm: 800, maxTempDiffF: 20 },
+  { ceilingHeightFt: 10, maxCfm: 2000, maxTempDiffF: 26 },
+  { ceilingHeightFt: 12, maxCfm: 3000, maxTempDiffF: 30 },
+  { ceilingHeightFt: 14, maxCfm: 5000, maxTempDiffF: 30 },
+  { ceilingHeightFt: 16, maxCfm: 6400, maxTempDiffF: 30 }
+];
+
+export function getMaxCfmForCeilingHeight(ceilingHeightFt: number = 9): number {
+  if (ceilingHeightFt <= 8) return 800;
+  if (ceilingHeightFt <= 10) return 2000;
+  if (ceilingHeightFt <= 12) return 3000;
+  if (ceilingHeightFt <= 14) return 5000;
+  return 6400;
+}
+
+/**
+ * Lecture 07 Table 1: Sound Level (NC) vs Maximum Allowable Neck Velocity (FPM)
+ */
+export function getMaxNeckVelocityForNc(ncLimit: number): number {
+  if (ncLimit <= 20) return 500;
+  if (ncLimit <= 30) return 700;
+  if (ncLimit <= 35) return 900;
+  if (ncLimit <= 40) return 1100;
+  return 1400;
+}
+
 export function getDiffuserThrowCriteria(
   diffuserType: string = '4-way-ceiling',
-  profile: StandardsProfile = ASHRAE_PROFILE
+  profile: StandardsProfile = ASHRAE_PROFILE,
+  spaceNcLimit: number = 30
 ): DiffuserThrowCriteria {
   const norm = diffuserType.toLowerCase();
-  let maxNeck = 600; // quiet design (NC <= 25)
-  if (norm.includes('slot')) maxNeck = 700;
-  if (norm.includes('swirl')) maxNeck = 650;
-  if (norm.includes('jet')) maxNeck = 1000;
+  let maxNeck = getMaxNeckVelocityForNc(spaceNcLimit);
+  if (norm.includes('slot')) maxNeck = Math.min(maxNeck, 800);
+  if (norm.includes('swirl')) maxNeck = Math.min(maxNeck, 750);
+  if (norm.includes('jet')) maxNeck = Math.min(maxNeck, 1400);
 
   return {
     diffuserType,

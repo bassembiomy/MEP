@@ -12,7 +12,7 @@ console.log('=== Running HVAC Architecture & Selection Algorithm Engine Tests ==
 
 // 1. Test Concealed Ducted Split
 {
-  const equip = STANDARD_EQUIPMENT_CATALOG.find(e => e.id === 'eq-ducted-24k')!; // 2.0 Ton (22,355 Btu/h)
+  const equip = STANDARD_EQUIPMENT_CATALOG.find(e => e.id === 'eq-miraco-msp-24k')!; // 2.0 Ton (22,355 Btu/h)
   const arch = generateSystemArchitecture(equip, 1, 614, 400, 21000, true);
   
   assert(arch.systemType === 'concealed', 'System type must be concealed');

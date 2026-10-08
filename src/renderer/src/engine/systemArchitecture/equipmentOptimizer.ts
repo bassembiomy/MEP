@@ -1,5 +1,6 @@
 import { StandardsProfile, ASHRAE_PROFILE } from '../standards/designStandards';
 import { selectEquipmentForLoad, SelectedEquipmentResult } from './equipmentSelector';
+import {calculateSolarLoadWeights,type ExteriorWallInfo} from '../zoning/solarLoadWeighting';
 
 export interface MultiUnitCandidate {
   optionId: string;
@@ -12,6 +13,8 @@ export interface MultiUnitCandidate {
   totalDeliveredCapacityBtu: number;
   availableEspInWg: number;
   equipmentHeightIn: number;
+  meetsCapacity: boolean;
+  meetsCfm: boolean;
   totalScore: number;
   scoreBreakdown: {
     capacityMatch: number;
@@ -28,6 +31,7 @@ export interface MultiUnitCandidate {
 }
 
 export interface OptimizationInput {
+  exteriorWalls?:ExteriorWallInfo[];
   roomName: string;
   sensibleLoadBtu: number;
   totalLoadBtu: number;
@@ -49,7 +53,7 @@ export interface OptimizationResult {
 export function optimizeMultiUnitCandidates(input: OptimizationInput): OptimizationResult {
   const {
     roomName,
-    sensibleLoadBtu: _sensibleLoadBtu,
+    sensibleLoadBtu,
     totalLoadBtu,
     requiredCfm,
     roomAreaSqFt,
@@ -62,18 +66,36 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
   const testUnitCounts = [1, 2, 3, 4];
 
   for (const n of testUnitCounts) {
-    const targetCfmPerUnit = requiredCfm / n;
-    const targetBtuPerUnit = totalLoadBtu / n;
-
-    const selection = selectEquipmentForLoad(targetCfmPerUnit, targetBtuPerUnit, systemType);
+    const peakShare=Math.max(...calculateSolarLoadWeights({unitCount:n,exteriorWalls:input.exteriorWalls}));
+    let selection = selectEquipmentForLoad(requiredCfm / n, totalLoadBtu * peakShare, systemType, undefined, {requiredSensibleBtu:sensibleLoadBtu*peakShare,requiredLatentBtu:(totalLoadBtu-sensibleLoadBtu)*peakShare});
     if (!selection) continue;
 
-    const deliveredCfm = selection.supplyCfm * n;
-    const deliveredBtu = selection.totalCapacityBtu * n;
+    let deliveredCfm = selection.supplyCfm * n;
+    let deliveredBtu = selection.totalCapacityBtu * n;
 
-    // 1. Capacity match score (0-20 pts)
+    // Greedy single-slot selection can return a combination that is short of the
+    // combined load. Step the per-unit requirement up until the aggregate is
+    // sufficient (capacity & airflow) or the largest available unit is reached.
+    let step = 1.0;
+    const meetsLoad = (): boolean =>
+      deliveredBtu >= totalLoadBtu && deliveredCfm >= requiredCfm;
+    while (!meetsLoad() && step < 5) {
+      step += 0.5;
+      const next = selectEquipmentForLoad(
+        (requiredCfm / n) * step,
+        (totalLoadBtu / n) * step,
+        systemType, undefined, {requiredSensibleBtu:sensibleLoadBtu/n,requiredLatentBtu:(totalLoadBtu-sensibleLoadBtu)/n}
+      );
+      if (!next || next.model === selection.model) break;
+      selection = next;
+      deliveredCfm = selection.supplyCfm * n;
+      deliveredBtu = selection.totalCapacityBtu * n;
+    }
+
+    // 1. Capacity & airflow match score (0-20 pts)
     const capRatio = deliveredBtu / totalLoadBtu;
-    let capScore = 20 - Math.abs(capRatio - 1.05) * 40;
+    const cfmRatio = deliveredCfm / requiredCfm;
+    let capScore = 20 - Math.abs(capRatio - 1.05) * 40 - Math.abs(cfmRatio - 1.05) * 20;
     capScore = Math.max(5, Math.min(20, capScore));
 
     // 2. Air distribution quality (0-20 pts) - larger areas benefit from multiple injection points
@@ -115,6 +137,9 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
       (capScore + distScore + acousticScore + espScore + ductScore + ceilingScore + redundancyScore - unitPenalty).toFixed(1)
     );
 
+    const meetsCapacity = deliveredBtu >= totalLoadBtu;
+    const meetsCfm = deliveredCfm >= requiredCfm;
+
     const rationale = `${n} × ${selection.model} (${selection.nominalTons} TR, ${selection.supplyCfm} CFM each) -> Total ${deliveredCfm} CFM, Score: ${totalScore}`;
 
     candidates.push({
@@ -128,6 +153,8 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
       totalDeliveredCapacityBtu: deliveredBtu,
       availableEspInWg: selection.availableEspInWg,
       equipmentHeightIn: eqHeight,
+      meetsCapacity,
+      meetsCfm,
       totalScore,
       scoreBreakdown: {
         capacityMatch: parseFloat(capScore.toFixed(1)),
@@ -146,7 +173,11 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
 
   // Sort candidates by total score descending
   candidates.sort((a, b) => b.totalScore - a.totalScore);
-  const recommended = candidates[0];
+
+  // Recommend the highest-scoring feasible option (must satisfy load & airflow).
+  const feasible = candidates.filter((c) => c.meetsCapacity && c.meetsCfm);
+  if (!feasible.length) throw new Error('No feasible multi-unit equipment satisfies total, sensible, latent capacity and airflow.');
+  const recommended = feasible[0];
 
   return {
     roomName,

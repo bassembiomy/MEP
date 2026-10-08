@@ -1,6 +1,6 @@
 import React from 'react';
 import { useProjectStore } from '../store/projectStore';
-import { calculateZoneLoad } from '../engine/loadCalc';
+import { calculateZoneLoadSafely } from '../engine/loadCalc';
 import { recommendSystemsForZone } from '../engine/systemDesigner';
 import { Award, DollarSign, Zap, Database, Upload, CheckCircle2, Sliders } from 'lucide-react';
 
@@ -62,19 +62,23 @@ export const SystemComparisonTable: React.FC = () => {
     }
   };
 
+  const evaluations = zones.map(zone => ({ zone, ...calculateZoneLoadSafely(zone, project) }));
+  const invalid = evaluations.find(result => !result.load);
+  if (invalid) return <p role="alert" className="text-xs text-red-300 p-4">{invalid.zone.name}: {invalid.error}</p>;
+  const loads = new Map(evaluations.flatMap(result => result.load ? [[result.zone.id, result.load] as const] : []));
   // If no zone is selected, summarize the main zones load
   const totalArea = zones.reduce((sum, z) => {
-    const load = calculateZoneLoad(z, project);
+    const load = loads.get(z.id)!;
     return sum + load.area;
   }, 0);
 
   const totalLoad = zones.reduce((sum, z) => {
-    const load = calculateZoneLoad(z, project);
+    const load = loads.get(z.id)!;
     return sum + load.totalLoad;
   }, 0);
 
   const totalCfm = zones.reduce((sum, z) => {
-    const load = calculateZoneLoad(z, project);
+    const load = loads.get(z.id)!;
     return sum + load.supplyCfm;
   }, 0);
 
@@ -88,9 +92,9 @@ export const SystemComparisonTable: React.FC = () => {
   }
 
   const isImperial = project.units === 'imperial';
-  const displayArea = selectedZone ? calculateZoneLoad(selectedZone, project).area : totalArea;
-  const displayLoad = selectedZone ? calculateZoneLoad(selectedZone, project).totalLoad : totalLoad;
-  const displayCfm = selectedZone ? calculateZoneLoad(selectedZone, project).supplyCfm : totalCfm;
+  const displayArea = selectedZone ? loads.get(selectedZone.id)!.area : totalArea;
+  const displayLoad = selectedZone ? loads.get(selectedZone.id)!.totalLoad : totalLoad;
+  const displayCfm = selectedZone ? loads.get(selectedZone.id)!.supplyCfm : totalCfm;
   const spaceTypeId = selectedZone ? selectedZone.spaceTypeId : 'office';
 
   // Run the recommendation sizer

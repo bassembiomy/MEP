@@ -407,10 +407,34 @@ export function calculateOptimalIndoorUnitPos(
   let optimalX = targetX + (vx / len) * offset;
   let optimalY = targetY + (vy / len) * offset;
 
-  // Make sure it is inside the polygon
+  // Make sure it is inside the polygon (especially for L-shaped and concave polygons)
   if (!isPointInPolygon(optimalX, optimalY, points)) {
-    optimalX = (targetX + centroid.x) / 2;
-    optimalY = (targetY + centroid.y) / 2;
+    let minBboxX = Infinity, maxBboxX = -Infinity, minBboxY = Infinity, maxBboxY = -Infinity;
+    for (let i = 0; i < numPoints; i++) {
+      const px = points[i * 2];
+      const py = points[i * 2 + 1];
+      if (px < minBboxX) minBboxX = px;
+      if (px > maxBboxX) maxBboxX = px;
+      if (py < minBboxY) minBboxY = py;
+      if (py > maxBboxY) maxBboxY = py;
+    }
+    const spanW = maxBboxX - minBboxX;
+    const spanH = maxBboxY - minBboxY;
+    const stepX = (spanW || 100) / 20;
+    const stepY = (spanH || 100) / 20;
+
+    for (let ix = 1; ix < 20; ix++) {
+      const px = minBboxX + ix * stepX;
+      for (let iy = 1; iy < 20; iy++) {
+        const py = minBboxY + iy * stepY;
+        if (isPointInPolygon(px, py, points)) {
+          optimalX = px;
+          optimalY = py;
+          break;
+        }
+      }
+      if (isPointInPolygon(optimalX, optimalY, points)) break;
+    }
   }
 
   return {

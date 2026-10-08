@@ -9,44 +9,51 @@ export function sizeDuctNetwork(
   profile: StandardsProfile = ASHRAE_PROFILE,
   maxAvailableCeilingDepthIn: number = 14
 ): SteppedDuctSection[] {
+  if (!Number.isFinite(maxAvailableCeilingDepthIn) || maxAvailableCeilingDepthIn <= 0) {
+    throw new Error('Invalid ceiling depth: expected a positive finite value');
+  }
+  if (!Number.isFinite(profile.ductSizing.maxAspectRatio) || profile.ductSizing.maxAspectRatio <= 0) {
+    throw new Error('Invalid maximum duct aspect ratio: expected a positive finite value');
+  }
   const standardSizes = getStandardRectangularSizes();
   const sized: SteppedDuctSection[] = [];
 
   for (const s of sections) {
     const cfm = s.airflowCfm;
+    const targetNc = s.ncRating ?? 30;
+    if (!Number.isFinite(cfm) || cfm < 0) {
+      throw new Error(`Invalid airflow for section ${s.id}: expected a nonnegative finite value`);
+    }
+    if (!Number.isFinite(targetNc) || targetNc < 0) {
+      throw new Error(`Invalid NC target for section ${s.id}: expected a nonnegative finite value`);
+    }
+    if (![s.startPoint.x, s.startPoint.y, s.endPoint.x, s.endPoint.y].every(Number.isFinite)) {
+      throw new Error(`Invalid coordinates for section ${s.id}: expected finite values`);
+    }
     const velocityRule = getAcousticVelocityLimit(
-      s.role === 'main-trunk' ? 'main-trunk' : s.role === 'branch' ? 'branch' : 'runout',
-      s.ncRating || 30,
+      s.systemType === 'return' ? 'return' : s.role,
+      targetNc,
       profile
     );
 
     const allowableVelocity = velocityRule.maxVelocityFpm;
+    if (!Number.isFinite(allowableVelocity) || allowableVelocity <= 0) {
+      throw new Error(`Invalid allowable velocity for section ${s.id}: expected a positive finite value`);
+    }
 
-    // Filter candidate sizes that satisfy max ceiling depth and aspect ratio <= 3.0
+    // Use the exact dimensional aspect ratio rather than its rounded catalog value.
     const candidateSizes = standardSizes.filter(
-      (sz) => sz.heightIn <= maxAvailableCeilingDepthIn && sz.aspectRatio <= profile.ductSizing.maxAspectRatio
+      (sz) => sz.heightIn <= maxAvailableCeilingDepthIn &&
+        sz.widthIn / sz.heightIn <= profile.ductSizing.maxAspectRatio
     );
 
-    // Find the smallest size where actual velocity <= allowableVelocity
-    let bestSize = candidateSizes[0];
-    let minAreaDiff = Infinity;
-
-    for (const sz of candidateSizes) {
-      const actualV = cfm / sz.areaSqFt;
-      if (actualV <= allowableVelocity + 30) {
-        const areaDiff = sz.areaSqFt - cfm / allowableVelocity;
-        if (areaDiff >= 0 && areaDiff < minAreaDiff) {
-          minAreaDiff = areaDiff;
-          bestSize = sz;
-        }
-      }
-    }
-
+    // Standard sizes are sorted by area; select the first actually feasible size.
+    const bestSize = candidateSizes.find((sz) => cfm / sz.areaSqFt <= allowableVelocity);
     if (!bestSize) {
-      bestSize = candidateSizes[candidateSizes.length - 1];
+      throw new Error(`Infeasible duct sizing for section ${s.id}: no standard size satisfies airflow, velocity, ceiling depth and aspect ratio constraints`);
     }
 
-    const actualVelocity = Math.round(cfm / bestSize.areaSqFt);
+    const actualVelocity = cfm / bestSize.areaSqFt;
     const frictionRate = calculateFrictionRatePer100Ft(cfm, bestSize.equivalentDiameterIn);
 
     const dx = s.endPoint.x - s.startPoint.x;

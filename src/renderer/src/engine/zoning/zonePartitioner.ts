@@ -6,12 +6,16 @@ export type DesignControlMode = 'ai' | 'user-modified' | 'user-locked';
 
 export interface EquipmentServiceZone {
   id: string;
+  isDucted?: boolean;
+  sensibleCapacityBtu?: number;
+  latentCapacityBtu?: number;
+  exhaustCfm?: number;
   unitTag: string;
   designControlMode: DesignControlMode;
   
   equipmentModel: string;
   coolingSource: 'dx' | 'chilled-water' | 'heat-pump' | 'package';
-  equipmentType: 'concealed-split' | 'fcu' | 'ahu' | 'rtu' | 'package';
+  equipmentType: 'concealed-split' | 'fcu' | 'ahu' | 'rtu' | 'package' | 'high-wall' | 'cassette' | 'vrf';
   
   nominalTonnage: number;
   actualCapacityBtu: number;
@@ -120,8 +124,11 @@ export function partitionRoomIntoServiceZones(input: EquipmentServiceZoneInput):
   const bbox = getPolygonBoundingBox(roomPolygon);
   const zones: EquipmentServiceZone[] = [];
 
-  // Determine partitioning axis: slice along Y (horizontal bays) or along X (vertical bays)
-  const isVerticalSlicing = mountingWallSide === 'north' || mountingWallSide === 'south';
+  // Determine partitioning axis to produce optimal aspect-ratio square bays (~1:1)
+  let isVerticalSlicing = mountingWallSide === 'north' || mountingWallSide === 'south';
+  if ((mountingWallSide === 'east' || mountingWallSide === 'west') && bbox.width >= bbox.height * 1.8 && unitCount > 1) {
+    isVerticalSlicing = true;
+  }
 
   let currentOffset = isVerticalSlicing ? bbox.minX : bbox.minY;
   const totalSpan = isVerticalSlicing ? bbox.width : bbox.height;

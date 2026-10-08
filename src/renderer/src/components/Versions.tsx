@@ -1,7 +1,9 @@
 import { useState } from 'react'
 
 function Versions(): React.JSX.Element {
-  const [versions] = useState(window.electron.process.versions)
+  const [versions] = useState(window.electron?.process.versions)
+
+  if (!versions) return <span className="text-[11px] text-neutral-400">Browser preview</span>
 
   return (
     <ul className="flex flex-wrap items-center justify-center gap-3 text-[11px] font-mono text-neutral-400">

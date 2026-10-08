@@ -1,10 +1,16 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Stage, Layer, Line, Circle, Text, Group, Shape, Rect } from 'react-konva';
 import { useProjectStore } from '../store/projectStore';
 import { snapToGrid, getPolygonCentroid } from '../engine/geometry';
-import { calculateZoneLoad } from '../engine/loadCalc';
+import { calculateZoneDiffuserCoverage } from '../engine/diffuserPlacer';
+import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
+import { getCadEntityPath } from '../engine/cad/nativeGeometry';
+import { groupCadEntitiesForRendering } from '../engine/cad/renderGroups';
+import { getSupplyAirflowForDisplay } from '../engine/airflowDisplay';
 import { routeDucts } from '../engine/ductRouter';
 import { routeOrthogonalRefrigerantPiping } from '../engine/spatialPlanner';
+import { solveDirectedNetworkStaticPressure } from '../engine/staticPressureCalc';
+import { STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES } from '../engine/hvacCatalogs';
 import { CadLayerManagerModal } from '../components/CadLayerManagerModal';
 import Konva from 'konva';
 import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Target, Layers } from 'lucide-react';
@@ -26,7 +32,9 @@ export const FloorPlanCanvas: React.FC = () => {
     dxfBoundingBox,
     dxfLayers,
     annotationVisibility,
-    activePreview
+    activePreview,
+    highlightedDuctId,
+    highlightedEntityTag
   } = useProjectStore();
 
   const stageRef = useRef<Konva.Stage>(null);
@@ -37,6 +45,86 @@ export const FloorPlanCanvas: React.FC = () => {
   const [isSpacePressed, setIsSpacePressed] = useState<boolean>(false);
   const [isLayerManagerOpen, setIsLayerManagerOpen] = useState<boolean>(false);
   const lastPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [stageDimensions, setStageDimensions] = useState<{ width: number; height: number }>({ width: 900, height: 500 });
+
+  const cadRenderGroups=useMemo(()=>groupCadEntitiesForRendering(dxfEntities,dxfLayers),[dxfEntities,dxfLayers]);
+
+  // Memoized zone geometry, loads, piping, and coverage calculations to eliminate frame drops and freezing
+  const zoneRenderData = useMemo(() => {
+    return zones.map((zone) => {
+      const isSelected = zone.id === selectedZoneId;
+      const centroid = getPolygonCentroid(zone.points);
+      const load = calculateZoneLoadSafely(zone, project).load;
+      const coverage = calculateZoneDiffuserCoverage(
+        zone.points,
+        zone.diffusers,
+        project.scale,
+        project.units === 'imperial'
+      );
+
+      const unitList = zone.unitPositions && zone.unitPositions.length > 0
+        ? zone.unitPositions
+        : zone.unitPos
+        ? [zone.unitPos]
+        : [];
+
+      const outdoorList = zone.outdoorUnitPositions && zone.outdoorUnitPositions.length > 0
+        ? zone.outdoorUnitPositions
+        : zone.outdoorUnitPos
+        ? [zone.outdoorUnitPos]
+        : [];
+
+      const pipingList = unitList.map((uPos, uIdx) => {
+        const oPos = outdoorList[uIdx] || outdoorList[0] || { x: uPos.x + 35, y: uPos.y + 35 };
+        return routeOrthogonalRefrigerantPiping(oPos, [uPos]);
+      });
+
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      if (zone.points && zone.points.length >= 2) {
+        for (let i = 0; i < zone.points.length; i += 2) {
+          if (zone.points[i] < minX) minX = zone.points[i];
+          if (zone.points[i] > maxX) maxX = zone.points[i];
+          if (zone.points[i + 1] < minY) minY = zone.points[i + 1];
+          if (zone.points[i + 1] > maxY) maxY = zone.points[i + 1];
+        }
+      }
+      if (minX === Infinity || maxX === -Infinity) {
+        minX = 0; maxX = 100; minY = 0; maxY = 100;
+      }
+
+      return {
+        zone,
+        isSelected,
+        centroid,
+        load,
+        coverage,
+        unitList,
+        outdoorList,
+        pipingList,
+        minX,
+        maxX,
+        minY,
+        maxY
+      };
+    });
+  }, [zones, selectedZoneId, project]);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const updateDimensions = () => {
+      if (containerRef.current) {
+        const { clientWidth, clientHeight } = containerRef.current;
+        if (clientWidth > 50 && clientHeight > 50) {
+          setStageDimensions({ width: clientWidth, height: clientHeight });
+        }
+      }
+    };
+    updateDimensions();
+    const ro = new ResizeObserver(updateDimensions);
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
 
   // Determine Level of Detail (LOD) tier from scale
   const getLodTier = (scale: number): 1 | 2 | 3 | 4 => {
@@ -55,8 +143,8 @@ export const FloorPlanCanvas: React.FC = () => {
 
   // Fit view to entire design
   const handleFitDesign = useCallback(() => {
-    const stageWidth = 900;
-    const stageHeight = 500;
+    const stageWidth = stageDimensions.width;
+    const stageHeight = stageDimensions.height;
 
     if (dxfBoundingBox) {
       const dxfWidth = dxfBoundingBox.maxX - dxfBoundingBox.minX;
@@ -115,7 +203,7 @@ export const FloorPlanCanvas: React.FC = () => {
         y: stageHeight / 2 - centerY * newScale
       });
     }
-  }, [dxfBoundingBox, zones]);
+  }, [dxfBoundingBox, zones, stageDimensions]);
 
   // Fit view to selected zone
   const handleFitSelection = useCallback(() => {
@@ -125,8 +213,8 @@ export const FloorPlanCanvas: React.FC = () => {
       return;
     }
 
-    const stageWidth = 900;
-    const stageHeight = 500;
+    const stageWidth = stageDimensions.width;
+    const stageHeight = stageDimensions.height;
 
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     const numPoints = selectedZone.points.length / 2;
@@ -212,14 +300,18 @@ export const FloorPlanCanvas: React.FC = () => {
     const stage = stageRef.current;
     if (!stage) return;
 
-    const transform = stage.getAbsoluteTransform().copy().invert();
-    const pos = stage.getPointerPosition();
-    if (pos) {
-      const localPos = transform.point(pos);
-      setMousePos({
-        x: snapToGrid(localPos.x, gridSpacing),
-        y: snapToGrid(localPos.y, gridSpacing),
-      });
+    if (drawMode === 'polyline') {
+      const transform = stage.getAbsoluteTransform().copy().invert();
+      const pos = stage.getPointerPosition();
+      if (pos) {
+        const localPos = transform.point(pos);
+        const snappedX = snapToGrid(localPos.x, gridSpacing);
+        const snappedY = snapToGrid(localPos.y, gridSpacing);
+        setMousePos((prev) => {
+          if (prev.x === snappedX && prev.y === snappedY) return prev;
+          return { x: snappedX, y: snappedY };
+        });
+      }
     }
 
     if (isPanning) {
@@ -250,9 +342,16 @@ export const FloorPlanCanvas: React.FC = () => {
     if (e.evt.button !== 0 || isSpacePressed || drawMode === 'pan') return;
 
     if (drawMode === 'polyline') {
-      const sx = mousePos.x;
-      const sy = mousePos.y;
-      addTempPoint(sx, sy);
+      const stage = stageRef.current;
+      if (!stage) return;
+      const transform = stage.getAbsoluteTransform().copy().invert();
+      const pos = stage.getPointerPosition();
+      if (pos) {
+        const localPos = transform.point(pos);
+        const sx = snapToGrid(localPos.x, gridSpacing);
+        const sy = snapToGrid(localPos.y, gridSpacing);
+        addTempPoint(sx, sy);
+      }
     }
   };
 
@@ -332,72 +431,249 @@ export const FloorPlanCanvas: React.FC = () => {
     const snapX = snapToGrid(newX, gridSpacing);
     const snapY = snapToGrid(newY, gridSpacing);
 
+    const oldDif = zone.diffusers.find(d => d.id === diffuserId);
     const updatedDiffusers = zone.diffusers.map((dif) =>
       dif.id === diffuserId ? { ...dif, x: snapX, y: snapY } : dif
     );
 
-    const isDucted = zone.systemType === 'concealed' || zone.systemType === 'packaged' || zone.systemType === 'ahu';
+    const isDucted = zone.systemType === 'concealed' || zone.systemType === 'packaged' || zone.systemType === 'ahu' || zone.systemType === 'vrf';
+
+    let updatedDucts = zone.ducts;
+    let catalogEsp = zone.catalogEsp;
 
     if (isDucted) {
-      const { ducts, unitPos } = routeDucts(
-        zone.points,
-        updatedDiffusers,
-        project.units,
-        zone.id,
-        zone.unitPos,
-        zone.systemType
-      );
-      updateZone(zoneId, {
-        diffusers: updatedDiffusers,
-        ducts,
-        unitPos
-      });
-    } else {
-      updateZone(zoneId, {
-        diffusers: updatedDiffusers,
-        ducts: []
-      });
+      if (oldDif && zone.ducts.length > 0) {
+        // Adjust connected duct: branch or return duct
+        if (oldDif.type === 'return') {
+          updatedDucts = zone.ducts.map(d => {
+            if (d.type === 'return') {
+              return {
+                ...d,
+                points: [d.points[0], d.points[1], snapX, snapY]
+              };
+            }
+            return d;
+          });
+        } else {
+          // Supply branch takeoff stretching and extending
+          let matchedBranch = false;
+          updatedDucts = zone.ducts.map(d => {
+            if (d.type === 'branch') {
+              const distToEnd = Math.hypot(d.points[2] - oldDif.x, d.points[3] - oldDif.y);
+              if (distToEnd < 40 * (project.scale > 50 ? project.scale / 10 : 1)) {
+                matchedBranch = true;
+                const isVerticalBranch = Math.abs(d.points[2] - d.points[0]) < Math.abs(d.points[3] - d.points[1]);
+                const newStartX = isVerticalBranch ? snapX : d.points[0];
+                const newStartY = isVerticalBranch ? d.points[1] : snapY;
+                return {
+                  ...d,
+                  points: [newStartX, newStartY, snapX, snapY]
+                };
+              }
+            }
+            return d;
+          });
+
+          // If branch moved past trunk boundary, extend trunk
+          if (matchedBranch) {
+            const branchXList = updatedDucts.filter(d => d.type === 'branch').map(d => d.points[0]);
+            if (branchXList.length > 0) {
+              const minBranchX = Math.min(...branchXList);
+              const maxBranchX = Math.max(...branchXList);
+              updatedDucts = updatedDucts.map(d => {
+                if (d.type === 'trunk') {
+                  const isRightToLeft = d.points[0] > d.points[2];
+                  if (isRightToLeft && minBranchX < d.points[2]) {
+                    return { ...d, points: [d.points[0], d.points[1], minBranchX, d.points[3]] };
+                  } else if (!isRightToLeft && maxBranchX > d.points[2]) {
+                    return { ...d, points: [d.points[0], d.points[1], maxBranchX, d.points[3]] };
+                  }
+                }
+                return d;
+              });
+            }
+          }
+        }
+      } else {
+        const routeRes = routeDucts(
+          zone.points,
+          updatedDiffusers,
+          project.units,
+          zone.id,
+          zone.unitPos,
+          zone.systemType
+        );
+        updatedDucts = routeRes.ducts;
+      }
+
+      if (updatedDucts.length > 0 && updatedDiffusers.length > 0) {
+        const cp = solveDirectedNetworkStaticPressure(
+          updatedDucts,
+          updatedDiffusers,
+          STANDARD_DIFFUSER_CATALOG,
+          STANDARD_DUCT_TYPES[0],
+          project.scale
+        );
+        if (cp.espRequiredInWg > 0) {
+          catalogEsp = `${cp.espRequiredInWg.toFixed(2)} in.wg`;
+        }
+      }
     }
-  };
-
-  const handleIndoorUnitDrag = (zoneId: string, newX: number, newY: number) => {
-    const zone = zones.find(z => z.id === zoneId);
-    if (!zone) return;
-
-    const snapX = snapToGrid(newX, gridSpacing);
-    const snapY = snapToGrid(newY, gridSpacing);
-
-    const isDucted = zone.systemType === 'concealed' || zone.systemType === 'packaged' || zone.systemType === 'ahu';
-
-    if (isDucted) {
-      const { ducts, unitPos } = routeDucts(
-        zone.points,
-        zone.diffusers,
-        project.units,
-        zone.id,
-        { x: snapX, y: snapY },
-        zone.systemType
-      );
-      updateZone(zoneId, {
-        ducts,
-        unitPos
-      });
-    } else {
-      updateZone(zoneId, {
-        unitPos: { x: snapX, y: snapY }
-      });
-    }
-  };
-
-  const handleOutdoorUnitDrag = (zoneId: string, newX: number, newY: number) => {
-    const zone = zones.find(z => z.id === zoneId);
-    if (!zone) return;
-
-    const snapX = snapToGrid(newX, gridSpacing);
-    const snapY = snapToGrid(newY, gridSpacing);
 
     updateZone(zoneId, {
-      outdoorUnitPos: { x: snapX, y: snapY }
+      diffusers: updatedDiffusers,
+      ducts: updatedDucts,
+      catalogEsp
+    });
+  };
+
+  const handleDuctDrag = (zoneId: string, ductId: string, deltaX: number, deltaY: number) => {
+    const zone = zones.find(z => z.id === zoneId);
+    if (!zone) return;
+
+    const snapDx = snapToGrid(deltaX, gridSpacing);
+    const snapDy = snapToGrid(deltaY, gridSpacing);
+    if (snapDx === 0 && snapDy === 0) return;
+
+    const targetDuct = zone.ducts.find(d => d.id === ductId);
+    if (!targetDuct) return;
+
+    let updatedDucts = zone.ducts;
+
+    if (targetDuct.type === 'trunk') {
+      // Offsetting a trunk extends / stretches all connected branch takeoffs!
+      updatedDucts = zone.ducts.map(d => {
+        if (d.id === ductId || (d.type === 'trunk' && Math.abs(d.points[1] - targetDuct.points[1]) < 5)) {
+          return {
+            ...d,
+            points: [
+              d.points[0] + snapDx,
+              d.points[1] + snapDy,
+              d.points[2] + snapDx,
+              d.points[3] + snapDy
+            ]
+          };
+        } else if (d.type === 'branch' && Math.abs(d.points[1] - targetDuct.points[1]) < 15) {
+          // Stretch branch start takeoff with trunk while keeping endpoint connected to diffuser!
+          return {
+            ...d,
+            points: [
+              d.points[0] + snapDx,
+              d.points[1] + snapDy,
+              d.points[2],
+              d.points[3]
+            ]
+          };
+        }
+        return d;
+      });
+    } else {
+      updatedDucts = zone.ducts.map(d => {
+        if (d.id === ductId) {
+          return {
+            ...d,
+            points: [
+              d.points[0] + snapDx,
+              d.points[1] + snapDy,
+              d.points[2] + snapDx,
+              d.points[3] + snapDy
+            ]
+          };
+        }
+        return d;
+      });
+    }
+
+    let catalogEsp = zone.catalogEsp;
+    if (updatedDucts.length > 0 && zone.diffusers.length > 0) {
+      const cp = solveDirectedNetworkStaticPressure(
+        updatedDucts,
+        zone.diffusers,
+        STANDARD_DIFFUSER_CATALOG,
+        STANDARD_DUCT_TYPES[0],
+        project.scale
+      );
+      if (cp.espRequiredInWg > 0) {
+        catalogEsp = `${cp.espRequiredInWg.toFixed(2)} in.wg`;
+      }
+    }
+
+    updateZone(zoneId, {
+      ducts: updatedDucts,
+      catalogEsp
+    });
+  };
+
+  const handleIndoorUnitDrag = (zoneId: string, newX: number, newY: number, uIdx: number = 0) => {
+    const zone = zones.find(z => z.id === zoneId);
+    if (!zone) return;
+
+    const snapX = snapToGrid(newX, gridSpacing);
+    const snapY = snapToGrid(newY, gridSpacing);
+
+    let updatedUnitPositions = zone.unitPositions;
+    if (updatedUnitPositions && updatedUnitPositions.length > uIdx) {
+      updatedUnitPositions = updatedUnitPositions.map((pos, idx) =>
+        idx === uIdx ? { x: snapX, y: snapY } : pos
+      );
+    }
+
+    const isDucted = zone.systemType === 'concealed' || zone.systemType === 'packaged' || zone.systemType === 'ahu' || zone.systemType === 'vrf';
+
+    let updatedDucts = zone.ducts;
+    let catalogEsp = zone.catalogEsp;
+
+    if (isDucted && zone.ducts.length > 0) {
+      // Adjust connected trunk start point
+      updatedDucts = zone.ducts.map(d => {
+        if (d.type === 'trunk' && d.id.includes(`-${uIdx + 1}-0`)) {
+          return {
+            ...d,
+            points: [snapX, snapY, d.points[2], d.points[3]]
+          };
+        }
+        return d;
+      });
+
+      if (updatedDucts.length > 0 && zone.diffusers.length > 0) {
+        const cp = solveDirectedNetworkStaticPressure(
+          updatedDucts,
+          zone.diffusers,
+          STANDARD_DIFFUSER_CATALOG,
+          STANDARD_DUCT_TYPES[0],
+          project.scale
+        );
+        if (cp.espRequiredInWg > 0) {
+          catalogEsp = `${cp.espRequiredInWg.toFixed(2)} in.wg`;
+        }
+      }
+    }
+
+    updateZone(zoneId, {
+      unitPos: uIdx === 0 ? { x: snapX, y: snapY } : zone.unitPos,
+      unitPositions: updatedUnitPositions,
+      ducts: updatedDucts,
+      catalogEsp
+    });
+  };
+
+  const handleOutdoorUnitDrag = (zoneId: string, newX: number, newY: number, oIdx: number = 0) => {
+    const zone = zones.find(z => z.id === zoneId);
+    if (!zone) return;
+
+    const snapX = snapToGrid(newX, gridSpacing);
+    const snapY = snapToGrid(newY, gridSpacing);
+
+    let updatedOutdoorPositions = zone.outdoorUnitPositions;
+    if (updatedOutdoorPositions && updatedOutdoorPositions.length > oIdx) {
+      updatedOutdoorPositions = updatedOutdoorPositions.map((pos, idx) =>
+        idx === oIdx ? { x: snapX, y: snapY } : pos
+      );
+    }
+
+    updateZone(zoneId, {
+      outdoorUnitPos: oIdx === 0 ? { x: snapX, y: snapY } : zone.outdoorUnitPos,
+      outdoorUnitPositions: updatedOutdoorPositions
     });
   };
 
@@ -423,11 +699,11 @@ export const FloorPlanCanvas: React.FC = () => {
   const isPanActive = drawMode === 'pan' || isSpacePressed;
 
   return (
-    <div className="relative w-full h-[65vh] bg-[#0c0c0c] border border-neutral-800 rounded-3xl overflow-hidden shadow-inner flex flex-col">
+    <div ref={containerRef} className="relative w-full h-full min-h-0 bg-[#0a0a0a] overflow-hidden flex flex-col flex-1 select-none">
       <Stage
         ref={stageRef}
-        width={900}
-        height={500}
+        width={stageDimensions.width}
+        height={stageDimensions.height}
         scaleX={stageScale}
         scaleY={stageScale}
         x={stagePos.x}
@@ -449,78 +725,17 @@ export const FloorPlanCanvas: React.FC = () => {
           {drawGridLines()}
 
           {/* DXF CAD Underlay Geometry (Layer-by-Layer with Visibility & Native CAD Colors) */}
-          {Object.entries(dxfLayers).length > 0 ? (
-            Object.entries(dxfLayers).map(([layerName, layerInfo]) => {
-              if (!layerInfo.visible) return null;
-              const layerEntities = dxfEntities.filter((e) => (e.layer || '0') === layerName);
-              if (layerEntities.length === 0) return null;
-
-              return (
-                <Shape
-                  key={`dxf-layer-${layerName}`}
-                  stroke={layerInfo.color || '#94a3b8'}
-                  strokeWidth={getStrokeWidth(0.8, 1.0)}
-                  sceneFunc={(context, shape) => {
-                    context.save();
-                    context.beginPath();
-
-                    for (const ent of layerEntities) {
-                      if (ent.type === 'LINE') {
-                        context.moveTo(ent.x || 0, ent.y || 0);
-                        context.lineTo(ent.points?.[0] || 0, ent.points?.[1] || 0);
-                      } else if ((ent.type === 'LWPOLYLINE' || ent.type === 'POLYLINE') && ent.points) {
-                        const pts = ent.points;
-                        if (pts.length >= 4) {
-                          context.moveTo(pts[0], pts[1]);
-                          for (let i = 2; i < pts.length; i += 2) {
-                            context.lineTo(pts[i], pts[i + 1]);
-                          }
-                        }
-                      } else if ((ent.type === 'CIRCLE' || ent.type === 'ARC') && typeof ent.radius === 'number') {
-                        context.moveTo((ent.x || 0) + ent.radius, ent.y || 0);
-                        context.arc(ent.x || 0, ent.y || 0, ent.radius, 0, Math.PI * 2);
-                      }
-                    }
-                    context.fillStrokeShape(shape);
-                    context.restore();
-                  }}
-                  hitFunc={() => {}}
-                  opacity={0.65}
-                />
-              );
-            })
-          ) : dxfEntities.length > 0 ? (
-            <Shape
-              stroke="#525252"
-              strokeWidth={getStrokeWidth(0.8, 1.0)}
-              sceneFunc={(context, shape) => {
-                context.save();
-                context.beginPath();
-
-                for (const ent of dxfEntities) {
-                  if (ent.type === 'LINE') {
-                    context.moveTo(ent.x || 0, ent.y || 0);
-                    context.lineTo(ent.points?.[0] || 0, ent.points?.[1] || 0);
-                  } else if ((ent.type === 'LWPOLYLINE' || ent.type === 'POLYLINE') && ent.points) {
-                    const pts = ent.points;
-                    if (pts.length >= 4) {
-                      context.moveTo(pts[0], pts[1]);
-                      for (let i = 2; i < pts.length; i += 2) {
-                        context.lineTo(pts[i], pts[i + 1]);
-                      }
-                    }
-                  } else if ((ent.type === 'CIRCLE' || ent.type === 'ARC') && typeof ent.radius === 'number') {
-                    context.moveTo((ent.x || 0) + ent.radius, ent.y || 0);
-                    context.arc(ent.x || 0, ent.y || 0, ent.radius, 0, Math.PI * 2);
-                  }
-                }
-                context.fillStrokeShape(shape);
-                context.restore();
-              }}
-              hitFunc={() => {}}
-              opacity={0.45}
-            />
-          ) : null}
+          {cadRenderGroups.map(group=><Shape key={group.key} stroke={group.color} strokeWidth={getStrokeWidth(0.8,1.0)}
+            sceneFunc={(context,shape)=>{
+              context.save();context.beginPath();
+              for(const ent of group.entities) {
+                const points=getCadEntityPath(ent,{maxSagitta:0.5/stageScale,maxSegments:512});
+                if(points.length<4)continue;
+                context.moveTo(points[0],points[1]);
+                for(let i=2;i<points.length;i+=2)context.lineTo(points[i],points[i+1]);
+              }
+              context.fillStrokeShape(shape);context.restore();
+            }} hitFunc={()=>{}} opacity={0.65}/>)}
 
           {/* DXF CAD Text elements (LOD Tier 2+ and visibility controlled) */}
           {annotationVisibility.dxfText && dxfEntities.length > 0 && lodTier >= 2 && (
@@ -534,7 +749,13 @@ export const FloorPlanCanvas: React.FC = () => {
                 for (const ent of dxfEntities) {
                   const isLayerVis = !ent.layer || dxfLayers[ent.layer]?.visible !== false;
                   if (isLayerVis && (ent.type === 'TEXT' || ent.type === 'MTEXT') && ent.text) {
-                    context.fillText(ent.text, ent.x || 0, ent.y || 0);
+                    context.save();
+                    context.translate(ent.x ?? 0,ent.y ?? 0);
+                    context.rotate(-(ent.rotationDeg ?? 0)*Math.PI/180);
+                    context.font=`${ent.textHeight ?? fontSize}px sans-serif`;
+                    context.fillStyle=ent.color??dxfLayers[ent.layer??'0']?.color??'#94a3b8';
+                    context.fillText(ent.text,0,0);
+                    context.restore();
                   }
                 }
                 context.restore();
@@ -545,26 +766,13 @@ export const FloorPlanCanvas: React.FC = () => {
           )}
 
           {/* Zones Rendering */}
-          {zones.map((zone) => {
-            const isSelected = zone.id === selectedZoneId;
-            const centroid = getPolygonCentroid(zone.points);
-            const load = calculateZoneLoad(zone, project);
+          {zoneRenderData.map((item) => {
+            const { zone, isSelected, centroid, load, unitList, outdoorList, pipingList, maxX, minY } = item;
 
-            // Calculate zone span to dynamically adapt component sizes to room geometry
-            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-            for (let i = 0; i < zone.points.length; i += 2) {
-              if (zone.points[i] < minX) minX = zone.points[i];
-              if (zone.points[i] > maxX) maxX = zone.points[i];
-              if (zone.points[i + 1] < minY) minY = zone.points[i + 1];
-              if (zone.points[i + 1] > maxY) maxY = zone.points[i + 1];
-            }
-            const zoneW = maxX > minX ? maxX - minX : 300;
-            const zoneH = maxY > minY ? maxY - minY : 300;
-            const zoneSpan = Math.min(zoneW, zoneH);
-
-            const eqScale = project.equipmentScale || 2.0;
-            const baseUnitSize = Math.max(45, Math.min(160, zoneSpan * 0.16));
-            const symScale = (baseUnitSize / 30) * eqScale;
+            const eqScale = project.equipmentScale || 1.5;
+            // Proportion symbol scale to project scale so diffusers match physical CAD dimensions
+            const scaleMultiplier = (project.scale && project.scale > 30) ? (project.scale / 10) : 1.0;
+            const symScale = Math.max(1.2, scaleMultiplier) * eqScale;
 
             return (
               <Group key={zone.id}>
@@ -581,28 +789,17 @@ export const FloorPlanCanvas: React.FC = () => {
 
                 {/* Orthogonal Solid Copper Refrigerant Line Sets & Master Yellow MEP Engineering Callout */}
                 {(() => {
-                  const unitList = zone.unitPositions && zone.unitPositions.length > 0
-                    ? zone.unitPositions
-                    : zone.unitPos
-                    ? [zone.unitPos]
-                    : [];
+                  if (!load || (unitList.length === 0 && outdoorList.length === 0)) return null;
 
-                  const outdoorList = zone.outdoorUnitPositions && zone.outdoorUnitPositions.length > 0
-                    ? zone.outdoorUnitPositions
-                    : zone.outdoorUnitPos
-                    ? [zone.outdoorUnitPos]
-                    : [];
-
-                  if (unitList.length === 0 && outdoorList.length === 0) return null;
-
-                  const totalBtu = load.totalLoad;
+                  const canonicalLoad = calculateCanonicalZoneLoad(zone, project);
+                  const totalBtu = canonicalLoad.totalLoad;
                   const qty = zone.catalogQty || unitList.length || 1;
                   const btuPerUnit = Math.round(totalBtu / Math.max(1, qty));
-                  const supplyDiffusers = zone.diffusers.filter((d) => d.type !== 'return');
+                  const supplyDiffusers = zone.diffusers.filter((d) => d.type !== 'return' && d.type !== 'exhaust');
                   const returnDiffusers = zone.diffusers.filter((d) => d.type === 'return');
-                  const cfmPerUnit = Math.round((zone.diffusers.length > 0 ? supplyDiffusers.reduce((s, d) => s + d.cfm, 0) : load.supplyCfm) / Math.max(1, qty));
-                  const supplyDiffuserCfmEach = supplyDiffusers.length > 0 ? supplyDiffusers[0].cfm : Math.round(load.supplyCfm / 12);
-                  const freshAirCfm = Math.round(load.supplyCfm * 0.15);
+                  const cfmPerUnit = Math.round((zone.diffusers.length > 0 ? supplyDiffusers.reduce((s, d) => s + d.cfm, 0) : canonicalLoad.supplyCfm) / Math.max(1, qty));
+                  const supplyDiffuserCfmEach = supplyDiffusers.length > 0 ? supplyDiffusers[0].cfm : 0;
+                  const freshAirCfm = Math.round(canonicalLoad.oaCfm);
 
                   const sysLabel = zone.systemType === 'cassette'
                     ? 'CASSETTE SPLIT'
@@ -619,47 +816,42 @@ export const FloorPlanCanvas: React.FC = () => {
                   return (
                     <Group>
                       {/* Copper Line Set for each pair of indoor unit and outdoor ACU */}
-                      {annotationVisibility.refrigerantPiping && unitList.map((uPos, uIdx) => {
-                        const oPos = outdoorList[uIdx] || outdoorList[0] || { x: uPos.x + 35, y: uPos.y + 35 };
-                        const piping = routeOrthogonalRefrigerantPiping(oPos, [uPos]);
+                      {annotationVisibility.refrigerantPiping && pipingList.map((piping, uIdx) => (
+                        <Group key={`piping-set-${zone.id}-${uIdx}`}>
+                          {piping.segments.map((seg, sIdx) => (
+                            <Line
+                              key={`ref-seg-${zone.id}-${uIdx}-${sIdx}`}
+                              points={seg}
+                              stroke="#f97316"
+                              strokeWidth={getStrokeWidth(2.6 * Math.min(1.8, symScale), 2.5)}
+                              lineCap="round"
+                              lineJoin="round"
+                            />
+                          ))}
 
-                        return (
-                          <Group key={`piping-set-${zone.id}-${uIdx}`}>
-                            {piping.segments.map((seg, sIdx) => (
-                              <Line
-                                key={`ref-seg-${zone.id}-${uIdx}-${sIdx}`}
-                                points={seg}
-                                stroke="#f97316"
-                                strokeWidth={getStrokeWidth(2.6 * Math.min(1.8, symScale), 2.5)}
-                                lineCap="round"
-                                lineJoin="round"
+                          {/* Yellow Circular Isolator Tag (R) along pipe */}
+                          {piping.isolatorPos && (
+                            <Group x={piping.isolatorPos.x} y={piping.isolatorPos.y}>
+                              <Circle
+                                x={0}
+                                y={0}
+                                radius={5.5 * Math.min(1.8, symScale)}
+                                fill="#facc15"
+                                stroke="#000000"
+                                strokeWidth={getStrokeWidth(0.8, 0.8)}
                               />
-                            ))}
-
-                            {/* Yellow Circular Isolator Tag (R) along pipe */}
-                            {piping.isolatorPos && (
-                              <Group x={piping.isolatorPos.x} y={piping.isolatorPos.y}>
-                                <Circle
-                                  x={0}
-                                  y={0}
-                                  radius={5.5 * Math.min(1.8, symScale)}
-                                  fill="#facc15"
-                                  stroke="#000000"
-                                  strokeWidth={getStrokeWidth(0.8, 0.8)}
-                                />
-                                <Text
-                                  x={-3 * Math.min(1.8, symScale)}
-                                  y={-4 * Math.min(1.8, symScale)}
-                                  text="R"
-                                  fontSize={6 * Math.min(1.8, symScale)}
-                                  fill="#000000"
-                                  fontStyle="bold"
-                                />
-                              </Group>
-                            )}
-                          </Group>
-                        );
-                      })}
+                              <Text
+                                x={-3 * Math.min(1.8, symScale)}
+                                y={-4 * Math.min(1.8, symScale)}
+                                text="R"
+                                fontSize={6 * Math.min(1.8, symScale)}
+                                fill="#000000"
+                                fontStyle="bold"
+                              />
+                            </Group>
+                          )}
+                        </Group>
+                      ))}
 
                       {/* Master Yellow Engineering Callout Tag with Leader Line (Matching Reference CAD Drawing) */}
                       {annotationVisibility.leaderCallout && (() => {
@@ -703,14 +895,37 @@ export const FloorPlanCanvas: React.FC = () => {
                   const nx = -dy / len;
                   const ny = dx / len;
 
-                  // Half width in world coordinates
-                  const hw = Math.max(4 * symScale, (d.widthIn / 24) * project.scale * (symScale * 0.5));
+                  // Half width in world coordinates - scaled accurately to physical dimensions
+                  const realHw = ((d.widthIn || 12) / 24) * (project.scale || 10);
+                  const hw = Math.max(1.8 / stageScale, Math.min(realHw, 8.0 / stageScale));
                   const isReturn = d.type === 'return';
                   const isTrunk = d.type === 'trunk';
 
-                  const casingColor = isReturn ? '#64748b' : isTrunk ? '#06b6d4' : '#38bdf8';
-                  const fillColor = isReturn ? 'rgba(100, 116, 139, 0.18)' : 'rgba(6, 182, 212, 0.18)';
-                  const centerColor = isReturn ? '#94a3b8' : '#22d3ee';
+                  const isDuctHighlighted =
+                    highlightedDuctId === d.id ||
+                    highlightedEntityTag === d.id ||
+                    (highlightedEntityTag && (
+                      (highlightedEntityTag.toUpperCase().includes('TRK') && d.type === 'trunk') ||
+                      (highlightedEntityTag.toUpperCase().includes('MAIN') && d.type === 'trunk') ||
+                      (highlightedEntityTag.toUpperCase().includes('BR') && d.type === 'branch') ||
+                      (highlightedEntityTag.toUpperCase().includes('RET') && d.type === 'return')
+                    ));
+
+                  const casingColor = isDuctHighlighted
+                    ? '#fbbf24'
+                    : isReturn
+                    ? '#64748b'
+                    : isTrunk
+                    ? '#06b6d4'
+                    : '#38bdf8';
+
+                  const fillColor = isDuctHighlighted
+                    ? 'rgba(245, 158, 11, 0.40)'
+                    : isReturn
+                    ? 'rgba(100, 116, 139, 0.18)'
+                    : 'rgba(6, 182, 212, 0.18)';
+
+                  const centerColor = isDuctHighlighted ? '#fbbf24' : isReturn ? '#94a3b8' : '#22d3ee';
 
                   const mx = (x1 + x2) / 2;
                   const my = (y1 + y2) / 2;
@@ -725,7 +940,31 @@ export const FloorPlanCanvas: React.FC = () => {
                   const vel = d.velocityFpm || Math.round(d.cfm / Math.max(0.1, (d.widthIn * d.heightIn) / 144));
 
                   return (
-                    <Group key={d.id}>
+                    <Group
+                      key={d.id}
+                      draggable={drawMode === 'select' || isSelected}
+                      onDragEnd={(e) => {
+                        handleDuctDrag(zone.id, d.id, e.target.x(), e.target.y());
+                        e.target.position({ x: 0, y: 0 });
+                      }}
+                    >
+                      {/* Highlight Outer Glow Halo */}
+                      {isDuctHighlighted && (
+                        <Line
+                          points={[
+                            x1 + nx * (hw + 5 * symScale), y1 + ny * (hw + 5 * symScale),
+                            x2 + nx * (hw + 5 * symScale), y2 + ny * (hw + 5 * symScale),
+                            x2 - nx * (hw + 5 * symScale), y2 - ny * (hw + 5 * symScale),
+                            x1 - nx * (hw + 5 * symScale), y1 - ny * (hw + 5 * symScale)
+                          ]}
+                          closed
+                          fill="rgba(245, 158, 11, 0.25)"
+                          stroke="#f59e0b"
+                          strokeWidth={getStrokeWidth(2.5, 2.5)}
+                          dash={[6, 3]}
+                        />
+                      )}
+
                       {/* Filled Duct Body Polygon */}
                       {annotationVisibility.ducts && (
                         <>
@@ -739,7 +978,7 @@ export const FloorPlanCanvas: React.FC = () => {
                             closed
                             fill={fillColor}
                             stroke={casingColor}
-                            strokeWidth={getStrokeWidth(1.6, 1.6)}
+                            strokeWidth={getStrokeWidth(isDuctHighlighted ? 2.8 : 1.6, isDuctHighlighted ? 2.8 : 1.6)}
                           />
                           {/* Transition Flange Lines at start and end */}
                           <Line
@@ -760,7 +999,7 @@ export const FloorPlanCanvas: React.FC = () => {
                         <Line
                           points={[x1, y1, x2, y2]}
                           stroke={centerColor}
-                          strokeWidth={getStrokeWidth(1.0, 1.0)}
+                          strokeWidth={getStrokeWidth(isDuctHighlighted ? 1.6 : 1.0, isDuctHighlighted ? 1.6 : 1.0)}
                           dash={[6, 4]}
                         />
                       )}
@@ -783,16 +1022,54 @@ export const FloorPlanCanvas: React.FC = () => {
                         />
                       )}
 
-                      {/* Bright Yellow CFM Callout directly along duct branch (Matching CAD Reference Drawing) */}
+                      {/* Bright Yellow CFM Callout directly along duct branch with clean background */}
                       {annotationVisibility.ductCfm && (
-                        <Text
-                          x={mx - 25 * symScale}
-                          y={my - (hw + 12 * symScale)}
-                          text={`${d.cfm} CFM`}
-                          fontSize={Math.max(8.5 * symScale, 9 / stageScale)}
-                          fill="#facc15"
-                          fontStyle="bold"
-                        />
+                        <Group x={mx - 25 * symScale} y={my - (hw + 14 * symScale)}>
+                          <Rect
+                            x={-2}
+                            y={-1}
+                            width={54 * symScale}
+                            height={14 * symScale}
+                            fill="rgba(15, 23, 42, 0.95)"
+                            stroke={isDuctHighlighted ? '#fbbf24' : '#eab308'}
+                            strokeWidth={0.6}
+                            cornerRadius={2}
+                          />
+                          <Text
+                            x={2}
+                            y={1}
+                            text={`${d.cfm} CFM`}
+                            fontSize={Math.max(8.5 * symScale, 9 / stageScale)}
+                            fill={isDuctHighlighted ? '#fbbf24' : '#facc15'}
+                            fontStyle="bold"
+                          />
+                        </Group>
+                      )}
+
+                      {/* Floating Interactive Selection Badge */}
+                      {isDuctHighlighted && (
+                        <Group x={mx} y={my - (hw + 26 * symScale)}>
+                          <Rect
+                            x={-45 * Math.min(1.5, symScale)}
+                            y={-9 * Math.min(1.5, symScale)}
+                            width={90 * Math.min(1.5, symScale)}
+                            height={18 * Math.min(1.5, symScale)}
+                            fill="#f59e0b"
+                            cornerRadius={4}
+                            shadowColor="#000000"
+                            shadowBlur={6}
+                          />
+                          <Text
+                            x={-43 * Math.min(1.5, symScale)}
+                            y={-6 * Math.min(1.5, symScale)}
+                            width={86 * Math.min(1.5, symScale)}
+                            text={`★ ${d.id || d.sizeLabel}`}
+                            fontSize={Math.max(8.5 * symScale, 9.5 / stageScale)}
+                            fill="#000000"
+                            fontStyle="bold"
+                            align="center"
+                          />
+                        </Group>
                       )}
 
                       {/* Detailed Air Distribution Callout Badge with CFM & Size (LOD Tier 2+) */}
@@ -824,71 +1101,145 @@ export const FloorPlanCanvas: React.FC = () => {
                 })}
 
                 {/* Diffusers / Terminals Placement */}
-                {zone.diffusers.map((dif) => (
-                  <Group
-                    key={dif.id}
-                    x={dif.x}
-                    y={dif.y}
-                    draggable={lodTier >= 2}
-                    onDragMove={(e) => handleDiffuserDrag(zone.id, dif.id, e.target.x(), e.target.y())}
-                  >
-                    {dif.type === 'return' ? (
+                {zone.diffusers.map((dif) => {
+                  const isTerminalHighlighted =
+                    highlightedDuctId === dif.id ||
+                    highlightedEntityTag === dif.id ||
+                    (highlightedEntityTag && (
+                      (highlightedEntityTag.toUpperCase().includes('SAD') && dif.type !== 'return') ||
+                      (highlightedEntityTag.toUpperCase().includes('DIFF') && dif.type !== 'return') ||
+                      (highlightedEntityTag.toUpperCase().includes('RG') && dif.type === 'return') ||
+                      (highlightedEntityTag.toUpperCase().includes('RET') && dif.type === 'return') ||
+                      (highlightedEntityTag.toUpperCase().includes('CASS') && zone.systemType === 'cassette')
+                    ));
+
+                  return (
+                    <Group
+                      key={dif.id}
+                      x={dif.x}
+                      y={dif.y}
+                      draggable={drawMode === 'select' || isSelected}
+                      onDragEnd={(e) => handleDiffuserDrag(zone.id, dif.id, e.target.x(), e.target.y())}
+                    >
+                      {/* Interactive Selection Glowing Ring & Callout */}
+                      {isTerminalHighlighted && (
+                        <Group listening={false}>
+                          <Circle
+                            x={0}
+                            y={0}
+                            radius={22 * symScale}
+                            fill="rgba(245, 158, 11, 0.25)"
+                            stroke="#fbbf24"
+                            strokeWidth={getStrokeWidth(2.2, 2.2)}
+                            dash={[4, 3]}
+                          />
+                          <Text
+                            x={-30 * symScale}
+                            y={-28 * symScale}
+                            text={`★ ${dif.id}`}
+                            fontSize={Math.max(9 * symScale, 10 / stageScale)}
+                            fill="#fbbf24"
+                            fontStyle="bold"
+                          />
+                        </Group>
+                      )}
+
+                      {/* Aerodynamic Distribution / Throw Coverage Circle */}
+                      {dif.type !== 'return' && annotationVisibility.throwRings && (
+                        <Group listening={false}>
+                          {/* Outer T50 Throw Coverage Boundary */}
+                          <Circle
+                            x={0}
+                            y={0}
+                            radius={((dif.throwT50Ft && dif.throwT50Ft > 0 ? dif.throwT50Ft : 10) * (project.scale || 10))}
+                            fill={isTerminalHighlighted ? "rgba(245, 158, 11, 0.12)" : "rgba(16, 185, 129, 0.07)"}
+                            stroke={isTerminalHighlighted ? "rgba(245, 158, 11, 0.85)" : "rgba(16, 185, 129, 0.60)"}
+                            strokeWidth={getStrokeWidth(isTerminalHighlighted ? 2.0 : 1.2, isTerminalHighlighted ? 2.0 : 1.2)}
+                            dash={[6, 4]}
+                            listening={false}
+                          />
+                          {/* Mid-Zone Throw Isovel Ring (50% Radius) */}
+                          <Circle
+                            x={0}
+                            y={0}
+                            radius={((dif.throwT50Ft && dif.throwT50Ft > 0 ? dif.throwT50Ft : 10) * (project.scale || 10) * 0.5)}
+                            stroke={isTerminalHighlighted ? "rgba(245, 158, 11, 0.4)" : "rgba(16, 185, 129, 0.25)"}
+                            strokeWidth={getStrokeWidth(0.8, 0.8)}
+                            dash={[3, 3]}
+                            listening={false}
+                          />
+                        </Group>
+                      )}
+
+                      {dif.type === 'return' ? (
                       <Group>
-                        {/* Return Air Grille (RG-1) Engineering Symbol */}
+                        {/* Return Air Grille (RG-1 / Purple MEP Symbol) */}
                         {annotationVisibility.diffusers && (
                           <>
                             <Rect
-                              x={-14 * symScale}
-                              y={-14 * symScale}
-                              width={28 * symScale}
-                              height={28 * symScale}
-                              fill="rgba(88, 28, 135, 0.35)"
+                              x={-12 * symScale}
+                              y={-12 * symScale}
+                              width={24 * symScale}
+                              height={24 * symScale}
+                              fill="rgba(168, 85, 247, 0.25)"
                               stroke="#c084fc"
                               strokeWidth={getStrokeWidth(1.8, 1.8)}
-                              cornerRadius={2}
+                              cornerRadius={1}
                             />
-                            {/* Inner Return Intake Box */}
+                            {/* Inner Return Box */}
                             <Rect
-                              x={-10 * symScale}
-                              y={-10 * symScale}
-                              width={20 * symScale}
-                              height={20 * symScale}
+                              x={-7 * symScale}
+                              y={-7 * symScale}
+                              width={14 * symScale}
+                              height={14 * symScale}
                               stroke="#c084fc"
                               strokeWidth={getStrokeWidth(1.0, 1.0)}
-                              fill="rgba(192, 132, 252, 0.1)"
+                              fill="rgba(192, 132, 252, 0.15)"
                             />
-                            {/* Single Diagonal Slash across Return Grille (standard MEP symbol) */}
+                            {/* Diagonal Slash Across Return Grille */}
                             <Line
-                              points={[-14 * symScale, -14 * symScale, 14 * symScale, 14 * symScale]}
+                              points={[-12 * symScale, -12 * symScale, 12 * symScale, 12 * symScale]}
                               stroke="#c084fc"
-                              strokeWidth={getStrokeWidth(1.6, 1.6)}
+                              strokeWidth={getStrokeWidth(1.4, 1.4)}
                             />
-                            {/* Return Air Inward Chevrons */}
-                            <Line points={[-6 * symScale, -3 * symScale, 0, 0, -6 * symScale, 3 * symScale]} stroke="#e879f9" strokeWidth={getStrokeWidth(1.2, 1.2)} />
-                            <Line points={[6 * symScale, -3 * symScale, 0, 0, 6 * symScale, 3 * symScale]} stroke="#e879f9" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                            {/* Inward Return Air Chevrons */}
+                            <Line points={[-5 * symScale, -3 * symScale, 0, 0, -5 * symScale, 3 * symScale]} stroke="#e879f9" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                            <Line points={[5 * symScale, -3 * symScale, 0, 0, 5 * symScale, 3 * symScale]} stroke="#e879f9" strokeWidth={getStrokeWidth(1.2, 1.2)} />
                           </>
                         )}
 
-                        {/* Yellow CFM Tag (Always visible per CAD Reference) */}
+                        {/* Yellow CFM Tag with clean pill background */}
                         {annotationVisibility.diffuserCfm && (
-                          <Text
-                            x={-15 * symScale}
-                            y={16 * symScale}
-                            text={`${dif.cfm} CFM`}
-                            fontSize={Math.max(8.5 * symScale, 9 / stageScale)}
-                            fill="#facc15"
-                            fontStyle="bold"
-                          />
+                          <Group x={14 * symScale} y={-5 * symScale}>
+                            <Rect
+                              x={-2}
+                              y={-1}
+                              width={48 * symScale}
+                              height={14 * symScale}
+                              fill="rgba(15, 23, 42, 0.92)"
+                              stroke="#facc15"
+                              strokeWidth={0.5}
+                              cornerRadius={2}
+                            />
+                            <Text
+                              x={2}
+                              y={1}
+                              text={`${dif.cfm} CFM`}
+                              fontSize={Math.max(8.5 * symScale, 9 / stageScale)}
+                              fill="#facc15"
+                              fontStyle="bold"
+                            />
+                          </Group>
                         )}
 
                         {/* Standard MEP Return Grille Tag (LOD Tier 2+) */}
                         {annotationVisibility.diffuserTags && lodTier >= 2 && (
-                          <Group x={16 * symScale} y={-10 * symScale}>
+                          <Group x={14 * symScale} y={8 * symScale}>
                             <Text
                               x={0}
                               y={0}
                               text={`RG-1 (${dif.size || '24"x12"'})`}
-                              fontSize={Math.max(9 * symScale, 9.5 / stageScale)}
+                              fontSize={Math.max(8 * symScale, 8.5 / stageScale)}
                               fill="#facc15"
                               fontStyle="bold"
                             />
@@ -920,47 +1271,79 @@ export const FloorPlanCanvas: React.FC = () => {
                       </Group>
                     ) : (
                       <Group>
-                        {/* Square Ceiling Diffuser (CD-1) Engineering Symbol */}
+                        {/* Square Ceiling Diffuser (CD-1 / Neon Green MEP Symbol) */}
                         {annotationVisibility.diffusers && (
                           <>
                             <Rect
-                              x={-12 * symScale}
-                              y={-12 * symScale}
-                              width={24 * symScale}
-                              height={24 * symScale}
-                              fill="rgba(5, 150, 105, 0.35)"
-                              stroke="#10b981"
+                              x={-11 * symScale}
+                              y={-11 * symScale}
+                              width={22 * symScale}
+                              height={22 * symScale}
+                              fill="rgba(34, 197, 94, 0.25)"
+                              stroke="#22c55e"
                               strokeWidth={getStrokeWidth(1.8, 1.8)}
-                              cornerRadius={2}
+                              cornerRadius={1}
                             />
                             {/* Inner Concentric Core Square */}
                             <Rect
-                              x={-7 * symScale}
-                              y={-7 * symScale}
-                              width={14 * symScale}
-                              height={14 * symScale}
-                              stroke="#10b981"
+                              x={-6 * symScale}
+                              y={-6 * symScale}
+                              width={12 * symScale}
+                              height={12 * symScale}
+                              stroke="#22c55e"
                               strokeWidth={getStrokeWidth(1.2, 1.2)}
-                              fill="rgba(16, 185, 129, 0.15)"
+                              fill="rgba(34, 197, 94, 0.15)"
                             />
-                            {/* 4-Way Radial Airflow Discharge Arrows */}
-                            <Line points={[0, -7 * symScale, 0, -12 * symScale, -3 * symScale, -9 * symScale, 0, -12 * symScale, 3 * symScale, -9 * symScale]} stroke="#34d399" strokeWidth={getStrokeWidth(1.2, 1.2)} />
-                            <Line points={[0, 7 * symScale, 0, 12 * symScale, -3 * symScale, 9 * symScale, 0, 12 * symScale, 3 * symScale, 9 * symScale]} stroke="#34d399" strokeWidth={getStrokeWidth(1.2, 1.2)} />
-                            <Line points={[-7 * symScale, 0, -12 * symScale, 0, -9 * symScale, -3 * symScale, -12 * symScale, 0, -9 * symScale, 3 * symScale]} stroke="#34d399" strokeWidth={getStrokeWidth(1.2, 1.2)} />
-                            <Line points={[7 * symScale, 0, 12 * symScale, 0, 9 * symScale, -3 * symScale, 12 * symScale, 0, 9 * symScale, 3 * symScale]} stroke="#34d399" strokeWidth={getStrokeWidth(1.2, 1.2)} />
+                            {/* 4-Way Radial Airflow Discharge Arrow Rays with Pointer Heads */}
+                            {/* North Arrow */}
+                            <Line
+                              points={[0, -6 * symScale, 0, -18 * symScale, -3.5 * symScale, -14.5 * symScale, 0, -18 * symScale, 3.5 * symScale, -14.5 * symScale]}
+                              stroke="#22c55e"
+                              strokeWidth={getStrokeWidth(1.4, 1.4)}
+                            />
+                            {/* South Arrow */}
+                            <Line
+                              points={[0, 6 * symScale, 0, 18 * symScale, -3.5 * symScale, 14.5 * symScale, 0, 18 * symScale, 3.5 * symScale, 14.5 * symScale]}
+                              stroke="#22c55e"
+                              strokeWidth={getStrokeWidth(1.4, 1.4)}
+                            />
+                            {/* West Arrow */}
+                            <Line
+                              points={[-6 * symScale, 0, -18 * symScale, 0, -14.5 * symScale, -3.5 * symScale, -18 * symScale, 0, -14.5 * symScale, 3.5 * symScale]}
+                              stroke="#22c55e"
+                              strokeWidth={getStrokeWidth(1.4, 1.4)}
+                            />
+                            {/* East Arrow */}
+                            <Line
+                              points={[6 * symScale, 0, 18 * symScale, 0, 14.5 * symScale, -3.5 * symScale, 18 * symScale, 0, 14.5 * symScale, 3.5 * symScale]}
+                              stroke="#22c55e"
+                              strokeWidth={getStrokeWidth(1.4, 1.4)}
+                            />
                           </>
                         )}
 
-                        {/* Yellow CFM Tag (Always visible per CAD Reference) */}
+                        {/* Yellow CFM Tag with clean pill background */}
                         {annotationVisibility.diffuserCfm && (
-                          <Text
-                            x={-15 * symScale}
-                            y={16 * symScale}
-                            text={`${dif.cfm} CFM`}
-                            fontSize={Math.max(8.5 * symScale, 9 / stageScale)}
-                            fill="#facc15"
-                            fontStyle="bold"
-                          />
+                          <Group x={14 * symScale} y={-5 * symScale}>
+                            <Rect
+                              x={-2}
+                              y={-1}
+                              width={48 * symScale}
+                              height={14 * symScale}
+                              fill="rgba(15, 23, 42, 0.92)"
+                              stroke="#facc15"
+                              strokeWidth={0.5}
+                              cornerRadius={2}
+                            />
+                            <Text
+                              x={2}
+                              y={1}
+                              text={`${dif.cfm} CFM`}
+                              fontSize={Math.max(8.5 * symScale, 9 / stageScale)}
+                              fill="#facc15"
+                              fontStyle="bold"
+                            />
+                          </Group>
                         )}
 
                         {/* Standard MEP Diffuser Tag: CD-1 (Size) / line / CFM • NC (LOD Tier 2+) */}
@@ -1004,9 +1387,10 @@ export const FloorPlanCanvas: React.FC = () => {
                       </Group>
                     )}
                   </Group>
-                ))}
+                );
+              })}
 
-                {/* Multiple Indoor Units (FCU / Concealed Split / AHU / RTU) */}
+              {/* Multiple Indoor Units (FCU / Concealed Split / AHU / RTU) */}
                 {annotationVisibility.indoorUnits && (() => {
                   const unitList = zone.unitPositions && zone.unitPositions.length > 0
                     ? zone.unitPositions
@@ -1014,16 +1398,49 @@ export const FloorPlanCanvas: React.FC = () => {
                     ? [zone.unitPos]
                     : [];
 
+                  const isIndoorUnitHighlighted =
+                    highlightedEntityTag &&
+                    (highlightedEntityTag.toUpperCase().includes('FCU') ||
+                     highlightedEntityTag.toUpperCase().includes('AHU') ||
+                     highlightedEntityTag.toUpperCase().includes('RTU') ||
+                     highlightedEntityTag.toUpperCase().includes('INDOOR') ||
+                     highlightedEntityTag.toUpperCase().includes('SPLIT'));
+
                   return unitList.map((pos, uIdx) => (
                     <Group
                       key={`unit-${zone.id}-${uIdx}`}
                       x={pos.x}
                       y={pos.y}
-                      draggable={lodTier >= 2}
-                      onDragMove={(e) => {
-                        if (uIdx === 0) handleIndoorUnitDrag(zone.id, e.target.x(), e.target.y());
+                      draggable={drawMode === 'select' || isSelected}
+                      onDragEnd={(e) => {
+                        handleIndoorUnitDrag(zone.id, e.target.x(), e.target.y(), uIdx);
                       }}
                     >
+                      {/* Selection Highlight Halo */}
+                      {isIndoorUnitHighlighted && (
+                        <Group listening={false}>
+                          <Rect
+                            x={-30 * symScale}
+                            y={-18 * symScale}
+                            width={60 * symScale}
+                            height={36 * symScale}
+                            stroke="#fbbf24"
+                            strokeWidth={getStrokeWidth(2.5, 2.5)}
+                            fill="rgba(251, 191, 36, 0.25)"
+                            dash={[5, 3]}
+                            cornerRadius={5}
+                          />
+                          <Text
+                            x={-35 * symScale}
+                            y={-28 * symScale}
+                            text="★ SELECTED INDOOR UNIT"
+                            fontSize={Math.max(8.5 * symScale, 9.5 / stageScale)}
+                            fill="#fbbf24"
+                            fontStyle="bold"
+                          />
+                        </Group>
+                      )}
+
                       {zone.systemType === 'packaged' ? (
                         <Group>
                           <Rect
@@ -1084,16 +1501,48 @@ export const FloorPlanCanvas: React.FC = () => {
                     ? [zone.outdoorUnitPos]
                     : [];
 
+                  const isOutdoorHighlighted =
+                    highlightedEntityTag &&
+                    (highlightedEntityTag.toUpperCase().includes('ODU') ||
+                     highlightedEntityTag.toUpperCase().includes('ACU') ||
+                     highlightedEntityTag.toUpperCase().includes('COND') ||
+                     highlightedEntityTag.toUpperCase().includes('OUTDOOR'));
+
                   return outdoorList.map((oPos, oIdx) => (
                     <Group
                       key={`odu-${zone.id}-${oIdx}`}
                       x={oPos.x}
                       y={oPos.y}
-                      draggable={lodTier >= 2}
-                      onDragMove={(e) => {
-                        if (oIdx === 0) handleOutdoorUnitDrag(zone.id, e.target.x(), e.target.y());
+                      draggable={drawMode === 'select' || isSelected}
+                      onDragEnd={(e) => {
+                        handleOutdoorUnitDrag(zone.id, e.target.x(), e.target.y(), oIdx);
                       }}
                     >
+                      {/* Selection Highlight Halo */}
+                      {isOutdoorHighlighted && (
+                        <Group listening={false}>
+                          <Rect
+                            x={-22 * symScale}
+                            y={-14 * symScale}
+                            width={44 * symScale}
+                            height={28 * symScale}
+                            stroke="#fbbf24"
+                            strokeWidth={getStrokeWidth(2.5, 2.5)}
+                            fill="rgba(251, 191, 36, 0.25)"
+                            dash={[5, 3]}
+                            cornerRadius={5}
+                          />
+                          <Text
+                            x={-35 * symScale}
+                            y={-22 * symScale}
+                            text="★ SELECTED OUTDOOR ACU"
+                            fontSize={Math.max(8 * symScale, 9 / stageScale)}
+                            fill="#fbbf24"
+                            fontStyle="bold"
+                          />
+                        </Group>
+                      )}
+
                       {/* Outdoor Air-Cooled Condenser Unit (ACU) Housing */}
                       <Rect
                         x={-18 * symScale}
@@ -1124,30 +1573,45 @@ export const FloorPlanCanvas: React.FC = () => {
                 })()}
 
                 {/* Centroid Labels */}
-                {annotationVisibility.zoneLabels && (
-                  <>
-                    <Text
-                      x={centroid.x - 70 / stageScale}
-                      y={centroid.y - 14 / stageScale}
-                      text={zone.name}
-                      fontSize={Math.max(13, 13 / stageScale)}
-                      fontStyle="bold"
-                      fill={isSelected ? '#3b82f6' : '#d4d4d4'}
-                      align="center"
-                      width={140 / stageScale}
-                    />
-                    <Text
-                      x={centroid.x - 70 / stageScale}
-                      y={centroid.y + 3 / stageScale}
-                      text={`${zone.diffusers.length > 0 ? zone.diffusers.reduce((s, d) => s + d.cfm, 0) : load.supplyCfm} ${project.units === 'imperial' ? 'CFM' : 'L/s'} (${zone.systemType || 'concealed'})`}
-                      fontSize={Math.max(11, 11 / stageScale)}
-                      fontStyle="bold"
-                      fill="#10b981"
-                      align="center"
-                      width={140 / stageScale}
-                    />
-                  </>
-                )}
+                {annotationVisibility.zoneLabels && (() => {
+                  const { coverage } = item;
+                  return (
+                    <>
+                      <Text
+                        x={centroid.x - 80 / stageScale}
+                        y={centroid.y - 18 / stageScale}
+                        text={zone.name}
+                        fontSize={Math.max(13, 13 / stageScale)}
+                        fontStyle="bold"
+                        fill={isSelected ? '#3b82f6' : '#d4d4d4'}
+                        align="center"
+                        width={160 / stageScale}
+                      />
+                      <Text
+                        x={centroid.x - 80 / stageScale}
+                        y={centroid.y - 2 / stageScale}
+                        text={load ? `${getSupplyAirflowForDisplay(zone.diffusers, calculateCanonicalZoneLoad(zone,project).supplyCfm, project.units)?.toFixed(1) ?? 'Unknown'} ${project.units === 'imperial' ? 'CFM' : 'L/s'} (${zone.systemType || 'concealed'})` : 'Engineering input error — check zone properties'}
+                        fontSize={Math.max(11, 11 / stageScale)}
+                        fontStyle="bold"
+                        fill="#10b981"
+                        align="center"
+                        width={160 / stageScale}
+                      />
+                      {zone.diffusers.length > 0 && zone.systemType !== 'high-wall' && (
+                        <Text
+                          x={centroid.x - 80 / stageScale}
+                          y={centroid.y + 12 / stageScale}
+                          text={`Coverage: ${coverage.coveragePercent}% ${coverage.coveragePercent >= 99 ? '★ (100% Full Space Covered)' : coverage.isCovered95 ? '✓ (≥95%)' : '⚠'}`}
+                          fontSize={Math.max(9.5, 9.5 / stageScale)}
+                          fontStyle="bold"
+                          fill={coverage.coveragePercent >= 99 ? '#34d399' : coverage.isCovered95 ? '#2dd4bf' : '#f59e0b'}
+                          align="center"
+                          width={160 / stageScale}
+                        />
+                      )}
+                    </>
+                  );
+                })()}
 
                 {/* Interactive Editable Vertices (Selected Zone only) */}
                 {isSelected &&
@@ -1230,16 +1694,18 @@ export const FloorPlanCanvas: React.FC = () => {
                 );
               })}
 
-              {/* Ghost Indoor Unit */}
-              {activePreview.manifest.equipment.indoorUnit && (() => {
+              {/* Ghost Indoor Unit(s) */}
+              {(() => {
                 const eqScale = project.equipmentScale || 2.0;
                 const symScale = eqScale * 1.5;
+                const unitsToPreview = activePreview.manifest.equipment.cassetteUnits && activePreview.manifest.equipment.cassetteUnits.length > 0
+                  ? activePreview.manifest.equipment.cassetteUnits
+                  : activePreview.manifest.equipment.indoorUnit
+                  ? [activePreview.manifest.equipment.indoorUnit]
+                  : [];
 
-                return (
-                  <Group
-                    x={activePreview.manifest.equipment.indoorUnit.position.x}
-                    y={activePreview.manifest.equipment.indoorUnit.position.y}
-                  >
+                return unitsToPreview.map((iu, uIdx) => (
+                  <Group key={`prev-iu-${uIdx}`} x={iu.position.x} y={iu.position.y}>
                     <Rect
                       x={-24 * symScale}
                       y={-12 * symScale}
@@ -1254,24 +1720,36 @@ export const FloorPlanCanvas: React.FC = () => {
                     <Text
                       x={-22 * symScale}
                       y={-6 * symScale}
-                      text={`PREVIEW: ${activePreview.manifest.equipment.indoorUnit.model}`}
+                      text={`PREVIEW: ${iu.model || 'Indoor Unit'}`}
                       fontSize={Math.min(11, Math.max(6, (7 * symScale) / stageScale))}
                       fill="#34d399"
                       fontStyle="bold"
                     />
                   </Group>
-                );
+                ));
               })()}
 
-              {/* Ghost Outdoor Unit */}
+              {/* Ghost Refrigerant Lines */}
+              {activePreview.manifest.piping?.refrigerantLines?.map((refLine, rIdx) => (
+                <Line
+                  key={`prev-ref-${rIdx}`}
+                  points={refLine.points}
+                  stroke="#f97316"
+                  strokeWidth={getStrokeWidth(2.2, 2.2)}
+                  dash={[6 / stageScale, 4 / stageScale]}
+                />
+              ))}
+
+              {/* Ghost Outdoor Unit(s) */}
               {activePreview.manifest.equipment.outdoorUnit && (() => {
                 const eqScale = project.equipmentScale || 2.0;
                 const symScale = eqScale * 1.5;
+                const odu = activePreview.manifest.equipment.outdoorUnit;
 
                 return (
                   <Group
-                    x={activePreview.manifest.equipment.outdoorUnit.position.x}
-                    y={activePreview.manifest.equipment.outdoorUnit.position.y}
+                    x={odu.position.x}
+                    y={odu.position.y}
                   >
                     <Rect
                       x={-18 * symScale}
@@ -1287,7 +1765,7 @@ export const FloorPlanCanvas: React.FC = () => {
                     <Text
                       x={-20 * symScale}
                       y={-22 * symScale}
-                      text={`PREVIEW ODU`}
+                      text={`PREVIEW ODU (${odu.model || 'ACU'})`}
                       fontSize={Math.min(11, Math.max(6, (7 * symScale) / stageScale))}
                       fill="#f43f5e"
                       fontStyle="bold"

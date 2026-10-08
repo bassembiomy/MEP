@@ -3,6 +3,7 @@ import { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
 import { StandardsProfile, ASHRAE_PROFILE } from '../standards/designStandards';
 
 export interface ValidationPointResult {
+  zoneId?: string;
   pointIndex: number;
   pointName: string;
   status: 'PASS' | 'WARNING' | 'FAIL';
@@ -21,11 +22,12 @@ export function validateSupplyAirflowBalance(
   const equipmentSum = zones.reduce((sum, z) => sum + z.supplyCfm, 0);
 
   const delta = Math.abs(terminalSum - equipmentSum);
-  const errorPercent = equipmentSum > 0 ? (delta / equipmentSum) * 100 : 0;
-  const tolerance = profile.tolerances.airflowBalancePercent || 5.0;
+  const errorPercent = equipmentSum > 0 ? (delta / equipmentSum) * 100 : terminalSum > 0 ? Infinity : 0;
+  const tolerance = profile.tolerances.airflowBalancePercent ?? 5.0;
 
-  const passed = errorPercent <= tolerance;
-  const status: 'PASS' | 'WARNING' | 'FAIL' = passed ? 'PASS' : (errorPercent <= tolerance * 2 ? 'WARNING' : 'FAIL');
+  const passed = zones.length > 0 && [terminalSum, equipmentSum, tolerance].every(Number.isFinite) &&
+    equipmentSum >= 0 && terminalSum >= 0 && tolerance >= 0 && errorPercent <= tolerance;
+  const status = passed ? 'PASS' : 'FAIL';
 
   return {
     pointIndex: 1,
@@ -46,10 +48,11 @@ export function validateRoomAirflowVerification(
   const deliveredCfm = supplyTerminals.reduce((sum, t) => sum + t.cfm, 0);
 
   const delta = Math.abs(deliveredCfm - requiredCfm);
-  const tolerance = profile.tolerances.roomCfmDeltaMax || 50;
+  const tolerance = profile.tolerances.roomCfmDeltaMax ?? 50;
 
-  const passed = delta <= tolerance;
-  const status: 'PASS' | 'WARNING' | 'FAIL' = passed ? 'PASS' : 'WARNING';
+  const passed = [deliveredCfm, requiredCfm, tolerance].every(Number.isFinite) && requiredCfm >= 0 &&
+    deliveredCfm >= 0 && tolerance >= 0 && delta <= tolerance;
+  const status = passed ? 'PASS' : 'FAIL';
 
   return {
     pointIndex: 2,

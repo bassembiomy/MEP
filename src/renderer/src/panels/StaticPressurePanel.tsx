@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
-import { calculateZoneLoad } from '../engine/loadCalc';
+import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
 import {
   solveDirectedNetworkStaticPressure,
   evaluateFanOperatingPoint,
@@ -23,6 +23,7 @@ import {
   CheckCircle2,
   FileSpreadsheet
 } from 'lucide-react';
+import { METERS_PER_FOOT } from '../engine/engineeringInputs';
 import { DuctAcousticVerification } from '../engine/types';
 
 export const StaticPressurePanel: React.FC = () => {
@@ -41,11 +42,14 @@ export const StaticPressurePanel: React.FC = () => {
   }
 
   const isImperial = project.units === 'imperial';
-  const loadResult = calculateZoneLoad(selectedZone, project);
+  const evaluation = calculateZoneLoadSafely(selectedZone, project);
+  if (!evaluation.load) return <p role="alert" className="text-xs text-red-300 p-4">{evaluation.error}</p>;
+  const loadResult = evaluation.load;
+  const canonicalLoad = calculateCanonicalZoneLoad(selectedZone, project);
   const isDucted =
     selectedZone.systemType === 'concealed' ||
     selectedZone.systemType === 'packaged' ||
-    selectedZone.systemType === 'ahu';
+    selectedZone.systemType === 'ahu' || selectedZone.systemType === 'fcu' || selectedZone.systemType === 'vrf';
 
   // Solve critical path
   const defaultDuctType = STANDARD_DUCT_TYPES[0];
@@ -54,24 +58,25 @@ export const StaticPressurePanel: React.FC = () => {
     selectedZone.diffusers,
     STANDARD_DIFFUSER_CATALOG,
     defaultDuctType,
-    project.scale
+    project.scale * (isImperial ? 1 : METERS_PER_FOOT)
   );
 
   // Match equipment record
   const matchingEquip =
     STANDARD_EQUIPMENT_CATALOG.find(
-      (e) => e.systemType === selectedZone.systemType && e.nominalCfm >= loadResult.supplyCfm * 0.7
-    ) || STANDARD_EQUIPMENT_CATALOG[0];
+      (e) => e.systemType === selectedZone.systemType && e.model === selectedZone.catalogModel
+    );
+  if (!matchingEquip) return <p role="alert" className="text-xs text-amber-300 p-4">Select catalog equipment before evaluating its fan operating point.</p>;
 
   const fanResult = evaluateFanOperatingPoint(
     matchingEquip,
-    loadResult.supplyCfm,
+    canonicalLoad.supplyCfm,
     criticalPath.espRequiredInWg
   );
 
   const balancingSchedule = calculateBranchBalancingSchedule(criticalPath, selectedZone.diffusers);
 
-  const targetNc = selectedZone.targetNc || 32;
+  const targetNc = selectedZone.targetNc ?? 32;
   const locationCategory = selectedZone.ductLocationCategory || 'above-suspended-ceiling';
   const isEnhanced = selectedZone.enhancedAcousticPerformance || false;
 
@@ -89,10 +94,11 @@ export const StaticPressurePanel: React.FC = () => {
 
   const passCount = acousticVerifications.filter((v) => v.complianceStatus === 'PASS').length;
   const failCount = acousticVerifications.length - passCount;
-  const allPass = failCount === 0;
+  const allPass = acousticVerifications.length > 0 && failCount === 0;
 
   return (
     <div className="flex flex-col gap-6 bg-neutral-900 border border-neutral-800 p-5 rounded-2xl backdrop-blur-md shadow-2xl">
+      <p className="text-xs text-amber-300">Preliminary pressure and acoustic estimates. CAD application independently rechecks connected fan paths; operating conditions and complete accessories remain unverified.</p>
       {/* Header */}
       <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-3 border-b border-neutral-800 pb-4">
         <div>
@@ -110,7 +116,7 @@ export const StaticPressurePanel: React.FC = () => {
           <div className="bg-neutral-950 border border-neutral-800 px-3.5 py-2 rounded-xl text-right">
             <span className="text-[9px] font-bold text-neutral-500 block uppercase">Acoustic Status</span>
             <span className={`text-xs font-bold font-mono ${allPass ? 'text-emerald-400' : 'text-red-400'}`}>
-              {allPass ? `PASS (${passCount}/${acousticVerifications.length})` : `REDESIGN (${failCount} Fail)`}
+              {acousticVerifications.length === 0 ? 'NOT VERIFIED' : allPass ? `PASS (${passCount}/${acousticVerifications.length})` : `REDESIGN (${failCount} Fail)`}
             </span>
           </div>
           <div className="bg-neutral-950 border border-neutral-800 px-3.5 py-2 rounded-xl text-right">

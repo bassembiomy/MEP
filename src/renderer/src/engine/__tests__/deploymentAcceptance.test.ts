@@ -110,7 +110,9 @@ if (supplyDucts.length === 0 || returnDucts.length === 0) {
 console.log('✔ Test 7 Passed: Supply and return networks isolated and verified');
 
 // Test 8: Airflow is conserved at all junctions
-const totalDiffuserFlow = concManifest.terminals.reduce((sum, t) => sum + t.cfm, 0);
+const totalDiffuserFlow = concManifest.terminals
+  .filter((t) => t.type === 'supply' || !t.type)
+  .reduce((sum, t) => sum + t.cfm, 0);
 const mainTrunkFlow = concManifest.ducts.find((d) => d.type === 'trunk')?.cfm || 0;
 if (totalDiffuserFlow !== mainTrunkFlow) {
   throw new Error(`Test 8 Failed: Airflow not conserved (Diffusers: ${totalDiffuserFlow} vs Trunk: ${mainTrunkFlow})`);

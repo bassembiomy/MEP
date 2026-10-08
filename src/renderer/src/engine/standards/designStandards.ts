@@ -49,7 +49,7 @@ export const ASHRAE_PROFILE: StandardsProfile = {
   id: 'profile-ashrae',
   type: 'ashrae',
   name: 'ASHRAE Standard Profile',
-  description: 'Compliant with ASHRAE Fundamentals 2021, ASHRAE 62.1-2019, ASHRAE 90.1-2019, and ASHRAE 55-2020.',
+  description: 'Preliminary engineering presets. Selected ASHRAE editions and numerical source evidence require project review.',
   governingStandards: ['ASHRAE Fundamentals', 'ASHRAE 62.1', 'ASHRAE 90.1', 'ASHRAE 55'],
   velocityLimits: {
     mainTrunkNc30: 1200,
@@ -71,8 +71,8 @@ export const ASHRAE_PROFILE: StandardsProfile = {
     preferredMaxHeightIn: 14
   },
   diffuserThrow: {
-    minThrowRatio: 0.75,
-    maxThrowRatio: 1.25,
+    minThrowRatio: 0.65,
+    maxThrowRatio: 1.40,
     minReturnSupplyOffsetRatio: 0.60
   },
   tolerances: {
@@ -86,7 +86,7 @@ export const SMACNA_PROFILE: StandardsProfile = {
   id: 'profile-smacna',
   type: 'smacna',
   name: 'SMACNA Standard Profile',
-  description: 'Compliant with SMACNA HVAC Duct Construction Standards - Metal and Flexible (4th Edition).',
+  description: 'Preliminary engineering presets. SMACNA construction and design clauses require project-specific evidence.',
   governingStandards: ['SMACNA HVAC Duct Construction Standards', 'SMACNA HVAC Systems Duct Design'],
   velocityLimits: {
     mainTrunkNc30: 1100,
@@ -108,9 +108,9 @@ export const SMACNA_PROFILE: StandardsProfile = {
     preferredMaxHeightIn: 12
   },
   diffuserThrow: {
-    minThrowRatio: 0.70,
-    maxThrowRatio: 1.20,
-    minReturnSupplyOffsetRatio: 0.65
+    minThrowRatio: 0.65,
+    maxThrowRatio: 1.40,
+    minReturnSupplyOffsetRatio: 0.60
   },
   tolerances: {
     airflowBalancePercent: 5.0,

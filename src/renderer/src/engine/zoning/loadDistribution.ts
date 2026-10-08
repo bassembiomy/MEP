@@ -30,10 +30,10 @@ export function distributeLoadsAcrossZones(input: LoadDistributionInput): ZoneLo
     const w = weights[i];
     const isLast = i === n - 1;
 
-    const sensible = isLast ? totalSensibleBtu - accumulatedSensible : Math.round(totalSensibleBtu * w);
-    const latent = isLast ? totalLatentBtu - accumulatedLatent : Math.round(totalLatentBtu * w);
-    const cfm = isLast ? totalCfm - accumulatedCfm : Math.round(totalCfm * w);
-    const oa = isLast ? totalOutdoorAirCfm - accumulatedOa : Math.round(totalOutdoorAirCfm * w);
+    const sensible = isLast ? totalSensibleBtu - accumulatedSensible : totalSensibleBtu * w;
+    const latent = isLast ? totalLatentBtu - accumulatedLatent : totalLatentBtu * w;
+    const cfm = isLast ? totalCfm - accumulatedCfm : totalCfm * w;
+    const oa = isLast ? totalOutdoorAirCfm - accumulatedOa : totalOutdoorAirCfm * w;
 
     accumulatedSensible += sensible;
     accumulatedLatent += latent;
@@ -46,7 +46,8 @@ export function distributeLoadsAcrossZones(input: LoadDistributionInput): ZoneLo
       latentBtu: latent,
       totalBtu: sensible + latent,
       supplyCfm: cfm,
-      returnCfm: Math.round(cfm * 0.88), // typical return cfm
+      // Outdoor air is included in supply, not a room exhaust sink.
+      returnCfm: cfm,
       outdoorAirCfm: oa
     });
   }

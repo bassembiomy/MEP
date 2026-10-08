@@ -66,6 +66,17 @@ export function sizeDuct(
     }
   }
 
+  // Ensure velocity does not exceed maxVelocityFpm
+  if (maxVelocityFpm > 0) {
+    while ((cfm / ((width * H) / 144)) > maxVelocityFpm && width < 200) {
+      if (width / H > 3.5 && H < 24) {
+        H += 2;
+      } else {
+        width += 2;
+      }
+    }
+  }
+
   // 3. Calculate velocity (FPM) = CFM / Area (sqft)
   const areaSqFt = (width * H) / 144;
   const velocityFpm = Math.round(cfm / areaSqFt);

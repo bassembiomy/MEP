@@ -1,17 +1,24 @@
 import React from 'react';
 import { useProjectStore } from '../store/projectStore';
-import { calculateZoneLoad } from '../engine/loadCalc';
+import { calculateZoneLoadSafely } from '../engine/loadCalc';
 import { Table } from 'lucide-react';
 
 export const LoadSummaryPanel: React.FC = () => {
   const { zones, project } = useProjectStore();
 
   const isImperial = project.units === 'imperial';
+  const evaluations = zones.map(zone => ({ zone, ...calculateZoneLoadSafely(zone, project) }));
+  const invalid = evaluations.filter(result => !result.load);
+  if (invalid.length) return <div role="alert" className="p-4 text-xs text-red-300">
+    Load schedule is incomplete. Correct these inputs before calculating totals:
+    {invalid.map(result => <p key={result.zone.id}>{result.zone.name}: {result.error}</p>)}
+  </div>;
+  const loads = new Map(evaluations.flatMap(result => result.load ? [[result.zone.id, result.load] as const] : []));
 
   // Calculate totals
   const totals = zones.reduce(
     (acc, z) => {
-      const load = calculateZoneLoad(z, project);
+      const load = loads.get(z.id)!;
       return {
         area: acc.area + load.area,
         sensible: acc.sensible + load.sensibleLoad,
@@ -60,7 +67,7 @@ export const LoadSummaryPanel: React.FC = () => {
           </thead>
           <tbody className="divide-y divide-neutral-850 text-neutral-300 font-mono">
             {zones.map((z) => {
-              const load = calculateZoneLoad(z, project);
+              const load = loads.get(z.id)!;
               return (
                 <tr key={z.id} className="hover:bg-neutral-950/40 transition-colors">
                   <td className="py-3 font-sans font-medium text-neutral-200">{z.name}</td>
@@ -82,7 +89,7 @@ export const LoadSummaryPanel: React.FC = () => {
               <td className="py-3 font-sans">Total Schedule</td>
               <td className="py-3 font-sans"></td>
               <td className="py-3 text-right">{totals.area.toLocaleString()}</td>
-              <td className="py-3 text-right">{zones.reduce((sum, z) => sum + calculateZoneLoad(z, project).occupants, 0)}</td>
+              <td className="py-3 text-right">{zones.reduce((sum, z) => sum + loads.get(z.id)!.occupants, 0)}</td>
               <td className="py-3 text-right text-neutral-300">
                 {totals.totalLoad.toLocaleString()} {isImperial ? 'Btu/h' : 'W'}
               </td>

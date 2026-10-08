@@ -149,7 +149,9 @@ const fittingLoss = calculateFittingLosses(sizedDucts);
 assert(fittingLoss >= 0, 'Fitting loss should be calculated');
 
 // 4. Return Duct Routing
-const returnDucts = routeReturnDucts(mockZone, []);
+assert(routeReturnDucts(mockZone, []).length === 0, 'Missing grilles must not create fabricated connected return evidence');
+const returnGrille: CoordinatedAirTerminal = { ...mockSupplyTerminals[0], id: 'RAG-1', type: 'return', position: {x:10,y:2}, cfm:mockZone.returnCfm };
+const returnDucts = routeReturnDucts(mockZone, [returnGrille]);
 assert(returnDucts.length >= 1, 'Should route return duct network');
 
 console.log('✔ All Stepped Ducts and Sizing Tests Passed Successfully!');

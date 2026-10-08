@@ -51,10 +51,17 @@ export function routeDucts(
 
   const centroid = getPolygonCentroid(points);
 
+  // Deduplicate diffusers that are too close (< 3 units) to prevent duct collisions
+  const uniqueSupplyDiffusers: DiffuserPos[] = [];
+  for (const d of supplyDiffusers) {
+    const isDup = uniqueSupplyDiffusers.some((u) => Math.hypot(u.x - d.x, u.y - d.y) < 3);
+    if (!isDup) uniqueSupplyDiffusers.push(d);
+  }
+
   // 2. Find the furthest supply diffuser from the Indoor Unit to orient the main trunk
   let maxDist = -1;
-  let furthestDif = supplyDiffusers[0] || diffusers[0];
-  for (const dif of supplyDiffusers) {
+  let furthestDif = uniqueSupplyDiffusers[0] || diffusers[0];
+  for (const dif of uniqueSupplyDiffusers) {
     const dist = Math.pow(dif.x - unitPos.x, 2) + Math.pow(dif.y - unitPos.y, 2);
     if (dist > maxDist) {
       maxDist = dist;
@@ -71,7 +78,7 @@ export function routeDucts(
   const lenSq = vx * vx + vy * vy || 1;
 
   // 3. Project each supply diffuser orthogonally onto the trunk line AB
-  const projectedDiffusers = supplyDiffusers.map((dif) => {
+  const projectedDiffusers = uniqueSupplyDiffusers.map((dif) => {
     const ux = dif.x - A.x;
     const uy = dif.y - A.y;
     let t = (ux * vx + uy * vy) / lenSq;
@@ -98,6 +105,11 @@ export function routeDucts(
       x: projectedDiffusers[i].projX,
       y: projectedDiffusers[i].projY
     };
+
+    const trunkDist = Math.hypot(segmentEnd.x - currentStart.x, segmentEnd.y - currentStart.y);
+    if (trunkDist < 2 && i < projectedDiffusers.length - 1) {
+      continue; // Merge zero-length segment into next segment
+    }
 
     // Flow rate in this trunk segment is the sum of flows of all downstream diffusers
     let downstreamFlow = 0;
@@ -157,23 +169,24 @@ export function routeDucts(
       }
     );
 
-    ducts.push({
-      id: ductId,
-      type: 'trunk',
-      points: [currentStart.x, currentStart.y, segmentEnd.x, segmentEnd.y],
-      widthIn: widthVal,
-      heightIn: heightVal,
-      diameterIn: ductShape === 'round' ? diameterVal : undefined,
-      shape: ductShape,
-      areaSqFt: Math.round(areaSqFt * 1000) / 1000,
-      cfm: downstreamFlow,
-      velocityFpm,
-      sizeLabel,
-      sectionCategory: 'trunk',
-      acousticVerification: verification
-    });
-
-    currentStart = segmentEnd;
+    if (trunkDist >= 2) {
+      ducts.push({
+        id: ductId,
+        type: 'trunk',
+        points: [currentStart.x, currentStart.y, segmentEnd.x, segmentEnd.y],
+        widthIn: widthVal,
+        heightIn: heightVal,
+        diameterIn: ductShape === 'round' ? diameterVal : undefined,
+        shape: ductShape,
+        areaSqFt: Math.round(areaSqFt * 1000) / 1000,
+        cfm: downstreamFlow,
+        velocityFpm,
+        sizeLabel,
+        sectionCategory: 'trunk',
+        acousticVerification: verification
+      });
+      currentStart = segmentEnd;
+    }
   }
 
   // 5. Build Orthogonal Branch Segments to Diffusers
@@ -301,21 +314,24 @@ export function routeDucts(
           }
         );
 
-        ducts.push({
-          id: ductId,
-          type: 'return',
-          points: [unitPos.x, unitPos.y, rd.x, rd.y],
-          widthIn: returnSizing.widthIn,
-          heightIn: returnSizing.heightIn,
-          diameterIn: ductShape === 'round' ? returnSizing.diameterIn : undefined,
-          shape: ductShape,
-          areaSqFt: Math.round(retAreaSqFt * 1000) / 1000,
-          cfm: rd.cfm,
-          velocityFpm: retVelocity,
-          sizeLabel: retLabel,
-          sectionCategory: 'return',
-          acousticVerification: retVerification
-        });
+        const retDist = Math.hypot(rd.x - unitPos.x, rd.y - unitPos.y);
+        if (retDist >= 4) {
+          ducts.push({
+            id: ductId,
+            type: 'return',
+            points: [unitPos.x, unitPos.y, rd.x, rd.y],
+            widthIn: returnSizing.widthIn,
+            heightIn: returnSizing.heightIn,
+            diameterIn: ductShape === 'round' ? returnSizing.diameterIn : undefined,
+            shape: ductShape,
+            areaSqFt: Math.round(retAreaSqFt * 1000) / 1000,
+            cfm: rd.cfm,
+            velocityFpm: retVelocity,
+            sizeLabel: retLabel,
+            sectionCategory: 'return',
+            acousticVerification: retVerification
+          });
+        }
       });
     } else {
       const totalFlow = supplyDiffusers.reduce((sum, d) => sum + d.cfm, 0);

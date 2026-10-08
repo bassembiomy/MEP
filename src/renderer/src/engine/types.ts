@@ -73,7 +73,17 @@ export interface DiffuserCatalogItem {
   id: string;
   manufacturer: string;
   model: string;
-  terminalType: 'square-ceiling' | 'round-ceiling' | 'linear-slot' | 'swirl' | 'sidewall-grille' | 'return-grille' | 'exhaust-grille';
+  terminalType:
+    | 'square-ceiling'
+    | 'round-ceiling'
+    | 'linear-slot'
+    | 'swirl'
+    | 'sidewall-grille'
+    | 'return-grille'
+    | 'exhaust-grille'
+    | 'jet-nozzle'
+    | 'louver'
+    | 'sand-trap-louver';
   neckSizeIn: { width: number; height: number; diameter?: number };
   faceSizeIn: { width: number; height: number };
   minCfm: number;
@@ -96,10 +106,89 @@ export interface DuctTypeItem {
 }
 
 export interface FittingLossDefinition {
-  type: 'elbow-90-vaned' | 'elbow-90-unvaned' | 'elbow-45' | 'branch-tee' | 'reducer' | 'boot-transition' | 'fire-damper' | 'balancing-damper' | 'filter-merv8' | 'filter-merv13' | 'silencer';
+  type:
+    | 'elbow-90-vaned'
+    | 'elbow-90-unvaned'
+    | 'elbow-45'
+    | 'branch-tee'
+    | 'reducer'
+    | 'boot-transition'
+    | 'fire-damper'
+    | 'smoke-damper'
+    | 'combination-fire-smoke-damper'
+    | 'ceiling-radiation-damper'
+    | 'balancing-damper'
+    | 'volume-control-damper'
+    | 'backdraft-damper'
+    | 'filter-merv8'
+    | 'filter-merv13'
+    | 'silencer';
   name: string;
   lossCoefficientK: number; // K-factor referenced to local cross-section velocity pressure
   fixedLossInWg?: number;
+}
+
+export interface Nfpa90aStandardRule {
+  id: string;
+  section: string;
+  category:
+    | 'smoke-detection'
+    | 'fire-damper'
+    | 'smoke-damper'
+    | 'ceiling-radiation-damper'
+    | 'flexible-duct'
+    | 'plenum-corridor'
+    | 'egress';
+  title: string;
+  description: string;
+  thresholdValue?: number;
+  thresholdUnit?: string;
+  mandatoryRequirement: string;
+  actionOnTrigger: string;
+  standardReference: string;
+}
+
+export interface DamperSpecification {
+  id: string;
+  manufacturer: string;
+  model: string;
+  type:
+    | 'fire-damper'
+    | 'smoke-damper'
+    | 'combination-fire-smoke-damper'
+    | 'ceiling-radiation-damper'
+    | 'volume-control-damper'
+    | 'backdraft-damper';
+  fireRatingHours?: number;
+  leakageClass?: 'Class I' | 'Class II' | 'Class III';
+  temperatureRatingF?: number;
+  fusibleLinkTempF?: number;
+  maxVelocityFpm: number;
+  maxPressureInWg: number;
+  lossCoefficientK: number;
+  bladeType: 'curtain' | '3V' | 'airfoil';
+  dimensionsAvailable?: { minIn: number; maxIn: number };
+  provenance: { source: string; version: string };
+}
+
+export interface DuctAccessoryItem {
+  id: string;
+  type:
+    | 'fire-damper'
+    | 'smoke-damper'
+    | 'combination-fire-smoke-damper'
+    | 'volume-control-damper'
+    | 'duct-smoke-detector'
+    | 'sound-attenuator'
+    | 'ceiling-radiation-damper';
+  tag: string;
+  position: { x: number; y: number };
+  widthIn: number;
+  heightIn: number;
+  deltaPInWg: number;
+  cadSymbol: string;
+  standardReference?: string;
+  actionOnTrigger?: string;
 }
 
 export interface PressureLossSegment {
@@ -177,6 +266,20 @@ export interface DiagnosticItem {
   remediation: string;
 }
 
+export interface DiffuserDistributionOption {
+  diffuserCount: number;
+  cfmPerDiffuser: number;
+  diffuserRecord: DiffuserCatalogItem;
+  faceSizeLabel: string;
+  neckSizeLabel: string;
+  actualNc: number;
+  throwT50Ft: number;
+  deltaPInWg: number;
+  estimatedCoveragePercent: number;
+  label: string;
+  isRecommended?: boolean;
+}
+
 export interface SystemDesignCandidate {
   id: string;
   systemType: 'concealed' | 'cassette' | 'high-wall' | 'packaged' | 'vrf' | 'ahu' | 'fcu';
@@ -190,6 +293,7 @@ export interface SystemDesignCandidate {
     throwT50Ft: number;
     deltaPInWg: number;
   };
+  diffuserDistributionOptions?: DiffuserDistributionOption[];
   ductwork?: {
     ductType: DuctTypeItem;
     totalDuctLengthFt: number;

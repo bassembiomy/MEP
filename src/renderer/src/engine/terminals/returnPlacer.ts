@@ -1,112 +1,43 @@
-import { EquipmentServiceZone } from '../zoning/zonePartitioner';
-import { CoordinatedAirTerminal } from './terminalPlacer';
-import { selectBestDiffuserFromCatalog } from './diffuserSelector';
-import { getPolygonScanlineSpan, clampPointInsidePolygon } from '../geometry';
+import type {EquipmentServiceZone} from '../zoning/zonePartitioner';
+import type {CoordinatedAirTerminal} from './terminalPlacer';
+import {selectBestDiffuserFromCatalog} from './diffuserSelector';
+import {isPointInPolygon} from '../geometry';
+import {requireNonnegative,measureSimplePolygon} from '../engineeringInputs';
+import {ASHRAE_PROFILE} from '../standards/designStandards';
 
-function getPolygonBoundingBox(points: number[]) {
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (let i = 0; i < points.length; i += 2) {
-    const x = points[i];
-    const y = points[i + 1];
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
+export function placeReturnGrillesForZone(zone:EquipmentServiceZone,supplyTerminals:CoordinatedAirTerminal[]):CoordinatedAirTerminal[] {
+ const returnCfm=requireNonnegative('Room return airflow',zone.returnCfm);
+ if(returnCfm===0)return [];
+ measureSimplePolygon(zone.serviceAreaPolygon);
+ let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+ for(let i=0;i<zone.serviceAreaPolygon.length;i+=2){minX=Math.min(minX,zone.serviceAreaPolygon[i]);maxX=Math.max(maxX,zone.serviceAreaPolygon[i]);minY=Math.min(minY,zone.serviceAreaPolygon[i+1]);maxY=Math.max(maxY,zone.serviceAreaPolygon[i+1]);}
+ const width=maxX-minX,height=maxY-minY;
+ const count=width>height*1.3&&supplyTerminals.length>=2?Math.max(2,Math.min(4,supplyTerminals.length)):Math.max(1,Math.min(2,supplyTerminals.length));
+ const inset=Math.min(1,width*0.05,height*0.05);
+ const candidates:{x:number;y:number}[]=[];
+ // Bounded plan search checks every return against every supply; no corner-only guess.
+ for(let ix=0;ix<=40;ix++)for(let iy=0;iy<=12;iy++){
+  const x=minX+inset+(width-2*inset)*ix/40,y=minY+inset+(height-2*inset)*iy/12;
+  if(isPointInPolygon(x,y,zone.serviceAreaPolygon))candidates.push({x,y});
+ }
+ if(!candidates.length)throw new Error('No contained return grille position was found.');
+ const ratio=ASHRAE_PROFILE.diffuserThrow.minReturnSupplyOffsetRatio;
+ const returns:CoordinatedAirTerminal[]=[];
+ for(let i=0;i<count;i++) {
+  let best:{x:number;y:number}|undefined,bestScore=-Infinity,bestMargin=-Infinity;
+  for(const candidate of candidates) {
+   if(returns.some(r=>Math.hypot(r.position.x-candidate.x,r.position.y-candidate.y)<Math.max(inset,0.5)))continue;
+   const margin=supplyTerminals.length?Math.min(...supplyTerminals.map(s=>Math.hypot(s.position.x-candidate.x,s.position.y-candidate.y)-s.throwT50Ft*ratio)):Infinity;
+   const spacing=returns.length?Math.min(...returns.map(r=>Math.hypot(r.position.x-candidate.x,r.position.y-candidate.y))):0;
+   const score=(margin>=0?1_000_000:0)+(Number.isFinite(margin)?margin:0)+Math.min(spacing,Math.max(width,height))*0.1;
+   if(score>bestScore){best=candidate;bestScore=score;bestMargin=margin;}
   }
-  return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
-}
-
-export function placeReturnGrillesForZone(
-  zone: EquipmentServiceZone,
-  supplyTerminals: CoordinatedAirTerminal[]
-): CoordinatedAirTerminal[] {
-  const returnCfm = zone.returnCfm || Math.round(zone.supplyCfm * 0.88);
-  const bbox = getPolygonBoundingBox(zone.serviceAreaPolygon);
-  const returns: CoordinatedAirTerminal[] = [];
-
-  if (bbox.width > bbox.height * 1.3 && supplyTerminals.length >= 2) {
-    const numReturns = Math.max(2, Math.min(4, supplyTerminals.length));
-    const cfmPerReturn = Math.round(returnCfm / numReturns);
-    const selected = selectBestDiffuserFromCatalog(cfmPerReturn, zone.targetNc);
-
-    const yTop = bbox.minY + bbox.height * 0.25;
-    const yBottom = bbox.minY + bbox.height * 0.75;
-    const yMid = bbox.minY + bbox.height * 0.5;
-
-    const spanTop = getPolygonScanlineSpan(yTop, zone.serviceAreaPolygon) || { minX: bbox.minX, maxX: bbox.maxX };
-    const spanBottom = getPolygonScanlineSpan(yBottom, zone.serviceAreaPolygon) || { minX: bbox.minX, maxX: bbox.maxX };
-    const spanMid = getPolygonScanlineSpan(yMid, zone.serviceAreaPolygon) || { minX: bbox.minX, maxX: bbox.maxX };
-
-    // Symmetrical perimeter and inter-bay return slots strictly inside polygon with anti-short-circuit separation
-    const returnSlots = numReturns === 2
-      ? [
-          { x: spanMid.minX + 1.0, y: yMid },
-          { x: spanMid.maxX - 1.0, y: yMid }
-        ]
-      : [
-          { x: spanTop.minX + 1.0, y: yTop },
-          { x: spanBottom.minX + 1.0, y: yBottom },
-          { x: spanTop.maxX - 1.0, y: yTop },
-          { x: spanBottom.maxX - 1.0, y: yBottom }
-        ];
-
-    for (let i = 0; i < numReturns; i++) {
-      const slot = returnSlots[i % returnSlots.length];
-      const clamped = clampPointInsidePolygon(slot.x, slot.y, zone.serviceAreaPolygon, 1.0);
-
-      returns.push({
-        id: `RAG-${zone.unitTag}-${i + 1}`,
-        unitId: zone.id,
-        designControlMode: 'ai',
-        type: 'return',
-        subtype: 'eggcrate',
-        position: { x: parseFloat(clamped.x.toFixed(2)), y: parseFloat(clamped.y.toFixed(2)) },
-        cfm: cfmPerReturn,
-        catalogModel: `${selected.catalogItem.manufacturer} Eggcrate Return ${selected.faceDimension}`,
-        neckDimension: selected.neckDimension,
-        faceDimension: selected.faceDimension,
-        throwT50Ft: 0,
-        throwRatio: 1.0,
-        adjacentOverlapRatio: 0,
-        occupiedZoneVelocityFpm: 35,
-        ncRating: Math.max(15, selected.actualNc - 5),
-        deltaPInWg: 0.025,
-        status: 'pass'
-      });
-    }
-  } else {
-    // Perimeter anti-short-circuit placement for compact bays
-    const numReturns = Math.max(1, Math.min(2, supplyTerminals.length));
-    const cfmPerReturn = Math.round(returnCfm / numReturns);
-    const selected = selectBestDiffuserFromCatalog(cfmPerReturn, zone.targetNc);
-
-    for (let i = 1; i <= numReturns; i++) {
-      const targetY = i % 2 === 0 ? bbox.minY + bbox.height * 0.20 : bbox.minY + bbox.height * 0.80;
-      const span = getPolygonScanlineSpan(targetY, zone.serviceAreaPolygon) || { minX: bbox.minX, maxX: bbox.maxX };
-      const rawX = i === 1 ? span.minX + (span.maxX - span.minX) * 0.08 : span.maxX - (span.maxX - span.minX) * 0.08;
-      const clamped = clampPointInsidePolygon(rawX, targetY, zone.serviceAreaPolygon, 1.8);
-
-      returns.push({
-        id: `RAG-${zone.unitTag}-${i}`,
-        unitId: zone.id,
-        designControlMode: 'ai',
-        type: 'return',
-        subtype: 'eggcrate',
-        position: { x: parseFloat(clamped.x.toFixed(2)), y: parseFloat(clamped.y.toFixed(2)) },
-        cfm: cfmPerReturn,
-        catalogModel: `${selected.catalogItem.manufacturer} Eggcrate Return ${selected.faceDimension}`,
-        neckDimension: selected.neckDimension,
-        faceDimension: selected.faceDimension,
-        throwT50Ft: 0,
-        throwRatio: 1.0,
-        adjacentOverlapRatio: 0,
-        occupiedZoneVelocityFpm: 35,
-        ncRating: Math.max(15, selected.actualNc - 5),
-        deltaPInWg: 0.025,
-        status: 'pass'
-      });
-    }
-  }
-
-  return returns;
+  if(!best)throw new Error('Insufficient separated return grille positions.');
+  const cfm=i===count-1?returnCfm-returns.reduce((sum,r)=>sum+r.cfm,0):returnCfm/count;
+  const selected=selectBestDiffuserFromCatalog(cfm,zone.targetNc);
+  returns.push({id:`RAG-${zone.unitTag}-${i+1}`,unitId:zone.id,designControlMode:'ai',type:'return',subtype:'eggcrate',position:best,cfm,
+   catalogModel:`${selected.catalogItem.manufacturer} Eggcrate Return ${selected.faceDimension}`,neckDimension:selected.neckDimension,faceDimension:selected.faceDimension,
+   throwT50Ft:0,throwRatio:1,adjacentOverlapRatio:0,occupiedZoneVelocityFpm:35,ncRating:Math.max(15,selected.actualNc-5),deltaPInWg:0.025,status:bestMargin>=0?'pass':'warning'});
+ }
+ return returns;
 }

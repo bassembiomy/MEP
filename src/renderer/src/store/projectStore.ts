@@ -1,6 +1,13 @@
 import { create } from 'zustand';
-import { calculateZoneLoad } from '../engine/loadCalc';
+import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
 import { generateSystemCandidates, DEFAULT_OPTIMIZATION_WEIGHTS } from '../engine/systemDesigner';
+import { convertProjectDisplayUnits } from '../engine/project/unitConversion';
+import { parseProjectDocument } from '../engine/project/projectSerialization';
+import type { CadImportDiagnostic } from '../engine/dxfParser';
+import type { CadRoomCandidate } from '../engine/cad/semanticTypes';
+import { measureSimplePolygon, requirePositive, requireNonnegative, METERS_PER_FOOT } from '../engine/engineeringInputs';
+import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
+import type { StandardsSelection } from '../engine/standards/profileRegistry';
 import {
   OptimizationWeights,
   SystemDesignCandidate,
@@ -15,7 +22,9 @@ import {
 } from '../engine/deploymentTypes';
 import {
   buildDeploymentManifest,
-  executeDeploymentTransaction
+  executeDeploymentTransaction,
+  getZoneDeploymentRevision,
+  getProjectDeploymentRevision
 } from '../engine/deploymentManager';
 
 export interface Diffuser {
@@ -47,7 +56,21 @@ export interface DuctSegment {
 }
 
 export interface DxfEntity {
-  type: 'LINE' | 'LWPOLYLINE' | 'POLYLINE' | 'CIRCLE' | 'ARC' | 'TEXT' | 'MTEXT';
+  type: 'LINE' | 'LWPOLYLINE' | 'POLYLINE' | 'CIRCLE' | 'ARC' | 'ELLIPSE' | 'TEXT' | 'MTEXT';
+  handle?: string;
+  sourceHandle?: string;
+  sourceBlock?: string;
+  closed?: boolean;
+  bulges?: number[];
+  startAngleDeg?: number;
+  endAngleDeg?: number;
+  majorAxis?: { x: number; y: number };
+  minorAxis?: { x: number; y: number };
+  startParam?: number;
+  endParam?: number;
+  textHeight?: number;
+  rotationDeg?: number;
+  geometryApproximation?: string;
   points?: number[];
   x?: number;
   y?: number;
@@ -65,7 +88,10 @@ export interface BoundingBox {
 }
 
 export interface Zone {
+  cadProvenance?: {sourceCadRevision?:string;candidateId:string;sourceHandles:string[];sourceLayers:string[];evidence:string[];unresolvedConditions:string[];drawingUnitsPerFoot:number;approvedAt:string};
   id: string;
+  engineeringStatus?: 'stale' | 'blocked' | 'preliminary';
+  engineeringError?: string;
   name: string;
   points: number[];
   spaceTypeId: string;
@@ -79,6 +105,8 @@ export interface Zone {
   ductTypeId?: string;
   diffuserTypeId?: string;
   maxVelocityLimitFpm?: number;
+  maxAvailableCeilingDepthIn?: number;
+  maxDuctAspectRatio?: number;
   maxSpaceNcLimit?: number;
   ductLocationCategory?: DuctLocationCategory;
   targetNc?: number;
@@ -96,6 +124,10 @@ export interface Zone {
   catalogQty?: number;
   catalogModel?: string;
   catalogEsp?: string;
+  distributionPattern?: 'hexagonal' | 'orthogonal' | 'adaptive';
+  coverageTargetPercent?: number;
+  throwRadiusMode?: 'catalog-t50' | 'cfm-area' | 'custom';
+  customThrowFt?: number;
 }
 
 export interface DxfLayerInfo {
@@ -142,13 +174,26 @@ export const DEFAULT_ANNOTATION_VISIBILITY: AnnotationVisibility = {
 };
 
 export interface ProjectMetadata {
+  standardsSelection?: StandardsSelection;
   name: string;
   location: string;
-  scale: number;
+  scale: number; // Drawing units per foot (imperial) or per meter (metric)
+  cadUnit?: 'mm' | 'cm' | 'm' | 'in' | 'ft' | 'custom';
+  cadUnitsConfirmed?: boolean;
   equipmentScale?: number; // Visual equipment symbol scale multiplier (0.5x to 5.0x)
   units: 'imperial' | 'metric';
   outdoorDb: number;
   indoorDb: number;
+  humidityRatioDelta?: number;
+  supplyDeltaTF?: number;
+  exposedWallFraction?: number;
+  roofExposureFraction?: number;
+}
+
+export interface CadImportMetadata {
+  sourceName?: string;
+  unitsConfidence: 'declared' | 'estimated' | 'unknown';
+  diagnostics: CadImportDiagnostic[];
 }
 
 interface ProjectState {
@@ -160,6 +205,7 @@ interface ProjectState {
   dxfEntities: DxfEntity[];
   dxfBoundingBox: BoundingBox | null;
   dxfLayers: Record<string, DxfLayerInfo>;
+  cadImport: CadImportMetadata | null;
   annotationVisibility: AnnotationVisibility;
   loadedCatalogs: {
     decorative: { highWall: any[]; cassette: any[] } | null;
@@ -170,19 +216,25 @@ interface ProjectState {
   optimizationWeights: OptimizationWeights;
   activeTab: 'comparison' | 'optimizer' | 'static-pressure' | 'schedule' | 'air-distribution';
   activePreview: DeploymentPreview | null;
+  highlightedDuctId: string | null;
+  highlightedEntityTag: string | null;
   undoStack: WorkspaceSnapshot[];
   redoStack: WorkspaceSnapshot[];
   
   // Actions
   setProject: (meta: Partial<ProjectMetadata>) => void;
+  restoreProjectDocument: (source: string) => {success: boolean; error?: string};
   setDrawMode: (mode: 'select' | 'polyline' | 'pan') => void;
   addZone: (points: number[]) => void;
+  approveCadRoom: (candidate:CadRoomCandidate, inputs:{name:string;spaceTypeId:string;ceilingHeight:number;occupants:number;sourceCadRevision:string;drawingUnitsPerFoot:number}) => {success:boolean;error?:string};
   updateZone: (id: string, updates: Partial<Zone>) => void;
   deleteZone: (id: string) => void;
   selectZone: (id: string | null) => void;
+  setHighlightedDuctId: (id: string | null) => void;
+  setHighlightedEntityTag: (tag: string | null) => void;
   addTempPoint: (x: number, y: number) => void;
   clearTempPoints: () => void;
-  setDxfData: (entities: DxfEntity[], bbox: BoundingBox) => void;
+  setDxfData: (entities: DxfEntity[], bbox: BoundingBox, suggestedScale?: number, cadUnit?: 'mm' | 'cm' | 'm' | 'in' | 'ft', metadata?:CadImportMetadata) => void;
   clearDxfData: () => void;
   setDxfLayerVisibility: (layerName: string, visible: boolean) => void;
   toggleAllDxfLayers: (visible: boolean) => void;
@@ -216,73 +268,187 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   dxfEntities: [],
   dxfBoundingBox: null,
   dxfLayers: {},
+  cadImport: null,
   annotationVisibility: DEFAULT_ANNOTATION_VISIBILITY,
   loadedCatalogs: null,
-  selectedSystemTypes: ['concealed', 'cassette', 'high-wall', 'vrf', 'packaged', 'ahu'],
+  selectedSystemTypes: ['fcu', 'packaged', 'ahu', 'concealed', 'vrf', 'cassette', 'high-wall'],
   optimizationWeights: DEFAULT_OPTIMIZATION_WEIGHTS,
   activeTab: 'optimizer',
   activePreview: null,
+  highlightedDuctId: null,
+  highlightedEntityTag: null,
   undoStack: [],
   redoStack: [],
 
-  setProject: (meta) => set((state) => ({ project: { ...state.project, ...meta } })),
+  setProject: (meta) => set((state) => {
+    const converted=convertProjectDisplayUnits(state.project,state.zones,meta.units??state.project.units);
+    const project = { ...converted.project, ...meta };
+    return { project, activePreview: null, zones: converted.zones.map(zone => {
+      const evaluation = calculateZoneLoadSafely(zone, project);
+      return { ...zone, engineeringStatus: evaluation.error ? 'blocked' as const : 'stale' as const,
+        engineeringError: evaluation.error };
+    }) };
+  }),
+
+  restoreProjectDocument: (source) => {
+    try {
+      const restored=parseProjectDocument(source);
+      const state=get();
+      set({...restored,
+        cadImport:restored.cadImport??null,
+        annotationVisibility:restored.annotationVisibility??DEFAULT_ANNOTATION_VISIBILITY,
+        selectedSystemTypes:restored.selectedSystemTypes??state.selectedSystemTypes,
+        optimizationWeights:restored.optimizationWeights??DEFAULT_OPTIMIZATION_WEIGHTS,
+        loadedCatalogs:restored.loadedCatalogs as ProjectState['loadedCatalogs'] ?? null,
+        selectedZoneId:restored.zones[0]?.id??null,activePreview:null,
+        highlightedDuctId:null,highlightedEntityTag:null,drawMode:'select',tempPoints:[],undoStack:[],redoStack:[]});
+      return {success:true};
+    } catch(error) {return {success:false,error:error instanceof Error?error.message:String(error)};}
+  },
   
   setDrawMode: (mode) => set({ drawMode: mode, tempPoints: [] }),
+  approveCadRoom: (candidate,inputs) => {
+    try {
+      const state=get();
+      if(state.project.cadUnitsConfirmed===false) throw new Error('Confirm CAD units before approving rooms.');
+      if(JSON.stringify(state.dxfEntities)!==inputs.sourceCadRevision) throw new Error('CAD changed; recognize rooms again.');
+      const unitsPerFoot=state.project.units==='metric'?state.project.scale*METERS_PER_FOOT:state.project.scale;
+      if(unitsPerFoot!==inputs.drawingUnitsPerFoot) throw new Error('Drawing scale changed; recognize rooms again.');
+      requirePositive('Drawing scale',unitsPerFoot);
+      measureSimplePolygon(candidate.polygon);
+      requirePositive('Ceiling height',inputs.ceilingHeight);requireNonnegative('Occupants',inputs.occupants);
+      if(!inputs.name.trim()) throw new Error('Enter a room name.');
+      if(!ASHRAE_SPACE_TYPES.some(t=>t.id===inputs.spaceTypeId)) throw new Error('Select a supported room use.');
+      if(state.zones.some(z=>z.cadProvenance?.candidateId===candidate.id)) throw new Error('This CAD room is already approved.');
+      const id=`cad-zone-${crypto.randomUUID()}`;
+      const zone:Zone={id,name:inputs.name.trim(),points:[...candidate.polygon],spaceTypeId:inputs.spaceTypeId,
+        ceilingHeight:inputs.ceilingHeight,occupants:inputs.occupants,systemType:'concealed',diffusers:[],ducts:[],engineeringStatus:'stale',
+        cadProvenance:{sourceCadRevision:inputs.sourceCadRevision,candidateId:candidate.id,sourceHandles:[...candidate.sourceHandles],sourceLayers:[...candidate.sourceLayers],
+          evidence:[...candidate.evidence],unresolvedConditions:[...candidate.unresolvedConditions],drawingUnitsPerFoot:unitsPerFoot,approvedAt:new Date().toISOString()}};
+      const evaluation=calculateZoneLoadSafely(zone,state.project);
+      if(evaluation.error) throw new Error(evaluation.error);
+      const previous:WorkspaceSnapshot={snapshotId:`snap-${crypto.randomUUID()}`,timestamp:Date.now(),zones:structuredClone(state.zones),
+        selectedZoneId:state.selectedZoneId,project:{...state.project},description:`Approved CAD room ${zone.name}`};
+      set({zones:[...state.zones,zone],selectedZoneId:id,activePreview:null,undoStack:[...state.undoStack,previous],redoStack:[]});
+      return {success:true};
+    } catch(error) {return {success:false,error:error instanceof Error?error.message:'Room approval failed.'};}
+  },
+  setHighlightedDuctId: (id) => set({ highlightedDuctId: id }),
+  setHighlightedEntityTag: (tag) => set({ highlightedEntityTag: tag }),
   
-  addZone: (points) => set((state) => {
+  addZone: (points) => {
+    // Remove consecutive duplicate vertices created during click/double-click
+    const cleanPoints: number[] = [];
+    for (let i = 0; i < points.length; i += 2) {
+      const x = points[i];
+      const y = points[i + 1];
+      const lastX = cleanPoints[cleanPoints.length - 2];
+      const lastY = cleanPoints[cleanPoints.length - 1];
+      if (lastX === undefined || Math.hypot(x - lastX, y - lastY) > 1e-3) {
+        cleanPoints.push(x, y);
+      }
+    }
+
+    if (cleanPoints.length < 6) {
+      set({ drawMode: 'select', tempPoints: [] });
+      return;
+    }
+
     const id = `zone-${Date.now()}`;
+    const state = get();
 
     const draftZone: Zone = {
       id,
       name: `Zone ${state.zones.length + 1}`,
-      points,
+      points: cleanPoints,
       spaceTypeId: 'office',
-      ceilingHeight: 10,
+      ceilingHeight: state.project.units === 'metric' ? 3.048 : 10,
       occupants: 1,
       systemType: 'concealed',
+      distributionPattern: 'hexagonal',
+      coverageTargetPercent: 100,
       diffusers: [],
       ducts: [],
       maxVelocityLimitFpm: 1200,
       maxSpaceNcLimit: 32
     };
+    const sourceZoneRevision = getZoneDeploymentRevision(draftZone);
+    const sourceProjectRevision = getProjectDeploymentRevision(state.project);
 
-    const load = calculateZoneLoad(draftZone, state.project);
-    const recommendations = generateSystemCandidates(
-      load.totalLoad,
-      load.sensibleLoad,
-      load.supplyCfm,
-      draftZone.spaceTypeId,
-      load.area,
-      state.project.units === 'imperial',
-      state.optimizationWeights,
-      state.selectedSystemTypes,
-      state.loadedCatalogs
-    );
+    // Phase 1: Immediately add the lightweight draft zone so the UI stays responsive
+    set({
+      zones: [...state.zones, draftZone],
+      selectedZoneId: id,
+      drawMode: 'select',
+      tempPoints: []
+    });
 
-    const bestCandidate = recommendations.candidates[0];
-    let newZone = draftZone;
+    // Phase 2: Defer the expensive engineering computations off the current call stack
+    // so the canvas can repaint the polygon before the heavy work begins
+    setTimeout(() => {
+      try {
+        const currentState = get();
+        const liveZone = currentState.zones.find(z => z.id === id);
+        if (!liveZone || getZoneDeploymentRevision(liveZone) !== sourceZoneRevision ||
+            getProjectDeploymentRevision(currentState.project) !== sourceProjectRevision) return;
+        const load = calculateCanonicalZoneLoad(draftZone, currentState.project);
+        // Only evaluate the default system type for fast auto-deployment
+        // (full multi-system comparison runs when user opens the optimizer panel)
+        const recommendations = generateSystemCandidates(
+          load.totalLoad,
+          load.sensibleLoad,
+          load.supplyCfm,
+          draftZone.spaceTypeId,
+          load.area,
+          true,
+          currentState.optimizationWeights,
+          draftZone.systemType ? [draftZone.systemType] : ['concealed'],
+          currentState.loadedCatalogs
+        );
 
-    if (bestCandidate) {
-      const manifest = buildDeploymentManifest(
-        bestCandidate,
-        draftZone,
-        state.zones,
-        state.project,
-        state.dxfEntities,
-        state.dxfBoundingBox
-      );
-      const txResult = executeDeploymentTransaction(manifest, [draftZone]);
-      newZone = txResult.updatedZones[0];
-    }
+        const bestCandidate = recommendations.bestOverall;
 
-    return {
-      zones: [...state.zones, newZone],
-      selectedZoneId: id
-    };
-  }),
+        if (bestCandidate) {
+          const manifest = buildDeploymentManifest(
+            bestCandidate,
+            draftZone,
+            currentState.zones,
+            currentState.project,
+            currentState.dxfEntities,
+            currentState.dxfBoundingBox
+          );
+          const txResult = executeDeploymentTransaction(manifest, currentState.zones, currentState.project);
+          if (txResult.success) {
+            const deployedZone = txResult.updatedZones.find(z => z.id === id)!;
+            // Apply the computed deployment to the existing zone
+            set((s) => ({
+              zones: s.zones.map((z) => (z.id === id ? { ...z, ...deployedZone, id,
+                engineeringStatus: 'preliminary', engineeringError: undefined } : z))
+            }));
+          } else {
+            set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked',
+              engineeringError: manifest.diagnostics.find(d=>d.severity==='error')?.message ?? txResult.errorDiagnostic?.message ?? 'Design cannot be deployed.' } : z) }));
+          }
+        } else {
+          set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked',
+            engineeringError: 'No feasible equipment candidate satisfies the current engineering inputs.' } : z) }));
+        }
+      } catch (err) {
+        set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked',
+          engineeringError: err instanceof Error ? err.message : 'Automatic design failed.' } : z) }));
+      }
+    }, 0);
+  },
   
   updateZone: (id, updates) => set((state) => ({
-    zones: state.zones.map((z) => (z.id === id ? { ...z, ...updates } : z))
+    activePreview: null,
+    zones: state.zones.map(z => {
+      if (z.id !== id) return z;
+      const updated = { ...z, ...updates };
+      const evaluation = calculateZoneLoadSafely(updated, state.project);
+      return { ...updated, engineeringStatus: evaluation.error ? 'blocked' as const : 'stale' as const,
+        engineeringError: evaluation.error };
+    })
   })),
   
   deleteZone: (id) => set((state) => ({
@@ -303,8 +469,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   
   clearTempPoints: () => set({ tempPoints: [] }),
   
-  setDxfData: (entities, bbox) => {
-    const layers: Record<string, DxfLayerInfo> = {};
+  setDxfData: (entities, bbox, suggestedScale, cadUnit, metadata) => {
+    const layers: Record<string, DxfLayerInfo> = Object.create(null);
     const autoColors = ['#94a3b8', '#38bdf8', '#34d399', '#fbbf24', '#f87171', '#c084fc', '#f472b6', '#a78bfa', '#4ade80'];
     let colorIdx = 0;
 
@@ -322,10 +488,26 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       layers[layerName].count++;
     }
 
-    set({ dxfEntities: entities, dxfBoundingBox: bbox, dxfLayers: layers });
+    set((state) => {
+      const project={...state.project,
+        ...(suggestedScale!==undefined?{scale:suggestedScale}:{}),
+        ...(cadUnit?{cadUnit}:{}),
+        ...(metadata?{cadUnitsConfirmed:metadata.unitsConfidence==='declared'}:{})};
+      return {
+      dxfEntities: entities,
+      dxfBoundingBox: bbox,
+      dxfLayers: layers,
+      cadImport:metadata??null,
+      activePreview:null,
+      project,
+      zones:state.zones.map(zone=>{
+        const evaluation=calculateZoneLoadSafely(zone,project);
+        return {...zone,engineeringStatus:evaluation.error?'blocked' as const:'stale' as const,engineeringError:evaluation.error};
+      })};
+    });
   },
 
-  clearDxfData: () => set({ dxfEntities: [], dxfBoundingBox: null, dxfLayers: {} }),
+  clearDxfData: () => set({ dxfEntities: [], dxfBoundingBox: null, dxfLayers: {},cadImport:null,activePreview:null }),
 
   setDxfLayerVisibility: (layerName, visible) => set((state) => ({
     dxfLayers: {
@@ -474,6 +656,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   setPreview: (preview) => set({ activePreview: preview }),
 
   applyCandidateTransaction: (candidate) => {
+    try {
     const state = get();
     const targetZone = state.zones.find((z) => z.id === state.selectedZoneId) || state.zones[0];
 
@@ -510,7 +693,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     };
 
     // 3. Execute atomic transaction
-    const { updatedZones, success, errorDiagnostic } = executeDeploymentTransaction(manifest, state.zones);
+    const { updatedZones, success, errorDiagnostic } = executeDeploymentTransaction(manifest, state.zones, state.project);
 
     if (!success) {
       return {
@@ -520,13 +703,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
 
     set({
-      zones: updatedZones,
+      zones: updatedZones.map(z => z.id === targetZone.id ? { ...z,
+        engineeringStatus: 'preliminary' as const, engineeringError: undefined } : z),
       undoStack: [...state.undoStack, snapshot],
       redoStack: [],
       activePreview: null
     });
 
     return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Invalid engineering input.' };
+    }
   },
 
   undo: () => {

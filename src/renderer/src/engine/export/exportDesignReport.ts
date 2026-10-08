@@ -9,6 +9,8 @@ export function exportFullEngineeringDesignReport(design: AirDistributionDesignR
   lines.push(`DETERMINISTIC AI HVAC AIR DISTRIBUTION DESIGN & CALCULATION REPORT`);
   lines.push(`Room: ${design.roomName} | Generated: ${design.timestamp}`);
   lines.push(`Standard Profile: ${design.standardsProfile.name}`);
+  lines.push('PRELIMINARY — NOT FOR CONSTRUCTION. Standards adoption and engineering issue readiness remain unverified.');
+  for(const limitation of design.validationReport.limitations??[])lines.push(`Unresolved: ${limitation}`);
   lines.push('================================================================================\n');
 
   lines.push(design.designDecisionLog);
@@ -65,10 +67,10 @@ export function exportFullEngineeringDesignReport(design: AirDistributionDesignR
   lines.push('\n');
 
   lines.push('--------------------------------------------------------------------------------');
-  lines.push('6. MASTER 9-POINT ENGINEERING VALIDATION MATRIX');
+  lines.push('6. MASTER 10-POINT PRELIMINARY ENGINEERING VALIDATION MATRIX');
   lines.push('--------------------------------------------------------------------------------');
   for (const p of design.validationReport.points) {
-    lines.push(`[${p.pointIndex}] ${p.pointName}: [${p.status}]`);
+    lines.push(`[${p.zoneId??'project'} / ${p.pointIndex}] ${p.pointName}: [${p.status}]`);
     lines.push(`    Metric: ${p.metric}`);
     lines.push(`    Criteria: ${p.criteria}`);
     lines.push(`    Remarks: ${p.message}`);
