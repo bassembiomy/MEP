@@ -82,7 +82,8 @@ export function buildDeploymentManifest(
       systemId,
       zone.id,
       candidate.equipment.model,
-      zone.maxSpaceNcLimit || 32
+      zone.maxSpaceNcLimit || 32,
+      physicalFootprint
     );
     cassetteComps = cassettePlan.components;
     deployedDiffusers = cassettePlan.diffusers;

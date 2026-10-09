@@ -470,8 +470,87 @@ export function planIndoorUnitPlacement(
   return { component, diagnostics };
 }
 
+type Rect = { minX: number; maxX: number; minY: number; maxY: number };
+const rectsOverlap = (a: Rect, b: Rect) =>
+  a.minX < b.maxX - 1e-9 && b.minX < a.maxX - 1e-9 && a.minY < b.maxY - 1e-9 && b.minY < a.maxY - 1e-9;
+const rectAt = (x: number, y: number, w: number, h: number): Rect => ({ minX: x - w / 2, maxX: x + w / 2, minY: y - h / 2, maxY: y + h / 2 });
+
+/** Same predicate as deployment acceptance (see isRectContainedInPolygon). */
+const containedWithTolerance = isRectContainedInPolygon;
+
 /**
- * Distributes cassette units symmetrically across usable room ceiling
+ * Deterministic cassette layout: the polygon is cut into `quantity` equal-area cells along its long
+ * axis, and in each cell the contained, non-overlapping footprint position nearest the cell centroid
+ * is chosen. Returns null when the footprints cannot all be placed.
+ */
+export function placeContainedFootprints(
+  points: number[],
+  quantity: number,
+  w: number,
+  h: number
+): { x: number; y: number }[] | null {
+  const bbox = getPolygonBoundingBox(points);
+  const step = Math.max(2.5, Math.max(bbox.width, bbox.height) / 80);
+  const samples: { x: number; y: number }[] = [];
+  for (let x = bbox.minX + step / 2; x < bbox.maxX; x += step)
+    for (let y = bbox.minY + step / 2; y < bbox.maxY; y += step)
+      if (isPointInPolygon(x, y, points)) samples.push({ x, y });
+  if (samples.length < quantity) return null;
+  const alongX = bbox.width >= bbox.height;
+  samples.sort((p, q) => (alongX ? p.x - q.x || p.y - q.y : p.y - q.y || p.x - q.x));
+
+  // Valid footprint centres (candidates), on a grid plus positions flush to the bounding box walls.
+  const candidates: { x: number; y: number }[] = [];
+  const cs = Math.max(2.5, Math.max(bbox.width, bbox.height) / 120);
+  for (let x = bbox.minX + w / 2; x <= bbox.maxX - w / 2 + 1e-9; x += cs)
+    for (let y = bbox.minY + h / 2; y <= bbox.maxY - h / 2 + 1e-9; y += cs)
+      if (containedWithTolerance(x, y, w, h, points)) candidates.push({ x, y });
+  if (candidates.length < quantity) return null;
+
+  const chosen: { x: number; y: number }[] = [];
+  for (let k = 0; k < quantity; k++) {
+    const cell = samples.slice(Math.floor((k * samples.length) / quantity), Math.floor(((k + 1) * samples.length) / quantity));
+    const cx = cell.reduce((s, p) => s + p.x, 0) / cell.length;
+    const cy = cell.reduce((s, p) => s + p.y, 0) / cell.length;
+    let best: { x: number; y: number } | null = null;
+    let bestD = Infinity;
+    for (const c of candidates) {
+      const r = rectAt(c.x, c.y, w, h);
+      if (chosen.some((o) => rectsOverlap(r, rectAt(o.x, o.y, w, h)))) continue;
+      const d = Math.hypot(c.x - cx, c.y - cy);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    if (!best) {
+      // Equal-area cells can leave no room for a later footprint; fall back to greedy farthest-point packing.
+      return greedyPack(candidates, quantity, w, h);
+    }
+    chosen.push(best);
+  }
+  return chosen;
+}
+
+function greedyPack(candidates: { x: number; y: number }[], quantity: number, w: number, h: number) {
+  const chosen: { x: number; y: number }[] = [candidates[Math.floor(candidates.length / 2)]];
+  while (chosen.length < quantity) {
+    let best: { x: number; y: number } | null = null;
+    let bestScore = -1;
+    for (const c of candidates) {
+      const r = rectAt(c.x, c.y, w, h);
+      if (chosen.some((o) => rectsOverlap(r, rectAt(o.x, o.y, w, h)))) continue;
+      const score = Math.min(...chosen.map((o) => Math.hypot(c.x - o.x, c.y - o.y)));
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    if (!best) return null;
+    chosen.push(best);
+  }
+  return chosen;
+}
+
+/**
+ * Distributes exactly `quantity` cassette units across the room ceiling. The requested count is
+ * authoritative: if the optimiser cannot supply that many contained, non-overlapping footprints a
+ * deterministic placement is used, and if that fails too an ERR_COMPONENT_OUTSIDE_ZONE error is
+ * reported instead of silently returning fewer units.
  */
 export function planCassetteDistribution(
   points: number[],
@@ -480,17 +559,20 @@ export function planCassetteDistribution(
   systemId: string,
   zoneId: string,
   model: string,
-  spaceNcLimit: number = 32
+  spaceNcLimit: number = 32,
+  physicalFootprint?: { width: number; depth: number }
 ): { components: MechanicalComponent[]; diffusers: Diffuser[]; diagnostics: DeploymentDiagnostic[] } {
   const diagnostics: DeploymentDiagnostic[] = [];
   const flowPerUnit = totalCfm / Math.max(1, quantity);
   const components: MechanicalComponent[] = [];
   const diffusers: Diffuser[] = [];
+  const fw = physicalFootprint?.width ?? 30;
+  const fh = physicalFootprint?.depth ?? 30;
 
   const areaPx = calculatePolygonArea(points);
   const areaSqFt = Math.max(50, areaPx / 100);
 
-  const optimizedCassettes = placeDiffusersWithCircularOptimization(
+  const optimized = placeDiffusersWithCircularOptimization(
     points,
     totalCfm,
     true,
@@ -507,25 +589,41 @@ export function planCassetteDistribution(
     }
   ).filter((d) => d.type !== 'return');
 
-  optimizedCassettes.forEach((p, idx) => {
-    const snapX = Math.round(p.x / 10) * 10;
-    const snapY = Math.round(p.y / 10) * 10;
-    const componentId = `comp-cassette-${zoneId}-${idx}`;
-
-    if (!isPointInPolygon(snapX, snapY, points)) {
+  // Grid-snap only where snapping keeps the whole footprint inside the zone.
+  let positions = optimized.map((p) => {
+    const snapped = { x: Math.round(p.x / 10) * 10, y: Math.round(p.y / 10) * 10 };
+    if (containedWithTolerance(snapped.x, snapped.y, fw, fh, points)) return snapped;
+    return { x: Math.round(p.x), y: Math.round(p.y) };
+  });
+  const layoutOk = (ps: { x: number; y: number }[]) =>
+    ps.length === quantity &&
+    ps.every((p) => containedWithTolerance(p.x, p.y, fw, fh, points)) &&
+    ps.every((p, i) => ps.every((q, j) => j <= i || !rectsOverlap(rectAt(p.x, p.y, fw, fh), rectAt(q.x, q.y, fw, fh))));
+  let sources: { actualNc?: number; throwT50Ft?: number; deltaPInWg?: number }[] = optimized;
+  if (!layoutOk(positions)) {
+    const fallback = placeContainedFootprints(points, quantity, fw, fh);
+    if (!fallback || !layoutOk(fallback)) {
       diagnostics.push({
         code: 'ERR_COMPONENT_OUTSIDE_ZONE',
-        severity: 'warning',
-        message: `Cassette unit #${idx + 1} position (${snapX}, ${snapY}) is near perimeter boundary.`
+        severity: 'error',
+        message: `Cannot place ${quantity} cassette footprint(s) of ${(fw / 10).toFixed(2)} x ${(fh / 10).toFixed(2)} ft fully inside the zone without overlap.`,
+        remediation: 'Reduce the cassette quantity, choose a smaller cassette, or enlarge the room.'
       });
+      return { components, diffusers, diagnostics };
     }
+    positions = fallback;
+    sources = [];
+  }
 
+  positions.forEach((pos, idx) => {
+    const p = sources[idx] ?? {};
+    const componentId = `comp-cassette-${zoneId}-${idx}`;
     const ports: ConnectionPort[] = [
       {
         id: `port-${componentId}-ref-gas`,
         componentId,
         role: 'refrigerant-suction',
-        position: { x: snapX, y: snapY },
+        position: { x: pos.x, y: pos.y },
         direction: { x: 0, y: -1 },
         size: 0.625,
         systemType: 'dx-refrigerant',
@@ -535,7 +633,7 @@ export function planCassetteDistribution(
         id: `port-${componentId}-drain`,
         componentId,
         role: 'condensate-drain-out',
-        position: { x: snapX, y: snapY + 15 },
+        position: { x: pos.x, y: pos.y + Math.min(15, fh / 2) },
         direction: { x: 0, y: 1 },
         size: 0.75,
         systemType: 'condensate-drain',
@@ -543,7 +641,7 @@ export function planCassetteDistribution(
       }
     ];
 
-    const comp: MechanicalComponent = {
+    components.push({
       id: componentId,
       systemId,
       floorId: 'floor-1',
@@ -551,28 +649,19 @@ export function planCassetteDistribution(
       role: 'cassette-terminal',
       model,
       systemType: 'cassette',
-      position: { x: snapX, y: snapY, z: 10 },
+      position: { x: pos.x, y: pos.y, z: 10 },
       rotationDeg: 0,
       elevationFt: 10,
-      footprint: {
-        minX: snapX - 15,
-        maxX: snapX + 15,
-        minY: snapY - 15,
-        maxY: snapY + 15,
-        widthWorld: 30,
-        heightWorld: 30
-      },
+      footprint: { minX: pos.x - fw / 2, maxX: pos.x + fw / 2, minY: pos.y - fh / 2, maxY: pos.y + fh / 2, widthWorld: fw, heightWorld: fh },
       ports,
       isLocked: false,
       metadata: { cfm: flowPerUnit, nc: spaceNcLimit }
-    };
-
-    components.push(comp);
+    });
 
     diffusers.push({
       id: `dif-${componentId}`,
-      x: snapX,
-      y: snapY,
+      x: pos.x,
+      y: pos.y,
       cfm: flowPerUnit,
       size: model,
       type: 'cassette',

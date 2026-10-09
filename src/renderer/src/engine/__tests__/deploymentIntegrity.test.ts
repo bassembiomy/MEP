@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as manager from '../deploymentManager'
-import { planCassetteDistribution } from '../spatialPlanner'
+import { planCassetteDistribution, isRectContainedInPolygon } from '../spatialPlanner'
+import { STANDARD_EQUIPMENT_CATALOG } from '../hvacCatalogs'
 import * as validation from '../deploymentValidation'
 import { STANDARD_DIFFUSER_CATALOG } from '../hvacCatalogs'
 import type { DeploymentManifest, MechanicalComponent } from '../deploymentTypes'
@@ -617,8 +618,7 @@ describe('engineering flow and footprint integrity for realistic rooms', () => {
 
   it('splits cassette airflow without rounding drift', () => {
     const res = planCassetteDistribution([0, 0, 300, 0, 300, 250, 0, 250], 3, 442.767, 's', 'z', 'Cassette')
-    // Known gap: the placer can return fewer cassettes than requested (2 of 3 here); pin it so a fix updates this test.
-    expect(res.diffusers.length).toBe(2)
+    expect(res.diffusers.length).toBe(3)
     for (const d of res.diffusers) expect(d.cfm).toBeCloseTo(442.767 / 3, 9)
   })
 
@@ -661,5 +661,58 @@ describe('engineering flow and footprint integrity for realistic rooms', () => {
   it('computes the rotated bounding box of a catalog footprint', () => {
     const fp = validation.getEquipmentFootprintWorld(equipment({ dimensionsIn: { width: 24, depth: 24, height: 10 } }), 10, 45)
     expect(fp.widthWorld).toBeCloseTo(20 * Math.SQRT2 / 1, 6)
+  })
+})
+
+describe('cassette count enforcement and footprint containment', () => {
+  const cass = STANDARD_EQUIPMENT_CATALOG.find((e) => e.id === 'eq-lg-round-cass-24k')!
+  const fp = { width: (cass.dimensionsIn!.width / 12) * 10, depth: (cass.dimensionsIn!.depth / 12) * 10 }
+  const rect = [0, 0, 300, 0, 300, 250, 0, 250]
+  const lShape = [0, 0, 300, 0, 300, 150, 150, 150, 150, 300, 0, 300]
+  const plan = (pts: number[], qty: number, cfm = 600, footprint: { width: number; depth: number } | undefined = fp) =>
+    (planCassetteDistribution as any)(pts, qty, cfm, 's', 'z', 'Cassette', 32, footprint)
+  const overlap = (a: any, b: any) =>
+    a.footprint.minX < b.footprint.maxX - 1e-9 && b.footprint.minX < a.footprint.maxX - 1e-9 &&
+    a.footprint.minY < b.footprint.maxY - 1e-9 && b.footprint.minY < a.footprint.maxY - 1e-9
+
+  it.each([[rect, 3], [rect, 4], [lShape, 3], [lShape, 4]])('contains every catalog footprint without overlap (qty %#)', (pts, qty) => {
+    const res = plan(pts, qty, 442.767)
+    expect(res.diagnostics.filter((d: any) => d.severity === 'error')).toEqual([])
+    expect(res.components.length).toBe(qty)
+    expect(res.diffusers.length).toBe(qty)
+    for (const c of res.components) {
+      expect(c.footprint.widthWorld).toBeCloseTo(fp.width, 9)
+      expect(isRectContainedInPolygon(c.position.x, c.position.y, fp.width, fp.depth, pts)).toBe(true)
+    }
+    for (let i = 0; i < qty; i++) for (let j = i + 1; j < qty; j++) expect(overlap(res.components[i], res.components[j])).toBe(false)
+    expect(Math.abs(res.diffusers.reduce((s: number, d: any) => s + d.cfm, 0) - 442.767)).toBeLessThan(1e-6)
+  })
+
+  it('never silently returns fewer cassettes than requested for an L-shaped room', () => {
+    const res = plan(lShape, 4)
+    const errors = res.diagnostics.filter((d: any) => d.severity === 'error' && /^ERR_/.test(d.code))
+    expect(res.components.length === 4 || errors.length > 0).toBe(true)
+  })
+
+  it('reports an error diagnostic when 4 cassettes cannot physically fit in an 8x8 ft room', () => {
+    const big = { width: (60 / 12) * 10, depth: (60 / 12) * 10 }
+    const res = plan([0, 0, 80, 0, 80, 80, 0, 80], 4, 600, big)
+    expect(res.diagnostics.some((d: any) => d.severity === 'error' && d.code === 'ERR_COMPONENT_OUTSIDE_ZONE')).toBe(true)
+  })
+
+  it('deploys a full 3-cassette manifest for the 30x25 ft room', () => {
+    const z = zone({ points: rect, manualCfmOverride: undefined })
+    const c = candidate({
+      systemType: 'cassette',
+      quantity: 3,
+      diffusers: undefined,
+      equipment: cass
+    } as any)
+    const m = manager.buildDeploymentManifest(c, z, [z], project)
+    expect(m.diagnostics.filter((d) => d.severity === 'error').map((d) => d.message)).toEqual([])
+    expect(m.isEligibleToApply).toBe(true)
+    expect(m.equipment.cassetteUnits?.length).toBe(3)
+    expect(m.terminals.length).toBe(3)
+    expect(execute(m, [z], project).success).toBe(true)
   })
 })

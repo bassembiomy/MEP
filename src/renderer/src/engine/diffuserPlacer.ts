@@ -440,8 +440,9 @@ export function placeDiffusersWithCircularOptimization(
     numTerminals = countByAirflow;
   }
 
-  // Enforce the healthy per-terminal airflow band on the requested count
-  numTerminals = Math.max(minCount, Math.min(numTerminals, maxCount));
+  // Enforce the healthy per-terminal airflow band on a derived count. A caller-fixed count
+  // (e.g. the number of cassettes the design specified) is never altered here.
+  if (!hasFixedOverride) numTerminals = Math.max(minCount, Math.min(numTerminals, maxCount));
 
   // Try snapping to CAD positions if valid mechanical terminals exist matching required count
   if (!hasFixedOverride) {
