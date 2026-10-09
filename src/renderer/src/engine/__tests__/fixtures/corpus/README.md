@@ -41,7 +41,6 @@ runs the gaps as normal tests and prints the real assertion failures.
 
 | # | Gap | Evidence (measured) | Tests (`it.fails`) | Likely fix site (Round 2) |
 |---|---|---|---|---|
-| 2 | ATTRIB, ATTDEF and SEQEND are reported as `UNSUPPORTED_ENTITY` warnings | metric + imperial: 15 each (5 ATTDEF per expanded INSERT, 5 ATTRIB, 5 SEQEND) | `INSERT attributes ...` (metric, imperial) | `dxfParser.ts` default case |
 | 3 | Room names are the alphabetically-first raw interior text: MTEXT formatting codes and `CH` notes leak into the name | Office 1 is named `CH 2700` (expected `OFFICE 1`); imperial Office A is `CLG HT 9'-0"`; raw `{\fArial\|b1;OFFICE 1}` also present in the label list | `room names come from the raw ...` (metric, imperial) | `roomRecognition.ts` label loop (normalise MTEXT, ignore level annotations) |
 | 4 | Path B (user-confirmed `A-WALL`, approved openings): an approved opening closes its gap on whichever wall face its end snaps to, so the Corridor polygon swallows jamb pockets | Corridor 309.57 ft2 vs ground truth 305.70 ft2 (+1.27%, limit 0.5%); the three other rooms are exact | `an approved opening closes the gap ...` | `roomRecognition.ts` approved-opening snap |
 | 5 | Path B: the body of a double-line wall (between its two face lines) is returned as a room candidate | 5 candidates for 4 rooms; extra `Room`, 33.8 ft2, 8 vertices; 8 smaller boundaries were already suppressed by the 20 ft2 threshold | `the 200 mm double-line exterior wall body ...` | `roomRecognition.ts` face filtering |

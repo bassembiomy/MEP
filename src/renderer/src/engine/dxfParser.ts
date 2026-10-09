@@ -407,6 +407,17 @@ export function parseDxfText(dxfText: string): ParsedDxf {
           if (!(ratio > 0 && ratio <= 1) || number(r, 31, 0) !== 0) { diagnose('MALFORMED_ELLIPSE', 'Ellipse ratio or major axis is invalid.', r, 'error'); continue; }
           break;
         }
+        case 'SEQEND': continue; // terminator of an INSERT's attribute list; carries no geometry
+        case 'ATTDEF':
+        case 'ATTRIB': {
+          // ATTDEF in a block is a template: its value is replaced by each INSERT's ATTRIB, so only constant
+          // attributes (70 bit 2) carry real text. Invisible attributes (70 bit 1) are not drawn.
+          const attFlags = number(r, 70, 0);
+          if ((Number.isInteger(attFlags) && (attFlags & 1)) || (r.type === 'ATTDEF' && !(attFlags & 2))) continue;
+          if (!(first(r, 1) ?? '').trim()) continue;
+          ent.type = 'TEXT';
+        }
+        // falls through: an attribute is drawn exactly like single-line TEXT (position 10/20, height 40, rotation 50, value 1)
         case 'TEXT':
         case 'MTEXT':
           ent.x = number(r, 10); ent.y = -number(r, 20);

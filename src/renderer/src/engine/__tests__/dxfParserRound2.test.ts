@@ -52,3 +52,32 @@ describe('paper space (group 67 = 1)', () => {
     expect(parsed.diagnostics!.some(x => x.code === 'PAPER_SPACE_SKIPPED')).toBe(false)
   })
 })
+
+describe('ATTRIB / ATTDEF / SEQEND', () => {
+  const attdef = (flags: number, value: string) => rawRecord([0, 'ATTDEF'], [8, '0'], [10, 0], [20, 0], [40, 100], [1, value], [2, 'TAG'], [70, flags])
+  const build = (flags: number, tail = '') => parseDxfText(dxf({
+    header: header({ insunits: 4 }), layers: [layer('0')],
+    blocks: [block('DOOR', line('0', 0, 0, 900, 0) + '\n' + attdef(0, 'D00') + '\n' + attdef(2, 'FIXED'))],
+    entities: [rawRecord([0, 'INSERT'], [8, '0'], [2, 'DOOR'], [66, 1], [10, 1000], [20, 0]),
+      rawRecord([0, 'ATTRIB'], [8, '0'], [10, 1450], [20, 100], [40, 100], [1, 'D01'], [2, 'TAG'], [70, flags], [50, 90]),
+      rawRecord([0, 'SEQEND'], [8, '0']), tail].filter(Boolean)
+  }))
+  it('turns a visible ATTRIB into a TEXT with its value, rotation and height', () => {
+    const t = build(0).entities.find(e => e.text === 'D01')!
+    expect(t.type).toBe('TEXT')
+    expect(t.textHeight).toBe(100)
+    // identical to what the same placement gives as plain TEXT
+    const plain = parseDxfText(dxf({ header: header({ insunits: 4 }), layers: [layer('0')], blocks: [],
+      entities: [rawRecord([0, 'TEXT'], [8, '0'], [10, 1450], [20, 100], [40, 100], [1, 'D01'], [50, 90])] })).entities[0]
+    expect(t.rotationDeg).toBeCloseTo(plain.rotationDeg!, 9)
+    expect(t.x).toBe(plain.x)
+    expect(t.y).toBe(plain.y)
+  })
+  it('drops invisible ATTRIB, template ATTDEF and SEQEND silently but keeps a constant ATTDEF', () => {
+    const p = build(1)
+    expect(p.entities.some(e => e.text === 'D01')).toBe(false)
+    expect(p.entities.some(e => e.text === 'D00')).toBe(false)
+    expect(p.entities.filter(e => e.text === 'FIXED')).toHaveLength(1)
+    expect(p.diagnostics!.filter(d => d.code === 'UNSUPPORTED_ENTITY')).toEqual([])
+  })
+})

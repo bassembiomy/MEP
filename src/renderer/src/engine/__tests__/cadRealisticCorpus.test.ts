@@ -93,7 +93,9 @@ const histogram = (parsed: ParsedDxf, filter: (d: { code: string; entityType?: s
   for (const d of parsed.diagnostics ?? []) if (filter(d)) h[d.code + (d.entityType && d.code === 'UNSUPPORTED_ENTITY' ? `:${d.entityType}` : '')] = (h[d.code + (d.entityType && d.code === 'UNSUPPORTED_ENTITY' ? `:${d.entityType}` : '')] ?? 0) + 1
   return h
 }
-const GAP_UNSUPPORTED = ['ATTRIB', 'ATTDEF', 'SEQEND', 'SPLINE']
+const GAP_UNSUPPORTED = ['SPLINE']
+/** Source record types the importer now handles (ATTRIB -> visible TEXT, ATTDEF template and SEQEND dropped silently). */
+const HANDLED_SOURCE = ['ATTRIB', 'ATTDEF', 'SEQEND']
 const isUnitsDiag = (d: { code: string }) => d.code.startsWith('units-')
 const centroid = (poly: number[]) => {
   let x = 0, y = 0
@@ -170,22 +172,27 @@ function describeUnitsAndImport(name: string) {
   it('has no diagnostics other than the documented ones (exact counts by code)', () => {
     const { parsed } = load(name)
     const expected: Record<string, number> = {}
-    for (const [type, n] of Object.entries(t.sourceUnsupported)) if (!GAP_UNSUPPORTED.includes(type)) expected[`UNSUPPORTED_ENTITY:${type}`] = n
+    for (const [type, n] of Object.entries(t.sourceUnsupported)) if (!GAP_UNSUPPORTED.includes(type) && !HANDLED_SOURCE.includes(type)) expected[`UNSUPPORTED_ENTITY:${type}`] = n
     if (t.elevatedTopLevelEntities) expected.ELEVATED_GEOMETRY_PROJECTED = t.elevatedTopLevelEntities
     if (t.nonPlanarLines) expected.UNSUPPORTED_ELEVATION = t.nonPlanarLines
     if (t.paperSpace) expected.PAPER_SPACE_SKIPPED = 1
+    // A door tag ATTRIB of a mirrored INSERT sits on a -Z extrusion: mirrored text keeps anchor and baseline only (one honest warning per such tag).
+    const mirroredTags = t.sourceUnsupported.ATTRIB ? t.openings.filter(o => o.kind === 'door' && o.mirrored).length : 0
+    if (mirroredTags) expected.APPROXIMATED_GEOMETRY = mirroredTags
     const actual = histogram(parsed, d => !isUnitsDiag(d) && !(d.code === 'UNSUPPORTED_ENTITY' && GAP_UNSUPPORTED.includes(d.entityType ?? '')))
     expect(actual).toEqual(expected)
   })
   if (t.sourceUnsupported.ATTRIB) {
-    gap('KNOWN GAP: INSERT attributes (ATTRIB, ATTDEF, SEQEND) are reported as UNSUPPORTED_ENTITY — the parser has no case for them', () => {
+    it('INSERT attributes: ATTDEF templates and SEQEND are dropped silently, each visible ATTRIB becomes a TEXT with its value', () => {
       const { parsed } = load(name)
-      const noisy = (parsed.diagnostics ?? []).filter(d => d.code === 'UNSUPPORTED_ENTITY' && ['ATTRIB', 'ATTDEF', 'SEQEND'].includes(d.entityType ?? ''))
+      const noisy = (parsed.diagnostics ?? []).filter(d => d.code === 'UNSUPPORTED_ENTITY' && HANDLED_SOURCE.includes(d.entityType ?? ''))
       expect(noisy).toHaveLength(0)
+      expect(parsed.entities.filter(e => e.type === 'TEXT' && /^D\d\d$/.test(e.text ?? ''))).toHaveLength(t.sourceUnsupported.ATTRIB)
     })
   }
-  it(`imports the manifest entity count (${t.expectedEntityCount}) after block expansion`, () => {
-    expect(load(name).parsed.entities).toHaveLength(t.expectedEntityCount)
+  // The manifest count excludes ATTRIB by convention; the importer draws each visible ATTRIB as a TEXT.
+  it(`imports the manifest entity count (${t.expectedEntityCount}) plus one TEXT per visible ATTRIB (${t.sourceUnsupported.ATTRIB ?? 0})`, () => {
+    expect(load(name).parsed.entities).toHaveLength(t.expectedEntityCount + (t.sourceUnsupported.ATTRIB ?? 0))
   })
   it('keeps the drawing bbox within the manifest model extents (+-1 unit, Y negated)', () => {
     const { parsed } = load(name)
