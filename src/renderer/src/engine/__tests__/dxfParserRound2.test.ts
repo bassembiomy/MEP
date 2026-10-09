@@ -156,3 +156,35 @@ describe('SPLINE', () => {
     expect(bad.diagnostics!.some(d => d.code === 'MALFORMED_SPLINE')).toBe(true)
   })
 })
+
+describe('frozen INSERT layer hides the whole reference', () => {
+  const file = (opts: { frozen?: boolean; off?: boolean }, nested = false) => parseDxfText(dxf({
+    header: header({ insunits: 4 }), layers: [layer('0'), layer('A-WALL'), layer('FURN', opts)],
+    blocks: [
+      block('B', line('A-WALL', 0, 0, 100, 0) + '\n' + line('0', 0, 10, 100, 10)),
+      block('OUTER', line('A-WALL', 0, 50, 100, 50) + '\n' + insert('FURN', 'B', 0, 200))
+    ],
+    entities: nested ? [insert('0', 'OUTER', 1000, 0)] : [insert('FURN', 'B', 1000, 0)]
+  }))
+  it('a child on another (thawed) layer is treated as hidden when the INSERT layer is frozen', () => {
+    const p = file({ frozen: true })
+    expect(p.hiddenLayers).toEqual(['FURN'])
+    expect(p.entities).toHaveLength(2)
+    expect(p.entities.every(e => e.layer === 'FURN')).toBe(true)
+    expect(p.entities.filter(e => e.originalLayer).map(e => e.originalLayer)).toEqual(['A-WALL']) // the layer-0 child inherited FURN anyway
+    expect(p.blockReferences![0].layer).toBe('FURN')
+  })
+  it('turning the INSERT layer OFF only hides layer-0 children (they inherit it); other layers stay visible', () => {
+    const p = file({ off: true })
+    expect(p.entities.map(e => e.layer).sort()).toEqual(['A-WALL', 'FURN'])
+  })
+  it('a normal layer changes nothing', () => {
+    expect(file({}).entities.map(e => e.layer).sort()).toEqual(['A-WALL', 'FURN'])
+  })
+  it('a frozen nested INSERT hides only its own subtree, not the outer block\'s other children', () => {
+    const p = file({ frozen: true }, true)
+    const outerLine = p.entities.find(e => e.originalLayer === undefined && e.layer === 'A-WALL' && e.sourceBlock === 'OUTER')
+    expect(outerLine).toBeTruthy()
+    expect(p.entities.filter(e => e.layer === 'FURN')).toHaveLength(2)
+  })
+})

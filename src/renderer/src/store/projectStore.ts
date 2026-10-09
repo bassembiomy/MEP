@@ -97,6 +97,8 @@ export interface DxfEntity {
   text?: string;
   color?: string;
   layer?: string;
+  /** Set when the importer moved this entity onto a frozen ancestor INSERT's layer (so it is hidden with the reference): its own layer. */
+  originalLayer?: string;
   /** Constant Z (drawing units) kept by the CAD parsers for planar geometry; absent means level 0. */
   elevation?: number;
 }

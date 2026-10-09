@@ -342,11 +342,13 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     return Number.isInteger(aci) && aci > 0 && aci < 256 ? aciToHexColor(aci) : undefined;
   };
   const layers = new Map<string, string | undefined>();
-  const hiddenLayers = new Set<string>();
+  const hiddenLayers = new Set<string>(), frozenLayers = new Set<string>();
   for (const r of sections.get('TABLES') ?? []) if (r.type === 'LAYER') {
     const name = first(r, 2)?.trim() ?? '0';
     layers.set(name, color(r));
-    if ((number(r, 70, 0) & 1) !== 0 || number(r, 62, 0) < 0) hiddenLayers.add(name);
+    const frozen = (number(r, 70, 0) & 1) !== 0;
+    if (frozen) frozenLayers.add(name);
+    if (frozen || number(r, 62, 0) < 0) hiddenLayers.add(name);
   }
   const blocks = new Map<string, DxfBlock>();
   const duplicateBlocks = new Set<string>();
@@ -375,7 +377,10 @@ export function parseDxfText(dxfText: string): ParsedDxf {
   }
   incompleteBlock();
   let visited = 0, expansionStopped = false, paperSpaceSkipped = 0;
-  function expand(records: DxfRecord[], matrix: CadAffineMatrix, stack: string[], inheritedLayer = '0', inheritedColor?: string, insertHandle?: string, zScale = 1, zOffset = 0) {
+  function expand(records: DxfRecord[], matrix: CadAffineMatrix, stack: string[], inheritedLayer = '0', inheritedColor?: string, insertHandle?: string, zScale = 1, zOffset = 0, frozenBy?: string) {
+    // `frozenBy`: layer of the nearest FROZEN ancestor INSERT. Freezing hides the whole reference, children on other layers
+    // included, so those children are moved onto that layer (originalLayer keeps their own). OFF only hides layer-0 children
+    // (they inherit the INSERT's layer), which `inheritedLayer` already covers.
     // Elevation of a child at block-space Z `cz` is zScale * cz + zOffset (affine, composed per nested INSERT).
     for (let index = 0; index < records.length; index++) {
       const r = records[index];
@@ -390,8 +395,8 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         if (r.type === 'POLYLINE') while (index + 1 < records.length && (records[index + 1].type === 'VERTEX' || records[index + 1].type === 'SEQEND')) { const t = records[++index].type; if (t === 'SEQEND') break; }
         continue;
       }
-      const rawLayer = first(r, 8)?.trim() || '0', layer = rawLayer === '0' ? inheritedLayer : rawLayer;
-      const aci = number(r, 62), ownColor = color(r) ?? (aci === 0 ? inheritedColor : layers.get(layer));
+      const rawLayer = first(r, 8)?.trim() || '0', ownLayer = rawLayer === '0' ? inheritedLayer : rawLayer, layer = frozenBy ?? ownLayer;
+      const aci = number(r, 62), ownColor = color(r) ?? (aci === 0 ? inheritedColor : layers.get(ownLayer));
       if (number(r, 39, 0) !== 0) { diagnose('UNSUPPORTED_THICKNESS', 'Volumetric entity thickness cannot be represented in the 2D drawing; entity omitted.', r); continue; }
       const nx = number(r, 210, 0), ny = number(r, 220, 0), nz = number(r, 230, 1);
       if (![nx, ny, nz].every(Number.isFinite) || Math.abs(nx) > 1e-10 || Math.abs(ny) > 1e-10 || Math.abs(Math.abs(nz) - 1) > 1e-10) {
@@ -437,7 +442,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         const insertWorldZ = zScale * nzSign * ownZ + zOffset;
         if (insertWorldZ !== 0 || child.baseZ !== 0) diagnose('ELEVATED_GEOMETRY_PROJECTED', `INSERT ${name} at elevation ${insertWorldZ}${child.baseZ !== 0 ? ` (block base Z ${child.baseZ})` : ''}; its geometry is projected onto the plan and keeps its elevation.`, r);
         expand(child.records, composed, [...stack, name], layer, ownColor ?? inheritedColor, first(r, 5)?.trim() ?? insertHandle,
-          zScale * nzSign * sz, zScale * nzSign * (ownZ - sz * child.baseZ) + zOffset);
+          zScale * nzSign * sz, zScale * nzSign * (ownZ - sz * child.baseZ) + zOffset, frozenBy ?? (frozenLayers.has(layer) ? layer : undefined));
         const placement = describeInsertTransform(composed, { x: child.baseX, y: child.baseY });
         const childBounds: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
         for (let k = childStart; k < entities.length; k++) {
@@ -452,6 +457,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       }
       let ent: DxfEntity = { type: r.type as DxfEntity['type'], layer, color: ownColor, handle: first(r, 5)?.trim(), sourceHandle: first(r, 5)?.trim(), sourceBlock: stack.at(-1) };
       if (stack.length && insertHandle) ent.handle = `${insertHandle}/${ent.sourceHandle ?? `${r.type}:${index}`}`;
+      if (layer !== ownLayer) ent.originalLayer = ownLayer;
       switch (r.type) {
         case 'LINE':
           ent.x = number(r, 10); ent.y = -number(r, 20); ent.points = [number(r, 11), -number(r, 21)]; break;
