@@ -26,11 +26,10 @@ const attachShot = async (page: Page, info: TestInfo, name: string): Promise<voi
 }
 
 /** Click a drawing-space point from a small pixel offset, to prove the tool snaps rather than the mouse being exact. */
-async function clickNear(page: Page, x: number, y: number, dx: number, dy: number, settleMs = 450): Promise<void> {
+async function clickNear(page: Page, x: number, y: number, dx: number, dy: number): Promise<void> {
   const p = await toScreen(page, x, y)
   await page.mouse.move(p.x + dx, p.y + dy)
   await page.mouse.click(p.x + dx, p.y + dy)
-  if (settleMs) await page.waitForTimeout(settleMs) // default stays outside Konva's 400 ms dblclick window (see test 4b)
 }
 
 // Office 1 in store coordinates (Y is negated on import). Offsets point away from the nearest neighbouring snap
@@ -121,26 +120,33 @@ test('4. polyline tool snaps to wall corners and closes a room', async ({ page }
 })
 
 test('4b. two quick vertex clicks at different places do not close the polygon', async ({ page }) => {
-  test.fail(true, 'App defect: Konva onDblClick has no distance check, so clicking a 4th vertex <400 ms after the 3rd is treated as a double-click and commits the polygon early.')
   await importCad(page, METRIC)
   await page.getByRole('button', { name: 'Draw Zone Polygon' }).click()
   const [a, b, c, d] = OFFICE_1_CORNERS
   await clickNear(page, a.x, a.y, a.dx, a.dy)
   await clickNear(page, b.x, b.y, b.dx, b.dy)
-  await clickNear(page, c.x, c.y, c.dx, c.dy, 0)
-  await clickNear(page, d.x, d.y, d.dx, d.dy, 0)
+  await clickNear(page, c.x, c.y, c.dx, c.dy)
+  await clickNear(page, d.x, d.y, d.dx, d.dy)
   expect(await store(page, (s) => s.zones.length)).toBe(0)
   expect(await store(page, (s) => s.tempPoints.length)).toBe(8)
 })
 
+test('4c. a true double-click at the last vertex closes the room', async ({ page }) => {
+  await importCad(page, METRIC)
+  await page.getByRole('button', { name: 'Draw Zone Polygon' }).click()
+  const [a, b, c, d] = OFFICE_1_CORNERS
+  await clickNear(page, a.x, a.y, a.dx, a.dy)
+  await clickNear(page, b.x, b.y, b.dx, b.dy)
+  await clickNear(page, c.x, c.y, c.dx, c.dy)
+  const p = await toScreen(page, d.x, d.y)
+  await page.mouse.move(p.x + d.dx, p.y + d.dy)
+  await page.mouse.dblclick(p.x + d.dx, p.y + d.dy)
+  await expect.poll(() => store(page, (s) => s.zones.length)).toBe(1)
+  expect(await store(page, (s) => s.zones[0].points.length)).toBe(8)
+})
+
 async function openMeasure(page: Page): Promise<void> {
-  const measure = page.locator('[title="Measure / Calibrate Scale"]')
-  if (!(await measure.isVisible())) {
-    // The measure tool is only on the collapsed tool rail.
-    await page.locator('[title^="Collapse Tools"]').click()
-    await waitStageSettled(page)
-  }
-  await measure.click()
+  await page.locator('[title="Measure / Calibrate Scale"]').click()
   await waitStageSettled(page)
 }
 
@@ -160,7 +166,7 @@ test('5a. measure/calibrate on a metric file leaves the scale unchanged', async 
   await importCad(page, METRIC)
   const before = await store(page, (s) => s.project.scale)
   await measureFiveMetreWall(page)
-  await expect(page.getByText(/Scale calibrated/)).toBeVisible()
+  await expect(page.getByText(/Scale calibrated: segment/)).toBeVisible()
   const after = await store(page, (s) => s.project.scale)
   expect(Math.abs(after - before) / before).toBeLessThan(0.001)
   expect(await store(page, (s) => s.project.cadUnitsConfirmed)).toBe(true)
@@ -173,7 +179,7 @@ test('5b. measure/calibrate corrects a wrongly confirmed unit', async ({ page })
   const wrong = await store(page, (s) => s.project.scale)
   expect(wrong).toBeCloseTo(0.3048, 4)
   await measureFiveMetreWall(page)
-  await expect(page.getByText(/Scale calibrated/)).toBeVisible()
+  await expect(page.getByText(/Scale calibrated: segment/)).toBeVisible()
   const fixed = await store(page, (s) => s.project.scale)
   expect(Math.abs(fixed - 304.8) / 304.8).toBeLessThan(0.001)
 })

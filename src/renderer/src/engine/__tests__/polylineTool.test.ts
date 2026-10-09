@@ -1,5 +1,5 @@
 import {describe,it,expect,beforeEach,vi,afterEach} from 'vitest';
-import {polylineReducer as r,initialPolylineState,type PolylineEvent} from '../cad/polylineTool';
+import {polylineReducer as r,initialPolylineState,shouldCommitOnDoubleClick,type PolylineEvent} from '../cad/polylineTool';
 import {useProjectStore} from '../../store/projectStore';
 const run=(events:PolylineEvent[],project={units:'imperial' as const,scale:1},tol=0)=>events.reduce(r,initialPolylineState(project,tol));
 const sq=(n=10):PolylineEvent[]=>[{type:'click',x:0,y:0},{type:'click',x:n,y:0},{type:'click',x:n,y:n},{type:'click',x:0,y:n}];
@@ -34,6 +34,19 @@ describe('polyline tool',()=>{
   const line=run([{type:'click',x:0,y:0},{type:'click',x:5,y:0},{type:'click',x:10,y:0},{type:'enter'}]);
   expect(line.committed).toBeNull();expect(line.message).toBeTruthy();expect(line.points).toHaveLength(6);
   const fixed=r(r(bow,{type:'backspace'}),{type:'enter'});expect(fixed.committed).not.toBeNull();
+ });
+});
+describe('shouldCommitOnDoubleClick',()=>{
+ it('commits only when both clicks land at the same screen spot',()=>{
+  expect(shouldCommitOnDoubleClick({x:100,y:100},{x:101,y:102},5)).toBe(true);
+  expect(shouldCommitOnDoubleClick({x:100,y:100},{x:100,y:100},5)).toBe(true);
+  expect(shouldCommitOnDoubleClick({x:100,y:100},{x:200,y:100},5)).toBe(false); // quick click on the next corner
+  expect(shouldCommitOnDoubleClick({x:100,y:100},{x:106,y:100},5)).toBe(false);
+ });
+ it('refuses when a click position is unknown or non-finite',()=>{
+  expect(shouldCommitOnDoubleClick(null,{x:1,y:1},5)).toBe(false);
+  expect(shouldCommitOnDoubleClick({x:1,y:1},null,5)).toBe(false);
+  expect(shouldCommitOnDoubleClick({x:NaN,y:1},{x:1,y:1},5)).toBe(false);
  });
 });
 describe('store.addZone validation',()=>{

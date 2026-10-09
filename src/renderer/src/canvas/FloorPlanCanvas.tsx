@@ -7,7 +7,7 @@ import { moveTerminal, moveIndoorUnit, moveOutdoorUnit, translateDuct, type Comp
 import { METERS_PER_FOOT } from '../engine/engineeringInputs';
 import type { Zone } from '../store/projectStore';
 import { parseKnownLength, measuredDistance, describeCalibration, snapLastPoint } from '../engine/cad/measureTool';
-import { polylineReducer, initialPolylineState, type PolylineEvent } from '../engine/cad/polylineTool';
+import { polylineReducer, initialPolylineState, shouldCommitOnDoubleClick, type PolylineEvent } from '../engine/cad/polylineTool';
 import { calculateZoneDiffuserCoverage } from '../engine/diffuserPlacer';
 import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
 import { getCadEntityPath } from '../engine/cad/nativeGeometry';
@@ -420,6 +420,7 @@ export const FloorPlanCanvas: React.FC = () => {
     if (drawMode === 'polyline') {
       const stage = stageRef.current;
       if (!stage) return;
+      clickScreenRef.current = { prev: clickScreenRef.current.last, last: { x: e.evt.clientX, y: e.evt.clientY } };
       const transform = stage.getAbsoluteTransform().copy().invert();
       const pos = stage.getPointerPosition();
       if (pos) {
@@ -430,8 +431,11 @@ export const FloorPlanCanvas: React.FC = () => {
     }
   };
 
+  // Screen positions of the last two polyline clicks: a double-click only commits when both are at the same spot.
+  const clickScreenRef = useRef<{ prev: { x: number; y: number } | null; last: { x: number; y: number } | null }>({ prev: null, last: null });
   const handleDoubleClick = () => {
-    if (drawMode === 'polyline' && tempPoints.length >= 6) applyPolyline({ type: 'enter' });
+    const { prev, last } = clickScreenRef.current;
+    if (drawMode === 'polyline' && tempPoints.length >= 6 && shouldCommitOnDoubleClick(prev, last)) applyPolyline({ type: 'enter' });
   };
 
   // Continuous smooth exponential cursor-anchored zooming

@@ -4,7 +4,7 @@ import { serializeProject } from '../engine/project/projectSerialization';
 import {exportProjectDxf} from '../engine/export/exportDxf';
 import { decodeDxfBytes, parseDxfText } from '../engine/dxfParser';
 import { parseDwgBuffer } from '../engine/dwgParser';
-import { MousePointer, PenTool, Hand, RefreshCw, Trash2, ShieldAlert, Upload, X, CheckCircle, Sparkles } from 'lucide-react';
+import { MousePointer, PenTool, Hand, Ruler, RefreshCw, Trash2, ShieldAlert, Upload, X, CheckCircle, Sparkles } from 'lucide-react';
 import { AiHvacAssistantModal } from './AiHvacAssistantModal';
 
 export const Toolbar: React.FC = () => {
@@ -132,6 +132,19 @@ export const Toolbar: React.FC = () => {
         >
           <PenTool size={16} />
           Draw Zone Polygon
+        </button>
+
+        <button
+          onClick={() => setDrawMode('measure')}
+          title="Measure / Calibrate Scale"
+          className={`flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-xs font-medium transition-all duration-200 ${
+            drawMode === 'measure'
+              ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
+              : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'
+          }`}
+        >
+          <Ruler size={16} />
+          Measure / Calibrate Scale
         </button>
 
         <button

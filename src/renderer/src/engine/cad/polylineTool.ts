@@ -66,3 +66,20 @@ export function polylineReducer(state: PolylineState, event: PolylineEvent): Pol
     }
   }
 }
+
+/** Screen-pixel distance within which two consecutive clicks count as one double-click. */
+export const DOUBLE_CLICK_TOLERANCE_PX = 5
+
+/**
+ * A double-click only commits the polygon when both clicks landed at the same screen spot. Two quick clicks at
+ * different places (the user placing consecutive vertices fast) are ordinary vertex clicks, not a double-click.
+ */
+export function shouldCommitOnDoubleClick(
+  prev: { x: number; y: number } | null,
+  cur: { x: number; y: number } | null,
+  tolerance = DOUBLE_CLICK_TOLERANCE_PX
+): boolean {
+  if (!prev || !cur) return false
+  const d = Math.hypot(cur.x - prev.x, cur.y - prev.y)
+  return Number.isFinite(d) && d <= tolerance
+}
