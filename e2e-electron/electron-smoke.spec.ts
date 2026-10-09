@@ -257,11 +257,11 @@ test('E7. Save project, relaunch with the same user data, open it; exported DXF 
   await approveMeetingRoom(page)
 
   await page.getByRole('button', { name: 'Export DXF' }).click()
-  await expect.poll(() => saved().filter((f) => f.endsWith('.preliminary.dxf')).length).toBe(1)
+  await expect.poll(async () => (await saved()).filter((f) => f.endsWith('.preliminary.dxf')).length).toBe(1)
   await page.getByRole('button', { name: 'Save project' }).click()
-  await expect.poll(() => saved().filter((f) => f.endsWith('.mep.json')).length).toBe(1)
-  const projectFile = saved().find((f) => f.endsWith('.mep.json'))!
-  const dxfFile = saved().find((f) => f.endsWith('.preliminary.dxf'))!
+  await expect.poll(async () => (await saved()).filter((f) => f.endsWith('.mep.json')).length).toBe(1)
+  const projectFile = (await saved()).find((f) => f.endsWith('.mep.json'))!
+  const dxfFile = (await saved()).find((f) => f.endsWith('.preliminary.dxf'))!
   const doc = JSON.parse(readFileSync(projectFile, 'utf8'))
   expect(doc.format).toBe('mep-hvac-project')
   expect(doc.version).toBe(2)

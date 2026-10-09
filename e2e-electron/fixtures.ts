@@ -1,5 +1,5 @@
 import { test as base, expect, _electron, type ElectronApplication, type Page } from '@playwright/test'
-import { mkdtempSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
@@ -203,12 +203,20 @@ export async function mockOpenDialog(app: ElectronApplication, path: string | nu
  * Route every download straight into `dir` (no native save dialog, which would hang under xvfb).
  * Returns a function listing the saved files' absolute paths.
  */
-export async function captureDownloads(app: ElectronApplication, dir: string): Promise<() => string[]> {
+export async function captureDownloads(app: ElectronApplication, dir: string): Promise<() => Promise<string[]>> {
   mkdirSync(dir, { recursive: true })
   await app.evaluate(({ session }, d) => {
+    const g = globalThis as unknown as { __mepDownloadsDone?: string[] }
+    g.__mepDownloadsDone = []
     session.defaultSession.on('will-download', (_e, item) => {
-      item.setSavePath(`${d}/${item.getFilename()}`)
+      const path = `${d}/${item.getFilename()}`
+      item.setSavePath(path)
+      // The file appears on disk as soon as the download starts; only the 'done' event means it is complete.
+      item.once('done', (_ev, state) => {
+        if (state === 'completed') g.__mepDownloadsDone!.push(path)
+      })
     })
   }, dir)
-  return () => readdirSync(dir).map((f) => join(dir, f))
+  return () =>
+    app.evaluate(() => (globalThis as unknown as { __mepDownloadsDone?: string[] }).__mepDownloadsDone ?? [])
 }
