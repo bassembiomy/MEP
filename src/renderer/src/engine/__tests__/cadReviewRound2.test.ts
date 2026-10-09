@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { parseDxfText } from '../dxfParser'
 import { useProjectStore, selectPersistedProject } from '../../store/projectStore'
-import { serializeProject } from '../project/projectSerialization'
+import { parseProjectDocument, serializeProject } from '../project/projectSerialization'
 import { circle, dxf, header, layer, line, lwpolyline, block, insert, arc } from './fixtures/dxfBuilder'
 
 const W = 'A-WALL'
@@ -109,5 +109,43 @@ describe('R3: restoring a project re-derives zone obstacles from the CAD review 
     expect(doc.zones[0].obstacles.length).toBe(1)
     expect(s().restoreProjectDocument(JSON.stringify(doc)).success).toBe(true)
     expect(s().zones[0].obstacles).toBeUndefined()
+  })
+})
+
+describe('R4: version 1 documents are not trusted for decisions that did not exist then', () => {
+  const v2doc = () => {
+    load()
+    s().setProject({ cadUnitsConfirmed: true })
+    s().addZone([4, -3, 18, -3, 18, -13, 4, -13])
+    s().approveCadObstacle(s().cadObstacles[0].id, 1)
+    s().approveCadOpening(s().cadOpenings[0].id)
+    return JSON.parse(serializeProject(selectPersistedProject(s())))
+  }
+  it('a v1 file with an unconfirmable import never keeps an explicit cadUnitsConfirmed=true', () => {
+    const doc = v2doc()
+    doc.cadImport = { sourceName: 'x.dxf', unitsConfidence: 'estimated', diagnostics: [] }
+    doc.project.cadUnitsConfirmed = true
+    expect(parseProjectDocument(JSON.stringify(doc)).project.cadUnitsConfirmed).toBe(true) // v2: the user's recorded decision
+    doc.version = 1
+    expect(parseProjectDocument(JSON.stringify(doc)).project.cadUnitsConfirmed).toBe(false)
+  })
+  it('a v1 file with auto-confirmable units keeps its stored value', () => {
+    const doc = v2doc()
+    doc.cadImport = { sourceName: 'x.dxf', unitsConfidence: 'declared', diagnostics: [] }
+    doc.version = 1
+    expect(parseProjectDocument(JSON.stringify(doc)).project.cadUnitsConfirmed).toBe(true)
+  })
+  it('ignores cadOpenings, cadObstacles, cadLevel and zone obstacles in a v1 file', () => {
+    const doc = v2doc()
+    expect(doc.cadOpenings.some((o: { status: string }) => o.status === 'approved')).toBe(true)
+    doc.version = 1
+    const parsed = parseProjectDocument(JSON.stringify(doc))
+    expect(parsed.cadOpenings).toBeUndefined()
+    expect(parsed.cadObstacles).toBeUndefined()
+    expect(parsed.cadLevel).toBeUndefined()
+    expect(parsed.zones[0].obstacles).toBeUndefined()
+    expect(s().restoreProjectDocument(JSON.stringify(doc)).success).toBe(true)
+    expect(s().cadOpenings.every(o => o.status === 'review-required')).toBe(true)
+    expect(s().cadObstacles.every(o => o.status === 'review-required')).toBe(true)
   })
 })

@@ -184,11 +184,14 @@ function validateLoadedCatalogs(value:unknown):PersistedProjectState['loadedCata
   return catalogs as unknown as PersistedProjectState['loadedCatalogs'];
 }
 
-function validateState(value:unknown):PersistedProjectState {
+function validateState(value:unknown,version:number=VERSION):PersistedProjectState {
+  // Version 1 predates CAD review decisions: nothing in such a file (unit confirmation of an unconfirmable import,
+  // approved openings/obstacles, level, zone obstacles) can have been a recorded user decision, so none is trusted.
+  const legacy=version<2;
   const data=object(value,'Project');
   const project={...object(data.project,'Project metadata')} as unknown as ProjectMetadata;
   const cadImport=data.cadImport===undefined?undefined:validateCadImport(data.cadImport);
-  if(cadImport && !unitsAutoConfirmed(cadImport) && project.cadUnitsConfirmed!==true)project.cadUnitsConfirmed=false;
+  if(cadImport && !unitsAutoConfirmed(cadImport) && (legacy || project.cadUnitsConfirmed!==true))project.cadUnitsConfirmed=false;
   text(project.name,'Project name');text(project.location,'Project location');
   if(project.standardsSelection!==undefined)resolveStandardsSelection(project.standardsSelection);
   if(project.units!=='imperial' && project.units!=='metric') throw new TypeError('Unsupported project unit system');
@@ -236,7 +239,8 @@ function validateState(value:unknown):PersistedProjectState {
       if(componentIds.has(id)) throw new TypeError('Duplicate component ID');componentIds.add(id);
       coordinates(d.points,'Duct coordinates',4);finite(d.widthIn,'Duct width');finite(d.heightIn,'Duct height');finite(d.cfm,'Duct flow');
     }
-    if(z.obstacles!==undefined)
+    if(legacy) delete (z as Partial<Zone>).obstacles;
+    else if(z.obstacles!==undefined)
       for(const o of array(z.obstacles,'Zone obstacles')) {
         const ob=object(o,'Zone obstacle');text(ob.id,'Zone obstacle ID');
         if(ob.status!=='approved') throw new TypeError('Zone obstacles must be approved obstacles');
@@ -278,9 +282,9 @@ function validateState(value:unknown):PersistedProjectState {
   return {project,zones,dxfEntities,dxfBoundingBox:bbox,dxfLayers,
     ...(cadImport!==undefined?{cadImport}:{}),
     ...(data.cadLayerOverrides!==undefined?{cadLayerOverrides:validateLayerOverrides(data.cadLayerOverrides)}:{}),
-    ...(data.cadOpenings!==undefined?{cadOpenings:validateCadOpenings(data.cadOpenings)}:{}),
-    ...(data.cadObstacles!==undefined?{cadObstacles:validateCadObstacles(data.cadObstacles)}:{}),
-    ...(data.cadLevel!==undefined?{cadLevel:finite(data.cadLevel,'CAD level')}:{}),
+    ...(!legacy&&data.cadOpenings!==undefined?{cadOpenings:validateCadOpenings(data.cadOpenings)}:{}),
+    ...(!legacy&&data.cadObstacles!==undefined?{cadObstacles:validateCadObstacles(data.cadObstacles)}:{}),
+    ...(!legacy&&data.cadLevel!==undefined?{cadLevel:finite(data.cadLevel,'CAD level')}:{}),
     ...(data.annotationVisibility!==undefined?{annotationVisibility:validateAnnotationVisibility(data.annotationVisibility)}:{}),
     ...(data.selectedSystemTypes!==undefined?{selectedSystemTypes:array(data.selectedSystemTypes,'System types').map(v=>text(v,'System type'))}:{}),
     ...(data.optimizationWeights!==undefined?{optimizationWeights:validateOptimizationWeights(data.optimizationWeights)}:{}),
@@ -314,5 +318,5 @@ export function parseProjectDocument(source:string):PersistedProjectState {
   const document=object(value,'Document');
   if(document.format!==FORMAT) throw new TypeError('Unrecognized project document format');
   if(!SUPPORTED_VERSIONS.includes(document.version as number)) throw new TypeError(`Unsupported project version ${String(document.version)}`);
-  return validateState(document);
+  return validateState(document,document.version as number);
 }
