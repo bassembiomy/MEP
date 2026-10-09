@@ -140,3 +140,41 @@ layer. libredwg-web also maps negative layer colours to 256, so a real file that
 gitignored `.cache/dwg-external/` (sha256 verified, never vendored: GPL test data). `dwgExternal.test.ts` skips without them; `REQUIRE_EXTERNAL_DWG=1` turns a missing or mismatching file into a failure.
 `example_2004`..`example_2018` carry an AppInfo block that names AutoCAD build O.48.M.294 (that is the file's own claim, not an independent verification); the two R2000 files (`example_2000`, `sample_2000`) carry
 no AppInfo, so their authoring application is not verified either. Hidden layers: the R2000 / R2004 saves have `*ADSK_SYSTEM_LIGHTS` frozen, from R2007 on it is stored unfrozen (native `flag0` 1008), so those saves hide no layer.
+
+## Text justification and far-from-origin drawings (invariants and deferred gaps)
+
+### Text justification (`cad/textJustification.ts`, `cadTextJustification.test.ts`)
+
+- **T1 anchor.** `DxfEntity.x,y` of a TEXT / MTEXT is the point the text is justified about. TEXT / ATTRIB / ATTDEF: group 11 when group 72 is 1, 2 or 4 or the vertical
+  justification is non-zero (**73 on TEXT, 74 on ATTRIB / ATTDEF**; 73 on an attribute is the field length and is ignored); the **midpoint** of 10 and 11 for 72 = 3 (aligned) and 5 (fit);
+  otherwise group 10. A justified TEXT with a missing or non-finite 11/21 falls back to group 10 with left/baseline and a `TEXT_ALIGNMENT_POINT_MISSING` warning (10 is never paired with a non-left
+  alignment); an out-of-range 72/73/74 gives `TEXT_JUSTIFICATION_UNSUPPORTED`. MTEXT: the anchor is always group 10; group 71 (1..9) gives the attachment, absent means top-left (its 11/21 is a direction vector
+  and 72/73 are flow / spacing, not justification).
+- **T2 storage.** Optional `textHAlign` (`left|center|right`) and `textVAlign` (`baseline|bottom|middle|top`), stored only when different from the type default (TEXT left/baseline, MTEXT left/top). Entities saved
+  without them stay valid; unknown values are rejected by `validateCadEntity` (so by project load).
+- **T3 transform.** The anchor is resolved *before* `transformCadEntity`, so it receives exactly the matrix group 10 received (DXF parser and the DWG emit step). A mirrored INSERT (det < 0) does **not** swap left/right:
+  this is the existing glyph-orientation approximation (see `nativeGeometry.transformCadEntity`).
+- **DWG.** TEXT uses `halign` / `valign` with `endPoint` as the alignment point. libredwg-web reports `endPoint` `{0,0}` when the DWG holds none, so `halign` / `valign` gate its use, and a justified TEXT whose `endPoint`
+  is exactly `{0,0}` counts as missing (`text-alignment-point-missing`, group-10 anchor, left/baseline). The committed LibreDWG-written `entity-units-r2000.dwg` is such a file (`TXT CENTER` has `halign` 1, `endPoint` `{0,0}`).
+- Export writes TEXT 10 = anchor, 72, 73 and 11/21 = anchor when not left/baseline (72 = 4 *Middle* and 72 = 1 with 73 = 2 both decode to centre/middle; export writes the latter), MTEXT 71 when not top-left.
+
+Deferred text gaps: old saved projects with justified TEXT keep the group-10 anchor until the drawing is re-imported; aligned / fit width fitting and the 10 -> 11 direction (the stored group 50 is used), text extents in the
+bbox, MTEXT wrapping / column width, mirrored (generation-flag / det < 0) glyphs, the difference between 72 = 4 and 73 = 2 vertical centring, and DXF font metrics vs canvas `sans-serif` metrics.
+
+### Far-from-origin drawings (`cad/drawingOrigin.ts`, `cadDrawingOrigin.test.ts`)
+
+- **I1** every engine coordinate (entities, bbox, block references, openings, obstacles, zones and components, manifests, temp points, snapshots) is *local*: `raw = local + drawingOrigin`. The origin is in the internal
+  Y-down frame: DXF X = `x + ox`, DXF Y = `-(y + oy)`. Z (`elevation`, group 30/31/38) is not localised.
+- **I2** `drawingOrigin` changes only in `setDxfData` (it translates every retained zone coordinate by old - new in the same `set()`, re-derives zone obstacles, and clears `deploymentEvidence`, `deploymentInputs` and
+  `tempPoints`; the undo stacks are already cleared by an import) and in `restoreProjectDocument` (wholesale). `clearDxfData` never changes it.
+- **I3** per axis: 0 when the raw bbox lies within `T = 1e5` drawing units of 0 (absolute threshold), else `round(centre / step) * step` with `step = 10^floor(log10(max(span, 1)))` so components are exact integers; a new
+  import reuses the current origin while its raw bbox localised with it stays within T. Every corpus bbox (max |coord| 50,550) keeps origin `{0,0}`.
+- **I4** parsers return RAW coordinates and are unchanged (corpus tests compare against ezdxf ground truth in raw coordinates). `setDxfData` takes RAW parser output and is the one place coordinates become local;
+  DXF and DWG imports both go through it (`Toolbar.tsx`).
+- **I5** export adds the origin to point group codes (10/20, LINE / TEXT / opening 11/21) and never to vectors (ELLIPSE 11/21, 210-230) or Z codes; with origin `{0,0}` the output is byte-identical.
+- **I6** no UI shows absolute coordinates.
+- **I7** the document carries a top-level `drawingOrigin` only when non-zero, with `version` 3; files with origin `{0,0}` stay version 2. Readers accept v1/v2/v3, treat v1/v2 as `{0,0}`, reject `drawingOrigin` in a
+  v < 3 document and require finite values.
+
+Deferred far-origin gaps: v1/v2 projects saved with far-from-origin raw coordinates are **not** localised at load (entity / candidate IDs embed coordinates, so migrating would orphan saved decisions); re-importing the
+drawing rebases it. Z is not localised. The engine's absolute tolerances are unchanged (fine in the local frame, but one drawing spanning more than about 1e7 drawing units cannot be centred within T and could still lose precision).
