@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoadSafely, calculateCanonicalZoneLoad } from '../engine/loadCalc';
 import { generateSystemCandidates } from '../engine/systemDesigner';
+import { zoneExtentFt } from '../engine/pressureBudget';
 import { createDeploymentPreview } from '../engine/deploymentManager';
 import { SelectionTraceViewer } from '../components/SelectionTraceViewer';
 import { ArchitectureInspectorModal } from '../components/ArchitectureInspectorModal';
@@ -91,7 +92,8 @@ export const OptimizerStudioPanel: React.FC = () => {
       selectedSystemTypes,
       loadedCatalogs,
       selectedZone.ducts,
-      selectedZone.diffusers
+      selectedZone.diffusers,
+      zoneExtentFt(selectedZone.points, project)
     );
   }, [
     loadResult,

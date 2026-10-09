@@ -23,7 +23,9 @@ describe('candidate airflow envelope', () => {
     expect(c!.diagnostics.some(d => d.code === 'ERR_AIRFLOW_OUTSIDE_EQUIPMENT_RANGE' && d.severity === 'error')).toBe(true)
   })
 
-  it.each([[15, 15, 2, false], [30, 25, 2, true], [40, 30, 6, true]])('valid ducted candidates stay inside the fan range (%i x %i ft, %i people)', (w, h, n, expectAny) => {
+  // With one shared pressure budget no bundled ducted unit can overcome the routed-path requirement in the 30x25 and
+  // 40x30 ft rooms (deployment independently rejects the former optimistic 'valid' picks), so none may be expected.
+  it.each([[15, 15, 2, false], [30, 25, 2, false], [40, 30, 6, false]])('valid ducted candidates stay inside the fan range (%i x %i ft, %i people)', (w, h, n, expectAny) => {
     const { L, result } = candidatesFor(room(w, h, n))
     const ducted = result.candidates.filter(x => x.isValid && x.equipment.capabilities.supportsDuctNetwork)
     if (expectAny) expect(ducted.length).toBeGreaterThan(0)

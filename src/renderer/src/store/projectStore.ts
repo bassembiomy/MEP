@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
 import { generateSystemCandidates, DEFAULT_OPTIMIZATION_WEIGHTS } from '../engine/systemDesigner';
+import { zoneExtentFt } from '../engine/pressureBudget';
 import { convertProjectDisplayUnits } from '../engine/project/unitConversion';
 import { parseProjectDocument } from '../engine/project/projectSerialization';
 import type { CadImportDiagnostic } from '../engine/dxfParser';
@@ -251,6 +252,21 @@ interface ProjectState {
   redo: () => void;
 }
 
+/** Explains why no candidate was feasible, quoting the blocking diagnostics of the best-ranked rejects. */
+function describeNoFeasibleCandidate(candidates: SystemDesignCandidate[]): string {
+  const reasons = candidates
+    .filter(c => !c.isValid)
+    .slice(0, 3)
+    .map(c => {
+      const err = c.diagnostics.find(d => d.severity === 'error');
+      return err ? `${c.equipment.model} x${c.quantity}: ${err.message}` : undefined;
+    })
+    .filter((m): m is string => !!m);
+  return reasons.length
+    ? `No feasible equipment candidate satisfies the current engineering inputs. ${reasons.join(' | ')}`
+    : 'No feasible equipment candidate satisfies the current engineering inputs.';
+}
+
 export const useProjectStore = create<ProjectState>((set, get) => ({
   project: {
     name: 'Cairo Commercial Office',
@@ -403,7 +419,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           true,
           currentState.optimizationWeights,
           draftZone.systemType ? [draftZone.systemType] : ['concealed'],
-          currentState.loadedCatalogs
+          currentState.loadedCatalogs,
+          [],
+          [],
+          zoneExtentFt(draftZone.points, currentState.project)
         );
 
         const bestCandidate = recommendations.bestOverall;
@@ -431,7 +450,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           }
         } else {
           set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked',
-            engineeringError: 'No feasible equipment candidate satisfies the current engineering inputs.' } : z) }));
+            engineeringError: describeNoFeasibleCandidate(recommendations.candidates) } : z) }));
         }
       } catch (err) {
         set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked',

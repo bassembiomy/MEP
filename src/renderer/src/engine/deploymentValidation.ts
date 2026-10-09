@@ -1,6 +1,6 @@
 import type { DeploymentManifest, MechanicalComponent } from './deploymentTypes'
 import type { Zone, ProjectMetadata, Diffuser, DuctSegment } from '../store/projectStore'
-import type { EquipmentCatalogItem, FanOperatingPoint } from './types'
+import type { EquipmentCatalogItem } from './types'
 import {
   measureSimplePolygon,
   requireNonnegative,
@@ -11,6 +11,7 @@ import {
 import { ASHRAE_PROFILE } from './standards/designStandards'
 import { isPointInOrOnPolygon, isSegmentInPolygon } from './validation/spatialValidator'
 import { calculateFittingLoss } from './staticPressureCalc'
+import { requiredExternalStaticPressure, availableFanPressureAtFlow } from './pressureBudget'
 
 // Sorted serialization avoids object insertion-order differences and hash collisions.
 function snapshot(value: unknown): string {
@@ -116,61 +117,6 @@ function fractionOn(p: Point, a: Point, b: Point): number | undefined {
     ? Math.max(0, Math.min(1, t))
     : undefined
 }
-function availableFanPressure(equipment: EquipmentCatalogItem, flow: number): number {
-  requirePositive('Fan airflow', flow)
-  if (flow < equipment.minCfm - 1 || flow > equipment.maxCfm + 1)
-    throw new Error('Per-unit airflow lies outside equipment limits')
-  const perf = equipment.fanPerformance
-  if (!perf) throw new Error('Missing fan performance evidence')
-  const interpolate = (table: FanOperatingPoint[]): number | undefined => {
-    const sorted = [...table].sort((a, b) => a.cfm - b.cfm)
-    if (
-      !sorted.length ||
-      sorted.some(
-        (p) => !Number.isFinite(p.cfm) || p.cfm <= 0 || !Number.isFinite(p.espInWg) || p.espInWg < 0
-      )
-    )
-      throw new Error('Invalid fan curve')
-    if (sorted.some((p, i) => i > 0 && p.cfm === sorted[i - 1].cfm))
-      throw new Error('Ambiguous fan curve')
-    if (flow < sorted[0].cfm || flow > sorted.at(-1)!.cfm) {
-      if (!perf.allowExtrapolation) return undefined
-      // Do not invent pressure beyond the provided curve even when extrapolation is allowed.
-      return flow < sorted[0].cfm ? sorted[0].espInWg : sorted.at(-1)!.espInWg
-    }
-    if (sorted.length === 1) return sorted[0].espInWg
-    for (let i = 1; i < sorted.length; i++)
-      if (flow <= sorted[i].cfm) {
-        const a = sorted[i - 1],
-          b = sorted[i]
-        return a.espInWg + ((b.espInWg - a.espInWg) * (flow - a.cfm)) / (b.cfm - a.cfm)
-      }
-    return undefined
-  }
-  let available: number | undefined
-  if (perf.table) available = interpolate(perf.table)
-  else if (perf.speeds) {
-    const values = Object.values(perf.speeds)
-      .map(interpolate)
-      .filter((v): v is number => v !== undefined)
-    if (values.length) available = Math.max(...values)
-  } else if (perf.coefficients) {
-    const c = perf.coefficients
-    if (
-      !Object.values(c).every(Number.isFinite) ||
-      c.minCfm <= 0 ||
-      c.maxCfm < c.minCfm ||
-      c.maxEsp < 0
-    )
-      throw new Error('Invalid fan coefficients')
-    if (flow >= c.minCfm && flow <= c.maxCfm)
-      available = Math.min(c.maxEsp, c.a + c.b * flow + c.c * flow * flow)
-  }
-  if (available === undefined || !Number.isFinite(available) || available < 0)
-    throw new Error('Missing fan pressure at actual per-unit airflow')
-  return Math.min(available, equipment.maxRatedEspInWg)
-}
-
 /** A conservative directed tree inferred from actual geometric attachments. */
 function validateNetwork(
   ducts: DuctSegment[],
@@ -452,12 +398,11 @@ export function validateAppliedDeployment(
     evidence.drawingUnitsPerFoot
   )
   const pressures = units.map((_, i) => {
-    const required =
-      (supplyNetwork.losses[i] +
-        returnNetwork.losses[i] +
-        calculateFittingLoss('filter-merv8', 800).deltaPInWg) *
-      1.15
-    if (required > availableFanPressure(e, supplyNetwork.flows[i]) + 1e-8)
+    const required = requiredExternalStaticPressure({
+      supplyPathInWg: supplyNetwork.losses[i],
+      returnPathInWg: returnNetwork.losses[i]
+    })
+    if (required > availableFanPressureAtFlow(e, supplyNetwork.flows[i]) + 1e-8)
       throw new Error('Actual per-unit fan pressure is insufficient')
     if (
       (supplyNetwork.flows[i] / actualSupply) * evidence.requiredTotalBtuPerHour >

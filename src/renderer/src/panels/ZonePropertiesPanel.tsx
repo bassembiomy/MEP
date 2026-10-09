@@ -4,6 +4,7 @@ import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
 import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
 import { calculateZoneDiffuserCoverage } from '../engine/diffuserPlacer';
 import { generateSystemCandidates } from '../engine/systemDesigner';
+import { zoneExtentFt } from '../engine/pressureBudget';
 import { STANDARD_DUCT_TYPES } from '../engine/hvacCatalogs';
 import {
   DEFAULT_SPACE_NC_TARGETS,
@@ -117,7 +118,7 @@ export const ZonePropertiesPanel: React.FC = () => {
     try {
       const load=calculateCanonicalZoneLoad(selectedZone,project);
       const recommendations=generateSystemCandidates(load.totalLoad,load.sensibleLoad,load.supplyCfm,
-        selectedZone.spaceTypeId,load.area,true,optimizationWeights,[selectedZone.systemType??'concealed'],loadedCatalogs);
+        selectedZone.spaceTypeId,load.area,true,optimizationWeights,[selectedZone.systemType??'concealed'],loadedCatalogs,[],[],zoneExtentFt(selectedZone.points,project));
       if(!recommendations.bestOverall) { setDesignFeedback('No feasible catalog candidate. Review the inputs in Optimizer Studio.'); return; }
       const result=applyCandidateTransaction(recommendations.bestOverall);
       setDesignFeedback(result.success ? 'Validated preliminary CAD design applied.' : result.error??'Design is blocked.');

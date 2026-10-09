@@ -16,6 +16,7 @@ import {
   calculateBranchBalancingSchedule
 } from './staticPressureCalc';
 import { selectBestDiffuserFromCatalog } from './diffuserPlacer';
+import { estimateRoutedPathPressure, availableFanPressureAtFlow } from './pressureBudget';
 import { DuctSegment } from '../store/projectStore';
 import { DiffuserPos } from './diffuserPlacer';
 import { verifyDuctSectionAcoustics } from './acousticDuctEngine';
@@ -170,7 +171,8 @@ export function generateSystemCandidates(
     ducted: any[] | null;
   } | null,
   ductSegments: DuctSegment[] = [],
-  diffusers: DiffuserPos[] = []
+  diffusers: DiffuserPos[] = [],
+  roomExtentFt?: { widthFt: number; heightFt: number }
 ): RecommendationSummary {
   const weights: OptimizationWeights = { ...DEFAULT_OPTIMIZATION_WEIGHTS, ...userWeights };
   const weightSum = weights.wComfort + weights.wEnergy + weights.wCost + weights.wNoise + weights.wPressure + weights.wSpace + weights.wPreference || 1.0;
@@ -319,34 +321,67 @@ export function generateSystemCandidates(
           );
           balancingDampers = calculateBranchBalancingSchedule(criticalPath, diffusers);
         } else {
-          const synthDuctLoss = 0.08 + (areaSqFt / 1000) * 0.04;
-          const synthDiffuserLoss = diffuserSelection.deltaPInWg || 0.035;
-          const synthReturnLoss = 0.04;
-          const synthRawLoss = synthDuctLoss + synthDiffuserLoss + synthReturnLoss;
-          const synthMargin = synthRawLoss * 0.15;
+          const extent = roomExtentFt ?? { widthFt: 1.06 * Math.sqrt(2 * areaSqFt), heightFt: 1.06 * Math.sqrt(areaSqFt / 2) };
+          const est = estimateRoutedPathPressure({
+            terminalsPerUnit: terminalCount / qty,
+            perUnitCfm: cfm / qty,
+            diffuserDeltaPInWg: diffuserSelection.deltaPInWg || 0.035,
+            widthFt: extent.widthFt,
+            heightFt: extent.heightFt
+          });
+          const r3 = (v: number) => Math.round(v * 1000) / 1000;
           criticalPath = {
-            pathId: `synth-${equip.id}`,
+            pathId: `est-${equip.id}`,
             terminalId: `term-1`,
             supplySegments: [],
             returnSegments: [],
-            totalSupplyDeltaPInWg: Math.round(synthDuctLoss * 1000) / 1000,
-            totalReturnDeltaPInWg: Math.round(synthReturnLoss * 1000) / 1000,
-            diffuserDeltaPInWg: Math.round(synthDiffuserLoss * 1000) / 1000,
-            accessoriesDeltaPInWg: 0.15,
-            totalLossInWg: Math.round(synthRawLoss * 1000) / 1000,
-            marginInWg: Math.round(synthMargin * 1000) / 1000,
-            espRequiredInWg: Math.round((synthRawLoss + synthMargin) * 1000) / 1000
+            totalSupplyDeltaPInWg: r3(est.supplyDuctInWg + est.supplyFittingsInWg),
+            totalReturnDeltaPInWg: r3(est.returnPathInWg),
+            diffuserDeltaPInWg: r3(est.diffuserInWg),
+            accessoriesDeltaPInWg: est.filterInWg,
+            totalLossInWg: r3(est.totalLossInWg),
+            marginInWg: r3(est.requiredEspInWg - est.totalLossInWg),
+            // Never round the requirement down: it must not fall below what deployment computes.
+            espRequiredInWg: Math.ceil(est.requiredEspInWg * 1000) / 1000
           };
         }
 
-        fanResult = evaluateFanOperatingPoint(equip, Math.round(cfm / qty), criticalPath.espRequiredInWg);
+        const perUnitCfm = cfm / qty;
+        let availableEsp: number | undefined;
+        let curveError: string | undefined;
+        try {
+          availableEsp = availableFanPressureAtFlow(equip, perUnitCfm);
+        } catch (err) {
+          curveError = err instanceof Error ? err.message : String(err);
+        }
+        // Power and warnings come from the legacy evaluator; the verdict and margin come from the deployment curve.
+        const legacy = evaluateFanOperatingPoint(equip, perUnitCfm, criticalPath.espRequiredInWg);
+        const fanMargin = availableEsp === undefined ? -criticalPath.espRequiredInWg : availableEsp - criticalPath.espRequiredInWg;
+        fanResult = {
+          ...legacy,
+          isValid: availableEsp !== undefined && fanMargin >= -1e-8,
+          operatingCfm: perUnitCfm,
+          operatingEspInWg: Math.round(criticalPath.espRequiredInWg * 1000) / 1000,
+          fanMarginInWg: Math.round(fanMargin * 1000) / 1000
+        };
 
-        if (!fanResult.isValid) {
+        if (availableEsp === undefined) {
+          // The per-unit flow range is already reported separately above; do not double count it.
+          if (!diagnostics.some((d) => d.code === 'ERR_AIRFLOW_OUTSIDE_EQUIPMENT_RANGE')) {
+            diagnostics.push({
+              code: 'ERR_FAN_CURVE_UNAVAILABLE',
+              severity: 'error',
+              componentId: equip.id,
+              message: `No published fan pressure at ${Math.round(perUnitCfm)} CFM per unit: ${curveError}.`,
+              remediation: 'Select equipment whose fan curve covers the per-unit design airflow.'
+            });
+          }
+        } else if (fanMargin < -1e-8) {
           diagnostics.push({
             code: 'ERR_FAN_ESP_DEFICIT',
             severity: 'error',
             componentId: equip.id,
-            message: `Fan available external static pressure (${equip.maxRatedEspInWg} in.wg) is below required system ESP (${criticalPath.espRequiredInWg.toFixed(2)} in.wg).`,
+            message: `Fan available external static pressure (${availableEsp.toFixed(2)} in.wg at ${Math.round(perUnitCfm)} CFM) is below required system ESP (${criticalPath.espRequiredInWg.toFixed(2)} in.wg).`,
             remediation: 'Select high-static duct indoor model or upsize duct cross-sections to reduce aerodynamic friction.'
           });
         }
