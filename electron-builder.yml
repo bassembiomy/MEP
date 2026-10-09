@@ -1,5 +1,7 @@
-appId: com.electron.app
-productName: '-'
+# appId is a neutral reverse-DNS placeholder, not a registered domain; replace with the owner's real id before distribution.
+appId: com.mep.hvac
+productName: MEP HVAC Design Assistant
+executableName: mep-hvac
 directories:
   buildResources: build
 files:
@@ -9,10 +11,12 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!{e2e,e2e-electron,out-e2e,docs,scripts,test-results,test-results-electron,playwright-report,playwright-report-electron,.agents,.cache,.superpowers,.vitest,dist}/**'
+  - '!{AGENTS.md,GEMINI.md,vitest.config.ts,tsconfig.web.tsbuildinfo}'
 asarUnpack:
   - resources/**
 win:
-  executableName: '-'
+  executableName: mep-hvac
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
@@ -33,11 +37,11 @@ linux:
     - AppImage
     - snap
     - deb
-  maintainer: electronjs.org
+  # Placeholder: .deb requires a maintainer; replace with a real name <email> before distribution.
+  maintainer: MEP HVAC maintainers <maintainers@invalid>
   category: Utility
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
-publish:
-  provider: generic
-  url: https://example.com/auto-updates
+# No publish/auto-update target is configured (the app ships no updater); null stops electron-builder inferring one from the git remote.
+publish: null
