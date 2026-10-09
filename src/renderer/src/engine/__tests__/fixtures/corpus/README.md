@@ -61,3 +61,68 @@ Not defects (documented behaviour, asserted as such): DIMENSION (4), HATCH (2) a
 | large-office-20k | 19,872 | ~250 ms | ~50-75 ms | ~8 ms (48 rooms) |
 
 The test bounds are about 3x these numbers with a floor on the tiny ones.
+
+## Binary DWG corpus (`dwg/`)
+
+Real binary DWG files for the libredwg-web import path (`dwgBinaryCorpus.test.ts`). `@mlightcad/libredwg-web` 0.7.7 has no DWG writer, so
+the files are written by the native **LibreDWG 0.13.3 `dxf2dwg`** (built outside the repo by `scripts/cad-corpus/build_libredwg.sh`, pinned to the
+release commit plus three small patches in `scripts/cad-corpus/patches/`) from **R2000 DXF twins** of the DXF corpus above:
+
+```
+scripts/cad-corpus/build_libredwg.sh                 # clone + build LibreDWG into ~/.cache/mep-libredwg (not part of npm test)
+npm run corpus:generate-dwg                          # twins (generate_corpus.py --r2000-twins) -> dxf2dwg -> writer check -> dwg/*.dwg
+```
+
+`dwg/*-r2000.dxf` are the twins (ezdxf 1.4.4), `dwg/twins-manifest.json` their ground truth (same construction geometry as `manifest.json`), `dwg/dwg-manifest.json`
+the sha256 of every committed `.dwg`, the LibreDWG version and patches, ezdxf-derived counts, layers, blocks and texts, and the **writer check** result.
+The `.dwg` bytes are not reproducible (LibreDWG stamps them); the sha256 identifies the committed files. Tests read the files only and never need Python or the build.
+
+| File | Version | Source |
+|---|---|---|
+| `arch-metric-mm-r2000.dwg`, `arch-imperial-in-r2000.dwg` | R2000 | doors with ATTDEF/ATTRIB at 4 rotations + one mirrored, windows, columns, MTEXT room names, A-AREA rooms |
+| `unitless-insunits0-r2000.dwg`, `unitless-insunits0-r14.dwg` | R2000, R14 | `$INSUNITS` 0 (R14 has no unit variable, so only the unitless drawing passes its writer check) |
+| `elevated-levels-r2000.dwg` | R2000 | z=0 and z=3500 levels, one non-planar 3D line |
+| `noise-dim-hatch-spline-paper-r2000.dwg` | R2000 | DIMENSION (3), HATCH, POINT, SPLINE, ELLIPSE, frozen `A-FRZ` and off `A-OFF` layers, Layout1 title block, Layout2 viewport (the rotated vertical dimension is left out of the twin: LibreDWG's DXF reader rejects the MTEXT group 50 ezdxf writes inside it) |
+| `entity-units-r2000.dwg` | R2000 | one of every entity with construction values in degrees: ARC 30-120 and 270-90, partial ELLIPSE, bulged LWPOLYLINE, TEXT rotation 90 / centre / oblique+width, MTEXT 45 degrees, scaled+rotated INSERT, nested INSERT |
+
+### Writer check (independent of our parsers)
+
+Each DWG is read back by LibreDWG's own `dwg2dxf` / `dwgread -O json` and compared with the ezdxf source document: entity counts by type and by layer, rounded geometry of
+every entity, text content and height, paper-space entities, INSERT attributes, layer flags (frozen / off / locked / colour), block names, anonymous dimension blocks,
+`$INSUNITS` / `$MEASUREMENT` / `$LUNITS`. A (file, version) pair that differs is not written and is listed under `rejected` in `dwg-manifest.json`.
+
+What LibreDWG 0.13.3 got wrong (found by this check or by reading the DWG), and what was done:
+
+| Writer defect | Handling |
+|---|---|
+| Entity handles of block definitions / paper space interleaved with model-space handles: the model-space entity list (first..last handle, `nolinks`) swallowed 3 LINE + 1 LWPOLYLINE of a block and 5 ATTRIB | input handles renumbered before `dxf2dwg` (model space last, contiguous), see `normalise_handles` |
+| Mirrored INSERT (only group 41 = -1) written with yscale = insertion Y, zscale = 0 | all of 41/42/43/50 forced into the input DXF |
+| Layer frozen / off / locked flags never written (`flag0` = 0) | patch `libredwg-0.13.3-layer-flags.patch` |
+| MTEXT group 40 stored as `rect_width`, text height 0 (every MTEXT then fails our "text height must be positive" check) | patch `libredwg-0.13.3-mtext-height.patch` |
+| TEXT `dataflags` inverted: elevation, rotation, oblique angle, width factor, alignments dropped from the file | patch `libredwg-0.13.3-text-dataflags.patch` |
+| SPLINE with fit points written as an empty entity | recorded as exclusion `SPLINE.points`; SPLINE sampling is covered by hand-made libredwg-shaped objects in `dwgNativeIntegrity.test.ts` |
+| A second `*Model_Space` block record is written | importer ignores layout records for ambiguity (see defects below) |
+| R2004 output cannot be read back by LibreDWG itself ("Invalid System Section Page Map") | R2004 rejected |
+| R14 cannot hold `$INSUNITS` (and its offs layer flag differs) | R14 kept only for the unitless drawing |
+
+### Importer defects the DWG corpus found (all fixed, tests are plain `it()`)
+
+- `hiddenLayers` was never returned for DWG: `LAYER` entries now give frozen / off layers, and children of a frozen INSERT move onto its layer as in the DXF path.
+  Confirmed on real Autodesk-saved files: `example_2000.dwg` / `example_2004.dwg` carry `ADSK_SYSTEM_LIGHTS` with layer flag 1017 (frozen).
+- Paper-space entities were imported into the plan (title block text and lines, viewport): now skipped with one `paper-space-skipped` warning.
+- A duplicate `*Model_Space` record produced an `ambiguous-block` **error** diagnostic: layout records are no INSERT targets and are ignored.
+- INSERT `attribs` (when present) are drawn as TEXT like the DXF path; SPLINE is sampled (`sampleSplineData`, shared with the DXF parser) instead of dropped.
+
+### Documented gaps (`gap(...)` = `it.fails` unless `CORPUS_SHOW_GAPS=1`)
+
+| Gap | Test | Cause |
+|---|---|---|
+| No TEXT per visible INSERT attribute (door tags D01...) in the DWG import | `draws one TEXT per visible INSERT attribute` (metric, imperial) | libredwg-web 0.7.7 returns `attribs: []` for every INSERT of these R2000 files although the ATTRIB objects exist in the file (`dwg_getall_entity_by_type`) |
+| TEXT elevation lost | `elevated-levels: TEXT keeps its elevation` | libredwg-web `convert()` has no elevation field on TEXT |
+| R14 INSERTs have an empty block name (8 `missing-block` warnings) | `resolves INSERT block names in R14 files` | libredwg-web reader on a LibreDWG-written R14 file (`Open dwg file with error code: 64`) |
+
+### External DWG files (opt-in)
+
+`npm run corpus:fetch-dwg` downloads LibreDWG's `example_2000/2004/2007/2010/2013/2018.dwg` and `sample_2000.dwg` from `raw.githubusercontent.com` at the pinned commit into the
+gitignored `.cache/dwg-external/` (sha256 verified, never vendored: GPL test data). `dwgExternal.test.ts` skips without them. `example_2004`..`example_2018` carry an AppInfo block that
+names AutoCAD build O.48.M.294 (that is the file's own claim); the two R2000 files carry no AppInfo, so their authoring application is not verified.
