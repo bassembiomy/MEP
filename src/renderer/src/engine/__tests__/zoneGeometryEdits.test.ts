@@ -28,7 +28,7 @@ describe('pure zone edits',()=>{
   const ccw=[0,0,10,0,10,10,0,10],cw=[0,0,0,10,10,10,10,0];
   const a=offsetEdge(ccw,1,5);expect(a).toMatchObject({ok:true});if(a.ok)expect(a.points.slice(2,6)).toEqual([15,0,15,10]);
   const b=offsetEdge(cw,2,5);expect(b).toMatchObject({ok:true});
-  if(b.ok)expect(Math.max(...b.points.filter((_,i)=>i%2===0))).toBe(15);
+  if(b.ok)expect(b.points).toEqual([0,0,0,10,15,10,15,0]); // edge 2 (x=10) moved outward to x=15, the rest untouched
   expect(offsetEdge(ccw,1,-10)).toMatchObject({ok:false}); // collapses onto the opposite edge
  });
 });

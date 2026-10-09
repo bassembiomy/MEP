@@ -90,9 +90,10 @@ function slideBranchStart(ducts: DuctSegment[], branch: DuctSegment, oldStart: P
   void ctx
   let parent: { duct: DuctSegment; i: number } | null = null
   for (const d of ducts) {
-    if (d === branch) continue
+    if (d === branch || d.type === 'return') continue // same parent rule as validateNetwork's supply network
     for (let i = 0; i < d.points.length - 2; i += 2) {
-      if (fractionOn(oldStart, { x: d.points[i], y: d.points[i + 1] }, { x: d.points[i + 2], y: d.points[i + 3] }) !== undefined) { parent = { duct: d, i }; break }
+      const t = fractionOn(oldStart, { x: d.points[i], y: d.points[i + 1] }, { x: d.points[i + 2], y: d.points[i + 3] })
+      if (t !== undefined && t > 1e-8) { parent = { duct: d, i }; break }
     }
     if (parent) break
   }
@@ -200,6 +201,8 @@ export function moveIndoorUnit(zone: Zone, unitIndex: number, x: number, y: numb
 export function moveOutdoorUnit(zone: Zone, index: number, x: number, y: number): ComponentEdit {
   if (!finite(x, y)) return fail('Outdoor unit position must be finite.')
   const list = zone.outdoorUnitPositions
+  const count = list?.length ? list.length : zone.outdoorUnitPos ? 1 : 0
+  if (!Number.isInteger(index) || index < 0 || index >= count) return fail('Outdoor unit not found.')
   const patch: ComponentPatch = { outdoorUnitPos: index === 0 ? { x, y } : zone.outdoorUnitPos, engineeringStatus: 'stale' }
   if (list && list.length > index) patch.outdoorUnitPositions = list.map((p, i) => i === index ? { x, y } : p)
   return { ok: true, patch, warnings: [] }

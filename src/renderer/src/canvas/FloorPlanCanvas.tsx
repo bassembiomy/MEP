@@ -502,6 +502,7 @@ export const FloorPlanCanvas: React.FC = () => {
     setDrawMessage(`Layout edited and marked stale; verify before relying on it.${result.warnings?.length ? ' ' + result.warnings.join(' ') : ''}`);
     return true;
   };
+  const storedZone = (zoneId: string) => useProjectStore.getState().zones.find(z => z.id === zoneId);
   const handleDiffuserDrag = (zoneId: string, diffuserId: string, newX: number, newY: number): boolean =>
     applyComponentEdit(zoneId, zone => moveTerminal(zone, diffuserId, snapToGrid(newX, gridSpacing), snapToGrid(newY, gridSpacing), editContext));
   const handleDuctDrag = (zoneId: string, ductId: string, deltaX: number, deltaY: number): boolean =>
@@ -955,7 +956,11 @@ export const FloorPlanCanvas: React.FC = () => {
                       x={dif.x}
                       y={dif.y}
                       draggable={drawMode === 'select' || isSelected}
-                      onDragEnd={(e) => { if (!handleDiffuserDrag(zone.id, dif.id, e.target.x(), e.target.y())) e.target.position({ x: dif.x, y: dif.y }); }}
+                      onDragEnd={(e) => {
+                        handleDiffuserDrag(zone.id, dif.id, e.target.x(), e.target.y());
+                        const stored = storedZone(zone.id)?.diffusers.find(t => t.id === dif.id) ?? dif;
+                        e.target.position({ x: stored.x, y: stored.y }); // snap the node to the stored position, accepted or not
+                      }}
                     >
                       {/* Interactive Selection Glowing Ring & Callout */}
                       {isTerminalHighlighted && (
@@ -1249,7 +1254,9 @@ export const FloorPlanCanvas: React.FC = () => {
                       y={pos.y}
                       draggable={drawMode === 'select' || isSelected}
                       onDragEnd={(e) => {
-                        if (!handleIndoorUnitDrag(zone.id, e.target.x(), e.target.y(), uIdx)) e.target.position({ x: pos.x, y: pos.y });
+                        handleIndoorUnitDrag(zone.id, e.target.x(), e.target.y(), uIdx);
+                        const sz = storedZone(zone.id), su = sz?.unitPositions?.length ? sz.unitPositions[uIdx] : uIdx === 0 ? sz?.unitPos : undefined;
+                        e.target.position({ x: (su ?? pos).x, y: (su ?? pos).y });
                       }}
                     >
                       {/* Selection Highlight Halo */}
@@ -1351,7 +1358,9 @@ export const FloorPlanCanvas: React.FC = () => {
                       y={oPos.y}
                       draggable={drawMode === 'select' || isSelected}
                       onDragEnd={(e) => {
-                        if (!handleOutdoorUnitDrag(zone.id, e.target.x(), e.target.y(), oIdx)) e.target.position({ x: oPos.x, y: oPos.y });
+                        handleOutdoorUnitDrag(zone.id, e.target.x(), e.target.y(), oIdx);
+                        const sz = storedZone(zone.id), so = sz?.outdoorUnitPositions?.length ? sz.outdoorUnitPositions[oIdx] : oIdx === 0 ? sz?.outdoorUnitPos : undefined;
+                        e.target.position({ x: (so ?? oPos).x, y: (so ?? oPos).y });
                       }}
                     >
                       {/* Selection Highlight Halo */}
@@ -1462,9 +1471,9 @@ export const FloorPlanCanvas: React.FC = () => {
                       strokeWidth={getStrokeWidth(1.0, 1.2)}
                       draggable
                       onDragEnd={(e) => {
-                        if (!handleVertexDrag(zone.id, idx, e.target.x(), e.target.y())) {
-                          e.target.position({ x: zone.points[idx * 2], y: zone.points[idx * 2 + 1] });
-                        }
+                        handleVertexDrag(zone.id, idx, e.target.x(), e.target.y());
+                        const sp = storedZone(zone.id)?.points ?? zone.points;
+                        e.target.position({ x: sp[idx * 2], y: sp[idx * 2 + 1] });
                       }}
                     />
                   ))}

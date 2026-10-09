@@ -24,7 +24,9 @@ describe('snapPoint kinds',()=>{
  const entities=[line(0,0,100,0,'A'),line(50,-50,50,50,'B')];
  it('endpoint',()=>{const r=snapPoint({x:101,y:2},{...base,entities});expect(r).toMatchObject({kind:'endpoint',point:{x:100,y:0},sourceHandle:'A'});});
  it('intersection beats midpoint',()=>{const r=snapPoint({x:51,y:1},{...base,entities});expect(r).toMatchObject({kind:'intersection',point:{x:50,y:0}});});
- it('midpoint',()=>{const r=snapPoint({x:51,y:-48},{...base,entities:[line(0,0,100,0),line(50,-50,50,-20,'B')]});expect(r.kind).toBe('endpoint');
+ it('midpoint',()=>{
+  const near=snapPoint({x:51,y:-48},{...base,entities:[line(0,0,100,0),line(50,-50,50,-20,'B')]});expect(near).toMatchObject({kind:'endpoint',point:{x:50,y:-50}}); // an endpoint within reach wins
+  const side=snapPoint({x:51,y:-34},{...base,entities:[line(50,-50,50,-20,'B')]});expect(side).toMatchObject({kind:'midpoint',point:{x:50,y:-35},sourceHandle:'B'});
   const m=snapPoint({x:49,y:1},{...base,entities:[line(0,0,100,0,'A')]});expect(m).toMatchObject({kind:'midpoint',point:{x:50,y:0}});});
  it('perpendicular from last point',()=>{const r=snapPoint({x:31,y:2},{...base,entities:[line(0,0,100,0,'A')],lastPoint:{x:30,y:40}});expect(r).toMatchObject({kind:'perpendicular',point:{x:30,y:0}});});
  it('grid and none',()=>{
@@ -55,11 +57,15 @@ describe('snapPoint kinds',()=>{
  });
 });
 describe('performance',()=>{
- it('10k entities: 100 snaps stay fast',()=>{
+ it('10k entities: 100 snaps each resolve to the intended endpoint within a generous budget',()=>{
   const ents:DxfEntity[]=[];for(let i=0;i<10000;i++){const x=(i%100)*50,y=Math.floor(i/100)*50;ents.push(line(x,y,x+40,y+10,'h'+i));}
-  const t=performance.now();let hits=0;
-  for(let i=0;i<100;i++){const r=snapPoint({x:(i%100)*50+41,y:Math.floor(i/2)*50+9},{...base,entities:ents,gridSpacing:10});if(r.kind==='endpoint')hits++;}
-  expect(performance.now()-t).toBeLessThan(200);expect(hits).toBeGreaterThan(0);
+  const t=performance.now();
+  for(let k=0;k<100;k++){
+   const i=k*97,x=(i%100)*50+40,y=Math.floor(i/100)*50+10; // end vertex of entity i
+   const r=snapPoint({x:x+1,y:y+1},{...base,entities:ents,gridSpacing:10});
+   expect(r).toMatchObject({kind:'endpoint',point:{x,y},sourceHandle:'h'+i});
+  }
+  expect(performance.now()-t).toBeLessThan(5000); // generous: catches accidental O(n^2) work, not machine speed
  });
 });
 import {snappableCadEntities,groupCadEntitiesForRendering} from '../cad/renderGroups';
@@ -84,5 +90,26 @@ describe('snapping matches what is drawn (F5)',()=>{
   const ents=snappableCadEntities([up],layers);
   expect(snapPoint({x:99,y:1},{...base,entities:ents}).kind).toBe('none');
   expect(snapPoint({x:99,y:1},{...base,entities:ents,level:3000})).toMatchObject({kind:'endpoint',sourceHandle:'UP'});
+ });
+});
+
+describe('snap priority and caching',()=>{
+ it('an endpoint within reach beats a closer intersection',()=>{
+  const ents=[line(0,0,100,0,'A'),line(50,-50,50,50,'B'),line(53,2,53,30,'C')];
+  expect(snapPoint({x:50.2,y:0.1},{...base,entities:ents})).toMatchObject({kind:'endpoint',point:{x:53,y:2},sourceHandle:'C'});
+  expect(snapPoint({x:50.2,y:0.1},{...base,entities:ents.slice(0,2)})).toMatchObject({kind:'intersection',point:{x:50,y:0}}); // without C the intersection is chosen
+ });
+ it('an endpoint within reach beats a closer perpendicular foot',()=>{
+  const ents=[line(0,0,100,0,'A'),line(33,2,33,40,'D')];
+  const o={...base,lastPoint:{x:30,y:40}};
+  expect(snapPoint({x:30.1,y:0.1},{...o,entities:ents})).toMatchObject({kind:'endpoint',point:{x:33,y:2}});
+  expect(snapPoint({x:30.1,y:0.1},{...o,entities:ents.slice(0,1)})).toMatchObject({kind:'perpendicular',point:{x:30,y:0}});
+ });
+ it('zone vertices follow a replaced points array on the same zone object',()=>{
+  const zone={id:'z1',points:[0,0,10,0,10,10]} as unknown as Zone;
+  expect(snapPoint({x:10,y:9},{...base,zones:[zone]})).toMatchObject({kind:'endpoint',point:{x:10,y:10}});
+  zone.points=[0,0,10,0,10,40];
+  expect(snapPoint({x:10,y:39},{...base,zones:[zone]})).toMatchObject({kind:'endpoint',point:{x:10,y:40}});
+  expect(snapPoint({x:10,y:9},{...base,zones:[zone]}).kind).not.toBe('endpoint');
  });
 });

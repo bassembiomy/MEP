@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {moveTerminal,moveIndoorUnit,translateDuct,verifyEditedZone,type EditContext} from '../cad/componentEdits';
+import {moveOutdoorUnit,moveTerminal,moveIndoorUnit,translateDuct,verifyEditedZone,type EditContext} from '../cad/componentEdits';
 import {solveDirectedNetworkStaticPressure} from '../staticPressureCalc';
 import {STANDARD_DIFFUSER_CATALOG,STANDARD_DUCT_TYPES} from '../hvacCatalogs';
 import {validateNetwork} from '../deploymentValidation';
@@ -31,6 +31,13 @@ describe('component edits',()=>{
   const next={...z,...r.patch} as Zone;expect(()=>connected(next)).not.toThrow();
   expect(next.ducts.find(d=>d.id==='T')!.points).toEqual([20,150,350,150]);
  });
+ it('a return duct lying along the trunk is not mistaken for the branch parent',()=>{
+  const z0=zone(),z:Zone={...z0,ducts:[duct('RET','return',[20,150,300,150,300,280],300),...z0.ducts.filter(d=>d.id!=='RET')]};
+  const r=moveTerminal(z,'S2',350,250,ctx);expect(r.ok).toBe(true);if(!r.ok)return;
+  const next={...z,...r.patch} as Zone;
+  expect(next.ducts.find(d=>d.id==='T')!.points).toEqual([20,150,350,150]);
+  expect(next.ducts.find(d=>d.id==='RET')!.points).toEqual([20,150,300,150,300,280]);
+ });
  it('moves return terminals with their duct end',()=>{
   const z=zone(),r=moveTerminal(z,'R1',220,270,ctx);expect(r.ok).toBe(true);if(!r.ok)return;
   expect((({...z,...r.patch}) as Zone).ducts.find(d=>d.id==='RET')!.points).toEqual([20,150,220,270]);
@@ -61,6 +68,18 @@ describe('component edits',()=>{
  it('refuses a unit move that would invert or collapse a branch',()=>{
   expect(moveIndoorUnit(zone(),0,20,250,ctx)).toMatchObject({ok:false,error:expect.stringMatching(/invert|zero length/)}); // trunk reaches B2's terminal row
   expect(moveIndoorUnit(zone(),0,20,260,ctx)).toMatchObject({ok:false,error:expect.stringMatching(/invert|zero length/)}); // trunk passes it
+ });
+});
+describe('moveOutdoorUnit',()=>{
+ it('moves the addressed unit and rejects an index with no unit, leaving status alone',()=>{
+  const z={...zone(),outdoorUnitPos:{x:5,y:5},outdoorUnitPositions:[{x:5,y:5},{x:50,y:5}]};
+  const r=moveOutdoorUnit(z,1,60,10);expect(r).toMatchObject({ok:true,patch:{outdoorUnitPositions:[{x:5,y:5},{x:60,y:10}],engineeringStatus:'stale'}});
+  if(r.ok)expect(r.patch.outdoorUnitPos).toEqual({x:5,y:5});
+  const first=moveOutdoorUnit(z,0,7,8);if(first.ok)expect(first.patch).toMatchObject({outdoorUnitPos:{x:7,y:8}});
+  for(const bad of [2,-1,0.5])expect(moveOutdoorUnit(z,bad,1,1)).toMatchObject({ok:false,error:expect.stringMatching(/not found/)});
+  expect(moveOutdoorUnit(zone(),0,1,1).ok).toBe(false); // no outdoor unit at all
+  expect(moveOutdoorUnit({...zone(),outdoorUnitPos:{x:1,y:1}},0,3,4)).toMatchObject({ok:true,patch:{outdoorUnitPos:{x:3,y:4}}});
+  expect(moveOutdoorUnit(z,0,NaN,1).ok).toBe(false);
  });
 });
 describe('translateDuct',()=>{
