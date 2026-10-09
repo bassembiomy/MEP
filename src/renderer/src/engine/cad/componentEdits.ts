@@ -120,18 +120,81 @@ function slideBranchStart(ducts: DuctSegment[], branch: DuctSegment, oldStart: P
   return null
 }
 
+const MIN_BRANCH_LENGTH = 1e-4
+const cross = (ax: number, ay: number, bx: number, by: number) => ax * by - ay * bx
+const startOf = (d: DuctSegment): P => ({ x: d.points[0], y: d.points[1] })
+const isRoomEdit = (zone: Zone, pts: number[]) => { for (let i = 0; i < pts.length - 2; i += 2) if (!isSegmentInPolygon({ x: pts[i], y: pts[i + 1] }, { x: pts[i + 2], y: pts[i + 3] }, zone.points)) return false; return true }
+const segments = (d: DuctSegment) => { const s: [P, P][] = []; for (let i = 0; i < d.points.length - 2; i += 2) s.push([{ x: d.points[i], y: d.points[i + 1] }, { x: d.points[i + 2], y: d.points[i + 3] }]); return s }
+const startsOn = (child: DuctSegment, parent: DuctSegment) => segments(parent).some(([a, b]) => { const t = fractionOn(startOf(child), a, b); return t !== undefined && t > 1e-8 })
+
+/** Supply trunks rooted at `unit`: ducts of type 'trunk' starting at it, plus chained trunks that start on a trunk already in the row. */
+function trunkRow(ducts: DuctSegment[], unit: P): DuctSegment[] {
+  const row = ducts.filter(d => d.type === 'trunk' && d.points.length >= 4 && near(startOf(d), unit))
+  for (let grew = true; grew;) {
+    grew = false
+    for (const d of ducts) if (d.type === 'trunk' && d.points.length >= 4 && !row.includes(d) && row.some(p => startsOn(d, p))) { row.push(d); grew = true }
+  }
+  return row
+}
+
+/**
+ * Move one indoor unit as a single coherent edit: the unit, every supply trunk of its row and any terminal sitting on a
+ * trunk vertex translate by the same offset; branch (and other non-return) ducts keep their terminal end and their start
+ * slides along their own axis to stay on the translated trunk; return ducts keep their terminal end and their start follows
+ * the unit. Refused when a branch would invert or reach zero length, or loses its trunk.
+ */
 export function moveIndoorUnit(zone: Zone, unitIndex: number, x: number, y: number, ctx: EditContext): ComponentEdit {
   const units = unitsOf(zone)
   if (unitIndex < 0 || unitIndex >= units.length) return fail('Unit not found.')
   if (!finite(x, y)) return fail('Unit position must be finite.')
   if (!isPointInOrOnPolygon(x, y, zone.points)) return fail('Unit cannot be moved outside its room.')
-  const from = units[unitIndex]
+  const from = units[unitIndex], dx = x - from.x, dy = y - from.y
   const ducts = cloneDucts(zone.ducts)
-  for (const d of ducts) if (d.points.length >= 4 && near({ x: d.points[0], y: d.points[1] }, from)) { d.points[0] = x; d.points[1] = y }
+  const row = trunkRow(zone.ducts, from)
+  const rowIds = new Set(row.map(d => d.id))
+  const moved = new Set<DuctSegment>()
+  const parentSegments = row.flatMap(segments)
+  for (const d of ducts) if (rowIds.has(d.id)) {
+    for (let i = 0; i < d.points.length; i += 2) { d.points[i] += dx; d.points[i + 1] += dy }
+    moved.add(d)
+  }
+  const warnings: string[] = []
+  let diffusers = zone.diffusers
+  const rowVertices = row.flatMap(d => d.points.length >= 4 ? Array.from({ length: d.points.length / 2 }, (_, i) => ({ x: d.points[2 * i], y: d.points[2 * i + 1] })) : [])
+  const carried = zone.diffusers.filter(t => rowVertices.some(v => near(v, { x: t.x, y: t.y })))
+  if (carried.length) {
+    diffusers = zone.diffusers.map(t => carried.includes(t) ? { ...t, x: t.x + dx, y: t.y + dy } : t)
+    for (const t of diffusers) if (carried.some(c => c.id === t.id) && !isPointInOrOnPolygon(t.x, t.y, zone.points)) return fail('A terminal at the end of the trunk would leave the room.')
+    warnings.push(`${carried.length} terminal(s) at trunk ends moved with the trunk.`)
+  }
+  for (let k = 0; k < zone.ducts.length; k++) {
+    const orig = zone.ducts[k], d = ducts[k]
+    if (rowIds.has(orig.id) || orig.points.length < 4) continue
+    const s = startOf(orig), p1 = { x: orig.points[2], y: orig.points[3] }
+    if (orig.type === 'return' || near(s, from)) { // follows the unit; terminal end fixed
+      if (near(s, from)) { d.points[0] = x; d.points[1] = y; moved.add(d) }
+      if (Math.hypot(d.points[2] - d.points[0], d.points[3] - d.points[1]) <= MIN_BRANCH_LENGTH) return fail(`Moving the unit would leave duct ${orig.id} with zero length.`)
+      continue
+    }
+    const host = parentSegments.find(([a, b]) => { const t = fractionOn(s, a, b); return t !== undefined && t > 1e-8 })
+    if (!host) continue // attached elsewhere: untouched
+    const a = { x: host[0].x + dx, y: host[0].y + dy }, pd = { x: host[1].x - host[0].x, y: host[1].y - host[0].y }
+    const dir = { x: p1.x - s.x, y: p1.y - s.y }, den = cross(dir.x, dir.y, pd.x, pd.y)
+    if (Math.abs(den) < 1e-9 * Math.hypot(dir.x, dir.y) * Math.hypot(pd.x, pd.y)) return fail(`Moving the unit would disconnect branch ${orig.id} from its trunk (it runs parallel to it).`)
+    const kk = cross(a.x - s.x, a.y - s.y, pd.x, pd.y) / den // new start = s + kk*dir; kk=1 is the branch's first bend/end
+    if ((1 - kk) * Math.hypot(dir.x, dir.y) <= MIN_BRANCH_LENGTH) return fail(`Moving the unit would invert branch ${orig.id} or reduce it to zero length.`)
+    d.points[0] = s.x + kk * dir.x; d.points[1] = s.y + kk * dir.y
+    const m = fractionOn({ x: d.points[0], y: d.points[1] }, a, { x: a.x + pd.x, y: a.y + pd.y })
+    if (m === undefined) return fail(`Moving the unit would disconnect branch ${orig.id} from its trunk.`)
+    moved.add(d)
+  }
+  for (const d of moved) if (!isRoomEdit(zone, d.points)) return fail('Duct segment would leave the room.')
   const nextUnits = units.map((u, i) => i === unitIndex ? { x, y } : u)
   const patch: ComponentPatch = { ducts, unitPos: unitIndex === 0 ? { x, y } : zone.unitPos }
+  if (carried.length) patch.diffusers = diffusers
   if (zone.unitPositions?.length) patch.unitPositions = nextUnits
-  return finish(zone, { ...zone, ...patch }, patch, ctx, 'Moving the unit')
+  const edit = finish(zone, { ...zone, ...patch }, patch, ctx, 'Moving the unit')
+  return edit.ok ? { ...edit, warnings: [...warnings, ...edit.warnings] } : edit
 }
 
 export function moveOutdoorUnit(zone: Zone, index: number, x: number, y: number): ComponentEdit {
@@ -142,29 +205,24 @@ export function moveOutdoorUnit(zone: Zone, index: number, x: number, y: number)
   return { ok: true, patch, warnings: [] }
 }
 
-/** Translate a duct (a trunk drags same-row trunks and stretches branch takeoffs while terminals stay put). */
+/**
+ * Drag a duct. A supply trunk is one coherent edit with its indoor unit (see moveIndoorUnit): the unit, the whole trunk
+ * row and the return start translate together and branch starts slide. Any other duct is shifted on its own, every
+ * point included, and is accepted only when the network still validates.
+ */
 export function translateDuct(zone: Zone, ductId: string, dx: number, dy: number, ctx: EditContext): ComponentEdit {
   const target = zone.ducts.find(d => d.id === ductId)
   if (!target) return fail('Duct not found.')
   if (!finite(dx, dy)) return fail('Offset must be finite.')
   if (dx === 0 && dy === 0) return { ok: true, patch: {}, warnings: [] }
-  const shift = (d: DuctSegment, endToo: boolean) => {
-    const p = [...d.points]
-    p[0] += dx; p[1] += dy
-    if (endToo) { p[2] += dx; p[3] += dy }
-    return { ...d, points: p }
+  if (target.type === 'trunk') {
+    const units = unitsOf(zone)
+    const idx = units.findIndex(u => trunkRow(zone.ducts, u).some(d => d.id === ductId))
+    if (idx < 0) return fail('This trunk is not connected to an indoor unit, so it cannot be moved.')
+    return moveIndoorUnit(zone, idx, units[idx].x + dx, units[idx].y + dy, ctx)
   }
-  const ducts = zone.ducts.map(d => {
-    if (target.type === 'trunk') {
-      if (d.id === ductId || (d.type === 'trunk' && Math.abs(d.points[1] - target.points[1]) < 5)) return shift(d, true)
-      if (d.type === 'branch' && Math.abs(d.points[1] - target.points[1]) < 15) return shift(d, false)
-      return d
-    }
-    return d.id === ductId ? shift(d, true) : d
-  })
-  for (const d of ducts) for (let i = 0; i < d.points.length - 2; i += 2) {
-    if (!isSegmentInPolygon({ x: d.points[i], y: d.points[i + 1] }, { x: d.points[i + 2], y: d.points[i + 3] }, zone.points)) return fail('Duct segment would leave the room.')
-  }
+  const ducts = zone.ducts.map(d => d.id !== ductId ? d : { ...d, points: d.points.map((v, i) => v + (i % 2 ? dy : dx)) })
+  if (!ducts.every(d => isRoomEdit(zone, d.points))) return fail('Duct segment would leave the room.')
   return finish(zone, { ...zone, ducts }, { ducts }, ctx, 'Moving the duct')
 }
 

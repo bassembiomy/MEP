@@ -40,10 +40,62 @@ describe('component edits',()=>{
   expect(moveTerminal(zone(),'nope',5,5,ctx).ok).toBe(false);expect(moveTerminal(zone(),'S1',NaN,5,ctx).ok).toBe(false);
  });
  it('rejects an edit that would disconnect a valid network',()=>{
-  const r=moveIndoorUnit(zone(),0,40,160,ctx);expect(r).toMatchObject({ok:false,error:expect.stringMatching(/disconnect|unbalance/)});
+  // Sliding the unit past the first branch leaves that branch off the trunk.
+  const r=moveIndoorUnit(zone(),0,120,150,ctx);expect(r).toMatchObject({ok:false,error:expect.stringMatching(/disconnect|unbalance/)});
   const ok=moveIndoorUnit(zone(),0,60,150,ctx);expect(ok.ok).toBe(true);
   if(ok.ok){const next={...zone(),...ok.patch} as Zone;expect(()=>connected(next)).not.toThrow();expect(next.unitPositions).toEqual([{x:60,y:150}]);expect(next.unitPos).toEqual({x:60,y:150});}
   expect(moveIndoorUnit(zone(),0,-10,150,ctx).ok).toBe(false);
+ });
+ it('moves the unit laterally as one coherent edit: trunk and return start follow, branch starts slide, terminals stay',()=>{
+  const z=zone(),r=moveIndoorUnit(z,0,40,160,ctx);expect(r.ok).toBe(true);if(!r.ok)return;
+  const next={...z,...r.patch} as Zone;expect(()=>connected(next)).not.toThrow();
+  const pts=(id:string)=>next.ducts.find(d=>d.id===id)!.points;
+  expect(pts('T')).toEqual([40,160,320,160]);
+  expect(pts('RET')).toEqual([40,160,200,280]);
+  expect(pts('B1')).toEqual([100,160,100,50]);expect(pts('B2')).toEqual([250,160,250,250]);
+  expect(next.unitPos).toEqual({x:40,y:160});expect(next.unitPositions).toEqual([{x:40,y:160}]);
+  expect(next.diffusers).toEqual(z.diffusers);expect(sum(next)).toEqual(sum(z));
+  expect(r.patch.engineeringStatus).toBe('stale');
+  expect(z.ducts[0].points).toEqual([20,150,300,150]); // input not mutated
+ });
+ it('refuses a unit move that would invert or collapse a branch',()=>{
+  expect(moveIndoorUnit(zone(),0,20,250,ctx)).toMatchObject({ok:false,error:expect.stringMatching(/invert|zero length/)}); // trunk reaches B2's terminal row
+  expect(moveIndoorUnit(zone(),0,20,260,ctx)).toMatchObject({ok:false,error:expect.stringMatching(/invert|zero length/)}); // trunk passes it
+ });
+});
+describe('translateDuct',()=>{
+ it('dragging a trunk moves the unit, the whole trunk row and the return start',()=>{
+  const z=zone(),r=translateDuct(z,'T',0,20,ctx);expect(r.ok).toBe(true);if(!r.ok)return;
+  const next={...z,...r.patch} as Zone;expect(()=>connected(next)).not.toThrow();
+  expect(next.ducts.find(d=>d.id==='T')!.points).toEqual([20,170,300,170]);
+  expect(next.ducts.find(d=>d.id==='B1')!.points).toEqual([100,170,100,50]);
+  expect(next.ducts.find(d=>d.id==='RET')!.points).toEqual([20,170,200,280]);
+  expect(next.unitPos).toEqual({x:20,y:170});expect(r.patch.engineeringStatus).toBe('stale');
+ });
+ it('shifts every point of a multi-point trunk and follows chained trunk segments',()=>{
+  const z:Zone={...zone(),
+   ducts:[duct('T1','trunk',[20,150,160,150],300),duct('T2','trunk',[160,150,300,150,300,200],150),duct('B1','branch',[100,150,100,50],150),duct('RET','return',[20,150,200,280],300)],
+   diffusers:[{id:'S1',type:'supply',x:100,y:50,cfm:150,size:'12x12',deltaPInWg:0.05},{id:'S2',type:'supply',x:300,y:200,cfm:150,size:'12x12',deltaPInWg:0.05},{id:'R1',type:'return',x:200,y:280,cfm:300,size:'12x12',deltaPInWg:0.05}]};
+  expect(()=>connected(z)).not.toThrow();
+  const r=translateDuct(z,'T2',0,10,ctx);expect(r).toMatchObject({ok:true});if(!r.ok)return;
+  const next={...z,...r.patch} as Zone;expect(()=>connected(next)).not.toThrow();
+  expect(next.ducts.find(d=>d.id==='T1')!.points).toEqual([20,160,160,160]);
+  expect(next.ducts.find(d=>d.id==='T2')!.points).toEqual([160,160,300,160,300,210]);
+  expect(next.diffusers.find(t=>t.id==='S2')).toMatchObject({x:300,y:210}); // terminal on the trunk end travels with it
+  expect(next.diffusers.find(t=>t.id==='S1')).toMatchObject({x:100,y:50});
+ });
+ it('does not depend on raw drawing units: the same drag works in a project drawn 100x larger',()=>{
+  const big=(z:Zone):Zone=>({...z,points:z.points.map(v=>v*100),unitPos:{x:z.unitPos!.x*100,y:z.unitPos!.y*100},unitPositions:z.unitPositions!.map(u=>({x:u.x*100,y:u.y*100})),
+   diffusers:z.diffusers.map(t=>({...t,x:t.x*100,y:t.y*100})),ducts:z.ducts.map(d=>({...d,points:d.points.map(v=>v*100)}))});
+  const z=big(zone()),c:EditContext={drawingUnitsPerFoot:1000};
+  const r=translateDuct(z,'T',0,2000,c);expect(r.ok).toBe(true);if(!r.ok)return;
+  const next={...z,...r.patch} as Zone;
+  expect(next.ducts.find(d=>d.id==='B1')!.points).toEqual([10000,17000,10000,5000]);
+  expect(()=>{validateNetwork(next.ducts.filter(d=>d.type!=='return'),next.diffusers.filter(t=>t.type!=='return'),next.unitPositions!,1000)}).not.toThrow();
+ });
+ it('reports a duct that no unit feeds',()=>{
+  expect(translateDuct(zone(),'nope',1,1,ctx).ok).toBe(false);
+  expect(translateDuct({...zone(),unitPos:undefined,unitPositions:undefined},'T',0,10,ctx).ok).toBe(false);
  });
  it('translating a duct keeps it inside the room',()=>{
   expect(translateDuct(zone(),'B1',0,-500,ctx).ok).toBe(false);
@@ -80,6 +132,18 @@ describe('explicit verification against deployment evidence',()=>{
  it('never claims validity without evidence',()=>{
   expect(verifyEditedZone(tx.updatedZones[0],null,project)).toMatchObject({ok:false,error:expect.stringMatching(/No deployment evidence/)});
   expect(verifyEditedZone({...tx.updatedZones[0],id:'other'},manifest,project).ok).toBe(false);
+ });
+ it('a unit dragged sideways on the real deployment stays network-valid and is re-checked by the explicit step',()=>{
+  const deployed=tx.updatedZones[0],u=deployed.unitPos!;
+  for(const [dx,dy] of [[-10,0],[0,-10],[-8,-6]]){
+   const r=moveIndoorUnit(deployed,0,u.x+dx,u.y+dy,{drawingUnitsPerFoot:10});
+   expect(r.ok,JSON.stringify([dx,dy,r])).toBe(true);if(!r.ok)return;
+   const next={...deployed,...r.patch} as Zone;
+   validateNetwork(next.ducts.filter(d=>d.type!=='return'),next.diffusers.filter(t=>t.type!=='return'),next.unitPositions!,10);
+   validateNetwork(next.ducts.filter(d=>d.type==='return'),next.diffusers.filter(t=>t.type==='return'),next.unitPositions!,10);
+   expect(next.unitPos).toEqual(next.unitPositions![0]);
+   expect(verifyEditedZone(next,manifest,project)).toMatchObject({ok:true});
+  }
  });
  it('a terminal moved with moveTerminal on the real deployment is re-checked by the explicit step',()=>{
   const deployed=tx.updatedZones[0];

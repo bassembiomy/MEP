@@ -772,7 +772,8 @@ export const FloorPlanCanvas: React.FC = () => {
                   return (
                     <Group
                       key={d.id}
-                      draggable={drawMode === 'select' || isSelected}
+                      // Only a supply trunk is a meaningful handle (it moves with its unit); branch and return ends are fixed by their terminals.
+                      draggable={d.type === 'trunk' && (drawMode === 'select' || isSelected)}
                       onDragEnd={(e) => {
                         handleDuctDrag(zone.id, d.id, e.target.x(), e.target.y());
                         e.target.position({ x: 0, y: 0 });
