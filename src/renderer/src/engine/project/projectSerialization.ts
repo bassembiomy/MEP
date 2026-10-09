@@ -212,6 +212,7 @@ function validateState(value:unknown):PersistedProjectState {
       text(p.approvedAt,'CAD approval date');
       if(p.level!==undefined)finite(p.level,'CAD provenance level');
       for(const key of ['approvedOpeningIds','boundaryLayers'])if(p[key]!==undefined)array(p[key],`CAD provenance ${key}`).forEach(v=>text(v,`CAD provenance ${key}`));
+      if(p.userModified!==undefined){const m=object(p.userModified,'CAD provenance userModified');text(m.at,'CAD userModified date');array(m.edits,'CAD userModified edits').forEach(v=>text(v,'CAD userModified edit'));}
       if(p.ceilingHeight!==undefined){
         const c=object(p.ceilingHeight,'CAD provenance ceiling height');
         finite(c.chosen,'CAD provenance chosen ceiling height');

@@ -21,6 +21,7 @@ import {
   type StoredCadOpening
 } from '../engine/cad/cadSemanticState';
 import { validateZonePolygon } from '../engine/cad/zonePolygon';
+import { moveVertex, insertVertex, deleteVertex, offsetEdge, type PolygonEdit } from '../engine/cad/zoneGeometryEdits';
 import { measureSimplePolygon, requirePositive, requireNonnegative, METERS_PER_FOOT } from '../engine/engineeringInputs';
 import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
 import type { StandardsSelection } from '../engine/standards/profileRegistry';
@@ -109,6 +110,8 @@ export interface Zone {
   cadProvenance?: {sourceCadRevision?:string;candidateId:string;sourceHandles:string[];sourceLayers:string[];evidence:string[];unresolvedConditions:string[];drawingUnitsPerFoot:number;approvedAt:string;
     /** Level (elevation, drawing units) and approved openings the room was recognised with. */
     level?:number;approvedOpeningIds?:string[];boundaryLayers?:string[];
+    /** Set once the user edits the approved outline; the geometry no longer equals the recognised CAD candidate. */
+    userModified?:{at:string;edits:string[]};
     /** The ceiling height the user chose, next to the annotation-derived suggestion that was shown (never applied automatically). */
     ceilingHeight?:{chosen:number;usedSuggestion:boolean;suggestedFt?:number;confidence?:number;evidence?:string[]}};
   id: string;
@@ -266,6 +269,11 @@ interface ProjectState {
   /** Validates the outline (simple polygon, >=3 distinct vertices); a refused outline leaves zones and tempPoints unchanged. */
   addZone: (points: number[]) => {success:boolean;error?:string};
   setTempPoints: (points: number[]) => void;
+  /** Validated outline edits: a rejected edit leaves the zone and undo stack untouched; accepted ones push an undo snapshot and mark the zone stale. */
+  moveZoneVertex: (id: string, index: number, x: number, y: number) => {success:boolean;error?:string};
+  insertZoneVertex: (id: string, edgeIndex: number, x: number, y: number) => {success:boolean;error?:string};
+  deleteZoneVertex: (id: string, index: number) => {success:boolean;error?:string};
+  offsetZoneEdge: (id: string, edgeIndex: number, distance: number) => {success:boolean;error?:string};
   /** Recognise room candidates from the CAD review state (approved openings, user-confirmed wall layers, selected level). */
   recognizeCadRoomCandidates: () => CadRoomRecognitionRun;
   /** `ceilingHeight` is the value the caller chose (a suggestion is available via selectCeilingHeightSuggestion). */
@@ -339,6 +347,22 @@ const captureCad = (s: ProjectState): CadSemanticSnapshot => ({
 function makeSnapshot(s: ProjectState, description: string, withCad: boolean): WorkspaceSnapshot {
   return { snapshotId: `snap-${crypto.randomUUID()}`, timestamp: Date.now(), zones: structuredClone(s.zones),
     selectedZoneId: s.selectedZoneId, project: { ...s.project }, description, ...(withCad ? { cad: captureCad(s) } : {}) };
+}
+
+/** Shared path for validated outline edits (see zoneGeometryEdits). */
+function applyZoneOutlineEdit(set: (partial: Partial<ProjectState>) => void, get: () => ProjectState, id: string, description: string,
+  edit: (zone: Zone) => PolygonEdit): { success: boolean; error?: string } {
+  const state = get();
+  const zone = state.zones.find(z => z.id === id);
+  if (!zone) return { success: false, error: 'Room not found.' };
+  const result = edit(zone);
+  if (!result.ok) return { success: false, error: result.error };
+  const snapshot = makeSnapshot(state, `${description} of ${zone.name}`, false);
+  set({ undoStack: [...state.undoStack, snapshot], redoStack: [] });
+  const updates: Partial<Zone> = { points: result.points };
+  if (zone.cadProvenance) updates.cadProvenance = { ...zone.cadProvenance, userModified: { at: new Date().toISOString(), edits: [...(zone.cadProvenance.userModified?.edits ?? []), description] } };
+  get().updateZone(id, updates); // re-derives obstacles and marks the room stale
+  return { success: true };
 }
 
 /** Refresh each zone's approved obstacles from the CAD review state; zones whose set changed become stale. */
@@ -645,6 +669,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   }),
   
   setTempPoints: (points) => set({ tempPoints: [...points] }),
+  moveZoneVertex: (id, index, x, y) => applyZoneOutlineEdit(set, get, id, `Moved vertex ${index}`, z => moveVertex(z.points, index, x, y)),
+  insertZoneVertex: (id, edgeIndex, x, y) => applyZoneOutlineEdit(set, get, id, `Inserted vertex on edge ${edgeIndex}`, z => insertVertex(z.points, edgeIndex, x, y)),
+  deleteZoneVertex: (id, index) => applyZoneOutlineEdit(set, get, id, `Deleted vertex ${index}`, z => deleteVertex(z.points, index)),
+  offsetZoneEdge: (id, edgeIndex, distance) => applyZoneOutlineEdit(set, get, id, `Offset edge ${edgeIndex}`, z => offsetEdge(z.points, edgeIndex, distance)),
   clearTempPoints: () => set({ tempPoints: [] }),
   
   setDxfData: (entities, bbox, suggestedScale, cadUnit, metadata, blockReferences) => {

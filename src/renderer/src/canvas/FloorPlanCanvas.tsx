@@ -25,6 +25,7 @@ export const FloorPlanCanvas: React.FC = () => {
     tempPoints,
     addZone,
     setTempPoints,
+    moveZoneVertex,
     selectZone,
     updateZone,
     project,
@@ -316,6 +317,7 @@ export const FloorPlanCanvas: React.FC = () => {
     if (next.points !== tempPoints) setTempPoints(next.points);
     setDrawMessage(next.message);
   };
+  useEffect(() => { setDrawMessage(null); setTypedLength(''); }, [drawMode, selectedZoneId]);
   const applyPolylineRef = useRef(applyPolyline);
   applyPolylineRef.current = applyPolyline;
   const typedLengthRef = useRef(typedLength);
@@ -451,15 +453,11 @@ export const FloorPlanCanvas: React.FC = () => {
     setStagePos({ x: 50, y: 50 });
   };
 
-  const handleVertexDrag = (zoneId: string, pointIdx: number, newX: number, newY: number) => {
-    const zone = zones.find(z => z.id === zoneId);
-    if (!zone) return;
-
-    const updatedPoints = [...zone.points];
-    updatedPoints[pointIdx * 2] = snapToGrid(newX, gridSpacing);
-    updatedPoints[pointIdx * 2 + 1] = snapToGrid(newY, gridSpacing);
-    
-    updateZone(zoneId, { points: updatedPoints });
+  // Validated outline edit (store action); returns false when refused so the caller can snap the handle back.
+  const handleVertexDrag = (zoneId: string, pointIdx: number, newX: number, newY: number): boolean => {
+    const result = moveZoneVertex(zoneId, pointIdx, snapToGrid(newX, gridSpacing), snapToGrid(newY, gridSpacing));
+    setDrawMessage(result.success ? null : `Edit refused: ${result.error}`);
+    return result.success;
   };
 
   const handleDiffuserDrag = (zoneId: string, diffuserId: string, newX: number, newY: number) => {
@@ -1664,8 +1662,10 @@ export const FloorPlanCanvas: React.FC = () => {
                       stroke="#ffffff"
                       strokeWidth={getStrokeWidth(1.0, 1.2)}
                       draggable
-                      onDragMove={(e) => {
-                        handleVertexDrag(zone.id, idx, e.target.x(), e.target.y());
+                      onDragEnd={(e) => {
+                        if (!handleVertexDrag(zone.id, idx, e.target.x(), e.target.y())) {
+                          e.target.position({ x: zone.points[idx * 2], y: zone.points[idx * 2 + 1] });
+                        }
                       }}
                     />
                   ))}
@@ -1888,11 +1888,11 @@ export const FloorPlanCanvas: React.FC = () => {
       </div>
 
       {/* Floating CAD Layer & Annotation Manager Popover Modal */}
-      {drawMode === 'polyline' && (drawMessage || typedLength || tempPoints.length > 0) && (
+      {(drawMessage || (drawMode === 'polyline' && (typedLength || tempPoints.length > 0))) && (
         <div className="absolute left-3 bottom-3 z-10 max-w-md rounded-lg border border-neutral-700 bg-neutral-900/95 px-3 py-2 text-xs text-neutral-200">
           {typedLength && <div className="font-mono text-teal-300">Length: {typedLength} {project.units === 'metric' ? 'm' : 'ft'} (Enter to place)</div>}
           {drawMessage && <div className="text-amber-300">{drawMessage}</div>}
-          {!drawMessage && <div className="text-neutral-400">Click to add vertices, click the first point or double-click to close, Backspace undoes, Esc cancels, type a length then Enter.</div>}
+          {!drawMessage && drawMode === 'polyline' && <div className="text-neutral-400">Click to add vertices, click the first point or double-click to close, Backspace undoes, Esc cancels, type a length then Enter.</div>}
         </div>
       )}
       <CadLayerManagerModal
