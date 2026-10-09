@@ -495,6 +495,37 @@ def gen_tiny(manifest):
         }
 
 
+# ------------------------------------------------------------------------------------------------- E2E precision pair
+def gen_far_origin(manifest):
+    """Far-origin drawings for e2e/precision.spec.ts. One plan (outer square wall, an inner room, a column and a label, all
+    centred on a point C) is written four ways per unit: at the origin (C = 0) and offset to C = (A, A), and a second drawing offset to
+    C = (B, B). A and B are multiples of the origin step, so the importer's local frame of a far file equals the at-origin file's:
+    ft: 20 ft wide, A = 2,000,000 ft, B = 500,000 ft;  mm: 20 m (20,000 mm) wide, A = 6e8 mm, B = 2e8 mm."""
+    for unit, insunits, half, a_off, b_off in (("ft", 2, 10.0, 2_000_000.0, 500_000.0), ("mm", 4, 10000.0, 6e8, 2e8)):
+        def write(fname, c):
+            doc = new_doc("R2018", insunits, 0 if unit == "ft" else 1)
+            add_layers(doc, ["A-WALL", "A-AREA", "A-ANNO-TEXT"])
+            msp = doc.modelspace()
+            outer = [(c - half, c - half), (c + half, c - half), (c + half, c + half), (c - half, c + half)]
+            for p, q in zip(outer, outer[1:] + outer[:1]):
+                msp.add_line(p, q, dxfattribs={"layer": "A-WALL"})
+            msp.add_lwpolyline([(c - half / 2, c - half / 4), (c + half / 2, c - half / 4), (c + half / 2, c + half / 4), (c - half / 2, c + half / 4)],
+                               close=True, dxfattribs={"layer": "A-AREA"})
+            msp.add_circle((c + half / 2, c + half / 2), half / 10, dxfattribs={"layer": "A-WALL"})
+            msp.add_text("FAR", height=half / 8, dxfattribs={"layer": "A-ANNO-TEXT", "insert": (c - half / 2, c + half / 2)})
+            doc.saveas(path(fname))
+            return outer
+        write(f"far-origin-{unit}-at-origin.dxf", 0.0)
+        outer = write(f"far-origin-{unit}.dxf", a_off)
+        write(f"far-origin-{unit}-b.dxf", b_off)
+        manifest[f"far-origin-{unit}.dxf"] = {
+            "item": "E2E", "insunits": insunits, "unit": unit, "half": half, "centre": [a_off, a_off], "centreB": [b_off, b_off],
+            "twin": f"far-origin-{unit}-at-origin.dxf", "second": f"far-origin-{unit}-b.dxf",
+            "outerCorners": [list(p) for p in outer],  # DXF Y-up raw coordinates of the far file's outer wall corners
+            "twinCorners": [[x - a_off, y - a_off] for x, y in outer],
+        }
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     manifest = {}
@@ -504,6 +535,7 @@ def main():
     gen_mline_walls(manifest)
     gen_legacy(manifest)
     gen_tiny(manifest)
+    gen_far_origin(manifest)
     doc = {
         "about": "Ground truth for the adversarial corpus, computed from the generator's construction geometry "
                  "(scripts/cad-corpus/generate_adversarial.py) and from ezdxf, never from our parser. "
