@@ -61,7 +61,7 @@
     }
    },
    "measurement": 0,
-   "sha256": "ed741250feb5a78b2b04d73466b2dbe527c4f5a99d8fde1a95f2e7940f391093",
+   "sha256": "4846de9a1feeae24702cdf0f946e03221b4da12e887b563c96867468e9110576",
    "texts": [
     {
      "height": 5.0,
@@ -203,7 +203,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "57df60636881436f7100b6ed575ca1a1966851a1e047a42d9e7c0779951e2afc",
+   "sha256": "5c955c8b20addbb19526e1f7af8cb8b2e604d62222852d96f9c1a972953d923e",
    "texts": [
     {
      "height": 150.0,
@@ -338,7 +338,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "c417589f8492f7f86fd5186c9e0df50aa66bad16fb7f6be099896c80673138c5",
+   "sha256": "4fd805312951948421da6356581ff02796a2f2c93586c7b4cace6bdade55a3a0",
    "texts": [
     {
      "height": 150.0,
@@ -471,7 +471,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "a6b8fb737b11a07f1e04fedef3b3741eaf05d96a8f0a095b0647858beeb1e35d",
+   "sha256": "d362b6344399b6ca2021e86e1bc117b93fbeced0f04032f40448a2fefddccbaf",
    "texts": [
     {
      "height": 180.0,
@@ -637,7 +637,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "cec28ba783fd609e538abe9f91804d237eb798c7c394ecf6f2130428b0a0397e",
+   "sha256": "5769e6e55f9ad864c769b8b85e73196d42fb0a3274bbcfd1ea0fd79be5bf92ee",
    "texts": [
     {
      "height": 150.0,
@@ -708,8 +708,26 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {},
-    "status": "pass"
+    "exclusions": {
+     "SPLINE.points": {
+      "cause": "LibreDWG 0.13.3 dxf2dwg writes a fit-point SPLINE with no fit points, control points or knots (empty entity)",
+      "dwg": [
+       [
+        0,
+        0,
+        0
+       ]
+      ],
+      "source": [
+       [
+        0,
+        4,
+        0
+       ]
+      ]
+     }
+    },
+    "status": "pass-with-exclusions"
    }
   },
   "unitless-insunits0-r14.dwg": {
@@ -792,7 +810,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "b1b9dc50ef1f1e1f5865d626116bf46d1bb41072fd098018bfc6ef33610b9a46",
+   "sha256": "4a52a708a06d0e8cd2a2899e2f5a2b212bea65d113f6e1a61e40ca441f0efda0",
    "texts": [
     {
      "height": 150.0,
@@ -947,7 +965,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "6d20a9183080eaf40b0f65d13e8a51da95e7282aef812362a90438c24ee82875",
+   "sha256": "fdd6f4555ae3aefec95b54eb549d08e146b152e9ea861de212b3a38642a0e24e",
    "texts": [
     {
      "height": 150.0,

@@ -92,9 +92,13 @@ def normalise_handles(src, dst):
             if e.dxftype() == "INSERT":
                 for a in e.attribs:
                     fresh(a)
+                if e.attribs and e.seqend is not None:
+                    fresh(e.seqend)
             if e.dxftype() == "POLYLINE":
                 for v in e.vertices:
                     fresh(v)
+                if e.seqend is not None:
+                    fresh(e.seqend)
     doc.saveas(dst)
 
 
@@ -159,6 +163,8 @@ def geometry_signature(t, ent):
             elif x.code == 70:
                 closed = int(x.value) & 1
         return (t, closed, tuple(tuple(round(c, 6) for c in v) for v in verts))
+    if t == "SPLINE":  # point counts only: ctrl (10), fit (11), knots (40)
+        return (t, tuple(sum(1 for x in ent if x.code == code) for code in (10, 11, 40)))
     spec = GEOMETRY.get(t)
     if spec is None:
         return None
@@ -290,9 +296,18 @@ def compare(src, back):
                                  "code), so MTEXT text_height is written as 0 and the height is stored in rectWidth"}
                 else:
                     diffs.append(f"{kind} heights: source {sorted(set(a))}, dwg {sorted(set(b))}")
-    if src["geometry"] != back["geometry"]:
-        missing = list((src["geometry"] - back["geometry"]).elements())
-        extra = list((back["geometry"] - src["geometry"]).elements())
+    splines = lambda c: collections.Counter({k: n for k, n in c.items() if k[1] == "SPLINE"})
+    if splines(src["geometry"]) != splines(back["geometry"]):
+        if all(sum(k[2]) == 0 for k in splines(back["geometry"]).elements()):
+            exclusions["SPLINE.points"] = {
+                "source": [list(k[2]) for k in splines(src["geometry"]).elements()], "dwg": [[0, 0, 0]],
+                "cause": "LibreDWG 0.13.3 dxf2dwg writes a fit-point SPLINE with no fit points, control points or knots (empty entity)"}
+        else:
+            diffs.append("SPLINE point counts differ between source and dwg")
+    rest = lambda c: collections.Counter({k: n for k, n in c.items() if k[1] != "SPLINE"})
+    if rest(src["geometry"]) != rest(back["geometry"]):
+        missing = list((rest(src["geometry"]) - rest(back["geometry"])).elements())
+        extra = list((rest(back["geometry"]) - rest(src["geometry"])).elements())
         diffs.append(f"geometry differs: {len(missing)} source entities not in dwg (e.g. {missing[:2]}), "
                      f"{len(extra)} dwg entities not in source (e.g. {extra[:2]})")
     if src["textZ"] != back["textZ"]:
