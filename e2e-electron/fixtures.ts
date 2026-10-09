@@ -16,9 +16,11 @@ const MAIN_ENTRY = resolve(__dirname, '../out/main/index.js')
  */
 const STDERR_ALLOWLIST: Array<{ re: RegExp; why: string }> = [
   // Under xvfb in a container there is no session D-Bus; Chromium logs its failed connection attempt.
-  { re: /bus\.cc/, why: 'Chromium cannot reach the (absent) D-Bus session bus' },
+  { re: /dbus\/(bus|object_proxy)\.cc/, why: 'Chromium cannot reach the (absent) D-Bus session bus' },
   // Software-rendered GPU process start-up chatter (we pass --disable-gpu; no GPU exists in the container).
   { re: /viz\/.*gpu_init|gpu_init\.cc|viz_main_impl\.cc/, why: 'GPU process initialisation messages with no GPU present' },
+  // Playwright launches Electron with --inspect and Node prints these two banner lines on attach/detach.
+  { re: /^(Debugger (listening|attached|ending)|For help, see: https:\/\/nodejs\.org\/en\/docs\/inspector|Waiting for the debugger)/, why: 'Node inspector banner caused by Playwright attaching to the main process' },
   // Fontconfig has no config/cache dirs in a clean container / temp XDG_CONFIG_HOME.
   { re: /Fontconfig/i, why: 'Fontconfig warns about missing config/cache directories in the container' }
 ]
@@ -96,6 +98,8 @@ interface Fixtures {
   launch: () => Promise<Launched>
   electronApp: ElectronApplication
   page: Page
+  /** `type: message` of every native JS dialog (alert/confirm) the renderer raised; all are auto-accepted. */
+  dialogLog: string[]
 }
 
 export const test = base.extend<Fixtures>({
@@ -114,11 +118,17 @@ export const test = base.extend<Fixtures>({
     mkdirSync(d)
     await use(d)
   },
-  launch: async ({ configHome, catalogDir }, use) => {
+  dialogLog: async ({}, use) => {
+    await use([])
+  },
+  launch: async ({ configHome, catalogDir, dialogLog }, use) => {
     const launched: Launched[] = []
     await use(async () => {
       const l = await launchApp({ configHome, catalogDir })
-      l.page.on('dialog', (d) => void d.accept())
+      l.page.on('dialog', (d) => {
+        dialogLog.push(`${d.type()}: ${d.message()}`)
+        void d.accept()
+      })
       launched.push(l)
       return l
     })
