@@ -13,6 +13,13 @@ describe('layer name case (recommended 5)', () => {
     expect(p.diagnostics![0].message).toMatch(/Walls/)
     expect(p.diagnostics![0].message).toMatch(/WALLS/)
   })
+  it('a frozen / off second spelling hides the FIRST spelling (where the entities live), not a layer of its own', () => {
+    for (const opt of [{ frozen: true }, { off: true }]) {
+      const p = parseDxfText(build([layer('Walls'), layer('WALLS', opt)], [line('walls', 0, 0, 5000, 0)]))
+      expect(p.entities.map(e => e.layer)).toEqual(['Walls'])
+      expect(p.hiddenLayers).toEqual(['Walls'])
+    }
+  })
   it('a repeated identical spelling is not a case collision', () => {
     expect(codes(parseDxfText(build([layer('Walls'), layer('Walls')], [line('Walls', 0, 0, 5000, 0)])))).toEqual([])
   })

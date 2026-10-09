@@ -491,11 +491,14 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     const name = first(r, 2)?.trim() ?? '0';
     const known = layerCase.get(name.toLowerCase());
     if (known === undefined) layerCase.set(name.toLowerCase(), name);
-    else if (known !== name) diagnose('LAYER_CASE_COLLISION', `Layers '${known}' and '${name}' differ only by case; AutoCAD treats them as one layer, so entities on either are placed on '${known}' (the first spelling).`, r);
-    layers.set(name, color(r));
+    // A second spelling is the same layer: its frozen / off state applies to the FIRST spelling (where the entities live) and it is
+    // not registered as a layer of its own.
+    const target = known ?? name;
+    if (known !== undefined && known !== name) diagnose('LAYER_CASE_COLLISION', `Layers '${known}' and '${name}' differ only by case; AutoCAD treats them as one layer, so entities on either are placed on '${known}' (the first spelling).`, r);
+    else layers.set(name, color(r));
     const frozen = (number(r, 70, 0) & 1) !== 0;
-    if (frozen) frozenLayers.add(name);
-    if (frozen || number(r, 62, 0) < 0) hiddenLayers.add(name);
+    if (frozen) frozenLayers.add(target);
+    if (frozen || number(r, 62, 0) < 0) hiddenLayers.add(target);
   }
   // Anonymous dynamic-block references: the BLOCK_RECORD of '*U##' carries XDATA AcDbBlockRepBTag whose 1005 is the handle of the
   // real (named) dynamic block's record. Resolve it so INSERTs of '*U12' are known by the name of the block they stand for.
