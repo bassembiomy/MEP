@@ -3,7 +3,7 @@ import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/l
 import { generateSystemCandidates, DEFAULT_OPTIMIZATION_WEIGHTS } from '../engine/systemDesigner';
 import { zoneExtentFt } from '../engine/pressureBudget';
 import { convertProjectDisplayUnits } from '../engine/project/unitConversion';
-import { parseProjectDocument } from '../engine/project/projectSerialization';
+import { parseProjectDocument, type PersistedProjectState } from '../engine/project/projectSerialization';
 import type { CadImportDiagnostic } from '../engine/dxfParser';
 import type { CadRoomCandidate, CadLayerRole, CadBlockReference, CadRoomRecognitionResult, CadApprovedObstacle } from '../engine/cad/semanticTypes';
 import { recognizeCadRooms } from '../engine/cad/roomRecognition';
@@ -338,6 +338,19 @@ export function selectCeilingHeightSuggestion(
   candidate: Pick<CadRoomCandidate, 'polygon'>
 ): { suggestion?: CeilingHeightSuggestionView; unresolved: boolean; reasons: string[] } {
   return ceilingHeightSuggestionFor(state.dxfEntities, candidate.polygon, state.project, state.cadLevel);
+}
+
+/**
+ * The document view of the store: the declarative fields serializeProject persists. The store keeps layer-role
+ * decisions in cadLayerRoles.overrides, so they must be mapped to cadLayerOverrides here or a save loses them.
+ */
+export function selectPersistedProject(state: ProjectState): PersistedProjectState {
+  return {
+    project: state.project, zones: state.zones, dxfEntities: state.dxfEntities, dxfBoundingBox: state.dxfBoundingBox, dxfLayers: state.dxfLayers,
+    cadImport: state.cadImport, cadLayerOverrides: state.cadLayerRoles.overrides, cadOpenings: state.cadOpenings, cadObstacles: state.cadObstacles,
+    cadLevel: state.cadLevel, annotationVisibility: state.annotationVisibility, selectedSystemTypes: state.selectedSystemTypes,
+    optimizationWeights: state.optimizationWeights, loadedCatalogs: state.loadedCatalogs as PersistedProjectState['loadedCatalogs']
+  };
 }
 
 const MAX_AUTO_DEPLOY_ATTEMPTS = 5;

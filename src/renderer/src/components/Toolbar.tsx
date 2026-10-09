@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { useProjectStore } from '../store/projectStore';
+import { useProjectStore, selectPersistedProject } from '../store/projectStore';
 import { serializeProject } from '../engine/project/projectSerialization';
 import {exportProjectDxf} from '../engine/export/exportDxf';
 import { parseDxfText } from '../engine/dxfParser';
@@ -69,7 +69,7 @@ export const Toolbar: React.FC = () => {
 
   const handleSaveProject = () => {
     try {
-      const text=serializeProject(useProjectStore.getState());
+      const text=serializeProject(selectPersistedProject(useProjectStore.getState()));
       const url=URL.createObjectURL(new Blob([text],{type:'application/json'}));
       const link=document.createElement('a');link.href=url;
       link.download=project.name.replace(/[^a-z0-9_-]+/gi,'_')+'.mep.json';link.click();
