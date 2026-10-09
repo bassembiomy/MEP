@@ -78,3 +78,36 @@ describe('R2: replacing or clearing the drawing resets undo history and zone obs
     expect(s().zones[0].obstacles).toBeUndefined()
   })
 })
+
+describe('R3: restoring a project re-derives zone obstacles from the CAD review state', () => {
+  const zonePts = [4, -3, 18, -3, 18, -13, 4, -13]
+  const saved = () => {
+    load()
+    s().setProject({ cadUnitsConfirmed: true })
+    expect(s().addZone(zonePts).success).toBe(true)
+    expect(s().approveCadObstacle(s().cadObstacles[0].id, 1).success).toBe(true)
+    return JSON.parse(serializeProject(selectPersistedProject(s())))
+  }
+  it('a version 2 file whose zone obstacles were removed gets them back', () => {
+    const doc = saved()
+    expect(doc.zones[0].obstacles.length).toBe(1)
+    delete doc.zones[0].obstacles
+    s().clearDxfData()
+    expect(s().restoreProjectDocument(JSON.stringify(doc)).success).toBe(true)
+    expect(s().zones[0].obstacles?.map(o => o.id)).toEqual([s().cadObstacles.find(o => o.status === 'approved')!.id])
+  })
+  it('a version 2 file cannot smuggle in a zone obstacle that is not an approved CAD obstacle', () => {
+    const doc = saved()
+    doc.zones[0].obstacles = [{ ...doc.zones[0].obstacles[0], id: 'forged', clearanceFt: 99 }]
+    expect(s().restoreProjectDocument(JSON.stringify(doc)).success).toBe(true)
+    expect(s().zones[0].obstacles?.map(o => o.id)).not.toContain('forged')
+  })
+  it('a version 1 file with zone obstacles has them dropped (no approvals existed then)', () => {
+    const doc = saved()
+    doc.version = 1
+    for (const key of ['cadOpenings', 'cadObstacles', 'cadLevel']) delete doc[key]
+    expect(doc.zones[0].obstacles.length).toBe(1)
+    expect(s().restoreProjectDocument(JSON.stringify(doc)).success).toBe(true)
+    expect(s().zones[0].obstacles).toBeUndefined()
+  })
+})

@@ -485,17 +485,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // (version 1) get fresh review-required suggestions and no approvals.
       const semantics=recognizeCadSemantics({entities:restored.dxfEntities,bbox:restored.dxfBoundingBox,
         unitsPerFoot:unitsPerFootOf(restored.project),level,overrides:cadLayerOverrides??{}});
-      set({...restored,
+      const restoredCadObstacles=cadObstacles??semantics.obstacles;
+      // Zone obstacles are derived data: rebuild them from the approved CAD obstacles instead of trusting the file.
+      const zones=syncZoneObstacles(restored.zones,restoredCadObstacles);
+      set({...restored,zones,
         cadImport:restored.cadImport??null,
         cadLayerRoles:semantics.layerRoles,
         cadOpenings:cadOpenings??semantics.openings,
-        cadObstacles:cadObstacles??semantics.obstacles,
+        cadObstacles:restoredCadObstacles,
         cadLevel:level,cadBlockReferences:[],
         annotationVisibility:restored.annotationVisibility??DEFAULT_ANNOTATION_VISIBILITY,
         selectedSystemTypes:restored.selectedSystemTypes??state.selectedSystemTypes,
         optimizationWeights:restored.optimizationWeights??DEFAULT_OPTIMIZATION_WEIGHTS,
         loadedCatalogs:restored.loadedCatalogs as ProjectState['loadedCatalogs'] ?? null,
-        selectedZoneId:restored.zones[0]?.id??null,activePreview:null,
+        selectedZoneId:zones[0]?.id??null,activePreview:null,
         highlightedDuctId:null,highlightedEntityTag:null,drawMode:'select',tempPoints:[],undoStack:[],redoStack:[]});
       return {success:true};
     } catch(error) {return {success:false,error:error instanceof Error?error.message:String(error)};}
