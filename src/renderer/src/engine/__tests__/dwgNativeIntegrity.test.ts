@@ -556,3 +556,113 @@ it('applies a nonzero block base Z to child elevation and says so, consistently 
  expect((result.entities[0] as {elevation?:number}).elevation).toBe(-10);
  expect(result.diagnostics?.some(d=>d.code==='elevated-geometry-projected'&&d.entityType==='INSERT'&&/base Z 10/.test(d.message))).toBe(true);
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Defects found by the binary DWG corpus (dwgBinaryCorpus.test.ts). The object shapes below are the ones libredwg-web
+// 0.7.7 really emits (recorded in the "real convert() output" test of that file), assembled by hand so the cases that
+// the LibreDWG writer cannot produce (INSERT attribs, SPLINE with control points) stay covered.
+describe('layout records, layers, paper space, attributes and splines (shapes recorded from libredwg-web)', () => {
+  const layerEntry = (name: string, frozen = false, off = false): Record<string, unknown> => ({ name, frozen, off })
+  const withLayers = (entities: unknown[], layers: unknown[], blocks: unknown[] = []): Record<string, unknown> => ({
+    entities,
+    tables: { BLOCK_RECORD: { entries: blocks }, LAYER: { entries: layers } },
+    header: { INSUNITS: 4 }
+  })
+  const lineOn = (layer: string, x = 0): Record<string, unknown> => ({ type: 'LINE', handle: `L${layer}${x}`, layer, startPoint: point(x, 0), endPoint: point(x + 1, 0) })
+
+  it('does not report a duplicate *Model_Space / *Paper_Space layout record as an ambiguous block', async () => {
+    const result = await parse(database([line()], [
+      { name: '*Model_Space', handle: '17', entities: [] },
+      { name: '*Paper_Space', handle: '1B', entities: [] },
+      { name: '*Model_Space', handle: '1F', entities: [] },
+      { name: '*Paper_Space0', handle: '12C', entities: [] },
+      { name: 'Real', handle: 'A0', entities: [line()] }
+    ]))
+    expect(result.diagnostics?.filter((d) => d.severity === 'error')).toEqual([])
+    const dup = await parse(database([insert('Real')], [{ name: 'Real', entities: [line()] }, { name: 'Real', entities: [line()] }]))
+    expect(dup.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'ambiguous-block', severity: 'error' })]))
+  })
+
+  it('returns frozen and switched-off layers as hiddenLayers (sorted) and nothing when all layers are visible', async () => {
+    const hidden = await parse(withLayers([lineOn('B'), lineOn('A')], [layerEntry('0'), layerEntry('B', true), layerEntry('A', false, true), layerEntry('C')]))
+    expect(hidden.hiddenLayers).toEqual(['A', 'B'])
+    expect(hidden.entities).toHaveLength(2)
+    const visible = await parse(withLayers([lineOn('B')], [layerEntry('0'), layerEntry('B')]))
+    expect(visible.hiddenLayers).toBeUndefined()
+    expect((await parse(database([lineOn('B')]))).hiddenLayers).toBeUndefined()
+  })
+
+  it('moves the children of a frozen INSERT onto its layer as the DXF path does, keeping hidden child layers', async () => {
+    const block = { name: 'Blk', basePoint: point(0, 0), entities: [lineOn('Vis', 0), lineOn('Gone', 2), lineOn('0', 4)] }
+    const layers = [layerEntry('0'), layerEntry('Vis'), layerEntry('Gone', false, true), layerEntry('Frz', true)]
+    const frozen = await parse(withLayers([insert('Blk', point(0, 0), { layer: 'Frz' })], layers, [block]))
+    expect(frozen.entities.map((e) => [e.layer, e.originalLayer])).toEqual([
+      ['Frz', 'Vis'],
+      ['Gone', undefined],
+      ['Frz', undefined]
+    ])
+    expect(frozen.blockReferences?.[0].layer).toBe('Frz')
+    // an INSERT on a layer that is only switched off hides just its layer-0 children, which inherit the INSERT layer
+    const off = await parse(withLayers([insert('Blk', point(0, 0), { layer: 'OffL' })], [...layers, layerEntry('OffL', false, true)], [block]))
+    expect(off.entities.map((e) => [e.layer, e.originalLayer])).toEqual([
+      ['Vis', undefined],
+      ['Gone', undefined],
+      ['OffL', undefined]
+    ])
+  })
+
+  it('skips top-level entities owned by a paper-space record with one aggregated warning, never block contents', async () => {
+    const models = [{ name: '*Model_Space', handle: '17' }, { name: '*Paper_Space', handle: '1B' }, { name: '*Paper_Space0', handle: '12C' }]
+    const inBlock = { name: 'Blk', handle: '91', basePoint: point(0, 0), entities: [{ ...lineOn('A', 7), ownerBlockRecordSoftId: '1B' }] }
+    const result = await parse(database([
+      { ...lineOn('A', 0), ownerBlockRecordSoftId: '17' },
+      { ...lineOn('A', 1), ownerBlockRecordSoftId: '1B' },
+      { ...lineOn('A', 2), ownerBlockRecordSoftId: '12C' },
+      insert('Blk')
+    ], [...models, inBlock]))
+    expect(result.entities.map((e) => e.x)).toEqual([0, 7])
+    expect(result.diagnostics?.filter((d) => d.code === 'paper-space-skipped')).toEqual([expect.objectContaining({ severity: 'warning' })])
+    expect(result.diagnostics?.find((d) => d.code === 'paper-space-skipped')?.message).toMatch(/^2 paper-space/)
+  })
+
+  const attrib = (value: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    type: 'ATTRIB',
+    handle: `T${value}`,
+    layer: '0',
+    isVisible: true,
+    flags: 0,
+    text: { text: value, startPoint: { x: 30, y: 40 }, textHeight: 5, rotation: Math.PI / 2 },
+    ...extra
+  })
+  it('draws each visible INSERT attribute as TEXT in WCS and drops invisible, empty and constant-template ones', async () => {
+    const block = { name: 'Door', basePoint: point(0, 0), entities: [line()] }
+    const result = await parse(database([insert('Door', point(100, 0), { rotation: Math.PI / 2, attribs: [attrib('D01'), attrib('D02', { flags: 1 }), attrib('D03', { isVisible: false }), attrib('   ')] })], [block]))
+    const texts = result.entities.filter((e) => e.type === 'TEXT')
+    expect(texts).toHaveLength(1)
+    // absolute coordinates: not moved by the INSERT's 100 mm / 90 degree placement
+    expect(texts[0]).toMatchObject({ text: 'D01', x: 30, y: -40, textHeight: 5, rotationDeg: 90, layer: '0' })
+    expect(texts[0].sourceBlock).toBeUndefined()
+    expect(result.blockReferences?.[0].entityRange).toEqual([0, 1])
+  })
+
+  it('samples a SPLINE from control points and knots (clamped end points exact) and from fit points, with a warning', async () => {
+    const knots = [0, 0, 0, 0, 1, 1, 1, 1]
+    const control = [point(0, 0), point(10, 20), point(20, 20), point(30, 0)]
+    const spline = await parse(database([{ type: 'SPLINE', handle: 'S1', flag: 8, degree: 3, knots, controlPoints: control, fitPoints: [] }]))
+    expect(spline.entities).toHaveLength(1)
+    const pts = spline.entities[0].points!
+    expect(spline.entities[0]).toMatchObject({ type: 'LWPOLYLINE', closed: false })
+    expect(pts[0]).toBeCloseTo(0, 9)
+    expect(Math.abs(pts[1])).toBeLessThan(1e-9)
+    expect(pts[pts.length - 2]).toBeCloseTo(30, 9)
+    expect(Math.abs(pts[pts.length - 1])).toBeLessThan(1e-9)
+    expect(spline.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'approximated-geometry' })]))
+    const fit = await parse(database([{ type: 'SPLINE', flag: 8, degree: 3, knots: [], controlPoints: [], fitPoints: [point(0, 0), point(10, 5), point(20, 0)] }]))
+    expect(fit.entities[0].points!.slice(0, 2).map((v) => v + 0)).toEqual([0, 0])
+    expect(fit.entities[0].points!.slice(-2).map((v) => v + 0)).toEqual([20, 0])
+    // a SPLINE written without any points (what LibreDWG 0.13.3 dxf2dwg produces) is an unsupported-entity warning, not an error
+    const empty = await parse(database([{ type: 'SPLINE', handle: 'S2', flag: 8, degree: 3, knots: [], controlPoints: [], fitPoints: [] }]))
+    expect(empty.entities).toHaveLength(0)
+    expect(empty.diagnostics).toEqual([expect.objectContaining({ code: 'unsupported-entity', severity: 'warning', entityType: 'SPLINE' })])
+  })
+})

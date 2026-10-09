@@ -2,6 +2,7 @@ import type { BoundingBox, DxfEntity } from '../../store/projectStore'
 import {
   aciToHexColor,
   resolveCadUnits,
+  sampleSplineData,
   type CadImportDiagnostic,
   type ParsedDxf
 } from '../dxfParser'
@@ -19,6 +20,7 @@ interface RawEntity {
   color?: number
   name?: string
   entities?: unknown[]
+  attribs?: unknown[]
   basePoint?: Point
   insertionPoint?: Point
   startPoint?: Point
@@ -46,6 +48,11 @@ interface RawEntity {
   text?: string
   textHeight?: number
   smoothType?: number
+  degree?: number
+  controlPoints?: Point[]
+  fitPoints?: Point[]
+  knots?: number[]
+  weights?: number[]
   thickness?: number
   elevation?: number
 }
@@ -82,20 +89,42 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
     input && typeof input === 'object'
       ? (input as {
           entities?: unknown[]
-          tables?: { BLOCK_RECORD?: { entries?: unknown[] }; HEADER_VARS?: { INSUNITS?: unknown } }
+          tables?: {
+            BLOCK_RECORD?: { entries?: unknown[] }
+            LAYER?: { entries?: unknown[] }
+            HEADER_VARS?: { INSUNITS?: unknown }
+          }
           header?: { INSUNITS?: unknown; MEASUREMENT?: unknown; vars?: { INSUNITS?: unknown; MEASUREMENT?: unknown } }
           insUnits?: unknown
         })
       : {}
   const diagnostics: CadImportDiagnostic[] = []
   const entities: DxfEntity[] = []
+  // Layer table: frozen layers and layers switched off are imported but hidden by default (same as the DXF path).
+  const hiddenLayers = new Set<string>()
+  const frozenLayers = new Set<string>()
+  for (const layer of db.tables?.LAYER?.entries ?? []) {
+    const l = layer as { name?: unknown; frozen?: unknown; off?: unknown }
+    if (typeof l.name !== 'string') continue
+    if (l.frozen === true) frozenLayers.add(l.name)
+    if (l.frozen === true || l.off === true) hiddenLayers.add(l.name)
+  }
+  let paperSpaceSkipped = 0
   const blockReferences: CadBlockReference[] = []
   const bbox: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
   const blocks = new Map<string, RawEntity>()
   const ambiguousBlocks = new Set<string>()
+  // Layout records (*Model_Space, *Paper_Space, *Paper_SpaceN) are not INSERT targets. LibreDWG's own writer emits a
+  // second *Model_Space record, which must not be reported as an ambiguous block definition.
+  const paperSpaceRecords = new Set<string>()
+  const layoutRecord = /^\*(model_space|paper_space\d*)$/i
   for (const block of db.tables?.BLOCK_RECORD?.entries ?? []) {
     const raw = rawObject(block)
     if (typeof raw.name !== 'string') continue
+    if (layoutRecord.test(raw.name)) {
+      if (/^\*paper_space/i.test(raw.name) && typeof raw.handle === 'string') paperSpaceRecords.add(raw.handle)
+      continue
+    }
     if (blocks.has(raw.name) || ambiguousBlocks.has(raw.name)) {
       blocks.delete(raw.name)
       ambiguousBlocks.add(raw.name)
@@ -305,6 +334,34 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           endParam: raw.endAngle
         }
       }
+      case 'SPLINE': {
+        // libredwg-web: controlPoints / fitPoints are {x,y,z}[], knots and weights number[]; flag is the DXF-style 70 value.
+        const control = Array.isArray(raw.controlPoints) ? raw.controlPoints : []
+        const fit = Array.isArray(raw.fitPoints) ? raw.fitPoints : []
+        if (!planar(raw, [...control, ...fit])) return null
+        const sampled = sampleSplineData({
+          closed: Number.isInteger(raw.flag) && ((raw.flag ?? 0) & 1) !== 0,
+          degree: raw.degree ?? 3,
+          control: control.map((p): [number, number] => [p.x, p.y]),
+          fit: fit.map((p): [number, number] => [p.x, p.y]),
+          knots: Array.isArray(raw.knots) ? raw.knots : [],
+          weights: Array.isArray(raw.weights) ? raw.weights : []
+        })
+        if (!sampled) {
+          diagnose(raw, 'unsupported-entity', 'SPLINE has no usable control points with knots, or fit points; source geometry omitted.')
+          return null
+        }
+        const points: number[] = []
+        for (let k = 0; k < sampled.points.length; k += 2) points.push(sampled.points[k], -sampled.points[k + 1])
+        return {
+          ...common,
+          type: 'LWPOLYLINE',
+          closed: sampled.closed,
+          points,
+          bulges: points.map(() => 0).slice(0, points.length / 2),
+          geometryApproximation: `SPLINE sampled as a polyline from its ${sampled.how}; the curve is approximate`
+        }
+      }
       case 'SOLID':
       case '3DFACE': {
         const corners = [
@@ -371,6 +428,50 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
         return null
     }
   }
+  function emit(
+    raw: RawEntity,
+    transform: Matrix,
+    sourceBlock: string | undefined,
+    inheritedLayer: string | undefined,
+    frozenBy: string | undefined,
+    zScale: number,
+    zOffset: number
+  ): void {
+    const converted = convert(raw, zScale, zOffset)
+    if (!converted) return
+    const invalid = validateCadEntity(converted)
+    if (invalid) {
+      diagnose(raw, 'invalid-geometry', invalid, 'error')
+      return
+    }
+    const transformed = transformCadEntity(converted, transform)
+    const transformedInvalid = validateCadEntity(transformed)
+    if (transformedInvalid) {
+      diagnose(raw, 'invalid-geometry', transformedInvalid, 'error')
+      return
+    }
+    const bounds = getCadEntityBounds(transformed)
+    if (!Object.values(bounds).every(finite)) {
+      diagnose(
+        raw,
+        'geometry-overflow',
+        'Native geometry exceeds finite drawing bounds; entity was skipped.',
+        'error'
+      )
+      return
+    }
+    transformed.sourceBlock = sourceBlock
+    const ownLayer = !transformed.layer || transformed.layer === '0' ? (inheritedLayer ?? '0') : transformed.layer
+    transformed.layer = frozenBy && !hiddenLayers.has(ownLayer) ? frozenBy : ownLayer
+    if (transformed.layer !== ownLayer) transformed.originalLayer = ownLayer
+    if (transformed.geometryApproximation)
+      diagnose(raw, 'approximated-geometry', transformed.geometryApproximation)
+    entities.push(transformed)
+    bbox.minX = Math.min(bbox.minX, bounds.minX)
+    bbox.maxX = Math.max(bbox.maxX, bounds.maxX)
+    bbox.minY = Math.min(bbox.minY, bounds.minY)
+    bbox.maxY = Math.max(bbox.maxY, bounds.maxY)
+  }
   let visitedRecords = 0
   let expansionStopped = false
   function extract(
@@ -380,7 +481,8 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
     sourceBlock?: string,
     inheritedLayer?: string,
     zScale = 1,
-    zOffset = 0
+    zOffset = 0,
+    frozenBy?: string
   ): void {
     for (const value of rawEntities) {
       if (expansionStopped) return
@@ -394,6 +496,13 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           'error'
         )
         return
+      }
+      // Top-level entities owned by a paper-space layout are layout content, not model geometry (block definitions are
+      // never filtered: their owner is the block record).
+      const owner = (raw as RawEntity & { ownerBlockRecordSoftId?: unknown }).ownerBlockRecordSoftId
+      if (sourceBlock === undefined && typeof owner === 'string' && paperSpaceRecords.has(owner)) {
+        paperSpaceSkipped++
+        continue
       }
       if (raw.type === 'INSERT') {
         const block = typeof raw.name === 'string' ? blocks.get(raw.name) : undefined
@@ -475,14 +584,18 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
         if (insertTransformHasShear(composed))
           diagnose(raw, 'sheared-insert', `INSERT ${raw.name} is sheared (non-uniform scale combined with a rotated nested insert); its geometry is transformed exactly but the block reference reports rotation and scale only.`)
         const childStart = entities.length
+        // Freezing an INSERT's layer hides the whole reference: children on a visible layer move onto it (see frozenBy).
+        const insertOwnLayer = raw.layer && raw.layer !== '0' ? raw.layer : (inheritedLayer ?? '0')
+        const insertLayer = frozenBy && !hiddenLayers.has(insertOwnLayer) ? frozenBy : insertOwnLayer
         extract(
           block.entities,
           composed,
           new Set([...ancestors, raw.name!]),
           raw.name,
-          raw.layer && raw.layer !== '0' ? raw.layer : inheritedLayer,
+          insertLayer,
           zScale * sz,
-          zScale * (insertZ - sz * baseZ) + zOffset
+          zScale * (insertZ - sz * baseZ) + zOffset,
+          frozenLayers.has(insertLayer) ? insertLayer : frozenBy
         )
         const placement = describeInsertTransform(composed, { x: base.x, y: -base.y })
         const childBounds: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
@@ -501,50 +614,57 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
         blockReferences.push({
           handle: raw.handle ?? `INSERT:${raw.name}:${blockReferences.length}`,
           name: raw.name!,
-          layer: raw.layer && raw.layer !== '0' ? raw.layer : (inheritedLayer ?? '0'),
+          layer: insertLayer,
           ...placement,
           bounds: childBounds,
           entityRange: [childStart, entities.length],
           nestingDepth: ancestors.size
         })
+        // Visible attributes are drawn like single-line TEXT in WCS (not through the INSERT's own transform), exactly
+        // as the DXF path does. libredwg-web exposes an ATTRIB's text through `text` (the converted text base).
+        for (const item of Array.isArray(raw.attribs) ? raw.attribs : []) {
+          const attrib = item as RawEntity & {
+            isVisible?: boolean
+            flags?: number
+            text?: { text?: unknown; startPoint?: Point; textHeight?: number; rotation?: number; extrusionDirection?: Point }
+          }
+          const base = attrib.text
+          if (!base || typeof base.text !== 'string' || !base.text.trim()) continue
+          if (attrib.isVisible === false || (finite(attrib.flags) && (attrib.flags & 1) !== 0)) continue
+          emit(
+            {
+              type: 'TEXT',
+              handle: attrib.handle,
+              layer: attrib.layer,
+              color: attrib.color,
+              colorIndex: attrib.colorIndex,
+              startPoint: base.startPoint,
+              text: base.text,
+              textHeight: base.textHeight,
+              rotation: base.rotation,
+              extrusionDirection: base.extrusionDirection
+            },
+            transform,
+            sourceBlock,
+            inheritedLayer,
+            frozenBy,
+            zScale,
+            zOffset
+          )
+        }
         continue
       }
-      const converted = convert(raw, zScale, zOffset)
-      if (!converted) continue
-      const invalid = validateCadEntity(converted)
-      if (invalid) {
-        diagnose(raw, 'invalid-geometry', invalid, 'error')
-        continue
-      }
-      const transformed = transformCadEntity(converted, transform)
-      const transformedInvalid = validateCadEntity(transformed)
-      if (transformedInvalid) {
-        diagnose(raw, 'invalid-geometry', transformedInvalid, 'error')
-        continue
-      }
-      const bounds = getCadEntityBounds(transformed)
-      if (!Object.values(bounds).every(finite)) {
-        diagnose(
-          raw,
-          'geometry-overflow',
-          'Native geometry exceeds finite drawing bounds; entity was skipped.',
-          'error'
-        )
-        continue
-      }
-      transformed.sourceBlock = sourceBlock
-      if (transformed.layer === '0' && inheritedLayer) transformed.layer = inheritedLayer
-      if (transformed.geometryApproximation)
-        diagnose(raw, 'approximated-geometry', transformed.geometryApproximation)
-      entities.push(transformed)
-      bbox.minX = Math.min(bbox.minX, bounds.minX)
-      bbox.maxX = Math.max(bbox.maxX, bounds.maxX)
-      bbox.minY = Math.min(bbox.minY, bounds.minY)
-      bbox.maxY = Math.max(bbox.maxY, bounds.maxY)
+      emit(raw, transform, sourceBlock, inheritedLayer, frozenBy, zScale, zOffset)
     }
   }
   extract(Array.isArray(db.entities) ? db.entities : [], identity, new Set())
 
+  if (paperSpaceSkipped)
+    diagnostics.push({
+      code: 'paper-space-skipped',
+      severity: 'warning',
+      message: `${paperSpaceSkipped} paper-space (layout) entit${paperSpaceSkipped === 1 ? 'y was' : 'ies were'} skipped; only model space is imported.`
+    })
   const finalBbox = entities.length ? bbox : { minX: 0, maxX: 500, minY: 0, maxY: 500 }
   const rawUnits =
     db.header?.INSUNITS ??
@@ -571,6 +691,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
     insUnits,
     measurement,
     unitsConfidence: units.unitsConfidence,
-    ...units.suggestion
+    ...units.suggestion,
+    ...(hiddenLayers.size ? { hiddenLayers: [...hiddenLayers].sort() } : {})
   }
 }

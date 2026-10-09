@@ -260,11 +260,17 @@ function sampleSpline(r: DxfRecord): { points: number[]; closed: boolean; how: s
     }
     return out;
   };
+  return sampleSplineData({
+    closed, degree: number(r, 71, 3), control: collect(10, 20), fit: collect(11, 21),
+    knots: r.pairs.filter(p => p.code === 40).map(p => Number(p.value)),
+    weights: r.pairs.filter(p => p.code === 41).map(p => Number(p.value))
+  });
+}
+
+/** Sampling shared by the DXF and DWG importers (DXF coordinates, Y up). */
+export function sampleSplineData(spline: { closed: boolean; degree: number; control: [number, number][]; fit: [number, number][]; knots: number[]; weights: number[] }): { points: number[]; closed: boolean; how: string } | undefined {
+  const { closed, degree, control, fit, knots, weights } = spline;
   const finite = (pts: [number, number][]) => pts.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
-  const degree = number(r, 71, 3);
-  const control = collect(10, 20), fit = collect(11, 21);
-  const knots = r.pairs.filter(p => p.code === 40).map(p => Number(p.value));
-  const weights = r.pairs.filter(p => p.code === 41).map(p => Number(p.value));
   const n = control.length;
   if (n >= 2 && Number.isInteger(degree) && degree >= 1 && degree < n && finite(control) && knots.length === n + degree + 1
     && knots.every((k, i) => Number.isFinite(k) && (i === 0 || k >= knots[i - 1])) && knots[n] > knots[degree]
