@@ -1,0 +1,19 @@
+diff --git a/src/in_dxf.c b/src/in_dxf.c
+index 5173623e..f52e9f53 100644
+--- a/src/in_dxf.c
++++ b/src/in_dxf.c
+@@ -9102,6 +9102,14 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
+                pair->value.l == 0L)
+         goto next_pair;
+ #  endif
++      // MEP patch: the generic DXF-code lookup maps MTEXT group 40 to rect_width (the same code of the annotation
++      // context), leaving text_height = 0. Group 40 of an MTEXT entity is the text height.
++      if (pair->code == 40 && obj->fixedtype == DWG_TYPE_MTEXT)
++        {
++          obj->tio.entity->tio.MTEXT->text_height = pair->value.d;
++          LOG_TRACE ("MTEXT.text_height = %f [BD 40]\n", pair->value.d);
++          goto next_pair;
++        }
+       // start_switch:
+       switch (pair->code)
+         { // common flags: name, xref

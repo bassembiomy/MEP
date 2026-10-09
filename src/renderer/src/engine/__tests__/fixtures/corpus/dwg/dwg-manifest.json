@@ -8,7 +8,7 @@
     "_CLOSEDBLANK",
     "_CLOSEDFILLED"
    ],
-   "bytes": 22136,
+   "bytes": 22050,
    "dwgVersion": "r2000",
    "ezdxfCounts": {
     "dimensionBlocks": 0,
@@ -61,7 +61,7 @@
     }
    },
    "measurement": 0,
-   "sha256": "c879437876ee408a5699b4f76df01828eeae8d260023db827180b13896bbae3e",
+   "sha256": "ed741250feb5a78b2b04d73466b2dbe527c4f5a99d8fde1a95f2e7940f391093",
    "texts": [
     {
      "height": 5.0,
@@ -118,20 +118,8 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {
-     "MTEXT.textHeight": {
-      "cause": "LibreDWG 0.13.3 dxf2dwg maps DXF group 40 of MTEXT to rect_width (the annotation-context field of the same code), so MTEXT text_height is written as 0 and the height is stored in rectWidth",
-      "count": 8,
-      "dwg": [
-       0.0
-      ],
-      "source": [
-       5.0,
-       8.0
-      ]
-     }
-    },
-    "status": "pass-with-exclusions"
+    "exclusions": {},
+    "status": "pass"
    }
   },
   "arch-metric-mm-r2000.dwg": {
@@ -143,7 +131,7 @@
     "_CLOSEDBLANK",
     "_CLOSEDFILLED"
    ],
-   "bytes": 25165,
+   "bytes": 25079,
    "dwgVersion": "r2000",
    "ezdxfCounts": {
     "dimensionBlocks": 0,
@@ -215,7 +203,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "3d17471ab6eac0a6d65b6c343e043457c629c9f465da102906efcf90c40eead5",
+   "sha256": "57df60636881436f7100b6ed575ca1a1966851a1e047a42d9e7c0779951e2afc",
    "texts": [
     {
      "height": 150.0,
@@ -286,20 +274,8 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {
-     "MTEXT.textHeight": {
-      "cause": "LibreDWG 0.13.3 dxf2dwg maps DXF group 40 of MTEXT to rect_width (the annotation-context field of the same code), so MTEXT text_height is written as 0 and the height is stored in rectWidth",
-      "count": 8,
-      "dwg": [
-       0.0
-      ],
-      "source": [
-       150.0,
-       250.0
-      ]
-     }
-    },
-    "status": "pass-with-exclusions"
+    "exclusions": {},
+    "status": "pass"
    }
   },
   "elevated-levels-r2000.dwg": {
@@ -309,7 +285,7 @@
     "_CLOSEDBLANK",
     "_CLOSEDFILLED"
    ],
-   "bytes": 22120,
+   "bytes": 22088,
    "dwgVersion": "r2000",
    "ezdxfCounts": {
     "dimensionBlocks": 0,
@@ -362,7 +338,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "949c1f744f57dfb32b55c4588be3825881fb69bccc628676c51d8c3d0f9f3b3b",
+   "sha256": "c417589f8492f7f86fd5186c9e0df50aa66bad16fb7f6be099896c80673138c5",
    "texts": [
     {
      "height": 150.0,
@@ -433,20 +409,113 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {
-     "TEXT.elevation": {
-      "cause": "LibreDWG 0.13.3 dxf2dwg does not store the Z of a DXF TEXT (R2000 keeps an `elevation` field it never fills)",
-      "count": 4,
-      "dwg": [
-       0.0
-      ],
-      "source": [
-       0.0,
-       3500.0
-      ]
-     }
+    "exclusions": {},
+    "status": "pass"
+   }
+  },
+  "entity-units-r2000.dwg": {
+   "blocks": [
+    "MARK",
+    "PAIR",
+    "_ARCHTICK",
+    "_CLOSEDBLANK",
+    "_CLOSEDFILLED"
+   ],
+   "bytes": 20882,
+   "dwgVersion": "r2000",
+   "ezdxfCounts": {
+    "dimensionBlocks": 0,
+    "insertAttributes": 0,
+    "modelSpaceByType": {
+     "ARC": 2,
+     "CIRCLE": 1,
+     "ELLIPSE": 2,
+     "INSERT": 2,
+     "LWPOLYLINE": 1,
+     "MTEXT": 1,
+     "TEXT": 3
     },
-    "status": "pass-with-exclusions"
+    "paperSpaceByType": {}
+   },
+   "insunits": 4,
+   "layers": {
+    "0": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-ANNO-TEXT": {
+     "color": 2,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-BLOCK": {
+     "color": 3,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-DETAIL": {
+     "color": 1,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "Defpoints": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    }
+   },
+   "measurement": 1,
+   "sha256": "a6b8fb737b11a07f1e04fedef3b3741eaf05d96a8f0a095b0647858beeb1e35d",
+   "texts": [
+    {
+     "height": 180.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "MTEXT ROT 45",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "TXT CENTER",
+     "type": "TEXT"
+    },
+    {
+     "height": 200.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "TXT ROT 90",
+     "type": "TEXT"
+    },
+    {
+     "height": 180.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "TXT SKEW",
+     "type": "TEXT"
+    }
+   ],
+   "twin": "entity-units-r2000.dxf",
+   "writerCheck": {
+    "compared": [
+     "entity counts by type",
+     "entity counts by type and layer",
+     "paper-space entities by type",
+     "INSERT attribute count",
+     "layer table (frozen/off/locked/colour, from dwgread JSON)",
+     "block names",
+     "anonymous dimension blocks",
+     "$INSUNITS/$MEASUREMENT/$LUNITS"
+    ],
+    "exclusions": {},
+    "status": "pass"
    }
   },
   "noise-dim-hatch-spline-paper-r2000.dwg": {
@@ -457,7 +526,7 @@
     "_CLOSEDBLANK",
     "_CLOSEDFILLED"
    ],
-   "bytes": 27858,
+   "bytes": 27850,
    "dwgVersion": "r2000",
    "ezdxfCounts": {
     "dimensionBlocks": 3,
@@ -568,7 +637,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "931c902e71fb3c33c41be4b64b518016397db8cbb6cb7e6f346a3c8ad66c8f34",
+   "sha256": "cec28ba783fd609e538abe9f91804d237eb798c7c394ecf6f2130428b0a0397e",
    "texts": [
     {
      "height": 150.0,
@@ -639,20 +708,8 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {
-     "MTEXT.textHeight": {
-      "cause": "LibreDWG 0.13.3 dxf2dwg maps DXF group 40 of MTEXT to rect_width (the annotation-context field of the same code), so MTEXT text_height is written as 0 and the height is stored in rectWidth",
-      "count": 8,
-      "dwg": [
-       0.0
-      ],
-      "source": [
-       150.0,
-       250.0
-      ]
-     }
-    },
-    "status": "pass-with-exclusions"
+    "exclusions": {},
+    "status": "pass"
    }
   },
   "unitless-insunits0-r14.dwg": {
@@ -735,7 +792,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "0856f5c0d8f9b24244d426ceba1ce1d65bb986cb7cdfc55c2832c4776aa19909",
+   "sha256": "b1b9dc50ef1f1e1f5865d626116bf46d1bb41072fd098018bfc6ef33610b9a46",
    "texts": [
     {
      "height": 150.0,
@@ -806,20 +863,8 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {
-     "MTEXT.textHeight": {
-      "cause": "LibreDWG 0.13.3 dxf2dwg maps DXF group 40 of MTEXT to rect_width (the annotation-context field of the same code), so MTEXT text_height is written as 0 and the height is stored in rectWidth",
-      "count": 8,
-      "dwg": [
-       0.0
-      ],
-      "source": [
-       150.0,
-       250.0
-      ]
-     }
-    },
-    "status": "pass-with-exclusions"
+    "exclusions": {},
+    "status": "pass"
    }
   },
   "unitless-insunits0-r2000.dwg": {
@@ -902,7 +947,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "45f56f7d7d1c9602753cc2a83cd937ce6f6f887c80bbb9482eb2d985cf326b55",
+   "sha256": "6d20a9183080eaf40b0f65d13e8a51da95e7282aef812362a90438c24ee82875",
    "texts": [
     {
      "height": 150.0,
@@ -973,20 +1018,8 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {
-     "MTEXT.textHeight": {
-      "cause": "LibreDWG 0.13.3 dxf2dwg maps DXF group 40 of MTEXT to rect_width (the annotation-context field of the same code), so MTEXT text_height is written as 0 and the height is stored in rectWidth",
-      "count": 8,
-      "dwg": [
-       0.0
-      ],
-      "source": [
-       150.0,
-       250.0
-      ]
-     }
-    },
-    "status": "pass-with-exclusions"
+    "exclusions": {},
+    "status": "pass"
    }
   }
  },
@@ -996,13 +1029,18 @@
  "handleNormalisation": "entity handles are renumbered before dxf2dwg (modelspace last) to avoid LibreDWG 0.13.3 first/last handle-range entity leaks",
  "libredwg": {
   "commit": "97c7225596c17430b82fd0161e7eff6beb5b1034",
-  "patches": [
-   {
-    "file": "scripts/cad-corpus/patches/libredwg-0.13.3-layer-flags.patch",
-    "purpose": "dxf2dwg writes the layer frozen/off/locked flag word (0.13.3 writes 0 and loses them)",
-    "sha256": "35c01da2cc9ce3fbfa801123bda3397da5cd6b379f513c8e3ba314dcdaecf933"
-   }
-  ],
+  "patches": {
+   "files": [
+    "scripts/cad-corpus/patches/libredwg-0.13.3-layer-flags.patch",
+    "scripts/cad-corpus/patches/libredwg-0.13.3-mtext-height.patch",
+    "scripts/cad-corpus/patches/libredwg-0.13.3-text-dataflags.patch"
+   ],
+   "purpose": {
+    "layer-flags": "dxf2dwg writes the layer frozen/off/locked flag word (0.13.3 writes 0 and loses them)",
+    "mtext-height": "dxf2dwg stores MTEXT group 40 as text_height (0.13.3 stores rect_width, height 0)"
+   },
+   "sha256OfConcatenation": "7d5254c2eadb6c97f0652da6da7ba760e540f47e1ad4a7936dd42ab58c11e986"
+  },
   "tag": "0.13.3",
   "version": "dxf2dwg 0.13.3"
  },
@@ -1062,6 +1100,25 @@
    ],
    "reason": "dwg2dxf of the written file failed (exit 1)",
    "twin": "elevated-levels-r2000.dxf",
+   "version": "r2004"
+  },
+  {
+   "diffCount": 1,
+   "diffs": [
+    "$INSUNITS: source 4, dwg 0"
+   ],
+   "reason": "writer check differs from the ezdxf source",
+   "twin": "entity-units-r2000.dxf",
+   "version": "r14"
+  },
+  {
+   "log": [
+    "ERROR: Invalid System Section Page Map type 0x1 != 0x41630e3b",
+    "ERROR: Failed to decode file: <tmp>/entity-units-r2004.dwg 0x100",
+    "READ ERROR 0x100"
+   ],
+   "reason": "dwg2dxf of the written file failed (exit 1)",
+   "twin": "entity-units-r2000.dxf",
    "version": "r2004"
   },
   {

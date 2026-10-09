@@ -1,0 +1,38 @@
+diff --git a/src/in_dxf.c b/src/in_dxf.c
+index f52e9f53..78e47346 100644
+--- a/src/in_dxf.c
++++ b/src/in_dxf.c
+@@ -8698,21 +8698,25 @@ postprocess_TEXTlike (Dwg_Object *obj)
+                            NULL);
+   dwg_dynapi_entity_value (_obj, obj->name, "style", &style, NULL);
+ 
+-  if (elevation != 0.0)
++  // MEP patch: a dataflags bit means "field absent from the file because it has its default value" (see dwg.spec
++  // and the code 30 handling above), so set it when the value IS the default. 0.13.3 set it when the value is not
++  // the default, which dropped the elevation, rotation, oblique angle, width factor, generation and alignments of
++  // every non-default TEXT / ATTRIB / ATTDEF written by dxf2dwg.
++  if (elevation == 0.0)
+     dataflags |= 1;
+-  if (alignment_pt.x != ins_pt.x || alignment_pt.y != ins_pt.y)
++  if (alignment_pt.x == ins_pt.x && alignment_pt.y == ins_pt.y)
+     dataflags |= 2;
+-  if (oblique_angle != 0.0)
++  if (oblique_angle == 0.0)
+     dataflags |= 4;
+-  if (rotation != 0.0)
++  if (rotation == 0.0)
+     dataflags |= 8;
+-  if (width_factor != 1.0)
++  if (width_factor == 1.0)
+     dataflags |= 0x10;
+-  if (generation != 0)
++  if (generation == 0)
+     dataflags |= 0x20;
+-  if (horiz_alignment != 0)
++  if (horiz_alignment == 0)
+     dataflags |= 0x40;
+-  if (vert_alignment != 0)
++  if (vert_alignment == 0)
+     dataflags |= 0x80;
+ 
+   if (!style)

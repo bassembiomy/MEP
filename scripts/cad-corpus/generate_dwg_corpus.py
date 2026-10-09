@@ -342,11 +342,11 @@ def main():
     bin_dir = find_bin()
     dxf2dwg, dwg2dxf = os.path.join(bin_dir, "dxf2dwg"), os.path.join(bin_dir, "dwg2dxf")
     dwgread = os.path.join(bin_dir, "dwgread")
-    patch_file = os.path.join(HERE, "patches", "libredwg-0.13.3-layer-flags.patch")
-    patch_sha = sha256(patch_file)
+    patch_files = sorted(f for f in os.listdir(os.path.join(HERE, "patches")) if f.startswith("libredwg-0.13.3-") and f.endswith(".patch"))
+    patch_sha = hashlib.sha256(b"".join(open(os.path.join(HERE, "patches", f), "rb").read() for f in patch_files)).hexdigest()
     stamp = os.path.join(os.path.dirname(bin_dir), ".patch-sha256")
     if not os.path.exists(stamp) or open(stamp).read().strip() != patch_sha:
-        sys.exit("LibreDWG build lacks patches/libredwg-0.13.3-layer-flags.patch: run scripts/cad-corpus/build_libredwg.sh")
+        sys.exit("LibreDWG build lacks the scripts/cad-corpus/patches: run scripts/cad-corpus/build_libredwg.sh")
     ver_out = run([dxf2dwg, "--version"]).stdout.strip().splitlines()[0]
     if LIBREDWG_TAG not in ver_out:
         sys.exit(f"expected LibreDWG {LIBREDWG_TAG}, found '{ver_out}' (rebuild with build_libredwg.sh)")
@@ -413,8 +413,9 @@ def main():
                  "blocks come from the ezdxf SOURCE document, never from our parsers. A file is committed only if LibreDWG's own "
                  "dwg2dxf round trip matches the source (writerCheck). Rejected (twin, version) pairs are listed with the reason.",
         "libredwg": {"tag": LIBREDWG_TAG, "commit": LIBREDWG_COMMIT, "version": ver_out,
-                     "patches": [{"file": "scripts/cad-corpus/patches/libredwg-0.13.3-layer-flags.patch", "sha256": patch_sha,
-                                  "purpose": "dxf2dwg writes the layer frozen/off/locked flag word (0.13.3 writes 0 and loses them)"}]},
+                     "patches": {"files": [f"scripts/cad-corpus/patches/{f}" for f in patch_files], "sha256OfConcatenation": patch_sha,
+                            "purpose": {"layer-flags": "dxf2dwg writes the layer frozen/off/locked flag word (0.13.3 writes 0 and loses them)",
+                                        "mtext-height": "dxf2dwg stores MTEXT group 40 as text_height (0.13.3 stores rect_width, height 0)"}}},
         "generator": {"ezdxf": ezdxf.__version__},
         "handleNormalisation": "entity handles are renumbered before dxf2dwg (modelspace last) to avoid LibreDWG 0.13.3 first/last handle-range entity leaks",
         "files": files,

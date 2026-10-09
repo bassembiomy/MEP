@@ -518,6 +518,202 @@
    "sourceUnsupported": {},
    "unitsPerFoot": 304.8
   },
+  "entity-units-r2000.dxf": {
+   "columns": [],
+   "constructed": [
+    {
+     "center": [
+      1000,
+      2000
+     ],
+     "endDeg": 120,
+     "layer": "A-DETAIL",
+     "radius": 500,
+     "startDeg": 30,
+     "type": "ARC"
+    },
+    {
+     "center": [
+      3000,
+      2000
+     ],
+     "endDeg": 90,
+     "layer": "A-DETAIL",
+     "radius": 400,
+     "startDeg": 270,
+     "type": "ARC"
+    },
+    {
+     "center": [
+      5000,
+      2000
+     ],
+     "layer": "A-DETAIL",
+     "radius": 300,
+     "type": "CIRCLE"
+    },
+    {
+     "center": [
+      7000,
+      2000
+     ],
+     "endParam": 6.283185307179586,
+     "layer": "A-DETAIL",
+     "majorAxis": [
+      600,
+      0
+     ],
+     "ratio": 0.5,
+     "startParam": 0.0,
+     "type": "ELLIPSE"
+    },
+    {
+     "center": [
+      9000,
+      2000
+     ],
+     "endParam": 2.0,
+     "layer": "A-DETAIL",
+     "majorAxis": [
+      0,
+      500
+     ],
+     "ratio": 0.4,
+     "startParam": 0.5,
+     "type": "ELLIPSE"
+    },
+    {
+     "closed": true,
+     "layer": "A-DETAIL",
+     "type": "LWPOLYLINE",
+     "vertices": [
+      [
+       0,
+       0,
+       0.5
+      ],
+      [
+       1000,
+       0,
+       0
+      ],
+      [
+       1000,
+       800,
+       -0.3
+      ],
+      [
+       0,
+       800,
+       0
+      ]
+     ]
+    },
+    {
+     "halign": 0,
+     "height": 200,
+     "insert": [
+      0,
+      5000
+     ],
+     "layer": "A-ANNO-TEXT",
+     "rotationDeg": 90,
+     "text": "TXT ROT 90",
+     "type": "TEXT"
+    },
+    {
+     "alignPoint": [
+      2500,
+      5000
+     ],
+     "halign": 1,
+     "height": 150,
+     "insert": [
+      2500,
+      5000
+     ],
+     "layer": "A-ANNO-TEXT",
+     "rotationDeg": 0,
+     "text": "TXT CENTER",
+     "type": "TEXT"
+    },
+    {
+     "halign": 0,
+     "height": 180,
+     "insert": [
+      5000,
+      5000
+     ],
+     "layer": "A-ANNO-TEXT",
+     "obliqueDeg": 15,
+     "rotationDeg": 30,
+     "text": "TXT SKEW",
+     "type": "TEXT",
+     "widthFactor": 0.8
+    },
+    {
+     "attachment": 5,
+     "height": 180,
+     "insert": [
+      8000,
+      5000
+     ],
+     "layer": "A-ANNO-TEXT",
+     "rotationDeg": 45,
+     "text": "MTEXT ROT 45",
+     "type": "MTEXT"
+    },
+    {
+     "depth": 0,
+     "insert": [
+      0,
+      7000
+     ],
+     "layer": "A-BLOCK",
+     "name": "MARK",
+     "rotationDeg": 90,
+     "type": "INSERT",
+     "xscale": 2.0,
+     "yscale": 1.5
+    },
+    {
+     "depth": 0,
+     "insert": [
+      4000,
+      7000
+     ],
+     "layer": "A-BLOCK",
+     "name": "PAIR",
+     "nested": [
+      "MARK",
+      "MARK"
+     ],
+     "rotationDeg": 30,
+     "type": "INSERT",
+     "xscale": 1.0,
+     "yscale": 1.0
+    }
+   ],
+   "drawingUnit": "mm",
+   "dxfVersion": "AC1015",
+   "expected": {
+    "cadUnit": "mm",
+    "unitsConfidence": "declared"
+   },
+   "expectedEntityCount": 19,
+   "insunits": 4,
+   "measurement": 1,
+   "modelBBox": {
+    "maxX": 8904.11489227916,
+    "maxY": 7759.807621135332,
+    "minX": -450.0,
+    "minY": -250.0
+   },
+   "openings": [],
+   "rooms": [],
+   "sourceUnsupported": {},
+   "unitsPerFoot": 304.8
+  },
   "noise-dim-hatch-spline-paper-r2000.dxf": {
    "columns": [
     {

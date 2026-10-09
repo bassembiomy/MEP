@@ -22,6 +22,7 @@ if os.environ.get("PYTHONHASHSEED") != "0":  # ezdxf's OBJECTS order follows set
 
 import ezdxf
 from ezdxf import units as ez_units
+from ezdxf.enums import TextEntityAlignment
 from ezdxf.bbox import extents as ez_extents
 
 if ezdxf.__version__ != "1.4.4":
@@ -540,6 +541,64 @@ def gen_elevated(manifest):
     manifest[name]["modelBBox"] = bb
 
 
+def gen_units(manifest):
+    """Twin-only drawing for the DWG corpus: one entity of every kind the importer reads, with construction values that
+    pin down angle units (ARC, ELLIPSE, TEXT, MTEXT, INSERT), bulges, text alignment and nested INSERTs.
+    The `constructed` list is the ground truth; angles are written in degrees exactly as constructed."""
+    doc = new_doc("R2018", ez_units.MM, 1, 2)
+    msp = doc.modelspace()
+    add_layers(doc, ["A-DETAIL", "A-ANNO-TEXT", "A-BLOCK"])
+    mark = doc.blocks.new("MARK")
+    mark.add_line((0, 0), (300, 0))
+    mark.add_line((0, 0), (0, 300))
+    mark.add_circle((150, 150), 50)
+    pair = doc.blocks.new("PAIR")
+    pair.add_blockref("MARK", (0, 0))
+    pair.add_blockref("MARK", (1000, 0), dxfattribs={"rotation": 90})
+    c = []
+
+    def rec(kind, layer, **kw):
+        c.append(dict(type=kind, layer=layer, **kw))
+
+    msp.add_arc((1000, 2000), 500, 30, 120, dxfattribs={"layer": "A-DETAIL"})
+    rec("ARC", "A-DETAIL", center=[1000, 2000], radius=500, startDeg=30, endDeg=120)
+    msp.add_arc((3000, 2000), 400, 270, 90, dxfattribs={"layer": "A-DETAIL"})
+    rec("ARC", "A-DETAIL", center=[3000, 2000], radius=400, startDeg=270, endDeg=90)
+    msp.add_circle((5000, 2000), 300, dxfattribs={"layer": "A-DETAIL"})
+    rec("CIRCLE", "A-DETAIL", center=[5000, 2000], radius=300)
+    msp.add_ellipse((7000, 2000), major_axis=(600, 0, 0), ratio=0.5, dxfattribs={"layer": "A-DETAIL"})
+    rec("ELLIPSE", "A-DETAIL", center=[7000, 2000], majorAxis=[600, 0], ratio=0.5, startParam=0.0, endParam=2 * math.pi)
+    msp.add_ellipse((9000, 2000), major_axis=(0, 500, 0), ratio=0.4, start_param=0.5, end_param=2.0, dxfattribs={"layer": "A-DETAIL"})
+    rec("ELLIPSE", "A-DETAIL", center=[9000, 2000], majorAxis=[0, 500], ratio=0.4, startParam=0.5, endParam=2.0)
+    bulged = [(0, 0, 0.5), (1000, 0, 0), (1000, 800, -0.3), (0, 800, 0)]
+    msp.add_lwpolyline(bulged, format="xyb", close=True, dxfattribs={"layer": "A-DETAIL"})
+    rec("LWPOLYLINE", "A-DETAIL", vertices=[list(v) for v in bulged], closed=True)
+    t = msp.add_text("TXT ROT 90", height=200, rotation=90, dxfattribs={"layer": "A-ANNO-TEXT", "insert": (0, 5000)})
+    rec("TEXT", "A-ANNO-TEXT", text="TXT ROT 90", insert=[0, 5000], height=200, rotationDeg=90, halign=0)
+    t = msp.add_text("TXT CENTER", height=150, dxfattribs={"layer": "A-ANNO-TEXT"})
+    t.set_placement((2500, 5000), align=TextEntityAlignment.CENTER)
+    rec("TEXT", "A-ANNO-TEXT", text="TXT CENTER", insert=[2500, 5000], alignPoint=[2500, 5000], height=150, rotationDeg=0, halign=1)
+    msp.add_text("TXT SKEW", height=180, rotation=30, dxfattribs={"layer": "A-ANNO-TEXT", "insert": (5000, 5000), "width": 0.8, "oblique": 15})
+    rec("TEXT", "A-ANNO-TEXT", text="TXT SKEW", insert=[5000, 5000], height=180, rotationDeg=30, widthFactor=0.8, obliqueDeg=15, halign=0)
+    m = msp.add_mtext("MTEXT ROT 45", dxfattribs={"layer": "A-ANNO-TEXT", "insert": (8000, 5000), "char_height": 180, "attachment_point": 5})
+    m.dxf.text_direction = (math.cos(math.radians(45)), math.sin(math.radians(45)), 0)
+    rec("MTEXT", "A-ANNO-TEXT", text="MTEXT ROT 45", insert=[8000, 5000], height=180, rotationDeg=45, attachment=5)
+    msp.add_blockref("MARK", (0, 7000), dxfattribs={"layer": "A-BLOCK", "rotation": 90, "xscale": 2.0, "yscale": 1.5})
+    rec("INSERT", "A-BLOCK", name="MARK", insert=[0, 7000], rotationDeg=90, xscale=2.0, yscale=1.5, depth=0)
+    msp.add_blockref("PAIR", (4000, 7000), dxfattribs={"layer": "A-BLOCK", "rotation": 30})
+    rec("INSERT", "A-BLOCK", name="PAIR", insert=[4000, 7000], rotationDeg=30, xscale=1.0, yscale=1.0, depth=0, nested=["MARK", "MARK"])
+    name = out_name("entity-units-r2018.dxf")
+    doc.saveas(os.path.join(OUT_DIR or OUT, name))
+    ents = list(msp)
+    manifest[name] = {
+        "dxfVersion": doc.dxfversion, "insunits": 4, "measurement": 1, "drawingUnit": "mm", "unitsPerFoot": MM_PER_FT,
+        "expected": {"cadUnit": "mm", "unitsConfidence": "declared"},
+        "constructed": c,
+        "rooms": [], "openings": [], "columns": [], "modelBBox": model_bbox(msp),
+        "expectedEntityCount": count_supported(doc, ents), "sourceUnsupported": count_unsupported(doc, ents),
+    }
+
+
 def model_bbox_excluding(msp, excluded):
     ids = {e.dxf.handle for e in excluded}
     xs, ys = [], []
@@ -658,7 +717,7 @@ def gen_legacy(manifest):
     }
 
 
-TWIN_SOURCES = (gen_metric, gen_imperial, gen_unitless, gen_noise, gen_elevated)
+TWIN_SOURCES = (gen_metric, gen_imperial, gen_unitless, gen_noise, gen_elevated, gen_units)
 
 
 def main_twins():
