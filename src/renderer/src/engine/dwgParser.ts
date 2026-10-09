@@ -14,28 +14,37 @@ async function getLibreDwgInstance(): Promise<LibreDwg> {
 }
 
 /**
- * libredwg-web's convert() omits the elevation (group 38) of TEXT and ATTRIB, which the DWG object does carry. Read it from
- * the typed entity and attach it, by handle, to the converted records (top level, block definitions and INSERT.attribs) so
- * the adapter treats it like every other elevated entity.
+ * libredwg-web's convert() omits the elevation (group 38) of TEXT and ATTRIB, which the DWG object does carry, and the
+ * `dataflags` that say whether the alignment point is stored (bit 0x02 set: it is not, and equals the insertion point).
+ * Read both from the typed entity and attach them, by handle, to the converted records (top level, block definitions and
+ * INSERT.attribs): `elevation` so the adapter treats the text like every other elevated entity, `textDataFlags` for the
+ * justification anchor.
  */
 function attachTextElevations(libredwg: LibreDwg, dwgData: Parameters<LibreDwg['convert']>[0], db: unknown): void {
   const elevations = new Map<string, number>()
+  const dataFlags = new Map<string, number>()
   for (const type of [Dwg_Object_Type.DWG_TYPE_TEXT, Dwg_Object_Type.DWG_TYPE_ATTRIB]) {
     for (const tio of libredwg.dwg_getall_entity_by_type(dwgData, type)) {
       const elevation = libredwg.dwg_dynapi_entity_data<number>(tio, 'elevation')
-      if (typeof elevation !== 'number' || elevation === 0) continue
+      const flags = libredwg.dwg_dynapi_entity_data<number>(tio, 'dataflags')
+      const hasElevation = typeof elevation === 'number' && elevation !== 0
+      if (!hasElevation && typeof flags !== 'number') continue
       const parent = libredwg.dwg_dynapi_entity_data<number>(tio, 'parent')
-      elevations.set(libredwg.dwg_object_entity_get_handle_object(parent).value.toString(16).toUpperCase(), elevation)
+      const handle = libredwg.dwg_object_entity_get_handle_object(parent).value.toString(16).toUpperCase()
+      if (hasElevation) elevations.set(handle, elevation)
+      if (typeof flags === 'number') dataFlags.set(handle, flags)
     }
   }
-  if (elevations.size === 0) return
+  if (elevations.size === 0 && dataFlags.size === 0) return
   const visit = (records: unknown): void => {
     if (!Array.isArray(records)) return
-    for (const record of records as { type?: string; handle?: string; elevation?: number; attribs?: unknown }[]) {
+    for (const record of records as { type?: string; handle?: string; elevation?: number; textDataFlags?: number; attribs?: unknown }[]) {
       if (!record || typeof record !== 'object') continue
-      if ((record.type === 'TEXT' || record.type === 'ATTRIB') && record.elevation === undefined && typeof record.handle === 'string') {
+      if ((record.type === 'TEXT' || record.type === 'ATTRIB') && typeof record.handle === 'string') {
         const elevation = elevations.get(record.handle)
-        if (elevation !== undefined) record.elevation = elevation
+        if (elevation !== undefined && record.elevation === undefined) record.elevation = elevation
+        const flags = dataFlags.get(record.handle)
+        if (flags !== undefined) record.textDataFlags = flags
       }
       visit(record.attribs)
     }

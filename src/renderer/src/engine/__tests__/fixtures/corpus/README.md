@@ -154,11 +154,15 @@ no AppInfo, so their authoring application is not verified either. Hidden layers
   without them stay valid; unknown values are rejected by `validateCadEntity` (so by project load).
 - **T3 transform.** The anchor is resolved *before* `transformCadEntity`, so it receives exactly the matrix group 10 received (DXF parser and the DWG emit step). A mirrored INSERT (det < 0) does **not** swap left/right:
   this is the existing glyph-orientation approximation (see `nativeGeometry.transformCadEntity`).
-- **DWG.** TEXT uses `halign` / `valign` with `endPoint` as the alignment point. libredwg-web reports `endPoint` `{0,0}` when the DWG holds none, so `halign` / `valign` gate its use, and a justified TEXT whose `endPoint`
-  is exactly `{0,0}` counts as missing (`text-alignment-point-missing`, group-10 anchor, left/baseline). The committed LibreDWG-written `entity-units-r2000.dwg` is such a file (`TXT CENTER` has `halign` 1, `endPoint` `{0,0}`).
+- **DWG.** TEXT uses `halign` / `valign` with `endPoint` as the alignment point. The DWG stores that point only when the TEXT / ATTRIB `dataflags` bit 0x02 is clear; when it is set the alignment point
+  is omitted and equals the insertion point (ODA spec; LibreDWG `dwg.spec`: `if (!(dataflags & 0x02)) FIELD_2DD (alignment_pt, ins_pt)`), and libredwg-web then reports `endPoint` `{0,0}`.
+  `dwgParser.attachTextElevations` reads `dataflags` through the typed entity and attaches it by handle (`textDataFlags`, also on INSERT attributes). Bit 0x02 set: the anchor is the insertion point with the declared
+  justification and no warning (the committed `entity-units-r2000.dwg` `TXT CENTER` has `halign` 1, `endPoint` `{0,0}`, bit 0x02 set, and matches its DXF twin). Bit clear: `endPoint` is used even when it is `{0,0}`
+  (block-local coordinates before the INSERT transform). Only a record without a matched entity (no handle / `dataflags`) falls back to the old heuristic: a justified TEXT whose `endPoint` is exactly `{0,0}`
+  counts as missing (`text-alignment-point-missing`, group-10 anchor, left/baseline).
 - Export writes TEXT 10 = anchor, 72, 73 and 11/21 = anchor when not left/baseline (72 = 4 *Middle* and 72 = 1 with 73 = 2 both decode to centre/middle; export writes the latter), MTEXT 71 when not top-left.
 
-Deferred text gaps: old saved projects with justified TEXT keep the group-10 anchor until the drawing is re-imported; aligned / fit width fitting and the 10 -> 11 direction (the stored group 50 is used), text extents in the
+Deferred text gaps: old saved projects with justified TEXT keep the group-10 anchor, and their MTEXT now draws top-left (it used to be drawn on the alphabetic baseline), until the drawing is re-imported; aligned / fit width fitting and the 10 -> 11 direction (the stored group 50 is used), text extents in the
 bbox, MTEXT wrapping / column width, mirrored (generation-flag / det < 0) glyphs, the difference between 72 = 4 and 73 = 2 vertical centring, and DXF font metrics vs canvas `sans-serif` metrics.
 
 ### Far-from-origin drawings (`cad/drawingOrigin.ts`, `cadDrawingOrigin.test.ts`)

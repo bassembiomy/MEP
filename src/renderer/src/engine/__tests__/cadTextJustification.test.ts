@@ -175,11 +175,34 @@ describe('F1 DWG text justification', () => {
     expect(r.entities[0]).not.toHaveProperty('textHAlign')
     expect(r.diagnostics.map((d) => d.code)).toContain('text-alignment-point-missing')
   })
-  it('a justified TEXT whose endPoint is exactly {0,0} (alignment point not stored) is not thrown to the origin', async () => {
+  it('a justified TEXT whose endPoint is exactly {0,0} (alignment point not stored) is not thrown to the origin when the record carries no dataflags (heuristic fallback)', async () => {
     const r = await parseDwgDatabase(db([text({ halign: 1, valign: 0, endPoint: { x: 0, y: 0 } })]))
     expect(r.entities[0]).toMatchObject({ x: 100, y: -50 })
     expect(r.entities[0]).not.toHaveProperty('textHAlign')
     expect(r.diagnostics.map((d) => d.code)).toContain('text-alignment-point-missing')
+  })
+  it('dataflags bit 0x02 (alignment point omitted: it is the insertion point) anchors at startPoint with the declared justification and no warning', async () => {
+    const r = await parseDwgDatabase(db([text({ halign: 1, valign: 0, endPoint: { x: 0, y: 0 }, textDataFlags: 0x02 })]))
+    expect(r.entities[0]).toMatchObject({ x: 100, y: -50, textHAlign: 'center' })
+    expect(r.diagnostics.map((d) => d.code)).not.toContain('text-alignment-point-missing')
+  })
+  it('bit 0x02 with a vertical-only justification keeps the declared vertical alignment', async () => {
+    const r = await parseDwgDatabase(db([text({ halign: 0, valign: 2, endPoint: { x: 0, y: 0 }, textDataFlags: 0x02 | 0x01 })]))
+    expect(r.entities[0]).toMatchObject({ x: 100, y: -50, textVAlign: 'middle' })
+    expect(r.diagnostics).toEqual([])
+  })
+  it('a stored alignment point (bit 0x02 clear) is used even when it is exactly {0,0}', async () => {
+    const r = await parseDwgDatabase(db([text({ halign: 1, valign: 0, endPoint: { x: 0, y: 0 }, textDataFlags: 0x00 })]))
+    expect(r.entities[0]).toMatchObject({ x: 0, textHAlign: 'center' })
+    expect(Math.abs(r.entities[0].y!)).toBe(0)
+    expect(r.diagnostics.map((d) => d.code)).not.toContain('text-alignment-point-missing')
+  })
+  it('a block-local centred tag on the block base point (0,0) lands on the INSERT point', async () => {
+    const tag = { type: 'TEXT', handle: 'T', layer: L, text: 'TAG', textHeight: 2, rotation: 0, startPoint: pt(0, 0), endPoint: { x: 0, y: 0 }, halign: 1, valign: 0, textDataFlags: 0x00 }
+    const r = await parseDwgDatabase({ entities: [{ type: 'INSERT', name: 'B', insertionPoint: pt(100, 50), xScale: 1, yScale: 1, rotation: 0 }],
+      tables: { BLOCK_RECORD: { entries: [{ name: 'B', entities: [tag] }] } }, header: { INSUNITS: 2 } })
+    expect(r.entities.find((e) => e.type === 'TEXT')).toMatchObject({ x: 100, y: -50, textHAlign: 'center' })
+    expect(r.diagnostics.map((d) => d.code)).not.toContain('text-alignment-point-missing')
   })
   it('MTEXT attachmentPoint 9 is right/bottom about insertionPoint', async () => {
     const r = await parseDwgDatabase(db([{ type: 'MTEXT', handle: 'M', layer: L, text: 'M', textHeight: 2, insertionPoint: pt(100, 50), attachmentPoint: 9 }]))

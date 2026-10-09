@@ -296,6 +296,15 @@ describe('DWG binary corpus (LibreDWG-written R2000 files, libredwg-web reader)'
     type Built = { type: string; layer: string; [k: string]: unknown }
     const built = (): Built[] => (twinManifest[dwgManifest.files[name].twin] as unknown as { constructed: Built[] }).constructed
     const deg = (rad: number): number => (rad * 180) / Math.PI
+    it('the justified TXT CENTER matches its DXF twin (anchor and horizontal alignment) with no alignment warning', async () => {
+      const dwg = await loadDwg(name)
+      const twin = loadTwin(name)
+      const pick = (p: ParsedDxf): DxfEntity => p.entities.find((e) => e.type === 'TEXT' && e.textHAlign === 'center')!
+      expect(pick(twin)).toBeDefined()
+      expect(pick(dwg)).toBeDefined()
+      expect([pick(dwg).x, pick(dwg).y, pick(dwg).textHAlign]).toEqual([pick(twin).x, pick(twin).y, pick(twin).textHAlign])
+      expect((dwg.diagnostics ?? []).map((d) => d.code)).not.toContain('text-alignment-point-missing')
+    })
     it('imports ARC angles, ELLIPSE parameters, bulges, TEXT/MTEXT rotation and INSERT placement as constructed', async () => {
       const dwg = await loadDwg(name)
       const of = (type: string): DxfEntity[] => dwg.entities.filter((e) => e.type === type && e.sourceBlock === undefined)

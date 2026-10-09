@@ -46,6 +46,8 @@ interface RawEntity {
   rotation?: number
   halign?: number
   valign?: number
+  /** DWG TEXT / ATTRIB `dataflags` (attached by dwgParser): bit 0x02 set means the alignment point is not stored (default: the insertion point). */
+  textDataFlags?: number
   attachmentPoint?: number
   columnCount?: number
   rowCount?: number
@@ -440,13 +442,17 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           const j = dxfTextJustification(raw.halign ?? 0, raw.valign ?? 0)
           if (j.invalid) diagnose(raw, 'text-justification-unsupported', `TEXT justification (halign ${String(raw.halign)}, valign ${String(raw.valign)}) is not supported; left/baseline at the insertion point used.`)
           else if (j.anchor !== 'p10') {
-            // libredwg reports exactly {0,0} for an alignment point the DWG does not hold (the LibreDWG-written corpus DWG
-            // has halign 1 with endPoint {0,0}); that is indistinguishable from a real origin point and anchoring there
-            // would throw the label to the origin, so it counts as missing.
-            const stored = finitePoint(raw.endPoint) && !(raw.endPoint.x === 0 && raw.endPoint.y === 0)
+            // DWG data flags bit 0x02: the alignment point is not stored and equals the insertion point (libredwg reports {0,0}
+            // for it). Without data flags (a record that could not be matched to its entity) {0,0} is indistinguishable from a
+            // real origin point, so it counts as missing there; with them, a stored point is used even when it is {0,0}
+            // (block-local coordinates are legitimate).
+            const flagged = finite(raw.textDataFlags)
+            const omitted = flagged && (raw.textDataFlags! & 0x02) !== 0
+            const stored = omitted || (finitePoint(raw.endPoint) && (flagged || !(raw.endPoint.x === 0 && raw.endPoint.y === 0)))
             if (stored && finitePoint(p)) {
               ;({ hAlign, vAlign } = j)
-              anchor = j.anchor === 'p11' ? raw.endPoint! : { x: (p.x + raw.endPoint!.x) / 2, y: (p.y + raw.endPoint!.y) / 2, z: p.z }
+              const alignment = omitted ? p : raw.endPoint!
+              anchor = j.anchor === 'p11' ? alignment : { x: (p.x + alignment.x) / 2, y: (p.y + alignment.y) / 2, z: p.z }
             } else diagnose(raw, 'text-alignment-point-missing', 'TEXT is justified but has no usable alignment point; left/baseline at the insertion point used.')
           }
         }
@@ -691,6 +697,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           const attrib = item as RawEntity & {
             isVisible?: boolean
             flags?: number
+            textDataFlags?: number
             text?: { text?: unknown; startPoint?: Point; endPoint?: Point; halign?: number; valign?: number; textHeight?: number; rotation?: number; extrusionDirection?: Point }
           }
           const base = attrib.text
@@ -706,6 +713,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
               colorIndex: attrib.colorIndex,
               startPoint: base.startPoint,
               endPoint: base.endPoint,
+              textDataFlags: attrib.textDataFlags,
               halign: base.halign,
               valign: base.valign,
               text: base.text,
