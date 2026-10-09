@@ -1,4 +1,4 @@
-import type {ProjectMetadata,Zone,DxfEntity} from '../../store/projectStore';
+import type {ProjectMetadata,Zone,DxfEntity,DxfLayerInfo} from '../../store/projectStore';
 import {validateCadEntity,getCadEntityBounds} from '../cad/nativeGeometry';
 import {requirePositive,requireNonnegative,measureSimplePolygon} from '../engineeringInputs';
 import {calculateZoneLoadSafely} from '../loadCalc';
@@ -7,7 +7,7 @@ import type {StoredCadObstacle,StoredCadOpening} from '../cad/cadSemanticState';
 import {resolveStandardsSelection} from '../standards/profileRegistry';
 
 /** `cadOpenings`/`cadObstacles` are the review lists; only items with status 'approved' are exported. */
-interface ExportState {project:ProjectMetadata;zones:Zone[];dxfEntities:DxfEntity[];cadOpenings?:StoredCadOpening[];cadObstacles?:StoredCadObstacle[]}
+interface ExportState {project:ProjectMetadata;zones:Zone[];dxfEntities:DxfEntity[];cadOpenings?:StoredCadOpening[];cadObstacles?:StoredCadObstacle[];dxfLayers?:Record<string,Pick<DxfLayerInfo,'visible'|'sourceHidden'>>}
 export interface CadExportReport {
  status:'preliminary';issueReady:false;projectName:string;jurisdiction:'Egypt';sourceProjectRevision:string;
  standards:ReturnType<typeof resolveStandardsSelection>;
@@ -97,7 +97,11 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
  text(`${project.name} | EGYPT | PRELIMINARY - NOT FOR CONSTRUCTION`,titleX,titleY,'HVAC-STATUS',scale*0.4);
  const insUnits={in:1,ft:2,mm:4,cm:5,m:6,custom:0}[project.cadUnit??'custom'];
  const headers=['0','SECTION','2','HEADER','9','$ACADVER','1','AC1027','9','$INSUNITS','70',String(insUnits),'0','ENDSEC','0','SECTION','2','TABLES','0','TABLE','2','LAYER','70',String(layerNames.size)];
- for(const layer of layerNames)headers.push('0','LAYER','2',layer,'70','0','62','7','6','CONTINUOUS');
+ // A layer the source froze / switched off and the user has not shown stays hidden in the export. The importer records
+ // both cases in one list (no frozen-vs-off distinction), so both are written FROZEN (70 bit 1): every viewer hides it,
+ // the geometry is still in the file. A layer the user showed, or hid themselves, is written thawed.
+ const frozen=(layer:string)=>{const l=state.dxfLayers?.[layer];return l?.sourceHidden===true&&!l.visible;};
+ for(const layer of layerNames)headers.push('0','LAYER','2',layer,'70',frozen(layer)?'1':'0','62','7','6','CONTINUOUS');
  headers.push('0','ENDTAB','0','ENDSEC','0','SECTION','2','ENTITIES');
  const report:CadExportReport={status:'preliminary',issueReady:false,projectName:project.name,jurisdiction:'Egypt',standards:resolveStandardsSelection(project.standardsSelection),sourceProjectRevision:getProjectDeploymentRevision(project),limitations:[...new Set(limitations)],rooms:zones.map(z=>({id:z.id,name:z.name,sourceRevision:getZoneDeploymentRevision(z),status:z.engineeringStatus??'stale',load:calculateZoneLoadSafely(z,project),terminalCount:z.diffusers.length,ductCount:z.ducts.length,equipmentCount:z.unitPositions?.length??(z.unitPos?1:0)}))};
  return {text:[...headers,...body,'0','ENDSEC','0','EOF',''].join('\n'),report};

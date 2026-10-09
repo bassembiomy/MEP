@@ -89,3 +89,24 @@ describe('export limitations', () => {
     expect(report.limitations.join(' ')).toMatch(/outdoor units.*refrigerant piping.*condensate.*terminal faces.*not checked/i)
   })
 })
+
+describe('source-hidden layers keep their frozen state on export', () => {
+  const entity = (layer: string, x: number) => ({ type: 'LINE' as const, layer, x, y: 0, points: [x + 10, 0] })
+  const layers = (visible: boolean) => ({
+    'A-WALL': { name: 'A-WALL', visible: true, count: 1 },
+    'S-COLS': { name: 'S-COLS', visible, count: 1, sourceHidden: true },
+    'A-USER': { name: 'A-USER', visible: false, count: 1 }
+  })
+  const run = (visible: boolean) => parseDxfText(exportProjectDxf({
+    project, zones: [], dxfEntities: [entity('A-WALL', 0), entity('S-COLS', 20), entity('A-USER', 40)], dxfLayers: layers(visible)
+  }).text)
+  it('writes a layer the source froze / switched off (and the user has not shown) as frozen, entities included', () => {
+    const parsed = run(false)
+    expect(parsed.hiddenLayers).toEqual(['S-COLS'])
+    expect(parsed.entities.filter(e => e.layer === 'S-COLS')).toHaveLength(1)
+  })
+  it('a user-hidden layer that the source did not hide stays thawed, and a layer the user showed is thawed', () => {
+    expect(run(false).hiddenLayers ?? []).not.toContain('A-USER')
+    expect(run(true).hiddenLayers).toBeUndefined()
+  })
+})
