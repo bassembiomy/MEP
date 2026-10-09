@@ -1,5 +1,6 @@
 import type { DxfEntity } from '../../store/projectStore'
 import { isPointInPolygon } from '../geometry'
+import { atLevel } from './elevation'
 import { rolesFromName } from './layerClassification'
 import { getCadEntityBounds } from './nativeGeometry'
 import type { CadLayerRole, CadObstacleCandidate, CadRoomCandidate } from './semanticTypes'
@@ -14,6 +15,8 @@ export interface ObstacleRecognitionOptions {
   unitsPerFoot: number
   layerRoles?: Record<string, CadLayerRole>
   rooms?: CadRoomCandidate[]
+  /** Elevation (drawing units) of the level to inspect; default 0. Elevated entities are ignored otherwise. */
+  level?: number
 }
 
 const NOT_OBSTACLE_ROLES: CadLayerRole[] = ['door', 'window', 'annotation', 'dimension', 'hatch', 'grid', 'wall', 'ceiling']
@@ -33,6 +36,7 @@ export function recognizeObstacles(
   const roomHandles = new Set((options.rooms ?? []).flatMap((r) => r.sourceHandles))
   const seen = new Map<string, CadObstacleCandidate>()
   entities.forEach((e, index) => {
+    if (!atLevel(e, options.level ?? 0)) return
     const isCircle = e.type === 'CIRCLE'
     const isClosed = (e.type === 'LWPOLYLINE' || e.type === 'POLYLINE') && e.closed === true && !e.bulges?.some((b) => b)
     if (!isCircle && !isClosed) return

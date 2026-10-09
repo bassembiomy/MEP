@@ -27,6 +27,8 @@ export interface CadRoomRecognitionOptions {
   endpointToleranceFt?: number
   minAreaSqFt?: number
   maxSegments?: number
+  /** Elevation (drawing units) of the level to recognise; default 0. Entities at other elevations are ignored. */
+  level?: number
   /**
    * Openings the user approved. Only an approved opening whose ends both sit on wall endpoints
    * (within 0.75 ft) closes that gap; suggested openings never do.
@@ -142,4 +144,28 @@ export interface CadApprovedObstacle {
   clearanceFt: number
   polygon?: number[]
   circle?: { x: number; y: number; radius: number }
+}
+
+export interface CadLevelAnnotation {
+  handle: string
+  /** The original text exactly as in the drawing (Arabic and other scripts retained). */
+  text: string
+  kind: 'ceiling-height' | 'ffl' | 'fcl' | 'soffit'
+  /** Value in feet (levels are signed). Absent for a bare marker such as "FCL". */
+  valueFt?: number
+  interpretation?: string
+}
+
+export interface CadCeilingHeightSuggestion {
+  valueFt: number
+  evidence: string[]
+  confidence: number
+}
+
+export interface CadLevelAnnotationResult {
+  ceilingHeightSuggestion?: CadCeilingHeightSuggestion
+  /** True when annotations exist but could not be turned into one trustworthy value. */
+  unresolved: boolean
+  unresolvedReasons: string[]
+  annotations: CadLevelAnnotation[]
 }

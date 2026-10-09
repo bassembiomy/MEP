@@ -533,9 +533,15 @@ it('uses native LibreDWG lightweight flags separately from legacy flags',()=>{
  expect(parse(database([{type:'LWPOLYLINE',flag:528,vertices:[{...vertices[0],bulge:1},...vertices.slice(1)]}])).entities[0]).toMatchObject({closed:true,bulges:[1,0,0,0]});
  expect(parse(database([{type:'LWPOLYLINE',flag:516,vertices}])).entities).toHaveLength(1);
 });
-it('diagnoses separate native elevations and nonzero WCS point Z',()=>{
+// Planner decision (CAD semantics B5): planar geometry at a constant non-zero elevation is kept and projected
+// onto the plan with an `elevation` field and an elevated-geometry-projected warning, instead of being dropped.
+// Non-planar entities (varying Z, tilted extrusion) are still dropped, see the nonplanar-entity test above.
+it('keeps constant-elevation geometry, records its elevation and warns that it was projected',()=>{
  for(const raw of [{type:'LWPOLYLINE',flag:520,elevation:10,vertices:[point(0,0),point(10,0),point(10,10)]},{type:'CIRCLE',center:point(0,0,10),radius:5}]) {
-  const result=parse(database([raw]));expect(result.entities).toHaveLength(0);expect(result.diagnostics?.some(d=>/plane|elevation/i.test(d.message))).toBe(true);
+  const result=parse(database([raw]));
+  expect(result.entities).toHaveLength(1);
+  expect((result.entities[0] as {elevation?:number}).elevation).toBe(10);
+  expect(result.diagnostics?.some(d=>d.code==='elevated-geometry-projected')).toBe(true);
  }
 });
 it('uses default +Z when converter emits an absent-extrusion zero vector',()=>{

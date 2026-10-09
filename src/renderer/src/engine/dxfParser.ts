@@ -265,7 +265,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
   }
   incompleteBlock();
   let visited = 0, expansionStopped = false;
-  function expand(records: DxfRecord[], matrix: CadAffineMatrix, stack: string[], inheritedLayer = '0', inheritedColor?: string, insertHandle?: string) {
+  function expand(records: DxfRecord[], matrix: CadAffineMatrix, stack: string[], inheritedLayer = '0', inheritedColor?: string, insertHandle?: string, inheritedElevation = 0) {
     for (let index = 0; index < records.length; index++) {
       const r = records[index];
       if (++visited > 100_000) {
@@ -279,9 +279,20 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       if (![nx, ny, nz].every(Number.isFinite) || Math.abs(nx) > 1e-10 || Math.abs(ny) > 1e-10 || Math.abs(Math.abs(nz) - 1) > 1e-10) {
         diagnose('UNSUPPORTED_EXTRUSION', 'Only planar +Z/-Z extrusion is supported; entity omitted.', r); continue;
       }
-      if (r.pairs.some(p => [30, 31, 38].includes(p.code) && (!Number.isFinite(Number(p.value)) || Number(p.value) !== 0))) {
-        diagnose('UNSUPPORTED_ELEVATION', 'Elevated or nonplanar geometry cannot be represented in the 2D drawing; entity omitted.', r); continue;
+      // Planner decision: planar geometry at one constant non-zero Z is kept (projected onto the plan, `elevation`
+      // recorded, ELEVATED_GEOMETRY_PROJECTED warning). Varying Z or tilted/3D data is still dropped.
+      const zValues: number[] = []; let badZ = false;
+      for (const p of r.pairs) {
+        if (p.code === 30 || p.code === 38 || (p.code === 31 && r.type === 'LINE')) {
+          const z = p.value.trim() === '' ? NaN : Number(p.value);
+          if (Number.isFinite(z)) zValues.push(z); else badZ = true;
+        } else if (p.code === 31 && (!Number.isFinite(Number(p.value)) || Number(p.value) !== 0)) badZ = true;
       }
+      const sameZ = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+      if (badZ || !zValues.every(z => sameZ(z, zValues[0]))) {
+        diagnose('UNSUPPORTED_ELEVATION', 'Nonplanar geometry (varying Z) cannot be represented in the 2D drawing; entity omitted.', r); continue;
+      }
+      let ownZ = zValues[0] ?? 0;
       const reflected = nz < 0 && !['LINE', 'ELLIPSE'].includes(r.type);
       const ocs: CadAffineMatrix = reflected ? { a: -1, b: 0, c: 0, d: 1, tx: 0, ty: 0 } : identity;
       if (r.type === 'INSERT') {
@@ -297,7 +308,9 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         local.tx -= local.a * child.baseX + local.c * child.baseY;
         local.ty -= local.b * child.baseX + local.d * child.baseY;
         const composed = compose(matrix, compose(ocs, local)), childStart = entities.length;
-        expand(child.records, composed, [...stack, name], layer, ownColor ?? inheritedColor, first(r, 5)?.trim() ?? insertHandle);
+        const insertZ = reflected ? -ownZ : ownZ;
+        if (ownZ !== 0) diagnose('ELEVATED_GEOMETRY_PROJECTED', `INSERT ${name} at elevation ${insertZ}; its geometry is projected onto the plan and keeps its elevation.`, r);
+        expand(child.records, composed, [...stack, name], layer, ownColor ?? inheritedColor, first(r, 5)?.trim() ?? insertHandle, inheritedElevation + insertZ);
         const placement = describeInsertTransform(composed, { x: child.baseX, y: child.baseY });
         const childBounds: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
         for (let k = childStart; k < entities.length; k++) {
@@ -328,7 +341,9 @@ export function parseDxfText(dxfText: string): ParsedDxf {
               if (vertex.type !== 'VERTEX') break;
               index++;
               ent.points.push(number(vertex, 10), -number(vertex, 20)); ent.bulges.push(number(vertex, 42, 0));
-              if (number(vertex, 30, 0) !== 0 || (number(vertex, 70, 0) & (1 | 8 | 16 | 32 | 64 | 128))) ent.points.push(NaN, NaN);
+              const vz = number(vertex, 30, 0);
+              if (!Number.isFinite(vz) || (number(vertex, 70, 0) & (1 | 8 | 16 | 32 | 64 | 128))) ent.points.push(NaN, NaN);
+              else if (vz !== 0) { if (ownZ === 0 || sameZ(ownZ, vz)) ownZ = vz; else ent.points.push(NaN, NaN); }
             }
             if (!ended) { diagnose('INCOMPLETE_POLYLINE', 'Legacy POLYLINE is missing SEQEND; entity omitted.', r, 'error'); continue; }
           } else {
@@ -382,6 +397,9 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       const invalid = validateCadEntity(ent);
       if (invalid) { diagnose('MALFORMED_ENTITY', invalid, r, 'error'); continue; }
       ent = transformCadEntity(ent, compose(matrix, ocs));
+      const entityZ = (reflected ? -ownZ : ownZ) + inheritedElevation;
+      if (ownZ !== 0) diagnose('ELEVATED_GEOMETRY_PROJECTED', `${r.type} at elevation ${entityZ} is projected onto the plan; its elevation is retained.`, r);
+      if (entityZ !== 0) (ent as DxfEntity & { elevation?: number }).elevation = entityZ;
       const transformedInvalid = validateCadEntity(ent);
       if (transformedInvalid) { diagnose('INVALID_TRANSFORM', transformedInvalid, r, 'error'); continue; }
       if (!Object.values(getCadEntityBounds(ent)).every(Number.isFinite)) { diagnose('GEOMETRY_OVERFLOW', 'Native geometry exceeds finite drawing bounds; entity omitted.', r, 'error'); continue; }

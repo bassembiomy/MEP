@@ -1,5 +1,6 @@
 import type { DxfEntity } from '../../store/projectStore'
 import { isPointInPolygon } from '../geometry'
+import { atLevel } from './elevation'
 import { rolesFromName } from './layerClassification'
 import { getCadEntityPath } from './nativeGeometry'
 import type {
@@ -34,6 +35,8 @@ export interface OpeningRecognitionOptions {
   layerRoles?: Record<string, CadLayerRole>
   /** Room candidates used only to report which rooms touch each opening. */
   rooms?: CadRoomCandidate[]
+  /** Elevation (drawing units) of the level to inspect; default 0. Elevated entities are ignored otherwise. */
+  level?: number
 }
 
 const MIN_LEAF_FT = 0.5 / 0.3048
@@ -188,8 +191,9 @@ export function recognizeOpenings(
     const roles = rolesFromName(layer).roles
     return roles.length === 1 ? roles[0] : 'unknown'
   }
+  const level = options.level ?? 0
   const entities = parsed.entities
-  const walls = segmentsOf(entities, (e) => !e.sourceBlock && roleOf(e.layer ?? '0') === 'wall')
+  const walls = segmentsOf(entities, (e) => atLevel(e, level) && !e.sourceBlock && roleOf(e.layer ?? '0') === 'wall')
   let gaps: Gap[] = []
   if (walls.length > SEGMENT_LIMIT)
     diagnostics.push({ code: 'opening-budget-exceeded', severity: 'warning', message: `More than ${SEGMENT_LIMIT} wall segments; wall-gap analysis skipped.` })
@@ -237,6 +241,7 @@ export function recognizeOpenings(
     const kind = nameKind ?? layerKind
     if (!kind) continue
     const children = entities.slice(ref.entityRange[0], ref.entityRange[1])
+    if (children.length && !atLevel(children[0], level)) continue
     const evidence: string[] = [nameKind ? `Block name ${ref.name} suggests a ${nameKind}.` : `Block ${ref.name} sits on a ${layerKind} layer.`]
     let confidence = 0
     let span: { a: P; b: P } | undefined
@@ -311,7 +316,7 @@ export function recognizeOpenings(
 
   // Free-standing door arcs (not inside a block) hinged at a wall-gap endpoint.
   entities.forEach((e, i) => {
-    if (e.sourceBlock || !isDoorArc(e, k)) return
+    if (e.sourceBlock || !atLevel(e, level) || !isDoorArc(e, k)) return
     const center: P = { x: e.x!, y: e.y! }
     const gap = gaps.find((g) => {
       const hinge = dist(center, g.p) <= 0.5 * k ? g.p : dist(center, g.q) <= 0.5 * k ? g.q : undefined
@@ -333,7 +338,7 @@ export function recognizeOpenings(
   })
 
   // Window drawn as loose parallel lines on a window-role layer.
-  const windowLines = segmentsOf(entities, (e) => !e.sourceBlock && roleOf(e.layer ?? '0') === 'window' && e.type === 'LINE')
+  const windowLines = segmentsOf(entities, (e) => atLevel(e, level) && !e.sourceBlock && roleOf(e.layer ?? '0') === 'window' && e.type === 'LINE')
   for (const set of parallelSets(windowLines, k)) {
     const span = { a: set.spanA, b: set.spanB }
     const gap = gapMatching(span.a, span.b)

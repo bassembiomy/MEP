@@ -115,6 +115,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
   ): void {
     diagnostics.push({ code, severity, message, entityType: raw.type, handle: raw.handle })
   }
+  let pendingElevation = 0
   function planar(raw: RawEntity, points: (Point | undefined)[]): boolean {
     if (!points.every(finitePoint)) {
       diagnose(raw, 'invalid-geometry', 'Entity coordinates must be present and finite.', 'error')
@@ -129,23 +130,47 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
       raw.extrusionDirection?.x===0 && raw.extrusionDirection.y===0 && raw.extrusionDirection.z===0
       ? undefined : raw.extrusionDirection
     if (
-      (normal &&
-        (Math.abs(normal.x) > 1e-10 ||
-          Math.abs(normal.y) > 1e-10 ||
-          Math.abs((normal.z ?? 0) - 1) > 1e-10)) ||
-      points.some((p) => Math.abs(p!.z ?? 0) > 1e-10) ||
-      (raw.elevation !== undefined && (!finite(raw.elevation) || Math.abs(raw.elevation)>1e-10))
+      normal &&
+      (Math.abs(normal.x) > 1e-10 ||
+        Math.abs(normal.y) > 1e-10 ||
+        Math.abs((normal.z ?? 0) - 1) > 1e-10)
     ) {
-      diagnose(
-        raw,
-        'nonplanar-entity',
-        'Entity is outside the supported drawing XY plane; geometry was skipped.'
-      )
+      diagnose(raw, 'nonplanar-entity', 'Entity is outside the supported drawing XY plane; geometry was skipped.')
       return false
     }
+    if (raw.elevation !== undefined && !finite(raw.elevation)) {
+      diagnose(raw, 'nonplanar-entity', 'Entity elevation is not finite; geometry was skipped.')
+      return false
+    }
+    // Planner decision: planar geometry at one constant non-zero Z is kept and projected (see pendingElevation).
+    // LWPOLYLINE vertices are 2D, so only its elevation counts; other entities need all point Z equal.
+    const zs = raw.type === 'LWPOLYLINE' ? [] : points.map((p) => p!.z ?? 0)
+    const elevation = raw.elevation ?? 0
+    const zBase = zs.length ? zs[0] : elevation
+    const uniform = zs.every((z) => Math.abs(z - zBase) <= 1e-10) &&
+      (elevation === 0 || zBase === 0 || Math.abs(elevation - zBase) <= 1e-10)
+    if (!uniform) {
+      diagnose(raw, 'nonplanar-entity', 'Entity is outside the supported drawing XY plane (varying Z); geometry was skipped.')
+      return false
+    }
+    const z = zBase !== 0 ? zBase : elevation
+    if (Math.abs(z) > 1e-10) pendingElevation = z
     return true
   }
   function convert(raw: RawEntity): DxfEntity | null {
+    pendingElevation = 0
+    const converted = convertPlanar(raw)
+    if (converted && pendingElevation !== 0) {
+      ;(converted as DxfEntity & { elevation?: number }).elevation = pendingElevation
+      diagnose(
+        raw,
+        'elevated-geometry-projected',
+        `${raw.type} at elevation ${pendingElevation} is projected onto the plan; its elevation is retained.`
+      )
+    }
+    return converted
+  }
+  function convertPlanar(raw: RawEntity): DxfEntity | null {
     if (raw.thickness !== undefined && (!finite(raw.thickness) || raw.thickness !== 0)) {
       diagnose(
         raw,
@@ -351,7 +376,8 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
     transform: Matrix,
     ancestors: Set<string>,
     sourceBlock?: string,
-    inheritedLayer?: string
+    inheritedLayer?: string,
+    inheritedElevation = 0
   ): void {
     for (const value of rawEntities) {
       if (expansionStopped) return
@@ -390,11 +416,19 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           continue
         }
         const base = block.basePoint === undefined ? { x: 0, y: 0 } : block.basePoint
-        if (!planar(raw, [raw.insertionPoint,base]) || !finitePoint(base)) {
-          if (!finitePoint(base))
-            diagnose(raw, 'invalid-geometry', 'Block base point must be finite.', 'error')
+        pendingElevation = 0
+        if (!finitePoint(base)) {
+          diagnose(raw, 'invalid-geometry', 'Block base point must be finite.', 'error')
           continue
         }
+        if (!planar(raw, [raw.insertionPoint])) continue
+        if (Math.abs(base.z ?? 0) > 1e-10) {
+          diagnose(raw, 'nonplanar-entity', 'Block base point has a nonzero Z elevation; geometry was skipped.')
+          continue
+        }
+        const insertElevation = pendingElevation
+        if (insertElevation !== 0)
+          diagnose(raw, 'elevated-geometry-projected', `INSERT ${raw.name} at elevation ${insertElevation}; its geometry is projected onto the plan and keeps its elevation.`)
         const sx = raw.xScale === undefined ? 1 : raw.xScale
         const sy = raw.yScale === undefined ? 1 : raw.yScale
         const angle = raw.rotation === undefined ? 0 : raw.rotation
@@ -437,7 +471,8 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           composed,
           new Set([...ancestors, raw.name!]),
           raw.name,
-          raw.layer && raw.layer !== '0' ? raw.layer : inheritedLayer
+          raw.layer && raw.layer !== '0' ? raw.layer : inheritedLayer,
+          inheritedElevation + insertElevation
         )
         const placement = describeInsertTransform(composed, { x: base.x, y: -base.y })
         const childBounds: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
@@ -466,6 +501,9 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
       }
       const converted = convert(raw)
       if (!converted) continue
+      if (inheritedElevation !== 0)
+        (converted as DxfEntity & { elevation?: number }).elevation =
+          ((converted as DxfEntity & { elevation?: number }).elevation ?? 0) + inheritedElevation
       const invalid = validateCadEntity(converted)
       if (invalid) {
         diagnose(raw, 'invalid-geometry', invalid, 'error')

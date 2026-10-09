@@ -1,6 +1,7 @@
 import type { DxfEntity } from '../../store/projectStore'
 import { measureSimplePolygon } from '../engineeringInputs'
 import { isPointInPolygon } from '../geometry'
+import { atLevel } from './elevation'
 import { getCadEntityPath, validateCadEntity } from './nativeGeometry'
 import type {
   CadRoomCandidate,
@@ -94,7 +95,14 @@ export function recognizeCadRooms(
     return result
   }
   const selected = options.layers ? new Set(options.layers) : null
-  const eligible = (e: DxfEntity): boolean => !selected || selected.has(e.layer ?? '0')
+  const level = options.level ?? 0
+  if (!Number.isFinite(level)) {
+    diagnostic('invalid-recognition-options', 'Level must be a finite elevation in drawing units.', 'error')
+    return result
+  }
+  // Elevated entities (constant non-zero Z kept by the parsers) are ignored unless `level` selects them.
+  const eligible = (e: DxfEntity): boolean =>
+    atLevel(e, level) && (!selected || selected.has(e.layer ?? '0'))
   const segments: Segment[] = []
   const direct: { points: number[]; sources: Source[]; approximate: boolean }[] = []
   let segmentCount = 0,
@@ -479,6 +487,7 @@ export function recognizeCadRooms(
         spend(candidate.polygon.length / 2)
         if (
           (entity.type === 'TEXT' || entity.type === 'MTEXT') &&
+          atLevel(entity, level) &&
           !validateCadEntity(entity) &&
           isPointInPolygon(entity.x!, entity.y!, candidate.polygon)
         )
