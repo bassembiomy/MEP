@@ -487,7 +487,7 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   // Component drags: all geometry/attachment rules live in engine/cad/componentEdits (pure, validated).
-  const editContext = { drawingUnitsPerFoot: project.scale * (project.units === 'metric' ? METERS_PER_FOOT : 1), projectScale: project.scale };
+  const editContext = { drawingUnitsPerFoot: project.scale * (project.units === 'metric' ? METERS_PER_FOOT : 1) };
   const applyComponentEdit = (zoneId: string, build: (zone: Zone) => ComponentEdit): boolean => {
     const zone = zones.find(z => z.id === zoneId);
     if (!zone) return false;

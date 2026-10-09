@@ -1,11 +1,13 @@
 import {describe,it,expect} from 'vitest';
 import {moveTerminal,moveIndoorUnit,translateDuct,verifyEditedZone,type EditContext} from '../cad/componentEdits';
+import {solveDirectedNetworkStaticPressure} from '../staticPressureCalc';
+import {STANDARD_DIFFUSER_CATALOG,STANDARD_DUCT_TYPES} from '../hvacCatalogs';
 import {validateNetwork} from '../deploymentValidation';
 import {buildDeploymentManifest,executeDeploymentTransaction} from '../deploymentManager';
 import {generateSystemCandidates,DEFAULT_OPTIMIZATION_WEIGHTS} from '../systemDesigner';
 import {calculateCanonicalZoneLoad} from '../loadCalc';
 import type {Zone,ProjectMetadata} from '../../store/projectStore';
-const ctx:EditContext={drawingUnitsPerFoot:10,projectScale:10};
+const ctx:EditContext={drawingUnitsPerFoot:10};
 const duct=(id:string,type:'trunk'|'branch'|'return',points:number[],cfm:number)=>({id,type,points,widthIn:10,heightIn:8,cfm,sizeLabel:'10x8'});
 const zone=():Zone=>({id:'z',name:'R',points:[0,0,400,0,400,300,0,300],spaceTypeId:'office',ceilingHeight:10,occupants:2,systemType:'concealed',
  unitPos:{x:20,y:150},unitPositions:[{x:20,y:150}],
@@ -48,6 +50,18 @@ describe('component edits',()=>{
   expect(translateDuct(zone(),'B2',0,0,ctx)).toMatchObject({ok:true,patch:{}});
  });
 });
+describe('static pressure refresh uses drawing units per foot',()=>{
+ it('a metric project (scale per metre) gets the same estimate as the deployment calculation',()=>{
+  // 30.48 drawing units per foot is a 100 units/metre project; project.scale itself must not be used as units/ft.
+  const upf=30.48,z=zone();
+  const r=moveTerminal(z,'S1',140,60,{drawingUnitsPerFoot:upf});expect(r.ok).toBe(true);if(!r.ok)return;
+  const expected=solveDirectedNetworkStaticPressure(r.patch.ducts!,r.patch.diffusers!,STANDARD_DIFFUSER_CATALOG,STANDARD_DUCT_TYPES[0],upf).espRequiredInWg;
+  expect(expected).toBeGreaterThan(0);
+  const wrong=solveDirectedNetworkStaticPressure(r.patch.ducts!,r.patch.diffusers!,STANDARD_DIFFUSER_CATALOG,STANDARD_DUCT_TYPES[0],upf*3.28084).espRequiredInWg;
+  expect(wrong.toFixed(2)).not.toBe(expected.toFixed(2)); // the fixture can tell the two scales apart
+  expect(r.patch.catalogEsp).toBe(`${expected.toFixed(2)} in.wg`);
+ });
+});
 describe('explicit verification against deployment evidence',()=>{
  const project:ProjectMetadata={name:'T',location:'Cairo',scale:10,units:'imperial',outdoorDb:95,indoorDb:75};
  const base:Zone={id:'zone-1',name:'Office',points:[60,60,260,60,260,210,60,210],spaceTypeId:'office',ceilingHeight:10,occupants:2,manualCfmOverride:350,diffusers:[],ducts:[],maxSpaceNcLimit:30};
@@ -70,7 +84,7 @@ describe('explicit verification against deployment evidence',()=>{
  it('a terminal moved with moveTerminal on the real deployment is re-checked by the explicit step',()=>{
   const deployed=tx.updatedZones[0];
   for(const t of deployed.diffusers){
-   const r=moveTerminal(deployed,t.id,t.x+10,t.y+10,{drawingUnitsPerFoot:10,projectScale:10});
+   const r=moveTerminal(deployed,t.id,t.x+10,t.y+10,{drawingUnitsPerFoot:10});
    expect(r.ok).toBe(true);if(!r.ok)return;
    expect(r.patch.engineeringStatus).toBe('stale');
    expect(verifyEditedZone({...deployed,...r.patch} as Zone,manifest,project)).toMatchObject({ok:true});
@@ -105,7 +119,7 @@ describe('store.verifyZoneEdits against the inputs the deployment was designed f
   deploy();
   expect(s().verifyZoneEdits('zone-1').success).toBe(true);
   const t=z().diffusers[0];
-  const r=moveTerminal(z(),t.id,t.x+10,t.y+10,{drawingUnitsPerFoot:10,projectScale:10});
+  const r=moveTerminal(z(),t.id,t.x+10,t.y+10,{drawingUnitsPerFoot:10});
   expect(r.ok).toBe(true);if(!r.ok)return;
   s().updateZone('zone-1',r.patch);
   expect(z().engineeringStatus).toBe('stale');

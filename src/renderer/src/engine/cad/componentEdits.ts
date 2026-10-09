@@ -14,8 +14,6 @@ import type { DeploymentManifest } from '../deploymentTypes'
 export interface EditContext {
   /** Drawing units per foot (project.scale, times 0.3048 for metric projects). */
   drawingUnitsPerFoot: number
-  /** project.scale, as used by the static-pressure estimate. */
-  projectScale: number
 }
 export type ComponentPatch = Partial<Pick<Zone, 'diffusers' | 'ducts' | 'unitPos' | 'unitPositions' | 'outdoorUnitPos' | 'outdoorUnitPositions' | 'catalogEsp' | 'engineeringStatus'>>
 export type ComponentEdit = { ok: true; patch: ComponentPatch; warnings: string[] } | { ok: false; error: string }
@@ -56,7 +54,7 @@ function finish(before: Zone, after: Zone, patch: ComponentPatch, ctx: EditConte
   let catalogEsp = after.catalogEsp
   if (after.ducts.length && after.diffusers.length) {
     try {
-      const cp = solveDirectedNetworkStaticPressure(after.ducts, after.diffusers, STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES[0], ctx.projectScale)
+      const cp = solveDirectedNetworkStaticPressure(after.ducts, after.diffusers, STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES[0], ctx.drawingUnitsPerFoot)
       if (cp.espRequiredInWg > 0) catalogEsp = `${cp.espRequiredInWg.toFixed(2)} in.wg`
     } catch { warnings.push('Static pressure estimate could not be refreshed.') }
   }
