@@ -21,6 +21,8 @@ import {
   type StoredCadOpening
 } from '../engine/cad/cadSemanticState';
 import { validateZonePolygon } from '../engine/cad/zonePolygon';
+import type { DeploymentManifest } from '../engine/deploymentTypes';
+import { verifyEditedZone } from '../engine/cad/componentEdits';
 import { moveVertex, insertVertex, deleteVertex, offsetEdge, type PolygonEdit } from '../engine/cad/zoneGeometryEdits';
 import { measureSimplePolygon, requirePositive, requireNonnegative, METERS_PER_FOOT } from '../engine/engineeringInputs';
 import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
@@ -257,6 +259,8 @@ interface ProjectState {
   optimizationWeights: OptimizationWeights;
   activeTab: 'comparison' | 'optimizer' | 'static-pressure' | 'schedule' | 'air-distribution';
   activePreview: DeploymentPreview | null;
+  /** Manifest each room was last successfully deployed with (session only); the evidence verifyZoneEdits re-checks edits against. */
+  deploymentEvidence: Record<string, DeploymentManifest>;
   highlightedDuctId: string | null;
   highlightedEntityTag: string | null;
   undoStack: WorkspaceSnapshot[];
@@ -270,6 +274,8 @@ interface ProjectState {
   addZone: (points: number[]) => {success:boolean;error?:string};
   setTempPoints: (points: number[]) => void;
   /** Validated outline edits: a rejected edit leaves the zone and undo stack untouched; accepted ones push an undo snapshot and mark the zone stale. */
+  /** Explicit apply step for dragged components: re-runs validateAppliedDeployment against the deployment evidence. Failure marks the room blocked with the error; success marks it preliminary. */
+  verifyZoneEdits: (id: string) => {success:boolean;error?:string;pressureInWg?:number};
   moveZoneVertex: (id: string, index: number, x: number, y: number) => {success:boolean;error?:string};
   insertZoneVertex: (id: string, edgeIndex: number, x: number, y: number) => {success:boolean;error?:string};
   deleteZoneVertex: (id: string, index: number) => {success:boolean;error?:string};
@@ -439,6 +445,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   optimizationWeights: DEFAULT_OPTIMIZATION_WEIGHTS,
   activeTab: 'optimizer',
   activePreview: null,
+  deploymentEvidence: {},
   highlightedDuctId: null,
   highlightedEntityTag: null,
   undoStack: [],
@@ -611,6 +618,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             const notice = skipped.length ? `Skipped higher-ranked candidates: ${skipped.join(' | ')}` : undefined;
             // Apply the computed deployment to the existing zone
             set((s) => ({
+              deploymentEvidence: { ...s.deploymentEvidence, [id]: manifest },
               zones: s.zones.map((z) => (z.id === id ? { ...z, ...deployedZone, id,
                 engineeringStatus: 'preliminary', engineeringError: undefined, engineeringNotice: notice } : z))
             }));
@@ -669,6 +677,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   }),
   
   setTempPoints: (points) => set({ tempPoints: [...points] }),
+  verifyZoneEdits: (id) => {
+    const state = get();
+    const zone = state.zones.find(z => z.id === id);
+    if (!zone) return { success: false, error: 'Room not found.' };
+    const result = verifyEditedZone(zone, state.deploymentEvidence[id], state.project);
+    set({ zones: state.zones.map(z => z.id !== id ? z : result.ok
+      ? { ...z, engineeringStatus: 'preliminary' as const, engineeringError: undefined, engineeringNotice: undefined }
+      : { ...z, engineeringStatus: 'blocked' as const, engineeringError: result.error }) });
+    return result.ok ? { success: true, pressureInWg: result.pressureInWg } : { success: false, error: result.error };
+  },
   moveZoneVertex: (id, index, x, y) => applyZoneOutlineEdit(set, get, id, `Moved vertex ${index}`, z => moveVertex(z.points, index, x, y)),
   insertZoneVertex: (id, edgeIndex, x, y) => applyZoneOutlineEdit(set, get, id, `Inserted vertex on edge ${edgeIndex}`, z => insertVertex(z.points, edgeIndex, x, y)),
   deleteZoneVertex: (id, index) => applyZoneOutlineEdit(set, get, id, `Deleted vertex ${index}`, z => deleteVertex(z.points, index)),
@@ -983,6 +1001,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
 
     set({
+      deploymentEvidence: { ...state.deploymentEvidence, [targetZone.id]: manifest },
       zones: updatedZones.map(z => z.id === targetZone.id ? { ...z,
         engineeringStatus: 'preliminary' as const, engineeringError: undefined, engineeringNotice: undefined } : z),
       undoStack: [...state.undoStack, snapshot],

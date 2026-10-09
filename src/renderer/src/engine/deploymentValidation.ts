@@ -120,7 +120,7 @@ function fractionOn(p: Point, a: Point, b: Point): number | undefined {
     : undefined
 }
 /** A conservative directed tree inferred from actual geometric attachments. */
-function validateNetwork(
+export function validateNetwork(
   ducts: DuctSegment[],
   terminals: Diffuser[],
   units: Point[],

@@ -3,16 +3,16 @@ import { Stage, Layer, Line, Circle, Text, Group, Shape, Rect } from 'react-konv
 import { useProjectStore } from '../store/projectStore';
 import { snapToGrid, getPolygonCentroid } from '../engine/geometry';
 import { snapPoint, physicalGridSpacing } from '../engine/cad/drawingSnap';
+import { moveTerminal, moveIndoorUnit, moveOutdoorUnit, translateDuct, type ComponentEdit } from '../engine/cad/componentEdits';
+import { METERS_PER_FOOT } from '../engine/engineeringInputs';
+import type { Zone } from '../store/projectStore';
 import { polylineReducer, initialPolylineState, type PolylineEvent } from '../engine/cad/polylineTool';
 import { calculateZoneDiffuserCoverage } from '../engine/diffuserPlacer';
 import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
 import { getCadEntityPath } from '../engine/cad/nativeGeometry';
 import { groupCadEntitiesForRendering } from '../engine/cad/renderGroups';
 import { getSupplyAirflowForDisplay } from '../engine/airflowDisplay';
-import { routeDucts } from '../engine/ductRouter';
 import { routeOrthogonalRefrigerantPiping } from '../engine/spatialPlanner';
-import { solveDirectedNetworkStaticPressure } from '../engine/staticPressureCalc';
-import { STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES } from '../engine/hvacCatalogs';
 import { CadLayerManagerModal } from '../components/CadLayerManagerModal';
 import Konva from 'konva';
 import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Target, Layers } from 'lucide-react';
@@ -26,6 +26,7 @@ export const FloorPlanCanvas: React.FC = () => {
     addZone,
     setTempPoints,
     moveZoneVertex,
+    verifyZoneEdits,
     selectZone,
     updateZone,
     project,
@@ -460,258 +461,25 @@ export const FloorPlanCanvas: React.FC = () => {
     return result.success;
   };
 
-  const handleDiffuserDrag = (zoneId: string, diffuserId: string, newX: number, newY: number) => {
+  // Component drags: all geometry/attachment rules live in engine/cad/componentEdits (pure, validated).
+  const editContext = { drawingUnitsPerFoot: project.scale * (project.units === 'metric' ? METERS_PER_FOOT : 1), projectScale: project.scale };
+  const applyComponentEdit = (zoneId: string, build: (zone: Zone) => ComponentEdit): boolean => {
     const zone = zones.find(z => z.id === zoneId);
-    if (!zone) return;
-
-    const snapX = snapToGrid(newX, gridSpacing);
-    const snapY = snapToGrid(newY, gridSpacing);
-
-    const oldDif = zone.diffusers.find(d => d.id === diffuserId);
-    const updatedDiffusers = zone.diffusers.map((dif) =>
-      dif.id === diffuserId ? { ...dif, x: snapX, y: snapY } : dif
-    );
-
-    const isDucted = zone.systemType === 'concealed' || zone.systemType === 'packaged' || zone.systemType === 'ahu' || zone.systemType === 'vrf';
-
-    let updatedDucts = zone.ducts;
-    let catalogEsp = zone.catalogEsp;
-
-    if (isDucted) {
-      if (oldDif && zone.ducts.length > 0) {
-        // Adjust connected duct: branch or return duct
-        if (oldDif.type === 'return') {
-          updatedDucts = zone.ducts.map(d => {
-            if (d.type === 'return') {
-              return {
-                ...d,
-                points: [d.points[0], d.points[1], snapX, snapY]
-              };
-            }
-            return d;
-          });
-        } else {
-          // Supply branch takeoff stretching and extending
-          let matchedBranch = false;
-          updatedDucts = zone.ducts.map(d => {
-            if (d.type === 'branch') {
-              const distToEnd = Math.hypot(d.points[2] - oldDif.x, d.points[3] - oldDif.y);
-              if (distToEnd < 40 * (project.scale > 50 ? project.scale / 10 : 1)) {
-                matchedBranch = true;
-                const isVerticalBranch = Math.abs(d.points[2] - d.points[0]) < Math.abs(d.points[3] - d.points[1]);
-                const newStartX = isVerticalBranch ? snapX : d.points[0];
-                const newStartY = isVerticalBranch ? d.points[1] : snapY;
-                return {
-                  ...d,
-                  points: [newStartX, newStartY, snapX, snapY]
-                };
-              }
-            }
-            return d;
-          });
-
-          // If branch moved past trunk boundary, extend trunk
-          if (matchedBranch) {
-            const branchXList = updatedDucts.filter(d => d.type === 'branch').map(d => d.points[0]);
-            if (branchXList.length > 0) {
-              const minBranchX = Math.min(...branchXList);
-              const maxBranchX = Math.max(...branchXList);
-              updatedDucts = updatedDucts.map(d => {
-                if (d.type === 'trunk') {
-                  const isRightToLeft = d.points[0] > d.points[2];
-                  if (isRightToLeft && minBranchX < d.points[2]) {
-                    return { ...d, points: [d.points[0], d.points[1], minBranchX, d.points[3]] };
-                  } else if (!isRightToLeft && maxBranchX > d.points[2]) {
-                    return { ...d, points: [d.points[0], d.points[1], maxBranchX, d.points[3]] };
-                  }
-                }
-                return d;
-              });
-            }
-          }
-        }
-      } else {
-        const routeRes = routeDucts(
-          zone.points,
-          updatedDiffusers,
-          project.units,
-          zone.id,
-          zone.unitPos,
-          zone.systemType
-        );
-        updatedDucts = routeRes.ducts;
-      }
-
-      if (updatedDucts.length > 0 && updatedDiffusers.length > 0) {
-        const cp = solveDirectedNetworkStaticPressure(
-          updatedDucts,
-          updatedDiffusers,
-          STANDARD_DIFFUSER_CATALOG,
-          STANDARD_DUCT_TYPES[0],
-          project.scale
-        );
-        if (cp.espRequiredInWg > 0) {
-          catalogEsp = `${cp.espRequiredInWg.toFixed(2)} in.wg`;
-        }
-      }
-    }
-
-    updateZone(zoneId, {
-      diffusers: updatedDiffusers,
-      ducts: updatedDucts,
-      catalogEsp
-    });
+    if (!zone) return false;
+    const result = build(zone);
+    if (!result.ok) { setDrawMessage(`Edit refused: ${result.error}`); return false; }
+    updateZone(zoneId, result.patch);
+    setDrawMessage(`Layout edited and marked stale; verify before relying on it.${result.warnings.length ? ' ' + result.warnings.join(' ') : ''}`);
+    return true;
   };
-
-  const handleDuctDrag = (zoneId: string, ductId: string, deltaX: number, deltaY: number) => {
-    const zone = zones.find(z => z.id === zoneId);
-    if (!zone) return;
-
-    const snapDx = snapToGrid(deltaX, gridSpacing);
-    const snapDy = snapToGrid(deltaY, gridSpacing);
-    if (snapDx === 0 && snapDy === 0) return;
-
-    const targetDuct = zone.ducts.find(d => d.id === ductId);
-    if (!targetDuct) return;
-
-    let updatedDucts = zone.ducts;
-
-    if (targetDuct.type === 'trunk') {
-      // Offsetting a trunk extends / stretches all connected branch takeoffs!
-      updatedDucts = zone.ducts.map(d => {
-        if (d.id === ductId || (d.type === 'trunk' && Math.abs(d.points[1] - targetDuct.points[1]) < 5)) {
-          return {
-            ...d,
-            points: [
-              d.points[0] + snapDx,
-              d.points[1] + snapDy,
-              d.points[2] + snapDx,
-              d.points[3] + snapDy
-            ]
-          };
-        } else if (d.type === 'branch' && Math.abs(d.points[1] - targetDuct.points[1]) < 15) {
-          // Stretch branch start takeoff with trunk while keeping endpoint connected to diffuser!
-          return {
-            ...d,
-            points: [
-              d.points[0] + snapDx,
-              d.points[1] + snapDy,
-              d.points[2],
-              d.points[3]
-            ]
-          };
-        }
-        return d;
-      });
-    } else {
-      updatedDucts = zone.ducts.map(d => {
-        if (d.id === ductId) {
-          return {
-            ...d,
-            points: [
-              d.points[0] + snapDx,
-              d.points[1] + snapDy,
-              d.points[2] + snapDx,
-              d.points[3] + snapDy
-            ]
-          };
-        }
-        return d;
-      });
-    }
-
-    let catalogEsp = zone.catalogEsp;
-    if (updatedDucts.length > 0 && zone.diffusers.length > 0) {
-      const cp = solveDirectedNetworkStaticPressure(
-        updatedDucts,
-        zone.diffusers,
-        STANDARD_DIFFUSER_CATALOG,
-        STANDARD_DUCT_TYPES[0],
-        project.scale
-      );
-      if (cp.espRequiredInWg > 0) {
-        catalogEsp = `${cp.espRequiredInWg.toFixed(2)} in.wg`;
-      }
-    }
-
-    updateZone(zoneId, {
-      ducts: updatedDucts,
-      catalogEsp
-    });
-  };
-
-  const handleIndoorUnitDrag = (zoneId: string, newX: number, newY: number, uIdx: number = 0) => {
-    const zone = zones.find(z => z.id === zoneId);
-    if (!zone) return;
-
-    const snapX = snapToGrid(newX, gridSpacing);
-    const snapY = snapToGrid(newY, gridSpacing);
-
-    let updatedUnitPositions = zone.unitPositions;
-    if (updatedUnitPositions && updatedUnitPositions.length > uIdx) {
-      updatedUnitPositions = updatedUnitPositions.map((pos, idx) =>
-        idx === uIdx ? { x: snapX, y: snapY } : pos
-      );
-    }
-
-    const isDucted = zone.systemType === 'concealed' || zone.systemType === 'packaged' || zone.systemType === 'ahu' || zone.systemType === 'vrf';
-
-    let updatedDucts = zone.ducts;
-    let catalogEsp = zone.catalogEsp;
-
-    if (isDucted && zone.ducts.length > 0) {
-      // Adjust connected trunk start point
-      updatedDucts = zone.ducts.map(d => {
-        if (d.type === 'trunk' && d.id.includes(`-${uIdx + 1}-0`)) {
-          return {
-            ...d,
-            points: [snapX, snapY, d.points[2], d.points[3]]
-          };
-        }
-        return d;
-      });
-
-      if (updatedDucts.length > 0 && zone.diffusers.length > 0) {
-        const cp = solveDirectedNetworkStaticPressure(
-          updatedDucts,
-          zone.diffusers,
-          STANDARD_DIFFUSER_CATALOG,
-          STANDARD_DUCT_TYPES[0],
-          project.scale
-        );
-        if (cp.espRequiredInWg > 0) {
-          catalogEsp = `${cp.espRequiredInWg.toFixed(2)} in.wg`;
-        }
-      }
-    }
-
-    updateZone(zoneId, {
-      unitPos: uIdx === 0 ? { x: snapX, y: snapY } : zone.unitPos,
-      unitPositions: updatedUnitPositions,
-      ducts: updatedDucts,
-      catalogEsp
-    });
-  };
-
-  const handleOutdoorUnitDrag = (zoneId: string, newX: number, newY: number, oIdx: number = 0) => {
-    const zone = zones.find(z => z.id === zoneId);
-    if (!zone) return;
-
-    const snapX = snapToGrid(newX, gridSpacing);
-    const snapY = snapToGrid(newY, gridSpacing);
-
-    let updatedOutdoorPositions = zone.outdoorUnitPositions;
-    if (updatedOutdoorPositions && updatedOutdoorPositions.length > oIdx) {
-      updatedOutdoorPositions = updatedOutdoorPositions.map((pos, idx) =>
-        idx === oIdx ? { x: snapX, y: snapY } : pos
-      );
-    }
-
-    updateZone(zoneId, {
-      outdoorUnitPos: oIdx === 0 ? { x: snapX, y: snapY } : zone.outdoorUnitPos,
-      outdoorUnitPositions: updatedOutdoorPositions
-    });
-  };
+  const handleDiffuserDrag = (zoneId: string, diffuserId: string, newX: number, newY: number): boolean =>
+    applyComponentEdit(zoneId, zone => moveTerminal(zone, diffuserId, snapToGrid(newX, gridSpacing), snapToGrid(newY, gridSpacing), editContext));
+  const handleDuctDrag = (zoneId: string, ductId: string, deltaX: number, deltaY: number): boolean =>
+    applyComponentEdit(zoneId, zone => translateDuct(zone, ductId, snapToGrid(deltaX, gridSpacing), snapToGrid(deltaY, gridSpacing), editContext));
+  const handleIndoorUnitDrag = (zoneId: string, newX: number, newY: number, uIdx: number = 0): boolean =>
+    applyComponentEdit(zoneId, zone => moveIndoorUnit(zone, uIdx, snapToGrid(newX, gridSpacing), snapToGrid(newY, gridSpacing), editContext));
+  const handleOutdoorUnitDrag = (zoneId: string, newX: number, newY: number, oIdx: number = 0): boolean =>
+    applyComponentEdit(zoneId, zone => moveOutdoorUnit(zone, oIdx, snapToGrid(newX, gridSpacing), snapToGrid(newY, gridSpacing)));
 
   // Draw background grid lines with scale adjustment
   const drawGridLines = () => {
@@ -1156,7 +924,7 @@ export const FloorPlanCanvas: React.FC = () => {
                       x={dif.x}
                       y={dif.y}
                       draggable={drawMode === 'select' || isSelected}
-                      onDragEnd={(e) => handleDiffuserDrag(zone.id, dif.id, e.target.x(), e.target.y())}
+                      onDragEnd={(e) => { if (!handleDiffuserDrag(zone.id, dif.id, e.target.x(), e.target.y())) e.target.position({ x: dif.x, y: dif.y }); }}
                     >
                       {/* Interactive Selection Glowing Ring & Callout */}
                       {isTerminalHighlighted && (
@@ -1450,7 +1218,7 @@ export const FloorPlanCanvas: React.FC = () => {
                       y={pos.y}
                       draggable={drawMode === 'select' || isSelected}
                       onDragEnd={(e) => {
-                        handleIndoorUnitDrag(zone.id, e.target.x(), e.target.y(), uIdx);
+                        if (!handleIndoorUnitDrag(zone.id, e.target.x(), e.target.y(), uIdx)) e.target.position({ x: pos.x, y: pos.y });
                       }}
                     >
                       {/* Selection Highlight Halo */}
@@ -1552,7 +1320,7 @@ export const FloorPlanCanvas: React.FC = () => {
                       y={oPos.y}
                       draggable={drawMode === 'select' || isSelected}
                       onDragEnd={(e) => {
-                        handleOutdoorUnitDrag(zone.id, e.target.x(), e.target.y(), oIdx);
+                        if (!handleOutdoorUnitDrag(zone.id, e.target.x(), e.target.y(), oIdx)) e.target.position({ x: oPos.x, y: oPos.y });
                       }}
                     >
                       {/* Selection Highlight Halo */}
@@ -1888,6 +1656,21 @@ export const FloorPlanCanvas: React.FC = () => {
       </div>
 
       {/* Floating CAD Layer & Annotation Manager Popover Modal */}
+      {drawMode === 'select' && (() => {
+        const sel = zones.find(z => z.id === selectedZoneId);
+        if (!sel || sel.engineeringStatus !== 'stale' || (sel.diffusers.length === 0 && sel.ducts.length === 0)) return null;
+        return (
+          <button
+            className="absolute right-3 bottom-3 z-10 rounded-lg border border-teal-700 bg-neutral-900/95 px-3 py-1.5 text-xs text-teal-300 hover:bg-neutral-800"
+            onClick={() => {
+              const r = verifyZoneEdits(sel.id);
+              setDrawMessage(r.success ? `Edited layout verified (fan static ${r.pressureInWg?.toFixed(2)} in.wg).` : `Verification failed: ${r.error}`);
+            }}
+          >
+            Verify edited layout
+          </button>
+        );
+      })()}
       {(drawMessage || (drawMode === 'polyline' && (typedLength || tempPoints.length > 0))) && (
         <div className="absolute left-3 bottom-3 z-10 max-w-md rounded-lg border border-neutral-700 bg-neutral-900/95 px-3 py-2 text-xs text-neutral-200">
           {typedLength && <div className="font-mono text-teal-300">Length: {typedLength} {project.units === 'metric' ? 'm' : 'ft'} (Enter to place)</div>}
