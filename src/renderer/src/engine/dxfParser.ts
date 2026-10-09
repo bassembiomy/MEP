@@ -232,7 +232,7 @@ export function decodeDxfBytes(bytes: Uint8Array): string {
 const decodeUnicodeEscapes = (text: string): string =>
   text.replace(/\\U\+([0-9A-Fa-f]{4})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/\\M\+([1-4])([0-9A-Fa-f]{4})/g, (whole, page: string, hex: string) => {
-      try { return new TextDecoder(MULTIBYTE_PAGES[page]).decode(Uint8Array.from([parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2), 16)])); } catch { return whole; }
+      try { return new TextDecoder(MULTIBYTE_PAGES[page], { fatal: true }).decode(Uint8Array.from([parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2), 16)])); } catch { return whole; }
     });
 
 /**

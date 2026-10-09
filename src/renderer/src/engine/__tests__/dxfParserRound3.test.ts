@@ -52,6 +52,9 @@ describe('MTEXT \\M+ multibyte escapes', () => {
   it('leaves an unsupported or malformed escape untouched', () => {
     expect(one('\\M+9ZZZZ')).toBe('\\M+9ZZZZ')
   })
+  it('leaves a well-formed but undecodable double-byte sequence as written (no U+FFFD)', () => {
+    expect(one('\\M+1FFFF')).toBe('\\M+1FFFF')
+  })
 })
 
 describe('AC1021+ text encoding', () => {
