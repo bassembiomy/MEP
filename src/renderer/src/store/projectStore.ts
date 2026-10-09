@@ -353,6 +353,9 @@ export function selectPersistedProject(state: ProjectState): PersistedProjectSta
   };
 }
 
+/** The panel pre-fills the suggestion rounded to 3 decimals, so a value equal to it is within half a unit of the last shown digit. */
+const CEILING_SUGGESTION_TOLERANCE = 5e-4;
+
 const MAX_AUTO_DEPLOY_ATTEMPTS = 5;
 
 const unitsPerFootOf = (project: ProjectMetadata): number =>
@@ -537,7 +540,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         cadProvenance:{sourceCadRevision:inputs.sourceCadRevision,candidateId:candidate.id,sourceHandles:[...candidate.sourceHandles],sourceLayers:[...candidate.sourceLayers],
           evidence:[...candidate.evidence],unresolvedConditions:[...candidate.unresolvedConditions],drawingUnitsPerFoot:unitsPerFoot,approvedAt:new Date().toISOString(),
           level:state.cadLevel,approvedOpeningIds:basis.approvedOpeningIds,boundaryLayers:basis.wallLayers,
-          ceilingHeight:{chosen:inputs.ceilingHeight,usedSuggestion:!!suggestion&&Math.abs(suggestion.value-inputs.ceilingHeight)<=1e-6,
+          ceilingHeight:{chosen:inputs.ceilingHeight,usedSuggestion:!!suggestion&&Math.abs(suggestion.value-inputs.ceilingHeight)<=CEILING_SUGGESTION_TOLERANCE,
             ...(suggestion?{suggestedFt:suggestion.valueFt,confidence:suggestion.confidence,evidence:[...suggestion.evidence]}:{})}}};
       const roomObstacles=zoneObstaclesFor(zone,state.cadObstacles);
       if(roomObstacles.length) zone.obstacles=roomObstacles;

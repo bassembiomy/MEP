@@ -124,6 +124,22 @@ describe('ceiling height suggestion wiring (W3)', () => {
     expect(s().zones.at(-1)!.cadProvenance?.ceilingHeight).toMatchObject({ chosen: 10, usedSuggestion: false })
     expect(s().zones.at(-1)!.cadProvenance?.ceilingHeight?.suggestedFt).toBeUndefined()
   })
+  it('records usedSuggestion for the 3-decimal value the panel pre-fills (2.8 m is 9.186352 ft, shown as 9.186)', () => {
+    const r = approvedRoom(note)
+    const candidate = r.result!.candidates[0]
+    const sug = selectCeilingHeightSuggestion(s(), candidate).suggestion!
+    const shown = Number(sug.value.toFixed(3))
+    expect(shown).toBe(9.186)
+    expect(shown).not.toBe(sug.value)
+    expect(s().approveCadRoom(candidate, inputsFor(r, { ceilingHeight: shown })).success).toBe(true)
+    expect(s().zones[0].cadProvenance?.ceilingHeight).toMatchObject({ chosen: 9.186, usedSuggestion: true })
+  })
+  it('does not flag a value that differs from the suggestion by more than display rounding', () => {
+    const r = approvedRoom(note)
+    const candidate = r.result!.candidates[0]
+    expect(s().approveCadRoom(candidate, inputsFor(r, { ceilingHeight: 9.187 })).success).toBe(true)
+    expect(s().zones[0].cadProvenance?.ceilingHeight?.usedSuggestion).toBe(false)
+  })
   it('refuses approval when the review decisions the recognition used have changed', () => {
     const r = approvedRoom()
     s().rejectCadOpening(r.approvedOpeningIds![0])

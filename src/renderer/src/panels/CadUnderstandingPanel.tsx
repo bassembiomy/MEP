@@ -34,7 +34,11 @@ export function CadUnderstandingPanel():React.JSX.Element|null {
   if(found.suggestion) {
    setHeight(String(Number(found.suggestion.value.toFixed(3))));
    setSuggestionNote(`Suggested ${found.suggestion.value.toFixed(2)} ${found.suggestion.unit} (${pct(found.suggestion.confidence)} confidence) from drawing text. ${found.suggestion.evidence.join(' ')} Edit it if it is wrong.`);
-  } else setSuggestionNote(found.unresolved?`Ceiling annotations are unresolved: ${found.reasons.join(' ')}`:'No ceiling-height annotation found in this room.');
+  } else {
+   // Do not carry the previous room's suggested height into a room that has none.
+   setHeight(project.units==='metric'?'3.048':'10');
+   setSuggestionNote(found.unresolved?`Ceiling annotations are unresolved: ${found.reasons.join(' ')}`:'No ceiling-height annotation found in this room.');
+  }
  };
  const approve=()=>{
   if(!selected||!run?.success)return;
