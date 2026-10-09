@@ -228,7 +228,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       if (type === 'ENDSEC' || type === 'EOF') section = '';
       else if (type !== 'SECTION' && section) sections.get(section)!.push(record);
     } else {
-      if (record?.type === 'SECTION' && code === 2) {
+      if (record?.type === 'SECTION' && code === 2 && record.pairs.length === 0) {
         section = value.trim().toUpperCase();
         if (!sections.has(section)) sections.set(section, []);
       }

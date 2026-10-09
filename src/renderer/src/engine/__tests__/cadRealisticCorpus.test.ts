@@ -138,10 +138,9 @@ function pathBStore(name: string) {
 }
 
 /** Generic checks shared by the plan files. */
-function describeUnitsAndImport(name: string, opts: { unitsGap: boolean; paperLeak?: boolean }) {
+function describeUnitsAndImport(name: string, opts: { paperLeak?: boolean } = {}) {
   const t = manifest[name]
-  const unitsTest = opts.unitsGap ? gap : it
-  unitsTest(`declares ${t.drawingUnit} units from $INSUNITS ${t.insunits} / $MEASUREMENT ${t.measurement} (confidence ${t.expected.unitsConfidence})`, () => {
+  it(`declares ${t.drawingUnit} units from $INSUNITS ${t.insunits} / $MEASUREMENT ${t.measurement} (confidence ${t.expected.unitsConfidence})`, () => {
     const { parsed } = load(name)
     expect(parsed.insUnits).toBe(t.insunits)
     expect(parsed.measurement).toBe(t.measurement)
@@ -149,7 +148,7 @@ function describeUnitsAndImport(name: string, opts: { unitsGap: boolean; paperLe
     expect(parsed.cadUnit).toBe(t.expected.cadUnit)
     expect(histogram(parsed, isUnitsDiag)).toEqual(t.expected.unitsConfidence === 'declared' ? {} : { 'units-unspecified': 1 })
   })
-  it('control: the same file read with its group-code-2 header variables removed declares the manifest units (root cause of the gap above)', () => {
+  it('control: the same file read with its group-code-2 header variables removed declares the manifest units', () => {
     // $DIMSTYLE, $UCSNAME, $PUCSNAME, $CMLSTYLE ... carry group code 2, which the parser takes for a section name and
     // so stops treating the rest of the HEADER as HEADER; $INSUNITS / $MEASUREMENT come after them.
     const lines = readText(name).split('\n')
@@ -247,7 +246,7 @@ function describeCeilings(name: string, rooms: TruthRoom[], level = 0) {
 describe('corpus: arch-metric-mm-r2018 (double-line walls, rotated/mirrored door blocks, attributes)', () => {
   const name = METRIC
   const t = manifest[name]
-  describeUnitsAndImport(name, { unitsGap: true })
+  describeUnitsAndImport(name)
   describeOpenings(name)
 
   describe('columns', () => {
@@ -351,7 +350,7 @@ const PERF = {
 describe('corpus: arch-imperial-in-r2010 (inches, single-line centreline walls)', () => {
   const name = IMPERIAL
   const t = manifest[name]
-  describeUnitsAndImport(name, { unitsGap: true })
+  describeUnitsAndImport(name)
   describeOpenings(name)
   it('is 12 ft x 14 ft = 168 ft2 for Office A in the ground truth', () => {
     expect(t.rooms[0].areaSqFt).toBeCloseTo(168, 9)
@@ -401,7 +400,7 @@ describe('corpus: arch-imperial-in-r2010 (inches, single-line centreline walls)'
 describe('corpus: unitless-insunits0 ($INSUNITS 0)', () => {
   const name = UNITLESS
   const t = manifest[name]
-  describeUnitsAndImport(name, { unitsGap: true })
+  describeUnitsAndImport(name)
   it('requires explicit unit confirmation before any room can be recognised', () => {
     loadStore(name, false)
     expect(s().project.cadUnitsConfirmed).toBe(false)
@@ -419,7 +418,7 @@ describe('corpus: unitless-insunits0 ($INSUNITS 0)', () => {
 describe('corpus: noise-dim-hatch-spline-paper (dimensions, hatches, spline, XDATA, hidden layers, paper space)', () => {
   const name = NOISE
   const t = manifest[name]
-  describeUnitsAndImport(name, { unitsGap: true, paperLeak: true })
+  describeUnitsAndImport(name, { paperLeak: true })
   it('reports dimensions, hatches and Defpoints points as unsupported, exactly once each', () => {
     const h = histogram(load(name).parsed, d => d.code === 'UNSUPPORTED_ENTITY')
     expect(h['UNSUPPORTED_ENTITY:DIMENSION']).toBe(t.sourceUnsupported.DIMENSION)
@@ -467,7 +466,7 @@ describe('corpus: elevated-levels (ground floor z=0, second floor z=3500 mm, one
   const name = ELEVATED
   const t = manifest[name]
   const ground = t.levels!['0'], upper = t.levels!['3500']
-  describeUnitsAndImport(name, { unitsGap: true })
+  describeUnitsAndImport(name)
   it('drops the non-planar 3D LINE with UNSUPPORTED_ELEVATION and keeps all planar geometry', () => {
     const { parsed } = load(name)
     expect((parsed.diagnostics ?? []).filter(d => d.code === 'UNSUPPORTED_ELEVATION')).toHaveLength(t.nonPlanarLines!)
@@ -522,7 +521,7 @@ describe('corpus: large-office-20k.dxf.gz (48 bays, ~20k entities after block ex
     expect(parsed.entities.filter(e => e.layer === 'A-WALL' && e.type === 'LINE')).toHaveLength(Number(t.wallSegments!['A-WALL']))
     expect(parsed.entities.filter(e => e.layer === 'A-AREA' && e.closed).reduce((n, e) => n + e.points!.length / 2, 0)).toBe(Number(t.wallSegments!['A-AREA']))
   })
-  describeUnitsAndImport(name, { unitsGap: true })
+  describeUnitsAndImport(name)
   it('finds the 48 door blocks', () => {
     loadStore(name)
     expect(s().cadOpenings.filter(o => o.kind === 'door')).toHaveLength(t.bays!)
@@ -555,7 +554,7 @@ describe('corpus: legacy-r2000-cp1252 (cp1252 bytes, \\U+ escapes)', () => {
   const name = LEGACY
   const t = manifest[name]
   const texts = () => load(name).parsed.entities.filter(e => e.type === 'MTEXT' || e.type === 'TEXT').map(e => e.text)
-  describeUnitsAndImport(name, { unitsGap: true })
+  describeUnitsAndImport(name)
   it('rooms path A: both rooms with the right areas', () => {
     expectRoomsMatch(pathA(name).candidates, t.rooms, upf(name))
   })

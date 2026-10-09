@@ -14,11 +14,22 @@ const section = (name: string, body: string[]): string =>
 export interface HeaderOptions {
   insunits?: number;
   measurement?: 0 | 1;
+  /** Extra HEADER variables written before $INSUNITS, e.g. [9,'$DIMSTYLE'],[2,'Standard'] (code 2 values are legal here). */
+  extra?: Pair[];
+  /** Written as $ACADVER / $DWGCODEPAGE when supplied. */
+  acadver?: string;
+  codepage?: string;
 }
+
+/** Arbitrary record from raw code/value pairs, for entities the typed helpers do not cover. */
+export const rawRecord = (...pairs: Pair[]): string => records(...pairs);
 
 /** HEADER section. Only the variables that were supplied are written. */
 export function header(options: HeaderOptions = {}): string {
   const body: string[] = [];
+  if (options.acadver !== undefined) body.push(records([9, '$ACADVER'], [1, options.acadver]));
+  if (options.codepage !== undefined) body.push(records([9, '$DWGCODEPAGE'], [3, options.codepage]));
+  if (options.extra?.length) body.push(records(...options.extra));
   if (options.insunits !== undefined) {
     body.push(records([9, '$INSUNITS'], [70, options.insunits]));
   }
