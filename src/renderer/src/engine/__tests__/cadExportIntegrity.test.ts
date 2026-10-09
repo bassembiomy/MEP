@@ -37,3 +37,19 @@ describe('editable native CAD engineering deliverables',()=>{
 it('rejects corrupt engineering flows instead of exporting NaN tags',()=>{
  expect(()=>exportProjectDxf({project,zones:[{...zone,diffusers:[{...zone.diffusers[0],cfm:NaN}]}],dxfEntities:[]})).toThrow(/finite|flow/i);
 });
+describe('elevation round trip',()=>{
+ it('writes group 38/30 so elevated entities stay on their level after re-import',()=>{
+  const elevated:DxfEntity[]=[
+   {type:'LWPOLYLINE',points:[0,0,10,0,10,-10],closed:true,layer:'UP',elevation:120},
+   {type:'LINE',x:1,y:-2,points:[5,-6],layer:'UPLINE',elevation:120},
+   {type:'CIRCLE',x:3,y:-3,radius:2,layer:'UPCIRCLE',elevation:-30},
+   {type:'ARC',x:3,y:-3,radius:2,startAngleDeg:0,endAngleDeg:90,layer:'UPARC',elevation:120},
+   {type:'TEXT',x:3,y:-3,text:'T',layer:'UPTEXT',elevation:120},
+   {type:'LINE',x:0,y:0,points:[1,1],layer:'FLAT'}];
+  const out=parseDxfText(exportProjectDxf({project,zones:[],dxfEntities:elevated}).text).entities;
+  expect(out.filter(e=>e.diagnostics).length).toBe(0);
+  const el=(layer:string)=>(out.find(e=>e.layer===layer) as DxfEntity|undefined)?.elevation;
+  expect(el('UP')).toBe(120);expect(el('UPLINE')).toBe(120);expect(el('UPCIRCLE')).toBe(-30);expect(el('UPARC')).toBe(120);expect(el('UPTEXT')).toBe(120);
+  expect(el('FLAT')).toBeUndefined();
+ });
+});

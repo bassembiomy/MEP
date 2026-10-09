@@ -22,9 +22,11 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
  const pair=(code:number,value:string|number)=>{if(typeof value==='number'&&!Number.isFinite(value))throw new Error('Export coordinates must be finite.');body.push(String(code),String(value).replace(/[\r\n]/g,' '));};
  const start=(type:string,layer:string,color?:string)=>{layerNames.add(layer);pair(0,type);pair(8,layer);if(color&&/^#[a-f\d]{6}$/i.test(color))pair(420,parseInt(color.slice(1),16));};
  const xy=(x:number,y:number)=>{pair(10,x);pair(20,-y);};
- const poly=(points:number[],layer:string,closed=false,bulges?:number[],color?:string)=>{
+ const zOf=(e:DxfEntity)=>e.elevation??0;
+ const xyz=(x:number,y:number,z:number)=>{xy(x,y);if(z!==0)pair(30,z);};
+ const poly=(points:number[],layer:string,closed=false,bulges?:number[],color?:string,elevation=0)=>{
   if(points.length<4||points.length%2)throw new Error('Invalid export polyline.');
-  start('LWPOLYLINE',layer,color);pair(90,points.length/2);pair(70,closed?1:0);
+  start('LWPOLYLINE',layer,color);pair(90,points.length/2);pair(70,closed?1:0);if(elevation!==0)pair(38,elevation);
   for(let i=0;i<points.length;i+=2){xy(points[i],points[i+1]);if(bulges?.[i/2])pair(42,bulges[i/2]);}
  };
  const text=(value:string,x:number,y:number,layer='HVAC-TAGS',height=scale*0.2)=>{start('TEXT',layer);xy(x,y);pair(40,height);pair(1,value);};
@@ -34,9 +36,9 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
   const layer=entity.layer??'0';
   if(entity.geometryApproximation)limitations.push(`CAD ${entity.handle??layer}: ${entity.geometryApproximation}`);
   switch(entity.type) {
-   case 'LINE':start('LINE',layer,entity.color);xy(entity.x!,entity.y!);pair(11,entity.points![0]);pair(21,-entity.points![1]);break;
-   case 'LWPOLYLINE':case 'POLYLINE':poly(entity.points!,layer,entity.closed,entity.bulges,entity.color);break;
-   case 'CIRCLE':case 'ARC':start(entity.type,layer,entity.color);xy(entity.x!,entity.y!);pair(40,entity.radius!);if(entity.type==='ARC'){pair(50,entity.startAngleDeg!);pair(51,entity.endAngleDeg!);}break;
+   case 'LINE':start('LINE',layer,entity.color);xyz(entity.x!,entity.y!,zOf(entity));pair(11,entity.points![0]);pair(21,-entity.points![1]);if(zOf(entity)!==0)pair(31,zOf(entity));break;
+   case 'LWPOLYLINE':case 'POLYLINE':poly(entity.points!,layer,entity.closed,entity.bulges,entity.color,zOf(entity));break;
+   case 'CIRCLE':case 'ARC':start(entity.type,layer,entity.color);xyz(entity.x!,entity.y!,zOf(entity));pair(40,entity.radius!);if(entity.type==='ARC'){pair(50,entity.startAngleDeg!);pair(51,entity.endAngleDeg!);}break;
    case 'ELLIPSE': {
     const u={x:entity.majorAxis!.x,y:-entity.majorAxis!.y},v={x:entity.minorAxis!.x,y:-entity.minorAxis!.y};
     const xx=u.x*u.x+v.x*v.x,yy=u.y*u.y+v.y*v.y,off=u.x*u.y+v.x*v.y;
@@ -52,9 +54,9 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
     const p0=entity.startParam??0,p1=entity.endParam??2*Math.PI;
     let begin=parameter(p0);begin=(begin+2*Math.PI)%(2*Math.PI);
     let span=p1-p0;while(span<0)span+=2*Math.PI;if(Math.abs(span)<1e-12)span=2*Math.PI;
-    start('ELLIPSE',layer,entity.color);xy(entity.x!,entity.y!);pair(11,e.x*a);pair(21,e.y*a);pair(31,0);pair(40,b/a);pair(41,begin);pair(42,begin+Math.min(span,2*Math.PI));pair(210,0);pair(220,0);pair(230,n);break;
+    start('ELLIPSE',layer,entity.color);xyz(entity.x!,entity.y!,zOf(entity));pair(11,e.x*a);pair(21,e.y*a);pair(31,0);pair(40,b/a);pair(41,begin);pair(42,begin+Math.min(span,2*Math.PI));pair(210,0);pair(220,0);pair(230,n);break;
    }
-   case 'TEXT':case 'MTEXT':start(entity.type,layer,entity.color);xy(entity.x!,entity.y!);pair(40,entity.textHeight??scale*0.2);pair(50,(entity.rotationDeg??0)*(entity.type==='MTEXT'?Math.PI/180:1));pair(1,entity.text??'');break;
+   case 'TEXT':case 'MTEXT':start(entity.type,layer,entity.color);xyz(entity.x!,entity.y!,zOf(entity));pair(40,entity.textHeight??scale*0.2);pair(50,(entity.rotationDeg??0)*(entity.type==='MTEXT'?Math.PI/180:1));pair(1,entity.text??'');break;
   }
  }
  for(const z of zones) {
