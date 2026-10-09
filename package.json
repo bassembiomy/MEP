@@ -21,7 +21,8 @@
     "build:linux": "electron-vite build && electron-builder --linux",
     "test": "node scripts/run-engine-tests.mjs",
     "test:watch": "vitest",
-    "test:engine": "vitest run"
+    "test:engine": "vitest run",
+    "corpus:generate": "python3 scripts/cad-corpus/generate_corpus.py"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
