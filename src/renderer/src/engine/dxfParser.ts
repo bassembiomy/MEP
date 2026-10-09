@@ -312,7 +312,6 @@ export function sampleSplineData(spline: { closed: boolean; degree: number; cont
   return undefined;
 }
 
-/** Parses DXF records before resolving INSERTs. Empty values never shift code/value pairs. */
 /**
  * Sets the justified anchor (x, y: internal Y-down frame, before the INSERT matrix) and textHAlign / textVAlign on a
  * TEXT / ATTRIB / ATTDEF / MTEXT entity whose group 10 has already been stored in x, y. See cad/textJustification.ts.
@@ -332,7 +331,7 @@ function applyTextJustification(ent: DxfEntity, r: DxfRecord, diagnose: (code: s
     const j = dxfTextJustification(number(r, 72, 0), number(r, attribute ? 74 : 73, 0));
     if (j.invalid) diagnose('TEXT_JUSTIFICATION_UNSUPPORTED', `${r.type} justification (72=${first(r, 72)?.trim() ?? 0}, ${attribute ? 74 : 73}=${first(r, attribute ? 74 : 73)?.trim() ?? 0}) is not supported; left/baseline at the insertion point used.`, r);
     else if (j.anchor !== 'p10') {
-      const x11 = first(r, 11) === undefined ? NaN : number(r, 11), y11 = -number(r, 21, 0);
+      const x11 = first(r, 11) === undefined ? NaN : number(r, 11), y11 = first(r, 21) === undefined ? NaN : -number(r, 21);
       if (Number.isFinite(x11) && Number.isFinite(y11)) {
         ({ hAlign, vAlign } = j);
         // Aligned / fit: the midpoint of the two baseline points (lossy: the fitted width and 10 -> 11 direction are not kept).
@@ -343,6 +342,7 @@ function applyTextJustification(ent: DxfEntity, r: DxfRecord, diagnose: (code: s
   Object.assign(ent, storedJustification(ent.type, hAlign, vAlign));
 }
 
+/** Parses DXF records before resolving INSERTs. Empty values never shift code/value pairs. */
 export function parseDxfText(dxfText: string): ParsedDxf {
   const diagnostics: CadImportDiagnostic[] = [], entities: DxfEntity[] = [], blockReferences: CadBlockReference[] = [];
   const diagnose = (code: string, message: string, r?: DxfRecord, severity: 'warning' | 'error' = 'warning') => {

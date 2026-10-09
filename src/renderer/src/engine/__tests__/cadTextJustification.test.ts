@@ -64,6 +64,12 @@ describe('F1 DXF TEXT justification matrix (T1)', () => {
     expect([ent.x, ent.y]).toEqual([5, -6])
     expect(codes(parsed)).toContain('TEXT_ALIGNMENT_POINT_MISSING')
   })
+  it('group 11 without group 21 is treated as missing, not as y = 0', () => {
+    const { ent, parsed } = only([rawRecord([0, 'TEXT'], [8, L], [10, 5], [20, 6], [40, 2], [1, 'X'], [72, 1], [11, 30])])
+    expect([ent.x, ent.y]).toEqual([5, -6])
+    expect(ent).not.toHaveProperty('textHAlign')
+    expect(codes(parsed)).toContain('TEXT_ALIGNMENT_POINT_MISSING')
+  })
   it('an out-of-range justification is reported and left/baseline at group 10 is used', () => {
     const { ent, parsed } = only([textRec(9, 0, [5, 6], [1, 2])])
     expect([ent.x, ent.y]).toEqual([5, -6])
