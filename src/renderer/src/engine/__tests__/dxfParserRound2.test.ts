@@ -120,3 +120,39 @@ describe('text encoding', () => {
     expect(parsed.entities.map(e => e.text)).toEqual(['\u0627\u0631 2.80', 'café'])
   })
 })
+
+describe('SPLINE', () => {
+  const spline = (...pairs: Parameters<typeof rawRecord>) => parseDxfText(dxf({ header: header({ insunits: 4 }), layers: [layer('0')], blocks: [], entities: [rawRecord([0, 'SPLINE'], [8, '0'], ...pairs)] }))
+  it('evaluates a clamped cubic B-spline exactly: Bezier midpoint of (0,0),(1,2),(3,2),(4,0) is (2,1.5)', () => {
+    const r = spline([70, 8], [71, 3], [72, 8], [73, 4],
+      ...[0, 0, 0, 0, 1, 1, 1, 1].map(k => [40, k] as [number, number]),
+      [10, 0], [20, 0], [10, 1], [20, 2], [10, 3], [20, 2], [10, 4], [20, 0])
+    const e = r.entities[0]
+    expect(e.type).toBe('LWPOLYLINE')
+    expect(e.geometryApproximation).toMatch(/control points and knots/)
+    const p = e.points!
+    expect(p[0]).toBeCloseTo(0, 9)
+    expect(p[1]).toBeCloseTo(0, 9)
+    expect(p[p.length - 2]).toBeCloseTo(4, 9)
+    expect(p[p.length - 1]).toBeCloseTo(0, 9)
+    const mid = (p.length / 2 - 1) / 2
+    expect(p[2 * mid]).toBeCloseTo(2, 9)
+    expect(p[2 * mid + 1]).toBeCloseTo(-1.5, 9)
+    expect(r.diagnostics!.filter(d => d.entityType === 'SPLINE').map(d => d.code)).toEqual(['APPROXIMATED_GEOMETRY'])
+  })
+  it('honours rational weights (a quarter circle through weight sqrt(2)/2 stays on the unit circle)', () => {
+    const r = spline([70, 8], [71, 2], [73, 3], ...[0, 0, 0, 1, 1, 1].map(k => [40, k] as [number, number]),
+      ...[1, Math.SQRT1_2, 1].map(w => [41, w] as [number, number]), [10, 1], [20, 0], [10, 1], [20, 1], [10, 0], [20, 1])
+    const p = r.entities[0].points!
+    for (let i = 0; i < p.length; i += 2) expect(Math.hypot(p[i], p[i + 1])).toBeCloseTo(1, 9)
+  })
+  it('interpolates fit points and reports a malformed spline instead of dropping it silently', () => {
+    const fit = spline([70, 0], [71, 3], [74, 3], [11, 0], [21, 0], [11, 5], [21, 5], [11, 10], [21, 0])
+    const p = fit.entities[0].points!
+    expect([p[0], p[1] + 0, p[p.length - 2], p[p.length - 1] + 0].map(v => Math.round(v))).toEqual([0, 0, 10, 0])
+    expect(p.some((v, i) => i % 2 === 0 && Math.abs(v - 5) < 1e-9 && Math.abs(p[i + 1] + 5) < 1e-9)).toBe(true)
+    const bad = spline([70, 0], [71, 3])
+    expect(bad.entities).toHaveLength(0)
+    expect(bad.diagnostics!.some(d => d.code === 'MALFORMED_SPLINE')).toBe(true)
+  })
+})

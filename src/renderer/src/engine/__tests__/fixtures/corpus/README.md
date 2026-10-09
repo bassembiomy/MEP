@@ -41,7 +41,6 @@ runs the gaps as normal tests and prints the real assertion failures.
 
 | # | Gap | Evidence (measured) | Tests (`it.fails`) | Likely fix site (Round 2) |
 |---|---|---|---|---|
-| 6 | SPLINE is unsupported, so a curved feature wall is dropped | 1 `UNSUPPORTED_ENTITY:SPLINE`, 0 entities on `A-WALL-CURVE` | `SPLINE feature wall is dropped ...` | `dxfParser.ts` (sample to polyline) |
 | 8 | Frozen / off layers are imported as visible geometry | 2 entities from `A-FRZ` (frozen) and `A-OFF` (off) are present | `geometry on frozen / off layers ...` | `dxfParser.ts` layer table (group 70 bit 1, negative colour); design question: hide or import-but-hidden |
 
 Not defects (documented behaviour, asserted as such): DIMENSION (4), HATCH (2) and POINT (3) are reported once each as

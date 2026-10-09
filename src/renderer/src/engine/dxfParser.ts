@@ -229,6 +229,67 @@ export function decodeDxfBytes(bytes: Uint8Array): string {
 const decodeUnicodeEscapes = (text: string): string =>
   text.replace(/\\U\+([0-9A-Fa-f]{4})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
 
+const SPLINE_SAMPLES_PER_SPAN = 16, SPLINE_MAX_POINTS = 1024;
+
+/**
+ * Samples a SPLINE record as a polyline (DXF coordinates, Y up). B-splines (control points + knots, optional
+ * weights) are evaluated exactly with de Boor's algorithm; a spline stored only with fit points is approximated by a
+ * uniform Catmull-Rom curve through them. Returns undefined when the record has neither usable form.
+ */
+function sampleSpline(r: DxfRecord): { points: number[]; closed: boolean; how: string } | undefined {
+  const flags = number(r, 70, 0), closed = Number.isInteger(flags) && (flags & 1) !== 0;
+  const collect = (xCode: number, yCode: number): [number, number][] => {
+    const out: [number, number][] = [];
+    for (const p of r.pairs) {
+      if (p.code === xCode) out.push([Number(p.value), NaN]);
+      else if (p.code === yCode && out.length) out[out.length - 1][1] = Number(p.value);
+    }
+    return out;
+  };
+  const finite = (pts: [number, number][]) => pts.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
+  const degree = number(r, 71, 3);
+  const control = collect(10, 20), fit = collect(11, 21);
+  const knots = r.pairs.filter(p => p.code === 40).map(p => Number(p.value));
+  const weights = r.pairs.filter(p => p.code === 41).map(p => Number(p.value));
+  const n = control.length;
+  if (n >= 2 && Number.isInteger(degree) && degree >= 1 && degree < n && finite(control) && knots.length === n + degree + 1
+    && knots.every((k, i) => Number.isFinite(k) && (i === 0 || k >= knots[i - 1])) && knots[n] > knots[degree]
+    && (weights.length === 0 || (weights.length === n && weights.every(w => Number.isFinite(w) && w > 0)))) {
+    const w = weights.length ? weights : control.map(() => 1);
+    const spans = n - degree, count = Math.min(SPLINE_MAX_POINTS, spans * SPLINE_SAMPLES_PER_SPAN + 1);
+    const lo = knots[degree], hi = knots[n], points: number[] = [];
+    for (let i = 0; i < count; i++) {
+      const t = i === count - 1 ? hi : lo + (hi - lo) * i / (count - 1);
+      let k = degree;
+      while (k < n - 1 && t >= knots[k + 1]) k++;
+      const d = []; // homogeneous control points of the active span
+      for (let j = 0; j <= degree; j++) { const c = k - degree + j; d.push([control[c][0] * w[c], control[c][1] * w[c], w[c]]); }
+      for (let rr = 1; rr <= degree; rr++)
+        for (let j = degree; j >= rr; j--) {
+          const den = knots[j + 1 + k - rr] - knots[j + k - degree];
+          const a = den === 0 ? 0 : (t - knots[j + k - degree]) / den;
+          for (let c = 0; c < 3; c++) d[j][c] = (1 - a) * d[j - 1][c] + a * d[j][c];
+        }
+      points.push(d[degree][0] / d[degree][2], d[degree][1] / d[degree][2]);
+    }
+    return { points, closed, how: 'control points and knots' };
+  }
+  if (fit.length >= 2 && finite(fit)) {
+    const pts = fit, m = pts.length, points: number[] = [];
+    const at = (i: number) => closed ? pts[((i % m) + m) % m] : pts[Math.max(0, Math.min(m - 1, i))];
+    const segs = closed ? m : m - 1, per = Math.max(2, Math.min(SPLINE_SAMPLES_PER_SPAN / 2, Math.floor(SPLINE_MAX_POINTS / segs)));
+    for (let i = 0; i < segs; i++)
+      for (let j = 0; j < per; j++) {
+        const t = j / per, t2 = t * t, t3 = t2 * t, p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+        points.push(0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+          0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3));
+      }
+    if (!closed) points.push(pts[m - 1][0], pts[m - 1][1]);
+    return { points, closed, how: 'fit points (Catmull-Rom through them)' };
+  }
+  return undefined;
+}
+
 /** Parses DXF records before resolving INSERTs. Empty values never shift code/value pairs. */
 export function parseDxfText(dxfText: string): ParsedDxf {
   const diagnostics: CadImportDiagnostic[] = [], entities: DxfEntity[] = [], blockReferences: CadBlockReference[] = [];
@@ -348,7 +409,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         diagnose('UNSUPPORTED_ELEVATION', 'Nonplanar geometry (varying Z) cannot be represented in the 2D drawing; entity omitted.', r); continue;
       }
       let ownZ = zValues[0] ?? 0;
-      const reflected = nz < 0 && !['LINE', 'ELLIPSE'].includes(r.type);
+      const reflected = nz < 0 && !['LINE', 'ELLIPSE', 'SPLINE'].includes(r.type);
       const ocs: CadAffineMatrix = reflected ? { a: -1, b: 0, c: 0, d: 1, tx: 0, ty: 0 } : identity;
       if (r.type === 'INSERT') {
         if (number(r, 70, 1) !== 1 || number(r, 71, 1) !== 1) { diagnose('UNSUPPORTED_INSERT_ARRAY', 'INSERT arrays are unsupported; entity omitted.', r); continue; }
@@ -436,6 +497,14 @@ export function parseDxfText(dxfText: string): ParsedDxf {
           ent.majorAxis = { x: mx, y: -my }; ent.minorAxis = { x: -my * ratio * nz, y: -mx * ratio * nz };
           ent.startParam = number(r, 41, 0); ent.endParam = number(r, 42, 2 * Math.PI);
           if (!(ratio > 0 && ratio <= 1) || number(r, 31, 0) !== 0) { diagnose('MALFORMED_ELLIPSE', 'Ellipse ratio or major axis is invalid.', r, 'error'); continue; }
+          break;
+        }
+        case 'SPLINE': {
+          const sampled = sampleSpline(r);
+          if (!sampled) { diagnose('MALFORMED_SPLINE', 'SPLINE has no usable control points with knots, or fit points; source geometry omitted.', r, 'error'); continue; }
+          ent.type = 'LWPOLYLINE'; ent.closed = sampled.closed; ent.points = []; ent.bulges = [];
+          for (let k = 0; k < sampled.points.length; k += 2) { ent.points.push(sampled.points[k], -sampled.points[k + 1]); ent.bulges.push(0); }
+          ent.geometryApproximation = `SPLINE sampled as a polyline from its ${sampled.how}; the curve is approximate`;
           break;
         }
         case 'SEQEND': continue; // terminator of an INSERT's attribute list; carries no geometry

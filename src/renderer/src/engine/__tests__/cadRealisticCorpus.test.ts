@@ -93,9 +93,9 @@ const histogram = (parsed: ParsedDxf, filter: (d: { code: string; entityType?: s
   for (const d of parsed.diagnostics ?? []) if (filter(d)) h[d.code + (d.entityType && d.code === 'UNSUPPORTED_ENTITY' ? `:${d.entityType}` : '')] = (h[d.code + (d.entityType && d.code === 'UNSUPPORTED_ENTITY' ? `:${d.entityType}` : '')] ?? 0) + 1
   return h
 }
-const GAP_UNSUPPORTED = ['SPLINE']
-/** Source record types the importer now handles (ATTRIB -> visible TEXT, ATTDEF template and SEQEND dropped silently). */
-const HANDLED_SOURCE = ['ATTRIB', 'ATTDEF', 'SEQEND']
+const GAP_UNSUPPORTED: string[] = []
+/** Source record types the importer now handles (ATTRIB -> visible TEXT, ATTDEF template and SEQEND dropped silently, SPLINE -> sampled polyline). */
+const HANDLED_SOURCE = ['ATTRIB', 'ATTDEF', 'SEQEND', 'SPLINE']
 const isUnitsDiag = (d: { code: string }) => d.code.startsWith('units-')
 const centroid = (poly: number[]) => {
   let x = 0, y = 0
@@ -178,7 +178,9 @@ function describeUnitsAndImport(name: string) {
     if (t.paperSpace) expected.PAPER_SPACE_SKIPPED = 1
     // A door tag ATTRIB of a mirrored INSERT sits on a -Z extrusion: mirrored text keeps anchor and baseline only (one honest warning per such tag).
     const mirroredTags = t.sourceUnsupported.ATTRIB ? t.openings.filter(o => o.kind === 'door' && o.mirrored).length : 0
-    if (mirroredTags) expected.APPROXIMATED_GEOMETRY = mirroredTags
+    // A SPLINE is sampled as a polyline: one APPROXIMATED_GEOMETRY warning each.
+    const approximated = mirroredTags + (t.sourceUnsupported.SPLINE ?? 0)
+    if (approximated) expected.APPROXIMATED_GEOMETRY = approximated
     const actual = histogram(parsed, d => !isUnitsDiag(d) && !(d.code === 'UNSUPPORTED_ENTITY' && GAP_UNSUPPORTED.includes(d.entityType ?? '')))
     expect(actual).toEqual(expected)
   })
@@ -191,8 +193,8 @@ function describeUnitsAndImport(name: string) {
     })
   }
   // The manifest count excludes ATTRIB by convention; the importer draws each visible ATTRIB as a TEXT.
-  it(`imports the manifest entity count (${t.expectedEntityCount}) plus one TEXT per visible ATTRIB (${t.sourceUnsupported.ATTRIB ?? 0})`, () => {
-    expect(load(name).parsed.entities).toHaveLength(t.expectedEntityCount + (t.sourceUnsupported.ATTRIB ?? 0))
+  it(`imports the manifest entity count (${t.expectedEntityCount}) plus one TEXT per visible ATTRIB (${t.sourceUnsupported.ATTRIB ?? 0}) and one polyline per SPLINE (${t.sourceUnsupported.SPLINE ?? 0})`, () => {
+    expect(load(name).parsed.entities).toHaveLength(t.expectedEntityCount + (t.sourceUnsupported.ATTRIB ?? 0) + (t.sourceUnsupported.SPLINE ?? 0))
   })
   it('keeps the drawing bbox within the manifest model extents (+-1 unit, Y negated)', () => {
     const { parsed } = load(name)
@@ -435,10 +437,17 @@ describe('corpus: noise-dim-hatch-spline-paper (dimensions, hatches, spline, XDA
   it('imports the supported ellipse', () => {
     expect(load(name).parsed.entities.filter(e => e.type === 'ELLIPSE')).toHaveLength(t.ellipseCount!)
   })
-  gap('KNOWN GAP: SPLINE feature wall is dropped as UNSUPPORTED_ENTITY (no geometry for curved walls)', () => {
+  it('SPLINE feature wall is sampled as an approximated polyline through its fit points (one APPROXIMATED_GEOMETRY warning)', () => {
     const { parsed } = load(name)
-    expect((parsed.diagnostics ?? []).filter(d => d.entityType === 'SPLINE')).toHaveLength(0)
-    expect(parsed.entities.filter(e => e.layer === 'A-WALL-CURVE').length).toBeGreaterThan(0)
+    const spline = (parsed.diagnostics ?? []).filter(d => d.entityType === 'SPLINE')
+    expect(spline.map(d => d.code)).toEqual(['APPROXIMATED_GEOMETRY'])
+    const wall = parsed.entities.filter(e => e.layer === 'A-WALL-CURVE')
+    expect(wall).toHaveLength(1)
+    expect(wall[0].geometryApproximation).toMatch(/SPLINE/)
+    const p = wall[0].points!
+    expect([p[0], p[1]]).toEqual([9000, -4500]) // first fit point (Y negated by the parser)
+    expect([p[p.length - 2], p[p.length - 1]]).toEqual([13200, -4000]) // last fit point
+    expect(p.length).toBeGreaterThan(8)
   })
   it('paper-space (group 67) entities of Layout1 are skipped with one aggregated PAPER_SPACE_SKIPPED diagnostic', () => {
     const { parsed } = load(name)
