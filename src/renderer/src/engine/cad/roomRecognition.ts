@@ -32,11 +32,64 @@ const OPENING_TAG = /^[DW]\s?-?\d{1,3}[A-Z]?$/i
 const APPROVED_OPENING_SNAP_FT = 0.75
 /** Parallel-ness / span tolerance for pairing the two faces of a double-line wall at an approved opening. */
 const JAMB_PAIR_TOLERANCE_FT = 0.05
-/** Faces whose mean width (2 x area / perimeter) is below this are wall bodies, not rooms. */
-const WALL_BODY_MAX_WIDTH_FT = 1
+/**
+ * Faces whose mean width (2 x area / perimeter) is below this are wall bodies, not rooms. 1.6 ft (~490 mm) also catches
+ * the 380-400 mm walls common in Egypt (a 0.4 m x 5 m face has a mean width of ~1.2 ft). Every room of at least the
+ * 20 ft2 default minimum area that is not a sliver has a mean width above 2 ft, so real rooms are not affected.
+ */
+const WALL_BODY_MAX_WIDTH_FT = 1.6
+/**
+ * Elongation test for thicker walls / shafts: the equivalent rectangle (same area and perimeter) narrower than this AND
+ * more than SLENDER_MIN_ASPECT times longer than wide is not a room. A 3 ft corridor is not narrow by this test;
+ * a 2.5 ft x 10 ft closet (aspect exactly 4) is kept; a 600 mm x 5 m wall (1.97 ft x 16.4 ft) is dropped.
+ */
+const SLENDER_MAX_WIDTH_FT = 2
+const SLENDER_MIN_ASPECT = 4
 const APPROVED_OPENING_LAYER = '(approved opening)'
 const isOpeningSource = (s: Source): boolean => s.layer === APPROVED_OPENING_LAYER
 class RecognitionBudgetExceeded extends Error {}
+
+/**
+ * Uniform 2D bucket index over axis-aligned boxes (points are zero-size boxes). Queries return only the items whose
+ * cells meet the query box, so stacked or large plans do not pay a scan over everything sharing an x-range.
+ */
+class GridIndex {
+  private readonly cells = new Map<number, number[]>()
+  private readonly minX: number
+  private readonly minY: number
+  private readonly cw: number
+  private readonly ch: number
+  private readonly n: number
+  constructor(private readonly boxes: [number, number, number, number][], private readonly spend: (n?: number) => void) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const b of boxes) { minX = Math.min(minX, b[0]); minY = Math.min(minY, b[1]); maxX = Math.max(maxX, b[2]); maxY = Math.max(maxY, b[3]) }
+    this.n = Math.max(1, Math.min(512, Math.ceil(Math.sqrt(boxes.length))))
+    this.minX = minX; this.minY = minY
+    this.cw = Math.max((maxX - minX) / this.n, 1e-9); this.ch = Math.max((maxY - minY) / this.n, 1e-9)
+    boxes.forEach((b, i) => this.forCells(b, (key) => { spend(); const cell = this.cells.get(key); if (cell) cell.push(i); else this.cells.set(key, [i]) }))
+  }
+  private forCells(b: [number, number, number, number], visit: (key: number) => void): void {
+    const c0 = Math.max(0, Math.min(this.n - 1, Math.floor((b[0] - this.minX) / this.cw)))
+    const c1 = Math.max(0, Math.min(this.n - 1, Math.floor((b[2] - this.minX) / this.cw)))
+    const r0 = Math.max(0, Math.min(this.n - 1, Math.floor((b[1] - this.minY) / this.ch)))
+    const r1 = Math.max(0, Math.min(this.n - 1, Math.floor((b[3] - this.minY) / this.ch)))
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) visit(r * this.n + c)
+  }
+  /** Indices of boxes that overlap `b` (exact box test), each once, ascending. Work is charged per cell and per candidate item. */
+  query(b: [number, number, number, number]): number[] {
+    const seen = new Set<number>()
+    this.forCells(b, (key) => {
+      this.spend()
+      for (const i of this.cells.get(key) ?? []) {
+        if (seen.has(i)) continue
+        this.spend()
+        const o = this.boxes[i]
+        if (o[0] <= b[2] && o[2] >= b[0] && o[1] <= b[3] && o[3] >= b[1]) seen.add(i)
+      }
+    })
+    return [...seen].sort((x, y) => x - y)
+  }
+}
 
 function signedArea(points: Point[]): number {
   const origin = points[0]
@@ -160,10 +213,15 @@ export function recognizeCadRooms(
     if (graph) {
       let perimeter = 0
       for (let i = 0; i < points.length; i++) perimeter += distance(points[i], points[(i + 1) % points.length])
-      if ((2 * area) / perimeter < WALL_BODY_MAX_WIDTH_FT) {
+      const meanWidth = (2 * area) / perimeter
+      // Equivalent rectangle: sides w, l with w + l = P / 2 and w * l = A.
+      const half = perimeter / 2
+      const length = (half + Math.sqrt(Math.max(0, half * half - 4 * area))) / 2
+      const width = area / length
+      if (meanWidth < WALL_BODY_MAX_WIDTH_FT || (width < SLENDER_MAX_WIDTH_FT - 1e-9 && length / width > SLENDER_MIN_ASPECT + 1e-9)) {
         diagnostic(
           'wall-body-excluded',
-          `A ${area.toFixed(1)} ft² face with a mean width of ${((2 * area) / perimeter).toFixed(2)} ft (under ${WALL_BODY_MAX_WIDTH_FT} ft) is the body of a wall between its two face lines, not a room; it was not proposed.`
+          `A ${area.toFixed(1)} ft² face with a mean width of ${meanWidth.toFixed(2)} ft (${meanWidth < WALL_BODY_MAX_WIDTH_FT ? `under ${WALL_BODY_MAX_WIDTH_FT} ft` : `a ${width.toFixed(2)} x ${length.toFixed(1)} ft sliver`}) is the body of a wall between its two face lines, not a room; it was not proposed.`
         )
         return
       }
@@ -499,8 +557,21 @@ export function recognizeCadRooms(
       }
       return true
     }
+    // Only candidates whose bounding boxes overlap can nest or overlap (a vertex strictly inside the other polygon lies in
+    // its box), so pairs are found through a grid index instead of testing every pair.
+    const boxOf = (poly: number[]): [number, number, number, number] => {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (let k = 0; k < poly.length; k += 2) {
+        minX = Math.min(minX, poly[k]); maxX = Math.max(maxX, poly[k])
+        minY = Math.min(minY, poly[k + 1]); maxY = Math.max(maxY, poly[k + 1])
+      }
+      return [minX, minY, maxX, maxY]
+    }
+    const candidateBoxes = allCandidates.map((c) => boxOf(c.polygon))
+    const candidateGrid = new GridIndex(candidateBoxes, spend)
     for (let i = 0; i < allCandidates.length; i++)
-      for (let j = i + 1; j < allCandidates.length; j++) {
+      for (const j of candidateGrid.query(candidateBoxes[i])) {
+        if (j <= i) continue
         const a = allCandidates[i],
           b = allCandidates[j]
         spend(a.polygon.length * b.polygon.length)
@@ -520,8 +591,8 @@ export function recognizeCadRooms(
         }
       }
     // Eligible room-name texts are collected once (normalised, level notes / pure numbers / door-window tags dropped)
-    // and sorted by x, so each candidate only scans the texts inside its x-range; work is charged per text actually
-    // examined, not per entity per candidate.
+    // and bucketed in a 2D grid, so each candidate only examines the texts in the cells its bounding box meets; work is
+    // charged per cell and per text actually examined, not per entity per candidate.
     interface RoomLabel { x: number; y: number; height: number; text: string }
     const labelTexts: RoomLabel[] = []
     for (const entity of entities) {
@@ -531,16 +602,9 @@ export function recognizeCadRooms(
       if (!text || isLevelAnnotation(entity.text!) || NUMBER_ONLY.test(text) || OPENING_TAG.test(text)) continue
       labelTexts.push({ x: entity.x!, y: entity.y!, height: Number.isFinite(entity.textHeight) ? entity.textHeight! : 0, text })
     }
-    labelTexts.sort((a, b) => a.x - b.x)
-    const lowerBound = (x: number): number => {
-      let lo = 0, hi = labelTexts.length
-      while (lo < hi) {
-        const mid = (lo + hi) >> 1
-        if (labelTexts[mid].x < x) lo = mid + 1
-        else hi = mid
-      }
-      return lo
-    }
+    const labelGrid = labelTexts.length
+      ? new GridIndex(labelTexts.map((l) => [l.x, l.y, l.x, l.y]), spend)
+      : undefined
     for (const candidate of allCandidates) {
       const poly = candidate.polygon
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, cx = 0, cy = 0
@@ -551,11 +615,8 @@ export function recognizeCadRooms(
       }
       cx /= poly.length / 2; cy /= poly.length / 2
       const found = new Map<string, { height: number; distance: number }>()
-      spend(Math.ceil(Math.log2(labelTexts.length + 2)))
-      for (let k = lowerBound(minX); k < labelTexts.length && labelTexts[k].x <= maxX; k++) {
+      for (const k of labelGrid?.query([minX, minY, maxX, maxY]) ?? []) {
         const label = labelTexts[k]
-        spend()
-        if (label.y < minY || label.y > maxY) continue
         spend(poly.length / 2)
         if (!isPointInPolygon(label.x, label.y, poly)) continue
         const distance = Math.hypot(label.x - cx, label.y - cy)
