@@ -9,6 +9,9 @@ const require = createRequire(__filename)
 export const CORPUS = resolve(__dirname, '../src/renderer/src/engine/__tests__/fixtures/corpus')
 export const corpusPath = (name: string): string => resolve(CORPUS, name)
 const MAIN_ENTRY = resolve(__dirname, '../out/main/index.js')
+/** Opt-in (TEST_ELECTRON_PACKAGED=1): launch the electron-builder unpacked Linux package instead of electron + out/main. */
+const PACKAGED = process.env.TEST_ELECTRON_PACKAGED === '1'
+export const PACKAGED_EXE = resolve(__dirname, '../dist/linux-unpacked/mep-hvac')
 
 /**
  * Child-process stderr lines that are known Chromium/Linux-container noise, not application errors.
@@ -48,8 +51,8 @@ export interface LaunchOptions {
 
 export async function launchApp(opts: LaunchOptions): Promise<Launched> {
   const app = await _electron.launch({
-    executablePath: require('electron') as unknown as string,
-    args: [MAIN_ENTRY, '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
+    executablePath: PACKAGED ? PACKAGED_EXE : (require('electron') as unknown as string),
+    args: [...(PACKAGED ? [] : [MAIN_ENTRY]), '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
     env: {
       ...process.env,
       ELECTRON_DISABLE_SANDBOX: '1',

@@ -33,7 +33,7 @@ $ npm run build:mac
 $ npm run build:linux
 ```
 
-Packaging is unverified: no installer has been built, installed or signed in testing, and `electron-builder.yml` still uses the placeholder product name `-`.
+Packaging verification is limited to an **unpacked Linux package**: `TEST_ELECTRON_PACKAGED=1 npm run test:electron` builds it with `electron-builder --linux --dir` into `dist/linux-unpacked/` and runs the boot, DXF-import and DWG-import smoke tests (E1, E4, E5) against `mep-hvac`, including the libredwg wasm loaded from inside `app.asar`. No installer (AppImage, snap, deb, NSIS, dmg) has been built or installed, nothing is code-signed or notarized, and Windows and macOS builds are untested. `appId` (`com.mep.hvac`) and the `.deb` maintainer in `electron-builder.yml` are neutral placeholders to replace before distribution.
 
 
 ## Engineering validation
