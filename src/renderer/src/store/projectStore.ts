@@ -716,7 +716,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!zone) return { success: false, error: 'Room not found.' };
     const evidence = state.deploymentEvidence[id], inputs = state.deploymentInputs[id]
     // Without a recorded fingerprint the evidence cannot be tied to the current inputs, so it is treated as missing.
-    const result = inputs === undefined ? verifyEditedZone(zone, null, state.project) : verifyEditedZone(zone, evidence, state.project, inputs);
+    const result = verifyEditedZone(zone, evidence, state.project, inputs);
     set({ zones: state.zones.map(z => z.id !== id ? z : result.ok
       ? { ...z, ...(result.pressureInWg > 0 ? { catalogEsp: `${result.pressureInWg.toFixed(2)} in.wg` } : {}), engineeringStatus: 'preliminary' as const, engineeringError: undefined, engineeringNotice: undefined }
       : { ...z, engineeringStatus: 'blocked' as const, engineeringError: result.error }) });

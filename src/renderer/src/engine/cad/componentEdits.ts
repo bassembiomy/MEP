@@ -3,6 +3,8 @@ import { isPointInOrOnPolygon, isSegmentInPolygon } from '../validation/spatialV
 import { validateNetwork, validateAppliedDeployment, getZoneDeploymentRevision, getProjectDeploymentRevision } from '../deploymentValidation'
 import { solveDirectedNetworkStaticPressure } from '../staticPressureCalc'
 import { STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES } from '../hvacCatalogs'
+import { calculateCanonicalZoneLoad } from '../loadCalc'
+import { METERS_PER_FOOT } from '../engineeringInputs'
 import type { DeploymentManifest } from '../deploymentTypes'
 
 /**
@@ -246,10 +248,17 @@ export function zoneInputsFingerprint(zone: Zone): string {
  * failure, when no evidence is available, or when the room/project inputs differ from those the evidence was built for
  * (required CFM, loads and drawing scale in the manifest are stored values and would otherwise be stale).
  */
-export function verifyEditedZone(zone: Zone, manifest: DeploymentManifest | null | undefined, project?: Parameters<typeof validateAppliedDeployment>[3], deployedInputs?: string): VerifyResult {
-  if (!manifest || manifest.zoneId !== zone.id) return { ok: false, error: 'No deployment evidence is available for this room; re-run automatic design to validate the edited layout.' }
+export function verifyEditedZone(zone: Zone, manifest: DeploymentManifest | null | undefined, project: Parameters<typeof validateAppliedDeployment>[3] | undefined, deployedInputs: string | undefined): VerifyResult {
+  if (!manifest || deployedInputs === undefined || manifest.zoneId !== zone.id) return { ok: false, error: 'No deployment evidence is available for this room; re-run automatic design to validate the edited layout.' }
   if (!project || manifest.sourceProjectRevision === undefined || manifest.sourceProjectRevision !== getProjectDeploymentRevision(project)) return { ok: false, error: INPUTS_CHANGED }
-  if (deployedInputs !== undefined && deployedInputs !== zoneInputsFingerprint(zone)) return { ok: false, error: INPUTS_CHANGED }
+  if (deployedInputs !== zoneInputsFingerprint(zone)) return { ok: false, error: INPUTS_CHANGED }
+  try {
+    const load = calculateCanonicalZoneLoad(zone, project), ev = manifest.engineeringEvidence
+    if (!ev) return { ok: false, error: 'No deployment evidence is available for this room; re-run automatic design to validate the edited layout.' }
+    const expected = [load.supplyCfm, load.returnCfm, load.totalLoad, load.sensibleLoad, load.latentLoad, project.scale * (project.units === 'metric' ? METERS_PER_FOOT : 1)]
+    const claimed = [ev.requiredSupplyCfm, ev.requiredReturnCfm, ev.requiredTotalBtuPerHour, ev.requiredSensibleBtuPerHour, ev.requiredLatentBtuPerHour, ev.drawingUnitsPerFoot]
+    if (claimed.some((v, i) => !Number.isFinite(v) || Math.abs(v - expected[i]) > 1e-6)) return { ok: false, error: 'Deployment load or drawing scale evidence does not match current engineering inputs; inputs changed; re-run automatic design.' }
+  } catch (e) { return { ok: false, error: `Current load validation failed: ${e instanceof Error ? e.message : String(e)}` } }
   const evidenceEquipment = manifest.engineeringEvidence?.equipmentRecord, evidenceQty = manifest.engineeringEvidence?.quantity
   if (zone.catalogModel !== undefined && evidenceEquipment && zone.catalogModel !== evidenceEquipment.model) return { ok: false, error: 'Room equipment model differs from the deployment evidence; inputs changed; re-run automatic design.' }
   if (zone.catalogQty !== undefined && evidenceQty !== undefined && zone.catalogQty !== evidenceQty) return { ok: false, error: 'Room equipment quantity differs from the deployment evidence; inputs changed; re-run automatic design.' }

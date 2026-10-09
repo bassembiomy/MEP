@@ -140,17 +140,27 @@ describe('explicit verification against deployment evidence',()=>{
  const cands=generateSystemCandidates(load.totalLoad,load.sensibleLoad,load.supplyCfm,base.spaceTypeId,load.area,true,DEFAULT_OPTIMIZATION_WEIGHTS,['concealed']);
  const manifest=buildDeploymentManifest(cands.candidates.find(c=>c.systemType==='concealed')||cands.candidates[0],base,[base],project);
  const tx=executeDeploymentTransaction(manifest,[base],project);
+ const fp=zoneInputsFingerprint(tx.updatedZones[0]);
  it('accepts the freshly deployed zone, then reports (not hides) an invalid edit',()=>{
   expect(tx.success).toBe(true);const deployed=tx.updatedZones[0];
-  expect(verifyEditedZone(deployed,manifest,project)).toMatchObject({ok:true});
+  expect(verifyEditedZone(deployed,manifest,project,fp)).toMatchObject({ok:true});
   const broken={...deployed,diffusers:deployed.diffusers.map((t,i)=>i===0?{...t,cfm:t.cfm+50}:t)};
-  const v=verifyEditedZone(broken,manifest,project);expect(v.ok).toBe(false);if(!v.ok)expect(v.error).toMatch(/engineering validation/);
+  const v=verifyEditedZone(broken,manifest,project,fp);expect(v.ok).toBe(false);if(!v.ok)expect(v.error).toMatch(/engineering validation/);
   const far={...deployed,diffusers:deployed.diffusers.map((t,i)=>i===0?{...t,x:900}:t)};
-  expect(verifyEditedZone(far,manifest,project).ok).toBe(false);
+  expect(verifyEditedZone(far,manifest,project,fp).ok).toBe(false);
+ });
+ it('refuses when no input fingerprint is supplied, or when the current load no longer matches the evidence',()=>{
+  const deployed=tx.updatedZones[0];
+  expect(verifyEditedZone(deployed,manifest,project,undefined)).toMatchObject({ok:false,error:expect.stringMatching(/No deployment evidence/)});
+  const ev=manifest.engineeringEvidence!;
+  for(const key of ['requiredSupplyCfm','requiredTotalBtuPerHour','drawingUnitsPerFoot'] as const){
+   const tampered={...manifest,engineeringEvidence:{...ev,[key]:ev[key]+1}};
+   expect(verifyEditedZone(deployed,tampered,project,fp),key).toMatchObject({ok:false,error:expect.stringMatching(/load or drawing scale evidence/)});
+  }
  });
  it('never claims validity without evidence',()=>{
-  expect(verifyEditedZone(tx.updatedZones[0],null,project)).toMatchObject({ok:false,error:expect.stringMatching(/No deployment evidence/)});
-  expect(verifyEditedZone({...tx.updatedZones[0],id:'other'},manifest,project).ok).toBe(false);
+  expect(verifyEditedZone(tx.updatedZones[0],null,project,fp)).toMatchObject({ok:false,error:expect.stringMatching(/No deployment evidence/)});
+  expect(verifyEditedZone({...tx.updatedZones[0],id:'other'},manifest,project,fp).ok).toBe(false);
  });
  it('a unit dragged sideways on the real deployment stays network-valid and is re-checked by the explicit step',()=>{
   const deployed=tx.updatedZones[0],u=deployed.unitPos!;
@@ -161,7 +171,7 @@ describe('explicit verification against deployment evidence',()=>{
    validateNetwork(next.ducts.filter(d=>d.type!=='return'),next.diffusers.filter(t=>t.type!=='return'),next.unitPositions!,10);
    validateNetwork(next.ducts.filter(d=>d.type==='return'),next.diffusers.filter(t=>t.type==='return'),next.unitPositions!,10);
    expect(next.unitPos).toEqual(next.unitPositions![0]);
-   expect(verifyEditedZone(next,manifest,project)).toMatchObject({ok:true});
+   expect(verifyEditedZone(next,manifest,project,fp)).toMatchObject({ok:true});
   }
  });
  it('a terminal moved with moveTerminal on the real deployment is re-checked by the explicit step',()=>{
@@ -170,7 +180,7 @@ describe('explicit verification against deployment evidence',()=>{
    const r=moveTerminal(deployed,t.id,t.x+10,t.y+10,{drawingUnitsPerFoot:10});
    expect(r.ok).toBe(true);if(!r.ok)return;
    expect(r.patch.engineeringStatus).toBe('stale');
-   expect(verifyEditedZone({...deployed,...r.patch} as Zone,manifest,project)).toMatchObject({ok:true});
+   expect(verifyEditedZone({...deployed,...r.patch} as Zone,manifest,project,fp)).toMatchObject({ok:true});
   }
 });
 });
