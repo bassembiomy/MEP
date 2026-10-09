@@ -31,10 +31,14 @@ export function buildRoomRecognitionBasis(input: {
   cadLayerRoles: CadLayerRoleState
   cadOpenings: StoredCadOpening[]
   cadLevel: number
+  /** Layer table: layers the source froze / switched off and the user has not shown are excluded from recognition. */
+  dxfLayers?: Record<string, { name: string; visible: boolean; sourceHidden?: boolean }>
 }): RoomRecognitionBasis {
   const wallLayers = userConfirmedWallLayers(input.cadLayerRoles)
   const openings = approvedOpenings(input.cadOpenings, input.cadLevel)
   const approvedOpeningIds = openings.map((o) => o.id).sort()
+  // Layers recognition does not read. Part of the context so showing / hiding one makes earlier candidates stale.
+  const excludedLayers = Object.values(input.dxfLayers ?? {}).filter(l => l.sourceHidden && !l.visible).map(l => l.name).sort()
   return {
     options: {
       drawingUnitsPerFoot: drawingUnitsPerFoot(input.project),
@@ -44,7 +48,7 @@ export function buildRoomRecognitionBasis(input: {
     },
     wallLayers,
     approvedOpeningIds,
-    context: JSON.stringify({ level: input.cadLevel, wallLayers, openings: approvedOpeningIds })
+    context: JSON.stringify({ level: input.cadLevel, wallLayers, openings: approvedOpeningIds, excludedLayers })
   }
 }
 

@@ -62,3 +62,41 @@ describe('frozen / off layers', () => {
     })
   })
 })
+
+describe('room approval notices layer visibility changes', () => {
+  const rect = (name: string, x0: number, w: number) => lwpolyline(name, [[x0, 0], [x0 + w, 0], [x0 + w, 4000], [x0, 4000]], true)
+  const parsed = () => parseDxfText(dxf({
+    header: header({ insunits: 4 }), layers: [layer('0'), layer('A-ROOM'), layer('A-FROZEN', { frozen: true })],
+    blocks: [], entities: [rect('A-ROOM', 0, 5000), rect('A-FROZEN', 9000, 5000)]
+  }))
+  beforeEach(() => {
+    s().clearDxfData()
+    const p = parsed()
+    s().setDxfData(p.entities, p.bbox, p.suggestedScaleImperial, p.cadUnit,
+      { unitsConfidence: 'declared', diagnostics: [] }, p.blockReferences, p.hiddenLayers)
+    useProjectStore.setState({ zones: [], undoStack: [], redoStack: [] })
+  })
+  const inputs = (r: ReturnType<typeof s>['recognizeCadRoomCandidates'] extends () => infer R ? R : never) => ({
+    name: 'Office', spaceTypeId: 'office', ceilingHeight: 10, occupants: 2,
+    sourceCadRevision: r.sourceCadRevision!, drawingUnitsPerFoot: r.drawingUnitsPerFoot!, recognitionContext: r.recognitionContext!
+  })
+  it('recognition ignores the frozen layer, and showing it makes the earlier candidate stale', () => {
+    const r = s().recognizeCadRoomCandidates()
+    expect(r.result!.candidates).toHaveLength(1)
+    s().setDxfLayerVisibility('A-FROZEN', true)
+    const out = s().approveCadRoom(r.result!.candidates[0], inputs(r))
+    expect(out.success).toBe(false)
+    expect(out.error).toMatch(/recognize rooms again/)
+    expect(s().zones).toHaveLength(0)
+  })
+  it('hiding it again returns to the original basis, and a fresh recognition after showing is approvable', () => {
+    const r = s().recognizeCadRoomCandidates()
+    s().setDxfLayerVisibility('A-FROZEN', true)
+    s().setDxfLayerVisibility('A-FROZEN', false)
+    expect(s().approveCadRoom(r.result!.candidates[0], inputs(r)).success).toBe(true)
+    s().setDxfLayerVisibility('A-FROZEN', true)
+    const again = s().recognizeCadRoomCandidates()
+    expect(again.result!.candidates.length).toBe(2)
+    expect(again.recognitionContext).not.toBe(r.recognitionContext)
+  })
+})
