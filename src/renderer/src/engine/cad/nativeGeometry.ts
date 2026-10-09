@@ -8,6 +8,9 @@ const mod = (n: number) => ((n % TAU) + TAU) % TAU;
 const sweep = (start: number, end: number) => Math.abs(end - start) >= TAU - 1e-12 ? TAU : mod(end - start);
 interface Conic { x: number; y: number; u: { x: number; y: number }; v: { x: number; y: number }; start: number; sweep: number }
 
+const TEXT_H_ALIGNS = ['left', 'center', 'right'] as const;
+const TEXT_V_ALIGNS = ['baseline', 'bottom', 'middle', 'top'] as const;
+
 export function validateCadEntity(ent: DxfEntity): string | null {
   if (ent.originalLayer !== undefined && typeof ent.originalLayer !== 'string') return 'Invalid originalLayer';
   if (ent.points && (ent.points.length % 2 !== 0 || !ent.points.every(finite))) return 'Invalid vertex coordinates';
@@ -31,7 +34,11 @@ export function validateCadEntity(ent: DxfEntity): string | null {
     if (lu === 0 || lv === 0 || (u.x / lu) * (v.y / lv) - (u.y / lu) * (v.x / lv) === 0) return 'Ellipse requires independent finite axes';
     return null;
   }
-  if (ent.type === 'TEXT' || ent.type === 'MTEXT') return ent.text ? null : 'Empty text';
+  if (ent.type === 'TEXT' || ent.type === 'MTEXT') {
+    if (ent.textHAlign !== undefined && !(TEXT_H_ALIGNS as readonly unknown[]).includes(ent.textHAlign)) return 'Invalid textHAlign';
+    if (ent.textVAlign !== undefined && !(TEXT_V_ALIGNS as readonly unknown[]).includes(ent.textVAlign)) return 'Invalid textVAlign';
+    return ent.text ? null : 'Empty text';
+  }
   return 'Unsupported entity';
 }
 

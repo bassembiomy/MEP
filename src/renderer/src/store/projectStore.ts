@@ -89,6 +89,13 @@ export interface DxfEntity {
   endParam?: number;
   textHeight?: number;
   rotationDeg?: number;
+  /**
+   * TEXT/MTEXT only. The anchor in x,y is the point the text is justified about (DXF group 11 for justified TEXT, the
+   * midpoint of 10 and 11 for aligned/fit TEXT, group 10 for MTEXT). Stored only when different from the type default
+   * (TEXT: left/baseline, MTEXT: left/top); an entity without them is valid and uses the default. See cad/textJustification.ts.
+   */
+  textHAlign?: 'left' | 'center' | 'right';
+  textVAlign?: 'baseline' | 'bottom' | 'middle' | 'top';
   geometryApproximation?: string;
   points?: number[];
   x?: number;
