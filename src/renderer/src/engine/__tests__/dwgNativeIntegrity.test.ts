@@ -657,12 +657,47 @@ describe('layout records, layers, paper space, attributes and splines (shapes re
     expect(pts[pts.length - 2]).toBeCloseTo(30, 9)
     expect(Math.abs(pts[pts.length - 1])).toBeLessThan(1e-9)
     expect(spline.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'approximated-geometry' })]))
-    const fit = await parse(database([{ type: 'SPLINE', flag: 8, degree: 3, knots: [], controlPoints: [], fitPoints: [point(0, 0), point(10, 5), point(20, 0)] }]))
+    // libredwg-web reports splineflags: 9 for a fit-point spline (R2000-R2013); bit 0 is the fit-point method, NOT closure
+    const fit = await parse(database([{ type: 'SPLINE', flag: 9, degree: 3, knots: [], controlPoints: [], fitPoints: [point(0, 0), point(10, 5), point(20, 0)] }]))
+    expect(fit.entities[0].closed).toBe(false)
     expect(fit.entities[0].points!.slice(0, 2).map((v) => v + 0)).toEqual([0, 0])
     expect(fit.entities[0].points!.slice(-2).map((v) => v + 0)).toEqual([20, 0])
     // a SPLINE written without any points (what LibreDWG 0.13.3 dxf2dwg produces) is an unsupported-entity warning, not an error
     const empty = await parse(database([{ type: 'SPLINE', handle: 'S2', flag: 8, degree: 3, knots: [], controlPoints: [], fitPoints: [] }]))
     expect(empty.entities).toHaveLength(0)
     expect(empty.diagnostics).toEqual([expect.objectContaining({ code: 'unsupported-entity', severity: 'warning', entityType: 'SPLINE' })])
+  })
+
+  it('derives SPLINE closure from the geometry, never from splineflags (bit 0 is the fit-point method)', async () => {
+    const closedOf = async (spline: Record<string, unknown>): Promise<boolean | undefined> =>
+      (await parse(database([{ type: 'SPLINE', degree: 3, knots: [], controlPoints: [], fitPoints: [], ...spline }]))).entities[0].closed
+    const open = [point(0, 0), point(10, 5), point(20, 0), point(30, 5)]
+    // open fit-point and control-point splines with every flag value LibreDWG produces
+    for (const flag of [8, 9, 1, 0]) expect(await closedOf({ flag, fitPoints: open }), `fit flag ${flag}`).toBe(false)
+    // coincident first / last fit points: closed, and the duplicated end point is not sampled twice
+    const loop = [point(0, 0), point(10, 5), point(20, 0), point(0, 0)]
+    expect(await closedOf({ flag: 9, fitPoints: loop })).toBe(true)
+    // clamped control polygon whose first and last control points coincide
+    const knots = [0, 0, 0, 0, 1, 2, 3, 3, 3, 3]
+    const ring = [point(0, 0), point(10, 0), point(10, 10), point(0, 10), point(5, 5), point(0, 0)]
+    expect(await closedOf({ flag: 8, controlPoints: ring, knots })).toBe(true)
+    expect(await closedOf({ flag: 8, controlPoints: ring.slice(0, 5).concat([point(1, 1)]), knots })).toBe(false)
+    // periodic: unclamped uniform knots and the first `degree` control points repeated at the end
+    const periodic = [point(0, 0), point(10, 0), point(10, 10), point(0, 10), point(0, 0), point(10, 0), point(10, 10)]
+    expect(await closedOf({ flag: 8, controlPoints: periodic, knots: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] })).toBe(true)
+    // unclamped uniform knots on an open control polygon are not closed
+    expect(await closedOf({ flag: 8, controlPoints: periodic.slice(0, 6).concat([point(3, 3)]), knots: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] })).toBe(false)
+  })
+
+  it('ignores the loose top-level ATTRIB records libredwg-web adds for each INSERT (drawn via INSERT.attribs, no warning) and keeps the attribute elevation', async () => {
+    const block = { name: 'Door', handle: '90', basePoint: point(0, 0), entities: [line()] }
+    const att = { type: 'ATTRIB', handle: '192', ownerBlockRecordSoftId: '190', layer: '0', isVisible: true, flags: 0, elevation: 3500, text: { text: 'D01', startPoint: { x: 30, y: 40 }, textHeight: 5, rotation: 0 } }
+    const stray = { type: 'ATTRIB', handle: '777', ownerBlockRecordSoftId: 'FFFF', layer: '0', text: { text: 'X' } }
+    const result = await parse(database([{ ...insert('Door'), handle: '190', attribs: [att] }, att, stray], [block]))
+    const texts = result.entities.filter((e) => e.type === 'TEXT')
+    expect(texts).toHaveLength(1)
+    expect((texts[0] as { elevation?: number }).elevation).toBe(3500)
+    // only the ATTRIB whose owner is no INSERT is still reported
+    expect((result.diagnostics ?? []).filter((d) => d.entityType === 'ATTRIB').map((d) => d.handle)).toEqual(['777'])
   })
 })

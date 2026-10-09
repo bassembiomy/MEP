@@ -110,6 +110,17 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
     if (l.frozen === true || l.off === true) hiddenLayers.add(l.name)
   }
   let paperSpaceSkipped = 0
+  // libredwg-web also appends every top-level INSERT's attributes to db.entities (owner = the INSERT's handle). They are
+  // drawn through INSERT.attribs below, so the loose records are duplicates and not "unsupported entities".
+  const insertHandles = new Set<string>()
+  const collectInserts = (records: unknown[] | undefined): void => {
+    for (const record of records ?? []) {
+      const r = rawObject(record)
+      if (r.type === 'INSERT' && typeof r.handle === 'string') insertHandles.add(r.handle)
+    }
+  }
+  collectInserts(db.entities)
+  for (const block of db.tables?.BLOCK_RECORD?.entries ?? []) collectInserts(rawObject(block).entities)
   const blockReferences: CadBlockReference[] = []
   const bbox: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
   const blocks = new Map<string, RawEntity>()
@@ -339,12 +350,26 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
         const control = Array.isArray(raw.controlPoints) ? raw.controlPoints : []
         const fit = Array.isArray(raw.fitPoints) ? raw.fitPoints : []
         if (!planar(raw, [...control, ...fit])) return null
+        // libredwg-web's `flag` is DWG splineflags (8 control-point method, 9 fit-point method in R2000-R2013): bit 0 selects
+        // the fit-point method and does not mean closed, and the DWG closed bit is not exposed. Closure is therefore read
+        // from the geometry: coincident end points, or a periodic (unclamped, wrapped) control polygon.
+        const degree = raw.degree ?? 3
+        const knots = Array.isArray(raw.knots) ? raw.knots : []
+        const near = (a: Point, b: Point): boolean => Math.hypot(a.x - b.x, a.y - b.y) <= 1e-9
+        const useControl = control.length >= 2 && knots.length === control.length + degree + 1
+        const periodic = useControl && Number.isInteger(degree) && degree >= 1 && degree < control.length &&
+          knots[0] !== knots[degree] && control.slice(0, degree).every((p, i) => near(p, control[control.length - degree + i]))
+        const coincident = useControl
+          ? near(control[0], control[control.length - 1])
+          : fit.length >= 3 && near(fit[0], fit[fit.length - 1])
+        const closed = periodic || coincident
+        const fitPts = !useControl && closed ? fit.slice(0, -1) : fit
         const sampled = sampleSplineData({
-          closed: Number.isInteger(raw.flag) && ((raw.flag ?? 0) & 1) !== 0,
-          degree: raw.degree ?? 3,
+          closed,
+          degree,
           control: control.map((p): [number, number] => [p.x, p.y]),
-          fit: fit.map((p): [number, number] => [p.x, p.y]),
-          knots: Array.isArray(raw.knots) ? raw.knots : [],
+          fit: fitPts.map((p): [number, number] => [p.x, p.y]),
+          knots,
           weights: Array.isArray(raw.weights) ? raw.weights : []
         })
         if (!sampled) {
@@ -504,6 +529,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
         paperSpaceSkipped++
         continue
       }
+      if (raw.type === 'ATTRIB' && typeof owner === 'string' && insertHandles.has(owner)) continue
       if (raw.type === 'INSERT') {
         const block = typeof raw.name === 'string' ? blocks.get(raw.name) : undefined
         if (!block || !Array.isArray(block.entities)) {
@@ -635,6 +661,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
             {
               type: 'TEXT',
               handle: attrib.handle,
+              elevation: attrib.elevation,
               layer: attrib.layer,
               color: attrib.color,
               colorIndex: attrib.colorIndex,
