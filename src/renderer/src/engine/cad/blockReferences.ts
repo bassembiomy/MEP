@@ -1,6 +1,16 @@
 import type { CadAffineMatrix } from './nativeGeometry'
 
 /**
+ * True when the linear part of a composed transform has shear (non-orthogonal axes), which happens when a
+ * non-uniform INSERT scale is followed by a rotated nested INSERT. describeInsertTransform can only report
+ * rotation and scale, so the shear is not represented in the block reference and callers should diagnose it.
+ */
+export function insertTransformHasShear(m: CadAffineMatrix): boolean {
+  const dot = m.a * m.c + m.b * m.d
+  return Math.abs(dot) > 1e-9 * Math.max(1e-300, Math.hypot(m.a, m.b) * Math.hypot(m.c, m.d))
+}
+
+/**
  * Decomposes a composed canvas transform (Y already reflected) into INSERT placement terms.
  * `base` is the block base point in the block's own (already reflected) coordinates.
  * Convention: scaleX > 0; a negative determinant is reported as scaleY < 0 / mirrored.

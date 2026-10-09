@@ -354,7 +354,7 @@ describe('native DWG geometry integrity without loading WASM', () => {
     const estimated = await parse(database([line(point(0, 0), point(1500, 0))], [], {}))
     expect(estimated).toMatchObject({ cadUnit: 'mm', unitsConfidence: 'estimated' })
     expect(estimated.diagnostics).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: 'estimated-units' })])
+      expect.arrayContaining([expect.objectContaining({ code: 'units-unspecified' })])
     )
   })
 

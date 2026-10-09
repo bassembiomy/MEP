@@ -2,7 +2,7 @@ import type { DxfEntity, BoundingBox } from '../store/projectStore';
 import { getCadEntityBounds, transformCadEntity, validateCadEntity } from './cad/nativeGeometry';
 import type { CadAffineMatrix } from './cad/nativeGeometry';
 import type { CadBlockReference } from './cad/semanticTypes';
-import { describeInsertTransform } from './cad/blockReferences';
+import { describeInsertTransform, insertTransformHasShear } from './cad/blockReferences';
 
 export interface CadImportDiagnostic {
   code: string;
@@ -101,8 +101,16 @@ const FEET_PER_UNIT: Record<CadKnownUnit, number> = {
   mm: 0.001 / 0.3048, cm: 0.01 / 0.3048, dm: 0.1 / 0.3048, m: 1 / 0.3048, in: 1 / 12, ft: 1, yd: 3
 };
 
+/** Drawing units per metre from drawing units per foot (project.scale is units per METRE in metric projects). */
+export function unitsPerFootToUnitsPerMetre(unitsPerFoot: number): number {
+  return unitsPerFoot / 0.3048;
+}
+
 /**
- * Drawing units per foot from two picked points and the real-world length between them.
+ * Drawing units per FOOT from two picked points and the real-world length between them.
+ * NOTE: this is per foot, whereas project.scale means units per METRE in metric projects. Callers that
+ * store the result for a metric project must convert it with unitsPerFootToUnitsPerMetre().
+ * (cadUnitsFromInsUnits' suggestedScaleImperial is per foot and suggestedScaleMetric is per metre.)
  * Throws RangeError for non-finite input, coincident points, or a non-positive/unknown length or unit,
  * so a bad pick can never produce a silent scale.
  */
@@ -127,7 +135,9 @@ export function calibrateDrawingScale(
  * the cadUnit union (store type) has no yd/dm member; they surface as 'units-unmapped'.
  * $MEASUREMENT is secondary evidence: it only produces a warning when it contradicts the units.
  * Declared units that give extents over 2 km or a largest closed polyline under 1 ft2 get a
- * 'declared-implausible' warning (confidence stays 'declared'; the store decides what to do).
+ * 'declared-implausible' warning (confidence stays 'declared').
+ * Callers MUST NOT auto-confirm units while a 'declared-implausible' or 'units-measurement-conflict'
+ * diagnostic exists, even when unitsConfidence is 'declared': the user has to confirm them explicitly.
  */
 export function resolveCadUnits(input: {
   insUnits?: number; measurement?: number; entities: DxfEntity[]; bbox: BoundingBox
@@ -151,8 +161,9 @@ export function resolveCadUnits(input: {
   }
   if (measurement === 0 || measurement === 1) {
     const metric = ['mm', 'cm', 'm'].includes(suggestion.cadUnit);
+    const basis = unitsConfidence === 'declared' ? 'declared' : unitsConfidence === 'estimated' ? 'estimated' : 'unconfirmed (guessed from the drawing extents)';
     if ((measurement === 1) !== metric)
-      diagnostics.push({ code: 'units-measurement-conflict', severity: 'warning', message: `$MEASUREMENT says ${measurement === 1 ? 'metric' : 'imperial'} but the ${declared ? 'declared' : 'estimated'} units are ${suggestion.cadUnit}. Confirm the drawing units.` });
+      diagnostics.push({ code: 'units-measurement-conflict', severity: 'warning', message: `$MEASUREMENT says ${measurement === 1 ? 'metric' : 'imperial'} but the ${basis} units are ${suggestion.cadUnit}. Confirm the drawing units.` });
   }
   if (declared && entities.length) {
     const spanM = Math.max(bbox.maxX - bbox.minX, bbox.maxY - bbox.minY) / suggestion.suggestedScaleMetric;
@@ -314,6 +325,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         local.tx -= local.a * child.baseX + local.c * child.baseY;
         local.ty -= local.b * child.baseX + local.d * child.baseY;
         const composed = compose(matrix, compose(ocs, local)), childStart = entities.length;
+        if (insertTransformHasShear(composed)) diagnose('INSERT_SHEARED', `INSERT ${name} is sheared (non-uniform scale combined with a rotated nested insert); its geometry is transformed exactly but the block reference reports rotation and scale only.`, r);
         // Child Z in the INSERT's OCS is ownZ + sz * (childZ - baseZ); a -Z extrusion maps OCS Z to world -Z.
         const nzSign = reflected ? -1 : 1;
         const insertWorldZ = zScale * nzSign * ownZ + zOffset;

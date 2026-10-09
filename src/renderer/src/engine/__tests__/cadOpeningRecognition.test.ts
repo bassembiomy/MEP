@@ -55,10 +55,39 @@ describe('parser keeps INSERT blocks as semantic objects', () => {
   })
 })
 
+describe('nested inserts with rotation and a non-zero block base', () => {
+  const rawBlock = (name: string, baseX: number, baseY: number, body: string) =>
+    `0\nBLOCK\n8\n0\n2\n${name}\n70\n0\n10\n${baseX}\n20\n${baseY}\n${body}\n0\nENDBLK\n8\n0`
+  const nested = () => parseDxfText(dxf({
+    header: header({ insunits: 2 }), layers: [layer('L')],
+    blocks: [rawBlock('INNER', 1, 0, line('0', 1, 0, 3, 0)), block('OUTER', insert('0', 'INNER', 4, 0, { rotation: 90 }))],
+    entities: [insert('L', 'OUTER', 10, 5, { rotation: 90 })]
+  }))
+  it('maps the child geometry through both rotations, subtracting the inner base point', () => {
+    const p = nested()
+    // INNER base (1,0) lands on (4,0) in OUTER, the line runs +Y there: (4,0)->(4,2). OUTER at (10,5) rotated 90:
+    // (x,y) -> (10 - y, 5 + x) gives (10,9)->(8,9); canvas Y is reflected.
+    expect(p.entities).toHaveLength(1)
+    const e = p.entities[0]
+    near(e.x!, 10); near(e.y!, -9); near(e.points![0], 8); near(e.points![1], -9)
+  })
+  it('records composed rotation and insertion for each reference', () => {
+    const refs = nested().blockReferences!
+    const inner = refs.find((r) => r.name === 'INNER')!, outer = refs.find((r) => r.name === 'OUTER')!
+    near(inner.rotationDeg, 180); near(inner.insertion.x, 10); near(inner.insertion.y, -9)
+    near(outer.rotationDeg, 90); near(outer.insertion.x, 10); near(outer.insertion.y, -5)
+    expect(inner.nestingDepth).toBe(1)
+    expect(outer.nestingDepth).toBe(0)
+  })
+})
+
 describe('opening recognition', () => {
   for (const [label, rotation, sx, axis, insertX, noWalls] of [['0 deg', 0, 1, 'x+', 8, false], ['90 deg (free-standing, no wall gap)', 90, 1, 'y', 8, true], ['mirrored X scale', 0, -1, 'x-', 11, false]] as const) {
     it(`door block at ${label}: width 3 ft and span at the insertion`, () => {
       const parsed = plan(1, 2, { door: 'block', rotation, sx, insertX, noWalls })
+      const ref = parsed.blockReferences![0]
+      expect(ref.mirrored).toBe(sx < 0)
+      if (sx < 0) { expect(ref.scaleY).toBeLessThan(0); near(ref.scaleX, 1) } else expect(ref.scaleY).toBeGreaterThan(0)
       const { candidates } = recognizeOpenings(parsed, { unitsPerFoot: 1 })
       expect(candidates).toHaveLength(1)
       const c = candidates[0]

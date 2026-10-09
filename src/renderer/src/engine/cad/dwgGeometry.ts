@@ -1,13 +1,12 @@
 import type { BoundingBox, DxfEntity } from '../../store/projectStore'
 import {
   aciToHexColor,
-  cadUnitsFromInsUnits,
   resolveCadUnits,
   type CadImportDiagnostic,
   type ParsedDxf
 } from '../dxfParser'
 import { getCadEntityBounds, transformCadEntity, validateCadEntity } from './nativeGeometry'
-import { describeInsertTransform } from './blockReferences'
+import { describeInsertTransform, insertTransformHasShear } from './blockReferences'
 import type { CadBlockReference } from './semanticTypes'
 
 type Point = { x: number; y: number; z?: number }
@@ -473,6 +472,8 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           diagnose(raw, 'invalid-geometry', 'Composed block transform is nonfinite.', 'error')
           continue
         }
+        if (insertTransformHasShear(composed))
+          diagnose(raw, 'sheared-insert', `INSERT ${raw.name} is sheared (non-uniform scale combined with a rotated nested insert); its geometry is transformed exactly but the block reference reports rotation and scale only.`)
         const childStart = entities.length
         extract(
           block.entities,
@@ -561,12 +562,6 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
   const measurementValue = typeof rawMeasurement === 'string' ? Number(rawMeasurement) : rawMeasurement
   const measurement = measurementValue === 0 || measurementValue === 1 ? measurementValue : undefined
   const units = resolveCadUnits({ insUnits, measurement, entities, bbox: finalBbox })
-  if (!cadUnitsFromInsUnits(insUnits))
-    diagnostics.push({
-      code: 'estimated-units',
-      severity: 'warning',
-      message: 'Drawing units are absent or unsupported; estimated units require confirmation.'
-    })
   diagnostics.push(...units.diagnostics)
   return {
     entities,
@@ -575,7 +570,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
     blockReferences,
     insUnits,
     measurement,
-    unitsConfidence: units.unitsConfidence === 'unknown' && !entities.length ? 'estimated' : units.unitsConfidence,
+    unitsConfidence: units.unitsConfidence,
     ...units.suggestion
   }
 }
