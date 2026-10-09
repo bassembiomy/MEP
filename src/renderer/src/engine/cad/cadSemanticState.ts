@@ -91,18 +91,42 @@ export function approvedObstacles(obstacles: StoredCadObstacle[]): CadApprovedOb
 }
 
 /** Fresh suggestions replace undecided ones; every decided item is kept exactly as the user saw it. */
-export function mergeCandidates<T extends { id: string; status: CadReviewStatus }>(fresh: T[], prior: T[]): T[] {
+export function mergeCandidates<T extends { id: string; status: CadReviewStatus }>(
+  fresh: T[],
+  prior: T[],
+  /**
+   * Whether a fresh candidate and a decided one describe the same drawing object even though their ids differ
+   * (an obstacle id embeds its size in feet, so it changes with the drawing scale). Such a fresh candidate is dropped:
+   * the decided item stands for the object.
+   */
+  sameObject?: (fresh: T, decided: T) => boolean
+): T[] {
   const decided = new Map(prior.filter((p) => isDecided(p.status)).map((p) => [p.id, p]))
   const result: T[] = []
   const used = new Set<string>()
   for (const f of fresh) {
     const keep = decided.get(f.id)
     if (keep) used.add(f.id)
+    else if (sameObject && [...decided.values()].some((d) => sameObject(f, d))) continue
     result.push(keep ?? f)
   }
   for (const [id, item] of decided) if (!used.has(id)) result.push(item)
   return result
 }
+
+const boundsKey = (polygon: number[]): string => {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (let i = 0; i + 1 < polygon.length; i += 2) {
+    minX = Math.min(minX, polygon[i]); maxX = Math.max(maxX, polygon[i])
+    minY = Math.min(minY, polygon[i + 1]); maxY = Math.max(maxY, polygon[i + 1])
+  }
+  return `${minX.toFixed(4)},${minY.toFixed(4)},${maxX.toFixed(4)},${maxY.toFixed(4)}`
+}
+
+/** Same obstacle object: shared source entity handle, or the same layer and outline bounds. */
+export const sameObstacleObject = (a: StoredCadObstacle, b: StoredCadObstacle): boolean =>
+  a.level === b.level &&
+  (a.sourceHandles.some((h) => b.sourceHandles.includes(h)) || (a.layer === b.layer && boundsKey(a.polygon) === boundsKey(b.polygon)))
 
 export interface SemanticRecognitionInput {
   entities: DxfEntity[]
@@ -112,6 +136,12 @@ export interface SemanticRecognitionInput {
   level: number
   overrides: CadLayerOverrides
   prior?: { openings: StoredCadOpening[]; obstacles: StoredCadObstacle[] }
+  /**
+   * Units per foot the prior items were computed at, when it differs from `unitsPerFoot`. Decided items keep the user's
+   * decision but their feet-denominated fields (widthFt, depthFt) are rescaled to the new scale. Clearances are user input
+   * in feet and never rescaled.
+   */
+  priorUnitsPerFoot?: number
   /** Reuse these machine suggestions instead of classifying again. */
   suggestions?: CadLayerClassification[]
 }
@@ -156,8 +186,18 @@ export function recognizeCadSemantics(input: SemanticRecognitionInput): Semantic
     }
   }
   if (input.prior) {
-    openings = mergeCandidates(openings, input.prior.openings)
-    obstacles = mergeCandidates(obstacles, input.prior.obstacles)
+    const ratio =
+      input.priorUnitsPerFoot !== undefined && Number.isFinite(input.priorUnitsPerFoot) && input.priorUnitsPerFoot > 0 && Number.isFinite(input.unitsPerFoot) && input.unitsPerFoot > 0
+        ? input.priorUnitsPerFoot / input.unitsPerFoot
+        : 1
+    const rescale = <T extends { status: CadReviewStatus }>(items: T[], fix: (i: T) => T): T[] =>
+      ratio === 1 ? items : items.map((i) => (isDecided(i.status) ? fix(i) : i))
+    openings = mergeCandidates(openings, rescale(input.prior.openings, (o) => ({ ...o, widthFt: o.widthFt * ratio })))
+    obstacles = mergeCandidates(
+      obstacles,
+      rescale(input.prior.obstacles, (o) => ({ ...o, widthFt: o.widthFt * ratio, depthFt: o.depthFt * ratio })),
+      sameObstacleObject
+    )
   }
   return { layerRoles, openings, obstacles }
 }

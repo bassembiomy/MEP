@@ -426,7 +426,7 @@ function refreshSemanticsForScale(state: ProjectState, project: ProjectMetadata)
   const before = unitsPerFootOf(state.project), after = unitsPerFootOf(project);
   if (!state.dxfEntities.length || !(after > 0) || Math.abs(after - before) <= 1e-12 * Math.max(before, after)) return {};
   const semantics = recognizeCadSemantics({ entities: recognitionEntities(state.dxfEntities, state.dxfLayers), bbox: state.dxfBoundingBox, blockReferences: state.cadBlockReferences,
-    unitsPerFoot: after, level: state.cadLevel, overrides: state.cadLayerRoles.overrides, suggestions: state.cadLayerRoles.suggestions,
+    unitsPerFoot: after, priorUnitsPerFoot: before, level: state.cadLevel, overrides: state.cadLayerRoles.overrides, suggestions: state.cadLayerRoles.suggestions,
     prior: { openings: state.cadOpenings, obstacles: state.cadObstacles } });
   return { cadOpenings: semantics.openings, cadObstacles: semantics.obstacles };
 }
@@ -1159,6 +1159,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
     set({
       ...restoreCad(previousSnapshot.cad),
+      // A snapshot without the CAD part cannot restore suggestions; recompute them at the scale it restores.
+      ...(previousSnapshot.cad ? {} : refreshSemanticsForScale(state, previousSnapshot.project)),
       zones: previousSnapshot.zones,
       selectedZoneId: previousSnapshot.selectedZoneId,
       project: previousSnapshot.project,
@@ -1187,6 +1189,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
     set({
       ...restoreCad(nextSnapshot.cad),
+      ...(nextSnapshot.cad ? {} : refreshSemanticsForScale(state, nextSnapshot.project)),
       zones: nextSnapshot.zones,
       selectedZoneId: nextSnapshot.selectedZoneId,
       project: nextSnapshot.project,
