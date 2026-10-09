@@ -11,7 +11,7 @@ test('0. userData is isolated under the temp XDG_CONFIG_HOME', async ({ electron
   expect(userData.startsWith(configHome), `${userData} should be under ${configHome} (tmp root ${tmpdir()})`).toBe(true)
 })
 
-test('E1. boots: one window, non-blank, hardened renderer, preload bridge, 900x670 layout', async ({ electronApp, page }, info) => {
+test('E1. boots: one window, non-blank, hardened renderer, preload bridge, default-size layout', async ({ electronApp, page }, info) => {
   expect(electronApp.windows()).toHaveLength(1)
   await expect(page.getByText('MEP Draw Tools')).toBeVisible()
   const shot = await captureNonBlank(electronApp)
@@ -31,26 +31,24 @@ test('E1. boots: one window, non-blank, hardened renderer, preload bridge, 900x6
   expect(globals.hasApi).toBe('function')
   expect(globals.electronVersion).toBe(await electronApp.evaluate(() => process.versions.electron))
 
-  // Real default window size: 900x670. Report horizontal overflow / clipping as a finding.
+  // Real default window size: 1400x900 (src/main/index.ts). Report horizontal overflow / clipping as a finding.
   const size = await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())
-  expect(size).toEqual([900, 670])
+  expect(size).toEqual([1400, 900])
   const overflow = await page.evaluate(() => ({
     scrollW: document.documentElement.scrollWidth,
     clientW: document.documentElement.clientWidth,
     scrollH: document.documentElement.scrollHeight,
     clientH: document.documentElement.clientHeight
   }))
-  await info.attach('window-900x670', { body: await page.screenshot(), contentType: 'image/png' })
+  await info.attach('window-default', { body: await page.screenshot(), contentType: 'image/png' })
   await info.attach('layout-metrics', { body: JSON.stringify(overflow), contentType: 'application/json' })
   expect(overflow.scrollW).toBeLessThanOrEqual(overflow.clientW)
   expect(overflow.scrollH).toBeLessThanOrEqual(overflow.clientH)
 })
 
-// Finding (not fixed, layout redesign is out of scope): at the real default 900x670 window the fixed
-// 260 px left and 330 px right docks leave the drawing canvas ~300 px wide; the canvas toolbars
-// (zoom / unit-size / Fit buttons) are clipped and the dock panels show nested scrollbars.
-test('E1b. at the default 900x670 the drawing canvas is usable (>= 450 px wide)', async ({ page }) => {
-  test.fail(true, 'default 900x670 window squeezes the canvas to ~300 px and clips its toolbars (see attached screenshot in E1)')
+// Regression guard for a usability finding: at the old 900x670 default window the fixed 260 px left and 330 px right docks
+// left the drawing canvas ~300 px wide and clipped its toolbars. The default window is now 1400x900 (minimum 1100x700).
+test('E1b. at the default window size the drawing canvas is usable (>= 450 px wide)', async ({ page }) => {
   const box = await page.locator('canvas').first().boundingBox()
   expect(box?.width ?? 0).toBeGreaterThanOrEqual(450)
 })

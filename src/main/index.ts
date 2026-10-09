@@ -165,8 +165,12 @@ function defaultCatalogCandidates(fileName: string, legacyPath: string): string[
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    // The fixed 260 px left and 330 px right docks leave the drawing canvas ~300 px wide at 900x670, which clips its toolbars:
+    // 1400x900 gives ~810 px, and the minimum keeps at least ~510 px (e2e-electron E1b asserts >= 450 px).
+    width: 1400,
+    height: 900,
+    minWidth: 1100,
+    minHeight: 700,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
