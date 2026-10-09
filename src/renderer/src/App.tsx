@@ -28,6 +28,7 @@ import {
   MousePointer,
   PenTool,
   Hand,
+  Ruler,
   Sliders,
   ShieldCheck,
   CheckCircle2
@@ -226,6 +227,15 @@ export function App(): React.JSX.Element {
                 title="Draw Zone Polygon"
               >
                 <PenTool size={16} />
+              </button>
+              <button
+                onClick={() => setDrawMode('measure')}
+                className={`p-2 rounded-xl cursor-pointer ${
+                  drawMode === 'measure' ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:bg-neutral-800'
+                }`}
+                title="Measure / Calibrate Scale"
+              >
+                <Ruler size={16} />
               </button>
               <button
                 onClick={() => setDrawMode('pan')}

@@ -6,6 +6,7 @@ import { snapPoint, physicalGridSpacing } from '../engine/cad/drawingSnap';
 import { moveTerminal, moveIndoorUnit, moveOutdoorUnit, translateDuct, type ComponentEdit } from '../engine/cad/componentEdits';
 import { METERS_PER_FOOT } from '../engine/engineeringInputs';
 import type { Zone } from '../store/projectStore';
+import { parseKnownLength, measuredDistance, describeCalibration } from '../engine/cad/measureTool';
 import { polylineReducer, initialPolylineState, type PolylineEvent } from '../engine/cad/polylineTool';
 import { calculateZoneDiffuserCoverage } from '../engine/diffuserPlacer';
 import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
@@ -27,6 +28,7 @@ export const FloorPlanCanvas: React.FC = () => {
     setTempPoints,
     moveZoneVertex,
     verifyZoneEdits,
+    calibrateScaleFromPoints,
     selectZone,
     updateZone,
     project,
@@ -319,6 +321,18 @@ export const FloorPlanCanvas: React.FC = () => {
     setDrawMessage(next.message);
   };
   useEffect(() => { setDrawMessage(null); setTypedLength(''); }, [drawMode, selectedZoneId]);
+  // Measure / calibrate tool: two picks, then an explicit confirmation before the store rewrites the scale.
+  const [measurePoints, setMeasurePoints] = useState<{ x: number; y: number }[]>([]);
+  const [measureInput, setMeasureInput] = useState<string>('');
+  useEffect(() => { setMeasurePoints([]); setMeasureInput(''); }, [drawMode]);
+  const confirmCalibration = () => {
+    if (measurePoints.length !== 2) return;
+    const parsed = parseKnownLength(measureInput, project.units === 'metric' ? 'm' : 'ft');
+    if (!parsed.ok) { setDrawMessage(parsed.error); return; }
+    const result = calibrateScaleFromPoints(measurePoints[0], measurePoints[1], parsed.length, parsed.unit);
+    setDrawMessage(result.success ? `Scale calibrated: segment = ${parsed.length} ${parsed.unit}. Rooms are stale; re-run design.` : `Calibration refused: ${result.error}`);
+    if (result.success) { setMeasurePoints([]); setMeasureInput(''); }
+  };
   const applyPolylineRef = useRef(applyPolyline);
   applyPolylineRef.current = applyPolyline;
   const typedLengthRef = useRef(typedLength);
@@ -346,7 +360,7 @@ export const FloorPlanCanvas: React.FC = () => {
     const stage = stageRef.current;
     if (!stage) return;
 
-    if (drawMode === 'polyline') {
+    if (drawMode === 'polyline' || (drawMode === 'measure' && measurePoints.length === 1)) {
       const transform = stage.getAbsoluteTransform().copy().invert();
       const pos = stage.getPointerPosition();
       if (pos) {
@@ -386,6 +400,17 @@ export const FloorPlanCanvas: React.FC = () => {
   const handleContentClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (e.evt.button !== 0 || isSpacePressed || drawMode === 'pan') return;
 
+    if (drawMode === 'measure' && measurePoints.length < 2) {
+      const stage = stageRef.current;
+      const pos = stage?.getPointerPosition();
+      if (!stage || !pos) return;
+      const local = stage.getAbsoluteTransform().copy().invert().point(pos);
+      const picked = snapPoint(local, { entities: dxfEntities, zones, gridSpacing, tolerancePx: 10, stageScale, ortho: e.evt.shiftKey, lastPoint: measurePoints[0] }).point;
+      if (measurePoints.length === 1 && measuredDistance(measurePoints[0], picked) === 0) { setDrawMessage('Pick a second point away from the first.'); return; }
+      setMeasurePoints([...measurePoints, picked]);
+      setDrawMessage(null);
+      return;
+    }
     if (drawMode === 'polyline') {
       const stage = stageRef.current;
       if (!stage) return;
@@ -524,7 +549,7 @@ export const FloorPlanCanvas: React.FC = () => {
         }}
         onClick={handleContentClick}
         onDblClick={handleDoubleClick}
-        style={{ cursor: isPanActive ? (isPanning ? 'grabbing' : 'grab') : drawMode === 'polyline' ? 'crosshair' : 'default' }}
+        style={{ cursor: isPanActive ? (isPanning ? 'grabbing' : 'grab') : drawMode === 'polyline' || drawMode === 'measure' ? 'crosshair' : 'default' }}
       >
         <Layer>
           {drawGridLines()}
@@ -1583,6 +1608,17 @@ export const FloorPlanCanvas: React.FC = () => {
             </Group>
           )}
 
+          {/* Measure / calibrate segment */}
+          {drawMode === 'measure' && measurePoints.length > 0 && (
+            <Group listening={false}>
+              <Line
+                points={[measurePoints[0].x, measurePoints[0].y, ...(measurePoints[1] ? [measurePoints[1].x, measurePoints[1].y] : [mousePos.x, mousePos.y])]}
+                stroke="#f59e0b" strokeWidth={getStrokeWidth(1.5, 1.5)} dash={[6 / stageScale, 4 / stageScale]}
+              />
+              {measurePoints.map((p, i) => <Circle key={`m-${i}`} x={p.x} y={p.y} radius={Math.max(3.5 / stageScale, 4)} fill="#f59e0b" />)}
+            </Group>
+          )}
+
           {/* Polyline Draw in Progress */}
           {tempPoints.length > 0 && (
             <Group>
@@ -1656,6 +1692,30 @@ export const FloorPlanCanvas: React.FC = () => {
       </div>
 
       {/* Floating CAD Layer & Annotation Manager Popover Modal */}
+      {drawMode === 'measure' && (
+        <div className="absolute left-3 top-14 z-10 w-72 rounded-lg border border-amber-700 bg-neutral-900/95 p-3 text-xs text-neutral-200">
+          {measurePoints.length < 2 ? (
+            <div>Measure / calibrate: click {measurePoints.length === 0 ? 'the first' : 'the second'} point of a segment of known length (snaps to CAD geometry, Shift = ortho).</div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <div>Segment: {measuredDistance(measurePoints[0], measurePoints[1]).toPrecision(6)} drawing units. What is its real length?</div>
+              <input
+                autoFocus
+                value={measureInput}
+                onChange={(e) => setMeasureInput(e.target.value)}
+                placeholder={project.units === 'metric' ? 'e.g. 3.5 m' : 'e.g. 12 ft'}
+                className="rounded border border-neutral-700 bg-neutral-950 px-2 py-1 font-mono"
+              />
+              {(() => { const parsed = parseKnownLength(measureInput, project.units === 'metric' ? 'm' : 'ft');
+                return parsed.ok ? <div className="text-amber-300">{describeCalibration(measuredDistance(measurePoints[0], measurePoints[1]), parsed.length, parsed.unit)}</div> : null; })()}
+              <div className="flex gap-2">
+                <button className="rounded border border-amber-600 px-2 py-1 text-amber-300 hover:bg-neutral-800" onClick={confirmCalibration}>Confirm and apply scale</button>
+                <button className="rounded border border-neutral-700 px-2 py-1 hover:bg-neutral-800" onClick={() => { setMeasurePoints([]); setMeasureInput(''); setDrawMessage(null); }}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {drawMode === 'select' && (() => {
         const sel = zones.find(z => z.id === selectedZoneId);
         if (!sel || sel.engineeringStatus !== 'stale' || (sel.diffusers.length === 0 && sel.ducts.length === 0)) return null;

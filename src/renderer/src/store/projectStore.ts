@@ -233,7 +233,7 @@ interface ProjectState {
   project: ProjectMetadata;
   zones: Zone[];
   selectedZoneId: string | null;
-  drawMode: 'select' | 'polyline' | 'pan';
+  drawMode: 'select' | 'polyline' | 'pan' | 'measure';
   tempPoints: number[];
   dxfEntities: DxfEntity[];
   dxfBoundingBox: BoundingBox | null;
@@ -269,7 +269,7 @@ interface ProjectState {
   // Actions
   setProject: (meta: Partial<ProjectMetadata>) => void;
   restoreProjectDocument: (source: string) => {success: boolean; error?: string};
-  setDrawMode: (mode: 'select' | 'polyline' | 'pan') => void;
+  setDrawMode: (mode: 'select' | 'polyline' | 'pan' | 'measure') => void;
   /** Validates the outline (simple polygon, >=3 distinct vertices); a refused outline leaves zones and tempPoints unchanged. */
   addZone: (points: number[]) => {success:boolean;error?:string};
   setTempPoints: (points: number[]) => void;
