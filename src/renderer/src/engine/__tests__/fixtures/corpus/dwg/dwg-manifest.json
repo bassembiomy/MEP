@@ -61,7 +61,51 @@
     }
    },
    "measurement": 0,
-   "sha256": "ecd0a746d331f1198f21b4cae0ee8235789b4293c70208481dd98a6211bd6586",
+   "sha256": "52b48e722d5c13143b46e8223c2857ac6c7d1d80e8f94a38ea40b3ff02c5890d",
+   "texts": [
+    {
+     "height": 5.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 2,
+     "text": "CH 8'-6\"",
+     "type": "MTEXT"
+    },
+    {
+     "height": 5.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 2,
+     "text": "CLG HT 9'-0\"",
+     "type": "MTEXT"
+    },
+    {
+     "height": 8.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CONFERENCE",
+     "type": "MTEXT"
+    },
+    {
+     "height": 8.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "LOBBY",
+     "type": "MTEXT"
+    },
+    {
+     "height": 8.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "OFFICE A",
+     "type": "MTEXT"
+    },
+    {
+     "height": 8.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "OFFICE B",
+     "type": "MTEXT"
+    }
+   ],
    "twin": "arch-imperial-in-r2000.dxf",
    "writerCheck": {
     "compared": [
@@ -74,8 +118,20 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {},
-    "status": "pass"
+    "exclusions": {
+     "MTEXT.textHeight": {
+      "cause": "LibreDWG 0.13.3 dxf2dwg maps DXF group 40 of MTEXT to rect_width (the annotation-context field of the same code), so MTEXT text_height is written as 0 and the height is stored in rectWidth",
+      "count": 8,
+      "dwg": [
+       0.0
+      ],
+      "source": [
+       5.0,
+       8.0
+      ]
+     }
+    },
+    "status": "pass-with-exclusions"
    }
   },
   "arch-metric-mm-r2000.dwg": {
@@ -159,7 +215,65 @@
     }
    },
    "measurement": 1,
-   "sha256": "9d8b1d89f534d73b839619136e4b0244dced5c806a71da1ab38235eea75c4a13",
+   "sha256": "fbeaf4d3737aeb12ad278b66cc8ceea67648bb905f2668c0c05b6fa229f00f63",
+   "texts": [
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "C.H. = 2.40 m",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "C.H. = 2.70 m",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 2700",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 3000",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;CORRIDOR}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;MEETING ROOM}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;OFFICE 1}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;OFFICE 2}",
+     "type": "MTEXT"
+    }
+   ],
    "twin": "arch-metric-mm-r2000.dxf",
    "writerCheck": {
     "compared": [
@@ -172,8 +286,20 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {},
-    "status": "pass"
+    "exclusions": {
+     "MTEXT.textHeight": {
+      "cause": "LibreDWG 0.13.3 dxf2dwg maps DXF group 40 of MTEXT to rect_width (the annotation-context field of the same code), so MTEXT text_height is written as 0 and the height is stored in rectWidth",
+      "count": 8,
+      "dwg": [
+       0.0
+      ],
+      "source": [
+       150.0,
+       250.0
+      ]
+     }
+    },
+    "status": "pass-with-exclusions"
    }
   },
   "elevated-levels-r2000.dwg": {
@@ -236,7 +362,65 @@
     }
    },
    "measurement": 1,
-   "sha256": "d887eee546f7b7240cfd936124850e474159fc0d9eb5f2e234f98f3e3de88ca2",
+   "sha256": "3bb0eca3edaca697eb298fcbef82329909c373caefa418798742385c75da7e8d",
+   "texts": [
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 2400",
+     "type": "TEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 2700",
+     "type": "TEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 2800",
+     "type": "TEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 3000",
+     "type": "TEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "GF OFFICE",
+     "type": "TEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "GF STORE",
+     "type": "TEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "UF MEETING",
+     "type": "TEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "UF OPEN OFFICE",
+     "type": "TEXT"
+    }
+   ],
    "twin": "elevated-levels-r2000.dxf",
    "writerCheck": {
     "compared": [
@@ -249,8 +433,20 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {},
-    "status": "pass"
+    "exclusions": {
+     "TEXT.elevation": {
+      "cause": "LibreDWG 0.13.3 dxf2dwg does not store the Z of a DXF TEXT (R2000 keeps an `elevation` field it never fills)",
+      "count": 4,
+      "dwg": [
+       0.0
+      ],
+      "source": [
+       0.0,
+       3500.0
+      ]
+     }
+    },
+    "status": "pass-with-exclusions"
    }
   },
   "noise-dim-hatch-spline-paper-r2000.dwg": {
@@ -372,7 +568,65 @@
     }
    },
    "measurement": 1,
-   "sha256": "063c45e91d9efe0dbc8f6729d642417ec0490efff874451256a207022f8bf83c",
+   "sha256": "c7d9b556ceb1d129a71aee0e72ac3a6f5dd0ad28f57191cd24252ddc9610db59",
+   "texts": [
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "C.H. = 2.40 m",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "C.H. = 2.70 m",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 2700",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 3000",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;CORRIDOR}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;MEETING ROOM}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;OFFICE 1}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;OFFICE 2}",
+     "type": "MTEXT"
+    }
+   ],
    "twin": "noise-dim-hatch-spline-paper-r2000.dxf",
    "writerCheck": {
     "compared": [
@@ -386,6 +640,17 @@
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
     "exclusions": {
+     "MTEXT.textHeight": {
+      "cause": "LibreDWG 0.13.3 dxf2dwg maps DXF group 40 of MTEXT to rect_width (the annotation-context field of the same code), so MTEXT text_height is written as 0 and the height is stored in rectWidth",
+      "count": 8,
+      "dwg": [
+       0.0
+      ],
+      "source": [
+       150.0,
+       250.0
+      ]
+     },
      "layer:A-FRZ": {
       "cause": "LibreDWG 0.13.3 dxf2dwg drops the layer frozen/locked flags",
       "dwg": {
@@ -409,7 +674,7 @@
     "_CLOSEDBLANK",
     "_CLOSEDFILLED"
    ],
-   "bytes": 23770,
+   "bytes": 23762,
    "dwgVersion": "r14",
    "ezdxfCounts": {
     "dimensionBlocks": 0,
@@ -481,7 +746,65 @@
     }
    },
    "measurement": 1,
-   "sha256": "64f09cfb7606c0aa287ee6496f4ede781cf0ef09a80b3fc470c5bb7f8dd91888",
+   "sha256": "38e7ab62c3b8adba552a6ed27ea51e5cdadbc60cd4272f59aba0653d6cf7572b",
+   "texts": [
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "C.H. = 2.40 m",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "C.H. = 2.70 m",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 2700",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 3000",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;CORRIDOR}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;MEETING ROOM}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;OFFICE 1}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;OFFICE 2}",
+     "type": "MTEXT"
+    }
+   ],
    "twin": "unitless-insunits0-r2000.dxf",
    "writerCheck": {
     "compared": [
@@ -494,8 +817,20 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {},
-    "status": "pass"
+    "exclusions": {
+     "MTEXT.textHeight": {
+      "cause": "LibreDWG 0.13.3 dxf2dwg maps DXF group 40 of MTEXT to rect_width (the annotation-context field of the same code), so MTEXT text_height is written as 0 and the height is stored in rectWidth",
+      "count": 8,
+      "dwg": [
+       0.0
+      ],
+      "source": [
+       150.0,
+       250.0
+      ]
+     }
+    },
+    "status": "pass-with-exclusions"
    }
   },
   "unitless-insunits0-r2000.dwg": {
@@ -578,7 +913,65 @@
     }
    },
    "measurement": 1,
-   "sha256": "e09997d5abc3a69e54840ec0358f5a683327577808be365ea7cefc11b1734a9a",
+   "sha256": "e8735196d1fd0557e5deef9c2cdc0ab94664ebc9ac8d578a97e247d4b7812007",
+   "texts": [
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "C.H. = 2.40 m",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "C.H. = 2.70 m",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 2700",
+     "type": "MTEXT"
+    },
+    {
+     "height": 150.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "CH 3000",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;CORRIDOR}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;MEETING ROOM}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;OFFICE 1}",
+     "type": "MTEXT"
+    },
+    {
+     "height": 250.0,
+     "layer": "A-ANNO-TEXT",
+     "n": 1,
+     "text": "{\\fArial|b1;OFFICE 2}",
+     "type": "MTEXT"
+    }
+   ],
    "twin": "unitless-insunits0-r2000.dxf",
    "writerCheck": {
     "compared": [
@@ -591,8 +984,20 @@
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {},
-    "status": "pass"
+    "exclusions": {
+     "MTEXT.textHeight": {
+      "cause": "LibreDWG 0.13.3 dxf2dwg maps DXF group 40 of MTEXT to rect_width (the annotation-context field of the same code), so MTEXT text_height is written as 0 and the height is stored in rectWidth",
+      "count": 8,
+      "dwg": [
+       0.0
+      ],
+      "source": [
+       150.0,
+       250.0
+      ]
+     }
+    },
+    "status": "pass-with-exclusions"
    }
   }
  },
