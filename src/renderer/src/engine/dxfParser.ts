@@ -528,7 +528,10 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         case 'TEXT':
         case 'MTEXT':
           ent.x = number(r, 10); ent.y = -number(r, 20);
-          ent.text = decodeUnicodeEscapes(r.pairs.filter(p => p.code === 3 || p.code === 1).map(p => p.value).join(''));
+          // TEXT has only group 1; MTEXT splits long text into 3 chunks followed by 1. On ATTRIB/ATTDEF group 3 is the PROMPT
+          // string (not content), so attributes use group 1 only.
+          const attribute = r.type === 'ATTRIB' || r.type === 'ATTDEF';
+          ent.text = decodeUnicodeEscapes(r.pairs.filter(p => p.code === 1 || (p.code === 3 && !attribute)).map(p => p.value).join(''));
           if (first(r, 40) !== undefined) ent.textHeight = number(r, 40);
           ent.rotationDeg = number(r, 50, 0);
           if(r.type==='MTEXT') {

@@ -54,7 +54,7 @@ describe('paper space (group 67 = 1)', () => {
 })
 
 describe('ATTRIB / ATTDEF / SEQEND', () => {
-  const attdef = (flags: number, value: string) => rawRecord([0, 'ATTDEF'], [8, '0'], [10, 0], [20, 0], [40, 100], [1, value], [2, 'TAG'], [70, flags])
+  const attdef = (flags: number, value: string) => rawRecord([0, 'ATTDEF'], [8, '0'], [10, 0], [20, 0], [40, 100], [1, value], [3, 'Enter tag'], [2, 'TAG'], [70, flags])
   const build = (flags: number, tail = '') => parseDxfText(dxf({
     header: header({ insunits: 4 }), layers: [layer('0')],
     blocks: [block('DOOR', line('0', 0, 0, 900, 0) + '\n' + attdef(0, 'D00') + '\n' + attdef(2, 'FIXED'))],
