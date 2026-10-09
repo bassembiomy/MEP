@@ -22,7 +22,7 @@ import {
 } from '../engine/cad/cadSemanticState';
 import { validateZonePolygon } from '../engine/cad/zonePolygon';
 import type { DeploymentManifest } from '../engine/deploymentTypes';
-import { verifyEditedZone } from '../engine/cad/componentEdits';
+import { verifyEditedZone, zoneInputsFingerprint } from '../engine/cad/componentEdits';
 import { moveVertex, insertVertex, deleteVertex, offsetEdge, type PolygonEdit } from '../engine/cad/zoneGeometryEdits';
 import { measureSimplePolygon, requirePositive, requireNonnegative, METERS_PER_FOOT } from '../engine/engineeringInputs';
 import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
@@ -263,6 +263,8 @@ interface ProjectState {
   activePreview: DeploymentPreview | null;
   /** Manifest each room was last successfully deployed with (session only); the evidence verifyZoneEdits re-checks edits against. */
   deploymentEvidence: Record<string, DeploymentManifest>;
+  /** Fingerprint of the room inputs each manifest was designed for (zoneInputsFingerprint); verifyZoneEdits refuses when they have since changed. */
+  deploymentInputs: Record<string, string>;
   highlightedDuctId: string | null;
   highlightedEntityTag: string | null;
   undoStack: WorkspaceSnapshot[];
@@ -464,6 +466,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   activeTab: 'optimizer',
   activePreview: null,
   deploymentEvidence: {},
+  deploymentInputs: {},
   highlightedDuctId: null,
   highlightedEntityTag: null,
   undoStack: [],
@@ -506,7 +509,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         optimizationWeights:restored.optimizationWeights??DEFAULT_OPTIMIZATION_WEIGHTS,
         loadedCatalogs:restored.loadedCatalogs as ProjectState['loadedCatalogs'] ?? null,
         selectedZoneId:zones[0]?.id??null,activePreview:null,
-        highlightedDuctId:null,highlightedEntityTag:null,drawMode:'select',tempPoints:[],undoStack:[],redoStack:[]});
+        highlightedDuctId:null,highlightedEntityTag:null,drawMode:'select',tempPoints:[],undoStack:[],redoStack:[],
+        deploymentEvidence:{},deploymentInputs:{}});
       return {success:true};
     } catch(error) {return {success:false,error:error instanceof Error?error.message:String(error)};}
   },
@@ -641,11 +645,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             const deployedZone = txResult.updatedZones.find(z => z.id === id)!;
             const notice = skipped.length ? `Skipped higher-ranked candidates: ${skipped.join(' | ')}` : undefined;
             // Apply the computed deployment to the existing zone
-            set((s) => ({
-              deploymentEvidence: { ...s.deploymentEvidence, [id]: manifest },
-              zones: s.zones.map((z) => (z.id === id ? { ...z, ...deployedZone, id,
-                engineeringStatus: 'preliminary', engineeringError: undefined, engineeringNotice: notice } : z))
-            }));
+            set((s) => {
+              const zones = s.zones.map((z) => (z.id === id ? { ...z, ...deployedZone, id,
+                engineeringStatus: 'preliminary' as const, engineeringError: undefined, engineeringNotice: notice } : z));
+              return { deploymentEvidence: { ...s.deploymentEvidence, [id]: manifest },
+                deploymentInputs: { ...s.deploymentInputs, [id]: zoneInputsFingerprint(zones.find(z => z.id === id)!) }, zones };
+            });
             deployed = true;
             break;
           }
@@ -686,6 +691,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   
   deleteZone: (id) => set((state) => ({
     zones: state.zones.filter((z) => z.id !== id),
+    deploymentEvidence: Object.fromEntries(Object.entries(state.deploymentEvidence).filter(([k]) => k !== id)),
+    deploymentInputs: Object.fromEntries(Object.entries(state.deploymentInputs).filter(([k]) => k !== id)),
     selectedZoneId: state.selectedZoneId === id ? null : state.selectedZoneId,
     activePreview: null
   })),
@@ -705,9 +712,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const state = get();
     const zone = state.zones.find(z => z.id === id);
     if (!zone) return { success: false, error: 'Room not found.' };
-    const result = verifyEditedZone(zone, state.deploymentEvidence[id], state.project);
+    const evidence = state.deploymentEvidence[id], inputs = state.deploymentInputs[id]
+    // Without a recorded fingerprint the evidence cannot be tied to the current inputs, so it is treated as missing.
+    const result = inputs === undefined ? verifyEditedZone(zone, null, state.project) : verifyEditedZone(zone, evidence, state.project, inputs);
     set({ zones: state.zones.map(z => z.id !== id ? z : result.ok
-      ? { ...z, engineeringStatus: 'preliminary' as const, engineeringError: undefined, engineeringNotice: undefined }
+      ? { ...z, ...(result.pressureInWg > 0 ? { catalogEsp: `${result.pressureInWg.toFixed(2)} in.wg` } : {}), engineeringStatus: 'preliminary' as const, engineeringError: undefined, engineeringNotice: undefined }
       : { ...z, engineeringStatus: 'blocked' as const, engineeringError: result.error }) });
     return result.ok ? { success: true, pressureInWg: result.pressureInWg } : { success: false, error: result.error };
   },
@@ -1027,10 +1036,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       };
     }
 
+    const appliedZones = updatedZones.map(z => z.id === targetZone.id ? { ...z,
+      engineeringStatus: 'preliminary' as const, engineeringError: undefined, engineeringNotice: undefined } : z);
     set({
       deploymentEvidence: { ...state.deploymentEvidence, [targetZone.id]: manifest },
-      zones: updatedZones.map(z => z.id === targetZone.id ? { ...z,
-        engineeringStatus: 'preliminary' as const, engineeringError: undefined, engineeringNotice: undefined } : z),
+      deploymentInputs: { ...state.deploymentInputs, [targetZone.id]: zoneInputsFingerprint(appliedZones.find(z => z.id === targetZone.id)!) },
+      zones: appliedZones,
       undoStack: [...state.undoStack, snapshot],
       redoStack: [],
       activePreview: null

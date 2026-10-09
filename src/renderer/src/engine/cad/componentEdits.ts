@@ -1,6 +1,6 @@
 import type { Diffuser, DuctSegment, Zone } from '../../store/projectStore'
 import { isPointInOrOnPolygon, isSegmentInPolygon } from '../validation/spatialValidator'
-import { validateNetwork, validateAppliedDeployment } from '../deploymentValidation'
+import { validateNetwork, validateAppliedDeployment, getZoneDeploymentRevision, getProjectDeploymentRevision } from '../deploymentValidation'
 import { solveDirectedNetworkStaticPressure } from '../staticPressureCalc'
 import { STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES } from '../hvacCatalogs'
 import type { DeploymentManifest } from '../deploymentTypes'
@@ -171,12 +171,28 @@ export function translateDuct(zone: Zone, ductId: string, dx: number, dy: number
 }
 
 export type VerifyResult = { ok: true; pressureInWg: number } | { ok: false; error: string }
+const INPUTS_CHANGED = 'Room or project inputs changed since the last automatic design; inputs changed; re-run automatic design to validate the layout.'
+/**
+ * Fingerprint of the engineering inputs a deployment was designed for: the deployment revision fields minus everything
+ * a component drag may legitimately change (terminals, ducts, unit positions, the derived catalog ESP).
+ */
+export function zoneInputsFingerprint(zone: Zone): string {
+  return getZoneDeploymentRevision({ ...zone, diffusers: undefined, ducts: undefined, unitPos: undefined, unitPositions: undefined,
+    outdoorUnitPos: undefined, outdoorUnitPositions: undefined, catalogEsp: undefined } as unknown as Zone)
+}
 /**
  * Explicit apply step: re-run validateAppliedDeployment against the deployment evidence. Never reports validity on
- * failure or when no evidence is available.
+ * failure, when no evidence is available, or when the room/project inputs differ from those the evidence was built for
+ * (required CFM, loads and drawing scale in the manifest are stored values and would otherwise be stale).
  */
-export function verifyEditedZone(zone: Zone, manifest: DeploymentManifest | null | undefined, project?: Parameters<typeof validateAppliedDeployment>[3]): VerifyResult {
+export function verifyEditedZone(zone: Zone, manifest: DeploymentManifest | null | undefined, project?: Parameters<typeof validateAppliedDeployment>[3], deployedInputs?: string): VerifyResult {
   if (!manifest || manifest.zoneId !== zone.id) return { ok: false, error: 'No deployment evidence is available for this room; re-run automatic design to validate the edited layout.' }
+  if (!project || manifest.sourceProjectRevision === undefined || manifest.sourceProjectRevision !== getProjectDeploymentRevision(project)) return { ok: false, error: INPUTS_CHANGED }
+  if (deployedInputs !== undefined && deployedInputs !== zoneInputsFingerprint(zone)) return { ok: false, error: INPUTS_CHANGED }
+  const evidenceEquipment = manifest.engineeringEvidence?.equipmentRecord, evidenceQty = manifest.engineeringEvidence?.quantity
+  if (zone.catalogModel !== undefined && evidenceEquipment && zone.catalogModel !== evidenceEquipment.model) return { ok: false, error: 'Room equipment model differs from the deployment evidence; inputs changed; re-run automatic design.' }
+  if (zone.catalogQty !== undefined && evidenceQty !== undefined && zone.catalogQty !== evidenceQty) return { ok: false, error: 'Room equipment quantity differs from the deployment evidence; inputs changed; re-run automatic design.' }
+  if (zone.unitPos && zone.unitPositions?.length && !near(zone.unitPos, zone.unitPositions[0])) return { ok: false, error: 'unitPos and unitPositions[0] disagree; the indoor unit position is ambiguous.' }
   const indoor = manifest.equipment.cassetteUnits?.length ? manifest.equipment.cassetteUnits : manifest.equipment.indoorUnit ? [manifest.equipment.indoorUnit] : []
   const positions = unitsOf(zone)
   const units = indoor.map((u, i) => positions[i] ? { ...u, position: { ...u.position, x: positions[i].x, y: positions[i].y } } : u)

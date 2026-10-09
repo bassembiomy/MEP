@@ -77,7 +77,8 @@ describe('explicit verification against deployment evidence',()=>{
   }
 });
 });
-import {useProjectStore} from '../../store/projectStore';
+import {useProjectStore,selectPersistedProject} from '../../store/projectStore';
+import {serializeProject} from '../project/projectSerialization';
 describe('store.verifyZoneEdits',()=>{
  it('reports the validation error instead of claiming validity when evidence is missing or the layout is invalid',()=>{
   const z=zone();
@@ -87,5 +88,59 @@ describe('store.verifyZoneEdits',()=>{
   const stored=useProjectStore.getState().zones[0];
   expect(stored.engineeringStatus).toBe('blocked');expect(stored.engineeringError).toMatch(/No deployment evidence/);
   expect(useProjectStore.getState().verifyZoneEdits('missing').success).toBe(false);
+ });
+});
+describe('store.verifyZoneEdits against the inputs the deployment was designed for',()=>{
+ const project:ProjectMetadata={name:'T',location:'Cairo',scale:10,units:'imperial',outdoorDb:95,indoorDb:75};
+ const base:Zone={id:'zone-1',name:'Office',points:[60,60,260,60,260,210,60,210],spaceTypeId:'office',ceilingHeight:10,occupants:2,manualCfmOverride:350,diffusers:[],ducts:[],maxSpaceNcLimit:30};
+ const s=()=>useProjectStore.getState();
+ const z=()=>s().zones[0];
+ function deploy(){
+  const load=calculateCanonicalZoneLoad(base,project);
+  const c=generateSystemCandidates(load.totalLoad,load.sensibleLoad,load.supplyCfm,base.spaceTypeId,load.area,true,DEFAULT_OPTIMIZATION_WEIGHTS,['concealed']).candidates.find(x=>x.systemType==='concealed'&&x.isValid)!;
+  useProjectStore.setState({project:{...project},zones:[structuredClone(base)],selectedZoneId:'zone-1',deploymentEvidence:{},undoStack:[],redoStack:[],cadObstacles:[]});
+  expect(s().applyCandidateTransaction(c)).toEqual({success:true});
+ }
+ it('verifies an untouched deployment and a pure terminal move',()=>{
+  deploy();
+  expect(s().verifyZoneEdits('zone-1').success).toBe(true);
+  const t=z().diffusers[0];
+  const r=moveTerminal(z(),t.id,t.x+10,t.y+10,{drawingUnitsPerFoot:10,projectScale:10});
+  expect(r.ok).toBe(true);if(!r.ok)return;
+  s().updateZone('zone-1',r.patch);
+  expect(z().engineeringStatus).toBe('stale');
+  expect(s().verifyZoneEdits('zone-1')).toMatchObject({success:true});
+  expect(z().engineeringStatus).toBe('preliminary');
+  expect(z().catalogEsp).toMatch(/in\.wg$/);
+ });
+ it('refuses after an occupant change',()=>{
+  deploy();s().updateZone('zone-1',{occupants:30});
+  const r=s().verifyZoneEdits('zone-1');
+  expect(r.success).toBe(false);expect(r.error).toMatch(/inputs changed; re-run automatic design/);
+  expect(z().engineeringStatus).toBe('blocked');
+ });
+ it('refuses after an outline edit',()=>{
+  deploy();expect(s().moveZoneVertex('zone-1',2,300,230).success).toBe(true);
+  const r=s().verifyZoneEdits('zone-1');expect(r.success).toBe(false);expect(r.error).toMatch(/inputs changed; re-run automatic design/);
+ });
+ it('refuses after the drawing scale is calibrated',()=>{
+  deploy();expect(s().calibrateScaleFromPoints({x:0,y:0},{x:200,y:0},10,'ft').success).toBe(true);
+  const r=s().verifyZoneEdits('zone-1');expect(r.success).toBe(false);expect(r.error).toMatch(/inputs changed; re-run automatic design/);
+ });
+ it('refuses when the equipment no longer matches or the unit positions disagree',()=>{
+  deploy();const orig=z();
+  useProjectStore.setState({zones:[{...orig,catalogModel:'Something Else'}]});
+  expect(s().verifyZoneEdits('zone-1').success).toBe(false);
+  useProjectStore.setState({zones:[{...orig,unitPos:{x:orig.unitPos!.x+5,y:orig.unitPos!.y},unitPositions:orig.unitPositions}]});
+  const r=s().verifyZoneEdits('zone-1');expect(r.success).toBe(false);
+ });
+ it('drops the evidence with the room, on restore and on delete',()=>{
+  deploy();expect(Object.keys(s().deploymentEvidence)).toEqual(['zone-1']);
+  s().deleteZone('zone-1');expect(s().deploymentEvidence).toEqual({});expect(s().deploymentInputs).toEqual({});
+  deploy();
+  const saved=serializeProject(selectPersistedProject(s()));
+  expect(s().restoreProjectDocument(saved)).toEqual({success:true});
+  expect(s().deploymentEvidence).toEqual({});expect(s().deploymentInputs).toEqual({});
+  expect(s().verifyZoneEdits('zone-1').success).toBe(false); // restored rooms have no deployment evidence
  });
 });
