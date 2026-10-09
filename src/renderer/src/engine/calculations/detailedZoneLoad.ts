@@ -400,7 +400,10 @@ export function calculateDetailedZoneLoad(input: DetailedZoneLoadInput): Detaile
   const sensibleW = Math.max(0, netSensibleW)
   const latentW = Math.max(0, netLatentW)
   const totalW = sensibleW + latentW
-  const thermalSupplyLps = (Math.max(0, zoneSensibleW) / (air.densityKgM3 * air.specificHeatJkgK * (w.indoorC - w.supplyC))) * 1000
+  const sensibleAirflowDenominator = air.densityKgM3 * air.specificHeatJkgK * (w.indoorC - w.supplyC)
+  finite(sensibleAirflowDenominator, 'air.densityKgM3 * air.specificHeatJkgK * (indoorC - supplyC)')
+  if (sensibleAirflowDenominator <= 0) throw new Error('sensible airflow denominator must be greater than zero (no underflow)')
+  const thermalSupplyLps = (Math.max(0, zoneSensibleW) / sensibleAirflowDenominator) * 1000
   const supplyLps = Math.max(thermalSupplyLps, outdoorIntakeLps)
   const roomReturnLps = supplyLps + infiltrationLps - exhaustLps
   const recirculatedLps = supplyLps - outdoorIntakeLps

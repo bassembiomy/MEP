@@ -6,6 +6,7 @@ import {
 import { generateSystemCandidates } from '../systemDesigner';
 import { DEFAULT_OPTIMIZATION_WEIGHTS } from '../systemDesigner';
 import { isPointInPolygon } from '../geometry';
+import { calculateCanonicalZoneLoad } from '../loadCalc';
 import { Zone, ProjectMetadata } from '../../store/projectStore';
 
 console.log('=== Starting 20-Point HVAC Deployment & "Apply Design" Acceptance Test Suite ===\n');
@@ -20,7 +21,7 @@ const mockProject: ProjectMetadata = {
   indoorDb: 75
 };
 
-const testZonePoints = [60, 60, 240, 60, 240, 180, 60, 180]; // 18ft x 12ft room (216 sq.ft)
+const testZonePoints = [60, 60, 260, 60, 260, 210, 60, 210]; // 20ft x 15ft room (300 sq.ft), 350 CFM design supply
 const mockZone: Zone = {
   id: 'zone-test-1',
   name: 'Executive Office',
@@ -28,18 +29,20 @@ const mockZone: Zone = {
   spaceTypeId: 'office',
   ceilingHeight: 10,
   occupants: 2,
+  manualCfmOverride: 350,
   diffusers: [],
   ducts: [],
   maxSpaceNcLimit: 30
 };
 
 // Generate candidates for testing
+const zoneLoad = calculateCanonicalZoneLoad(mockZone, mockProject);
 const candidates = generateSystemCandidates(
-  12000, // 1 TR
-  8400,  // Sensible
-  400,   // CFM
-  'office',
-  216,
+  zoneLoad.totalLoad,
+  zoneLoad.sensibleLoad,
+  zoneLoad.supplyCfm,
+  mockZone.spaceTypeId,
+  zoneLoad.area,
   true,
   DEFAULT_OPTIMIZATION_WEIGHTS,
   ['high-wall', 'cassette', 'concealed', 'packaged']
@@ -72,6 +75,9 @@ console.log(`✔ Test 2 Passed: Cassette units (${casManifest.equipment.cassette
 
 // Test 3: Concealed ducted system generates equipment, supply ducts, diffusers, and return
 const concManifest = buildDeploymentManifest(concealedCandidate, mockZone, [mockZone], mockProject);
+if (!concManifest.isEligibleToApply) {
+  throw new Error(`Concealed manifest not eligible: ${JSON.stringify(concManifest.diagnostics)}`);
+}
 if (!concManifest.equipment.indoorUnit || concManifest.terminals.length === 0 || concManifest.ducts.length === 0) {
   throw new Error('Test 3 Failed: Concealed system missing ducted components!');
 }
@@ -93,9 +99,29 @@ if (concManifest.diagnostics.some((d) => d.code === 'ERR_COMPONENT_COLLISION')) 
 console.log('✔ Test 5 Passed: Spatial clearance and collision validation verified');
 
 // Test 6: Every duct connects compatible ports
-const trunks = concManifest.ducts.filter((d) => d.type === 'trunk');
-const branches = concManifest.ducts.filter((d) => d.type === 'branch');
-if (trunks.length === 0 || branches.length === 0) {
+const EPS = 1e-6;
+const near = (ax: number, ay: number, bx: number, by: number) => Math.abs(ax - bx) < EPS && Math.abs(ay - by) < EPS;
+const onSegment = (px: number, py: number, d: { points: number[] }) => {
+  const [x1, y1, x2, y2] = d.points;
+  const cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
+  const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+  if (Math.abs(cross) / len > EPS) return false;
+  const dot = (px - x1) * (x2 - x1) + (py - y1) * (y2 - y1);
+  return dot >= -EPS && dot <= len * len + EPS;
+};
+const unitPos = concManifest.equipment.indoorUnit.position;
+const supplyRuns = concManifest.ducts.filter((d) => d.type !== 'return');
+const returnRuns = concManifest.ducts.filter((d) => d.type === 'return');
+const supplyConnected = supplyRuns.length > 0 && supplyRuns.every((d) =>
+  near(d.points[0], d.points[1], unitPos.x, unitPos.y) ||
+  supplyRuns.some((o) => o !== d && onSegment(d.points[0], d.points[1], o))
+);
+const supplyTerminals = concManifest.terminals.filter((t) => t.type !== 'return');
+const returnTerminals = concManifest.terminals.filter((t) => t.type === 'return');
+const terminalsEnded = supplyTerminals.every((t) =>
+  supplyRuns.filter((d) => near(d.points[2], d.points[3], t.x, t.y)).length === 1
+) && returnTerminals.every((t) => returnRuns.some((d) => near(d.points[2], d.points[3], t.x, t.y)));
+if (!supplyConnected || !terminalsEnded) {
   throw new Error('Test 6 Failed: Incompatible duct network topology!');
 }
 console.log('✔ Test 6 Passed: Port-to-port network connectivity verified across all junctions');
@@ -133,7 +159,7 @@ if (mockZone.diffusers.length !== 0 || mockZone.ducts.length !== 0) {
 console.log('✔ Test 10 Passed: Preview generation is completely non-destructive');
 
 // Test 11: Applying a design creates exactly the components in manifest
-const txResult = executeDeploymentTransaction(concManifest, [mockZone]);
+const txResult = executeDeploymentTransaction(concManifest, [mockZone], mockProject);
 if (!txResult.success) {
   throw new Error('Test 11 Failed: Transaction execution failed!');
 }
@@ -144,7 +170,7 @@ if (deployedZone.diffusers.length !== concManifest.terminals.length || deployedZ
 console.log('✔ Test 11 Passed: Deployed component counts strictly match manifest');
 
 // Test 12: Applying the same candidate twice creates no duplicates (Idempotency)
-const txResult2 = executeDeploymentTransaction(concManifest, txResult.updatedZones);
+const txResult2 = executeDeploymentTransaction(concManifest, txResult.updatedZones, mockProject);
 if (txResult2.updatedZones[0].diffusers.length !== concManifest.terminals.length) {
   throw new Error('Test 12 Failed: Reapplying candidate duplicated diffusers!');
 }
@@ -152,7 +178,7 @@ console.log('✔ Test 12 Passed: Idempotent deployment verified (zero duplicates
 
 // Test 13: Failed component creation rolls back transaction
 const invalidManifest = { ...concManifest, zoneId: 'non-existent-zone' };
-const failedTx = executeDeploymentTransaction(invalidManifest, [mockZone]);
+const failedTx = executeDeploymentTransaction(invalidManifest, [mockZone], mockProject);
 if (failedTx.success || failedTx.updatedZones[0].diffusers.length !== 0) {
   throw new Error('Test 13 Failed: Invalid transaction was not rolled back!');
 }
@@ -164,7 +190,7 @@ const lockedZone: Zone = {
   isDiffusersLocked: true
 };
 const newHwManifest = buildDeploymentManifest(highWallCandidate, lockedZone, [lockedZone], mockProject);
-const txWithLock = executeDeploymentTransaction(newHwManifest, [lockedZone]);
+const txWithLock = executeDeploymentTransaction(newHwManifest, [lockedZone], mockProject);
 if (txWithLock.updatedZones[0].diffusers.length !== deployedZone.diffusers.length) {
   throw new Error('Test 14 Failed: User-locked diffusers were deleted during replacement!');
 }

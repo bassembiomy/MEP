@@ -4,6 +4,8 @@ import { scoreHvacVariation, HvacScoreBreakdown } from './aiHvacScoringEngine';
 import { sliceEquipmentCatalogForZone, sliceDiffuserCatalogForZone, calculatePolygonArea } from './aiHvacPromptBuilder';
 import { placeDiffusersWithCircularOptimization, DiffuserPos } from '../diffuserPlacer';
 import { routeDucts } from '../ductRouter';
+import { normalizePolygonToFeet } from '../adapters/zoningAdapter';
+import { METERS_PER_FOOT } from '../engineeringInputs';
 import { calculateOptimalIndoorUnitPos, getPolygonCentroid } from '../geometry';
 
 export interface AiHvacCandidate {
@@ -25,14 +27,15 @@ function diffuserPosToAiDiffuserItem(d: DiffuserPos, defaultModel: string): AiDi
     cfm: d.cfm,
     coverageRadiusFt: d.throwT50Ft ? Math.round(d.throwT50Ft * 0.8 * 10) / 10 : 8,
     throwDistanceFt: d.throwT50Ft || 10,
-    ncLevel: d.actualNc || 22
+    ncLevel: d.actualNc || 22,
+    type: d.type === 'return' ? 'return' : 'supply'
   };
 }
 
 function ductSegmentToAiDuctItem(d: DuctSegment, frictionRate: number = 0.08): AiDuctItem {
   return {
     id: d.id,
-    type: d.type === 'trunk' ? 'trunk' : 'branch',
+    type: d.type === 'trunk' ? 'trunk' : d.type === 'return' ? 'return' : 'branch',
     startX: d.points[0],
     startY: d.points[1],
     endX: d.points[2],
@@ -50,9 +53,32 @@ function ductSegmentToAiDuctItem(d: DuctSegment, frictionRate: number = 0.08): A
 /**
  * Generates 3 diverse, mathematically sound AI HVAC layout variations for any zone geometry
  */
-export function generateCandidateVariations(zone: Zone): AiHvacCandidate[] {
-  const points = zone.points || [];
-  if (points.length < 6) return [];
+export function generateCandidateVariations(
+  zone: Zone,
+  drawing: { units: 'imperial' | 'metric'; drawingUnitsPerLength: number } = { units: 'imperial', drawingUnitsPerLength: 1 }
+): AiHvacCandidate[] {
+  const rawPoints = zone.points || [];
+  if (rawPoints.length < 6) return [];
+  // All engine math runs in feet; results are mapped back to drawing units on return.
+  let points: number[];
+  try {
+    points = normalizePolygonToFeet(rawPoints, drawing.units, drawing.drawingUnitsPerLength);
+  } catch {
+    return [];
+  }
+  const unitsPerFoot = drawing.drawingUnitsPerLength * (drawing.units === 'metric' ? METERS_PER_FOOT : 1);
+  const toDrawing = (design: AiHvacDesignOutput): AiHvacDesignOutput => ({
+    ...design,
+    acuPlacement: { ...design.acuPlacement, x: design.acuPlacement.x * unitsPerFoot, y: design.acuPlacement.y * unitsPerFoot },
+    diffuserLayout: design.diffuserLayout.map((d) => ({ ...d, x: d.x * unitsPerFoot, y: d.y * unitsPerFoot })),
+    ductNetwork: design.ductNetwork.map((d) => ({
+      ...d,
+      startX: d.startX * unitsPerFoot,
+      startY: d.startY * unitsPerFoot,
+      endX: d.endX * unitsPerFoot,
+      endY: d.endY * unitsPerFoot
+    }))
+  });
 
   const rawArea = calculatePolygonArea(points);
   const areaSqFt = rawArea > 0 ? Math.round(rawArea) : 300;
@@ -86,7 +112,7 @@ export function generateCandidateVariations(zone: Zone): AiHvacCandidate[] {
     totalCfm,
     true,
     10,
-    10,
+    1,
     [],
     systemType,
     totalLoadBtu,
@@ -139,7 +165,7 @@ export function generateCandidateVariations(zone: Zone): AiHvacCandidate[] {
     totalCfm,
     true,
     10,
-    10,
+    1,
     [],
     systemType,
     totalLoadBtu,
@@ -198,7 +224,7 @@ export function generateCandidateVariations(zone: Zone): AiHvacCandidate[] {
     totalCfm,
     true,
     10,
-    10,
+    1,
     [],
     systemType,
     totalLoadBtu,
@@ -251,7 +277,7 @@ export function generateCandidateVariations(zone: Zone): AiHvacCandidate[] {
       name: 'Option A: Balanced ASHRAE Equal-Friction',
       strategy: 'balanced-ashrae',
       description: 'Standard tree topology sized at 0.08 in. w.g./100 ft with optimal 70% boundary spacing.',
-      design: design1,
+      design: toDrawing(design1),
       scores: scoreHvacVariation(design1, points)
     },
     {
@@ -259,7 +285,7 @@ export function generateCandidateVariations(zone: Zone): AiHvacCandidate[] {
       name: 'Option B: Acoustic & Low Velocity (NC < 20)',
       strategy: 'acoustic-low-noise',
       description: 'Oversized low-velocity ducts (< 900 FPM) and quiet diffusers for sound-sensitive spaces.',
-      design: design2,
+      design: toDrawing(design2),
       scores: scoreHvacVariation(design2, points)
     },
     {
@@ -267,7 +293,7 @@ export function generateCandidateVariations(zone: Zone): AiHvacCandidate[] {
       name: 'Option C: Compact Shortest Duct Run',
       strategy: 'compact-shortest-run',
       description: 'Centralized ACU position minimizing total sheet metal material and installation labor.',
-      design: design3,
+      design: toDrawing(design3),
       scores: scoreHvacVariation(design3, points)
     }
   ];

@@ -55,8 +55,8 @@ export const AiHvacAssistantModal: React.FC<AiHvacAssistantModalProps> = ({ isOp
   // only run when the studio is actually open)
   const candidates: AiHvacCandidate[] = useMemo(() => {
     if (!isOpen || !targetZone) return [];
-    return generateCandidateVariations(targetZone);
-  }, [isOpen, targetZone]);
+    return generateCandidateVariations(targetZone, { units: project.units, drawingUnitsPerLength: project.scale });
+  }, [isOpen, targetZone, project.units, project.scale]);
 
   const activeCandidate = candidates.find((c) => c.id === selectedCandidateId) || candidates[0];
 

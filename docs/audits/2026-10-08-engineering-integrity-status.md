@@ -15,7 +15,7 @@ Date: 2026-10-08. Scope: the first implementation stage approved after the CAD/H
 
 ## Verification
 
-Final integrated verification on the final source tree:
+Verification at the end of the first stage (superseded by the follow-up results below):
 
 - `npm test`: 24 Vitest files, **273 tests passed**. Legacy Node/assertion tests: **42 passed, 9 failed**. Full command exit 1; release gate remains failing.
 - `npm run build`: exit 0; node and web TypeScript checks plus production main/preload/renderer bundles succeeded.
@@ -26,27 +26,27 @@ Final integrated verification on the final source tree:
 
 Local implementation evidence, red/green logs, snapshots and review reports are retained under the ignored `.superpowers/sdd/2026-10-08-engineering-integrity/` directory. Required commands are `npm test`, `npm run typecheck` and `npm run build`. UI compilation was checked; no live Electron interaction or installation package was verified in this stage.
 
-## Existing failures and changed acceptance assumptions
+## Resolution of remaining failures
 
-The pre-implementation baseline had seven failing legacy files. They still require resolution:
+Subsequent stage: `npm test` is green after these changes (verified by running the suite).
 
-| Legacy test | Remaining issue |
-| --- | --- |
-| addLShapedZoneStability | Expects automatic placement although the design can be blocked |
-| ashraeComplexShapeDistribution | Boardroom coverage below its required target |
-| closedLoopDesignOptimizer | Existing failure; current early assertion assumes a fixed validation point count |
-| deploymentAcceptance | Original branch/topology assertion fails; later assertions also assume deployment without current project evidence |
-| master9PointValidation | Assumes exactly nine checks despite expanded evidence validation |
-| standardsLayer | Expects the older throw-ratio threshold |
-| terminalsAndReturns | Expects a pass despite actual return short-circuit warnings |
+- `detailedZoneLoad`: the sensible-airflow denominator is validated (finite, positive) before dividing, so overflowing air properties are rejected rather than reported as zero demand.
+- `aiHvacGenerator`: the generator now normalizes the polygon to feet once, places diffusers at scale 1 (it previously passed scale 10 for feet-based geometry, collapsing the room to 3 ft x 3 ft and under-covering it), and maps results back to drawing units. Return grilles keep their type. Coverage targets were not lowered.
+- `deploymentAcceptance`: fixture updated to derive candidates from the canonical zone load, use a 20 ft x 15 ft room with a validated 350 CFM design override, pass the project to every deployment transaction, and check port connectivity instead of a duct type name. No thresholds were weakened.
 
-Two further legacy acceptance files, `endToEndAirDistribution` and `lecture06EquipmentVerification`, expect unconditional PASS/PASS-or-WARNING from shared design fixtures that now fail stricter evidence checks. They must be reviewed against actual engineering evidence; thresholds were not weakened and their expectations were not edited to manufacture a passing release.
+Current results: 34 Vitest files (442 tests) and 113 legacy tests pass, and `npm run typecheck` reports no errors. The earlier baseline files (addLShapedZoneStability, closedLoopDesignOptimizer, master9PointValidation, standardsLayer, terminalsAndReturns, endToEndAirDistribution, lecture06EquipmentVerification) pass on this tree; whether they were fixed by the first stage or this one was not isolated. The AI assistant modal now passes `project.units` and `project.scale` to the generator, and return ducts keep their `return` type.
 
-The stepped-return regression fixture was updated to supply a real grille. It now also asserts that absent grilles produce no fabricated connected return route.
+The stepped-return regression fixture supplies a real grille and asserts that absent grilles produce no fabricated connected return route.
+
+Known engine gaps found (not fixed here):
+
+- `systemDesigner.generateSystemCandidates` does not check per-unit min/max CFM; deployment later rejects such candidates.
+- Ducted indoor-unit placement ignores the physical footprint; larger units can be rejected even in 30 ft x 25 ft rooms.
+- A branched layout at 30 ft x 25 ft with 2 people failed the airflow match, probably from per-diffuser rounding; needs a regression test.
 
 ## Release limitations
 
-This stage improves software integrity; it does not establish a construction-ready professional release. The full test suite remains a release gate until the documented failures are resolved. Further work from the original audit remains necessary:
+This stage improves software integrity; it does not establish a construction-ready professional release. The full test suite is a release gate; it passes as of the follow-up stage, but passing tests do not establish engineering issue readiness. Further work from the original audit remains necessary:
 
 - CAD semantic understanding: room boundaries, openings, obstacles, elevations, layers, uncertainty and explicit user correction.
 - Detailed envelope, glazing, solar, schedules, psychrometrics and ventilation/exhaust design; the current load model is preliminary.
