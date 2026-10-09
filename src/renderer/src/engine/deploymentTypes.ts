@@ -1,4 +1,5 @@
 import { SystemDesignCandidate, CriticalPathResult, EquipmentCatalogItem } from './types';
+import type { CadSemanticSnapshot } from './cad/cadSemanticState';
 import { Diffuser, DuctSegment, Zone, ProjectMetadata } from '../store/projectStore';
 
 export type ComponentRole =
@@ -158,6 +159,8 @@ export interface WorkspaceSnapshot {
   selectedZoneId: string | null;
   project: ProjectMetadata;
   description: string;
+  /** Present only when the action also changed CAD review decisions; undo/redo then restores them too. */
+  cad?: CadSemanticSnapshot;
 }
 
 export interface TransactionResult {

@@ -4,6 +4,9 @@ import { measureSimplePolygon, requireNonnegative, requirePositive } from '../en
 import { calculateZoneLoadSafely } from '../loadCalc';
 import { validateCadEntity, getCadEntityBounds } from '../cad/nativeGeometry';
 import {resolveStandardsSelection} from '../standards/profileRegistry';
+import {CAD_LAYER_ROLES} from '../cad/layerClassification';
+import type {CadLayerOverrides,CadLayerRole} from '../cad/semanticTypes';
+import type {StoredCadOpening,StoredCadObstacle} from '../cad/cadSemanticState';
 
 export interface PersistedProjectState {
   project: ProjectMetadata;
@@ -12,6 +15,11 @@ export interface PersistedProjectState {
   dxfBoundingBox: BoundingBox | null;
   dxfLayers: Record<string, DxfLayerInfo>;
   cadImport?:CadImportMetadata|null;
+  /** User layer-role decisions (machine suggestions are recomputed from the entities). */
+  cadLayerOverrides?:CadLayerOverrides;
+  cadOpenings?:StoredCadOpening[];
+  cadObstacles?:StoredCadObstacle[];
+  cadLevel?:number;
   annotationVisibility?: AnnotationVisibility;
   selectedSystemTypes?: string[];
   optimizationWeights?: OptimizationWeights;
@@ -23,7 +31,10 @@ export interface PersistedProjectState {
 }
 
 const FORMAT='mep-hvac-project';
-const VERSION=1;
+// Version 2 adds CAD review decisions (layer roles, openings, obstacles, level). Version 1 documents
+// load unchanged with those fields absent; the store then re-derives suggestions from the entities.
+const VERSION=2;
+const SUPPORTED_VERSIONS=[1,2];
 const MAX_DOCUMENT_LENGTH=50_000_000;
 
 function assertDataTree(value: unknown, path='document', depth=0, seen=new Set<object>(), budget={nodes:0}): void {
@@ -37,7 +48,7 @@ function assertDataTree(value: unknown, path='document', depth=0, seen=new Set<o
     throw new TypeError(`${path} is not a plain data object`);
   seen.add(value);
   for (const [key,child] of Object.entries(value)) {
-    if (path!=='document.dxfLayers' && ['__proto__','constructor','prototype'].includes(key)) throw new TypeError(`Unsafe project key: ${key}`);
+    if (path!=='document.dxfLayers' && path!=='document.cadLayerOverrides' && ['__proto__','constructor','prototype'].includes(key)) throw new TypeError(`Unsafe project key: ${key}`);
     assertDataTree(child,`${path}.${key}`,depth+1,seen,budget);
   }
   seen.delete(value);
@@ -97,6 +108,51 @@ function validateCadImport(value:unknown):CadImportMetadata|null {
     for(const key of ['entityType','handle']) if(diagnostic[key]!==undefined) text(diagnostic[key],`CAD diagnostic ${key}`);
   }
   return metadata as unknown as CadImportMetadata;
+}
+
+const REVIEW_STATUSES=['review-required','approved','rejected'];
+function point2(value:unknown,name:string):void {
+  const p=object(value,name);finite(p.x,`${name} x`);finite(p.y,`${name} y`);
+}
+function stringList(value:unknown,name:string):void {array(value,name).forEach(v=>text(v,name));}
+function validateReviewCommon(o:Record<string,unknown>,name:string):void {
+  text(o.id,`${name} ID`);
+  if(!REVIEW_STATUSES.includes(o.status as string)) throw new TypeError(`${name} status is unsupported`);
+  finite(o.level,`${name} level`);finite(o.confidence,`${name} confidence`);
+  stringList(o.evidence,`${name} evidence`);stringList(o.sourceHandles,`${name} source handles`);
+  if(o.approvedAt!==undefined) text(o.approvedAt,`${name} approval date`);
+}
+function validateCadOpenings(value:unknown):StoredCadOpening[] {
+  return array(value,'CAD openings').map((v,i)=>{
+    const o=object(v,`CAD opening ${i}`);validateReviewCommon(o,'CAD opening');
+    if(!['door','window','opening'].includes(o.kind as string)) throw new TypeError('CAD opening kind is unsupported');
+    if(!['block','arc-in-gap','wall-gap','parallel-lines'].includes(o.origin as string)) throw new TypeError('CAD opening origin is unsupported');
+    point2(o.center,'CAD opening center');const span=object(o.span,'CAD opening span');point2(span.a,'CAD opening span a');point2(span.b,'CAD opening span b');
+    requireNonnegative('CAD opening width',finite(o.widthFt,'CAD opening width'));
+    stringList(o.adjacentRoomIds,'CAD opening rooms');
+    return o as unknown as StoredCadOpening;
+  });
+}
+function validateCadObstacles(value:unknown):StoredCadObstacle[] {
+  return array(value,'CAD obstacles').map((v,i)=>{
+    const o=object(v,`CAD obstacle ${i}`);validateReviewCommon(o,'CAD obstacle');
+    if(o.shape!=='polygon' && o.shape!=='circle') throw new TypeError('CAD obstacle shape is unsupported');
+    coordinates(o.polygon,'CAD obstacle polygon',6);text(o.layer,'CAD obstacle layer');
+    finite(o.widthFt,'CAD obstacle width');finite(o.depthFt,'CAD obstacle depth');
+    if(o.circle!==undefined){const c=object(o.circle,'CAD obstacle circle');point2(c,'CAD obstacle circle');requirePositive('CAD obstacle radius',finite(c.radius,'CAD obstacle radius'));}
+    if(o.clearanceFt!==undefined) requireNonnegative('CAD obstacle clearance',finite(o.clearanceFt,'CAD obstacle clearance'));
+    if(o.status==='approved' && o.clearanceFt===undefined) throw new TypeError('An approved CAD obstacle needs a clearance');
+    return o as unknown as StoredCadObstacle;
+  });
+}
+function validateLayerOverrides(value:unknown):CadLayerOverrides {
+  const raw=object(value,'CAD layer roles');
+  const result:CadLayerOverrides=Object.create(null);
+  for(const [layer,role] of Object.entries(raw)) {
+    if(typeof role!=='string' || !(CAD_LAYER_ROLES as readonly string[]).includes(role)) throw new TypeError(`Unsupported CAD layer role for ${layer}`);
+    result[layer]=role as CadLayerRole;
+  }
+  return result;
 }
 
 function validateLoadedCatalogs(value:unknown):PersistedProjectState['loadedCatalogs'] {
@@ -178,6 +234,7 @@ function validateState(value:unknown):PersistedProjectState {
     const entity=object(value,`CAD entity ${index}`) as unknown as DxfEntity;
     const error=validateCadEntity(entity);
     if(error) throw new TypeError(`CAD entity ${index}: ${error}`);
+    if(entity.elevation!==undefined) finite(entity.elevation,`CAD entity ${index} elevation`);
     return entity;
   });
   const rawLayers=object(data.dxfLayers??{},'CAD layers');
@@ -199,6 +256,10 @@ function validateState(value:unknown):PersistedProjectState {
   }
   return {project,zones,dxfEntities,dxfBoundingBox:bbox,dxfLayers,
     ...(cadImport!==undefined?{cadImport}:{}),
+    ...(data.cadLayerOverrides!==undefined?{cadLayerOverrides:validateLayerOverrides(data.cadLayerOverrides)}:{}),
+    ...(data.cadOpenings!==undefined?{cadOpenings:validateCadOpenings(data.cadOpenings)}:{}),
+    ...(data.cadObstacles!==undefined?{cadObstacles:validateCadObstacles(data.cadObstacles)}:{}),
+    ...(data.cadLevel!==undefined?{cadLevel:finite(data.cadLevel,'CAD level')}:{}),
     ...(data.annotationVisibility!==undefined?{annotationVisibility:validateAnnotationVisibility(data.annotationVisibility)}:{}),
     ...(data.selectedSystemTypes!==undefined?{selectedSystemTypes:array(data.selectedSystemTypes,'System types').map(v=>text(v,'System type'))}:{}),
     ...(data.optimizationWeights!==undefined?{optimizationWeights:validateOptimizationWeights(data.optimizationWeights)}:{}),
@@ -209,6 +270,10 @@ export function serializeProject(state:PersistedProjectState):string {
   // Pick declarative fields before inspecting; live Zustand actions are not document data.
   const data={project:state.project,zones:state.zones,dxfEntities:state.dxfEntities,dxfBoundingBox:state.dxfBoundingBox,dxfLayers:state.dxfLayers,
     ...(state.cadImport!==undefined?{cadImport:state.cadImport}:{}),
+    ...(state.cadLayerOverrides!==undefined?{cadLayerOverrides:state.cadLayerOverrides}:{}),
+    ...(state.cadOpenings!==undefined?{cadOpenings:state.cadOpenings}:{}),
+    ...(state.cadObstacles!==undefined?{cadObstacles:state.cadObstacles}:{}),
+    ...(state.cadLevel!==undefined?{cadLevel:state.cadLevel}:{}),
     ...(state.annotationVisibility!==undefined?{annotationVisibility:state.annotationVisibility}:{}),
     ...(state.selectedSystemTypes!==undefined?{selectedSystemTypes:state.selectedSystemTypes}:{}),
     ...(state.optimizationWeights!==undefined?{optimizationWeights:state.optimizationWeights}:{}),
@@ -227,6 +292,6 @@ export function parseProjectDocument(source:string):PersistedProjectState {
   assertDataTree(value);
   const document=object(value,'Document');
   if(document.format!==FORMAT) throw new TypeError('Unrecognized project document format');
-  if(document.version!==VERSION) throw new TypeError(`Unsupported project version ${String(document.version)}`);
+  if(!SUPPORTED_VERSIONS.includes(document.version as number)) throw new TypeError(`Unsupported project version ${String(document.version)}`);
   return validateState(document);
 }

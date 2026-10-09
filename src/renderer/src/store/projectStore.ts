@@ -5,7 +5,16 @@ import { zoneExtentFt } from '../engine/pressureBudget';
 import { convertProjectDisplayUnits } from '../engine/project/unitConversion';
 import { parseProjectDocument } from '../engine/project/projectSerialization';
 import type { CadImportDiagnostic } from '../engine/dxfParser';
-import type { CadRoomCandidate } from '../engine/cad/semanticTypes';
+import type { CadRoomCandidate, CadLayerRole, CadBlockReference } from '../engine/cad/semanticTypes';
+import { CAD_LAYER_ROLES } from '../engine/cad/layerClassification';
+import {
+  EMPTY_LAYER_ROLES,
+  recognizeCadSemantics,
+  type CadLayerRoleState,
+  type CadSemanticSnapshot,
+  type StoredCadObstacle,
+  type StoredCadOpening
+} from '../engine/cad/cadSemanticState';
 import { measureSimplePolygon, requirePositive, requireNonnegative, METERS_PER_FOOT } from '../engine/engineeringInputs';
 import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
 import type { StandardsSelection } from '../engine/standards/profileRegistry';
@@ -79,6 +88,8 @@ export interface DxfEntity {
   text?: string;
   color?: string;
   layer?: string;
+  /** Constant Z (drawing units) kept by the CAD parsers for planar geometry; absent means level 0. */
+  elevation?: number;
 }
 
 export interface BoundingBox {
@@ -209,6 +220,16 @@ interface ProjectState {
   dxfBoundingBox: BoundingBox | null;
   dxfLayers: Record<string, DxfLayerInfo>;
   cadImport: CadImportMetadata | null;
+  /** Layer-role suggestions plus the user's overrides. Suggestions never act as confirmed walls. */
+  cadLayerRoles: CadLayerRoleState;
+  /** Opening candidates with the user's decision. Only 'approved' ones may close wall gaps. */
+  cadOpenings: StoredCadOpening[];
+  /** Obstacle candidates with the user's decision; only 'approved' ones (with clearance) constrain designs. */
+  cadObstacles: StoredCadObstacle[];
+  /** Selected level elevation in drawing units (default 0). */
+  cadLevel: number;
+  /** INSERT block references of the current import; in memory only, used to re-run opening recognition. */
+  cadBlockReferences: CadBlockReference[];
   annotationVisibility: AnnotationVisibility;
   loadedCatalogs: {
     decorative: { highWall: any[]; cassette: any[] } | null;
@@ -237,7 +258,14 @@ interface ProjectState {
   setHighlightedEntityTag: (tag: string | null) => void;
   addTempPoint: (x: number, y: number) => void;
   clearTempPoints: () => void;
-  setDxfData: (entities: DxfEntity[], bbox: BoundingBox, suggestedScale?: number, cadUnit?: 'mm' | 'cm' | 'm' | 'in' | 'ft', metadata?:CadImportMetadata) => void;
+  setDxfData: (entities: DxfEntity[], bbox: BoundingBox, suggestedScale?: number, cadUnit?: 'mm' | 'cm' | 'm' | 'in' | 'ft', metadata?:CadImportMetadata, blockReferences?: CadBlockReference[]) => void;
+  /** Set (or with null clear) the user's role for a layer, then refresh opening/obstacle suggestions. */
+  setCadLayerRole: (layer: string, role: CadLayerRole | null) => CadActionResult;
+  approveCadOpening: (id: string) => CadActionResult;
+  rejectCadOpening: (id: string) => CadActionResult;
+  approveCadObstacle: (id: string, clearanceFt: number) => CadActionResult;
+  rejectCadObstacle: (id: string) => CadActionResult;
+  setCadLevel: (level: number) => CadActionResult;
   clearDxfData: () => void;
   setDxfLayerVisibility: (layerName: string, visible: boolean) => void;
   toggleAllDxfLayers: (visible: boolean) => void;
@@ -254,7 +282,25 @@ interface ProjectState {
   redo: () => void;
 }
 
+export interface CadActionResult { success: boolean; error?: string }
+
 const MAX_AUTO_DEPLOY_ATTEMPTS = 5;
+
+const unitsPerFootOf = (project: ProjectMetadata): number =>
+  project.units === 'metric' ? project.scale * METERS_PER_FOOT : project.scale;
+
+const captureCad = (s: ProjectState): CadSemanticSnapshot => ({
+  layerRoles: s.cadLayerRoles, openings: s.cadOpenings, obstacles: s.cadObstacles, level: s.cadLevel
+});
+
+/** Snapshot for undo/redo. CAD review state is included only for actions that change it. */
+function makeSnapshot(s: ProjectState, description: string, withCad: boolean): WorkspaceSnapshot {
+  return { snapshotId: `snap-${crypto.randomUUID()}`, timestamp: Date.now(), zones: structuredClone(s.zones),
+    selectedZoneId: s.selectedZoneId, project: { ...s.project }, description, ...(withCad ? { cad: captureCad(s) } : {}) };
+}
+
+const restoreCad = (cad: CadSemanticSnapshot | undefined) => cad ? {
+  cadLayerRoles: cad.layerRoles, cadOpenings: cad.openings, cadObstacles: cad.obstacles, cadLevel: cad.level } : {};
 
 /** Explains why no candidate was feasible, quoting the blocking diagnostics of the best-ranked rejects. */
 function describeNoFeasibleCandidate(candidates: SystemDesignCandidate[]): string {
@@ -269,6 +315,21 @@ function describeNoFeasibleCandidate(candidates: SystemDesignCandidate[]): strin
   return reasons.length
     ? `No feasible equipment candidate satisfies the current engineering inputs. ${reasons.join(' | ')}`
     : 'No feasible equipment candidate satisfies the current engineering inputs.';
+}
+
+type StoreGet = () => ProjectState;
+type StoreSet = (partial: Partial<ProjectState>) => void;
+function decideOpening(get: StoreGet, set: StoreSet, id: string, status: 'approved' | 'rejected'): CadActionResult {
+  const state=get();
+  if(!state.cadOpenings.some(o=>o.id===id)) return {success:false,error:'Unknown opening candidate.'};
+  if(status==='approved' && state.project.cadUnitsConfirmed===false) return {success:false,error:'Confirm CAD units before approving openings.'};
+  const cadOpenings=state.cadOpenings.map(o=>{
+    if(o.id!==id) return o;
+    const {approvedAt:_a,...rest}=o;
+    return status==='approved'?{...rest,status,approvedAt:new Date().toISOString()}:{...rest,status};
+  });
+  set({cadOpenings,undoStack:[...state.undoStack,makeSnapshot(state,`${status==='approved'?'Approved':'Rejected'} CAD opening ${id}`,true)],redoStack:[]});
+  return {success:true};
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
@@ -289,6 +350,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   dxfBoundingBox: null,
   dxfLayers: {},
   cadImport: null,
+  cadLayerRoles: EMPTY_LAYER_ROLES,
+  cadOpenings: [],
+  cadObstacles: [],
+  cadLevel: 0,
+  cadBlockReferences: [],
   annotationVisibility: DEFAULT_ANNOTATION_VISIBILITY,
   loadedCatalogs: null,
   selectedSystemTypes: ['fcu', 'packaged', 'ahu', 'concealed', 'vrf', 'cassette', 'high-wall'],
@@ -312,10 +378,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   restoreProjectDocument: (source) => {
     try {
-      const restored=parseProjectDocument(source);
+      const {cadLayerOverrides,cadOpenings,cadObstacles,cadLevel,...restored}=parseProjectDocument(source);
       const state=get();
+      const level=cadLevel??0;
+      // Suggestions are recomputed from the entities. Documents saved before CAD review decisions existed
+      // (version 1) get fresh review-required suggestions and no approvals.
+      const semantics=recognizeCadSemantics({entities:restored.dxfEntities,bbox:restored.dxfBoundingBox,
+        unitsPerFoot:unitsPerFootOf(restored.project),level,overrides:cadLayerOverrides??{}});
       set({...restored,
         cadImport:restored.cadImport??null,
+        cadLayerRoles:semantics.layerRoles,
+        cadOpenings:cadOpenings??semantics.openings,
+        cadObstacles:cadObstacles??semantics.obstacles,
+        cadLevel:level,cadBlockReferences:[],
         annotationVisibility:restored.annotationVisibility??DEFAULT_ANNOTATION_VISIBILITY,
         selectedSystemTypes:restored.selectedSystemTypes??state.selectedSystemTypes,
         optimizationWeights:restored.optimizationWeights??DEFAULT_OPTIMIZATION_WEIGHTS,
@@ -501,7 +576,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   
   clearTempPoints: () => set({ tempPoints: [] }),
   
-  setDxfData: (entities, bbox, suggestedScale, cadUnit, metadata) => {
+  setDxfData: (entities, bbox, suggestedScale, cadUnit, metadata, blockReferences) => {
     const layers: Record<string, DxfLayerInfo> = Object.create(null);
     const autoColors = ['#94a3b8', '#38bdf8', '#34d399', '#fbbf24', '#f87171', '#c084fc', '#f472b6', '#a78bfa', '#4ade80'];
     let colorIdx = 0;
@@ -525,11 +600,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         ...(suggestedScale!==undefined?{scale:suggestedScale}:{}),
         ...(cadUnit?{cadUnit}:{}),
         ...(metadata?{cadUnitsConfirmed:metadata.unitsConfidence==='declared'}:{})};
+      // A new drawing starts a fresh review: no inherited overrides, decisions or level.
+      const semantics=recognizeCadSemantics({entities,bbox,blockReferences,unitsPerFoot:unitsPerFootOf(project),level:0,overrides:{}});
       return {
       dxfEntities: entities,
       dxfBoundingBox: bbox,
       dxfLayers: layers,
       cadImport:metadata??null,
+      cadLayerRoles:semantics.layerRoles,cadOpenings:semantics.openings,cadObstacles:semantics.obstacles,
+      cadLevel:0,cadBlockReferences:blockReferences??[],
       activePreview:null,
       project,
       zones:state.zones.map(zone=>{
@@ -539,7 +618,59 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     });
   },
 
-  clearDxfData: () => set({ dxfEntities: [], dxfBoundingBox: null, dxfLayers: {},cadImport:null,activePreview:null }),
+  clearDxfData: () => set({ dxfEntities: [], dxfBoundingBox: null, dxfLayers: {},cadImport:null,activePreview:null,
+    cadLayerRoles:EMPTY_LAYER_ROLES,cadOpenings:[],cadObstacles:[],cadLevel:0,cadBlockReferences:[] }),
+
+  setCadLayerRole: (layer, role) => {
+    const state=get();
+    if(!state.dxfLayers[layer]) return {success:false,error:`Unknown CAD layer ${layer}.`};
+    if(role!==null && !(CAD_LAYER_ROLES as readonly string[]).includes(role)) return {success:false,error:'Unsupported layer role.'};
+    const overrides={...state.cadLayerRoles.overrides};
+    if(role===null) delete overrides[layer]; else overrides[layer]=role;
+    const semantics=recognizeCadSemantics({entities:state.dxfEntities,bbox:state.dxfBoundingBox,blockReferences:state.cadBlockReferences,
+      unitsPerFoot:unitsPerFootOf(state.project),level:state.cadLevel,overrides,suggestions:state.cadLayerRoles.suggestions,
+      prior:{openings:state.cadOpenings,obstacles:state.cadObstacles}});
+    set({cadLayerRoles:semantics.layerRoles,cadOpenings:semantics.openings,cadObstacles:semantics.obstacles,
+      undoStack:[...state.undoStack,makeSnapshot(state,`Set CAD layer role ${layer}`,true)],redoStack:[]});
+    return {success:true};
+  },
+
+  approveCadOpening: (id) => decideOpening(get,set,id,'approved'),
+  rejectCadOpening: (id) => decideOpening(get,set,id,'rejected'),
+
+  approveCadObstacle: (id, clearanceFt) => {
+    const state=get();
+    const found=state.cadObstacles.find(o=>o.id===id);
+    if(!found) return {success:false,error:'Unknown obstacle candidate.'};
+    if(state.project.cadUnitsConfirmed===false) return {success:false,error:'Confirm CAD units before approving obstacles.'};
+    if(typeof clearanceFt!=='number' || !Number.isFinite(clearanceFt) || clearanceFt<0) return {success:false,error:'Clearance must be a finite, non-negative length in feet.'};
+    const cadObstacles=state.cadObstacles.map(o=>o.id===id?{...o,status:'approved' as const,clearanceFt,approvedAt:new Date().toISOString()}:o);
+    set({cadObstacles,undoStack:[...state.undoStack,makeSnapshot(state,`Approved CAD obstacle ${id}`,true)],redoStack:[]});
+    return {success:true};
+  },
+  rejectCadObstacle: (id) => {
+    const state=get();
+    if(!state.cadObstacles.some(o=>o.id===id)) return {success:false,error:'Unknown obstacle candidate.'};
+    const cadObstacles=state.cadObstacles.map(o=>{
+      if(o.id!==id) return o;
+      const {clearanceFt:_c,approvedAt:_a,...rest}=o;
+      return {...rest,status:'rejected' as const};
+    });
+    set({cadObstacles,undoStack:[...state.undoStack,makeSnapshot(state,`Rejected CAD obstacle ${id}`,true)],redoStack:[]});
+    return {success:true};
+  },
+
+  setCadLevel: (level) => {
+    const state=get();
+    if(typeof level!=='number' || !Number.isFinite(level)) return {success:false,error:'Level must be a finite elevation.'};
+    if(level===state.cadLevel) return {success:true};
+    const semantics=recognizeCadSemantics({entities:state.dxfEntities,bbox:state.dxfBoundingBox,blockReferences:state.cadBlockReferences,
+      unitsPerFoot:unitsPerFootOf(state.project),level,overrides:state.cadLayerRoles.overrides,suggestions:state.cadLayerRoles.suggestions,
+      prior:{openings:state.cadOpenings,obstacles:state.cadObstacles}});
+    set({cadLevel:level,cadOpenings:semantics.openings,cadObstacles:semantics.obstacles,activePreview:null,
+      undoStack:[...state.undoStack,makeSnapshot(state,`Selected CAD level ${level}`,true)],redoStack:[]});
+    return {success:true};
+  },
 
   setDxfLayerVisibility: (layerName, visible) => set((state) => ({
     dxfLayers: {
@@ -761,10 +892,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       zones: JSON.parse(JSON.stringify(state.zones)),
       selectedZoneId: state.selectedZoneId,
       project: { ...state.project },
-      description: 'Current State'
+      description: 'Current State',
+      ...(previousSnapshot.cad ? { cad: captureCad(state) } : {})
     };
 
     set({
+      ...restoreCad(previousSnapshot.cad),
       zones: previousSnapshot.zones,
       selectedZoneId: previousSnapshot.selectedZoneId,
       project: previousSnapshot.project,
@@ -787,10 +920,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       zones: JSON.parse(JSON.stringify(state.zones)),
       selectedZoneId: state.selectedZoneId,
       project: { ...state.project },
-      description: 'Current State'
+      description: 'Current State',
+      ...(nextSnapshot.cad ? { cad: captureCad(state) } : {})
     };
 
     set({
+      ...restoreCad(nextSnapshot.cad),
       zones: nextSnapshot.zones,
       selectedZoneId: nextSnapshot.selectedZoneId,
       project: nextSnapshot.project,
