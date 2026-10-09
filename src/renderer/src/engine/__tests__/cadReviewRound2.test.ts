@@ -45,3 +45,36 @@ describe('R1: user-confirmed layer roles survive save/load through the store sel
     expect(() => serializeProject(selectPersistedProject(s()))).not.toThrow()
   })
 })
+
+describe('R2: replacing or clearing the drawing resets undo history and zone obstacles', () => {
+  const zoneAroundColumns = [4, -3, 18, -3, 18, -13, 4, -13] // the parser flips Y
+  const setup = () => {
+    load()
+    s().setProject({ cadUnitsConfirmed: true })
+    expect(s().addZone(zoneAroundColumns).success).toBe(true)
+    expect(s().approveCadObstacle(s().cadObstacles[0].id, 1).success).toBe(true)
+    expect(s().zones[0].obstacles?.length).toBeGreaterThan(0)
+    expect(s().undoStack.length).toBeGreaterThan(0)
+  }
+  const other = () => {
+    const p = parseDxfText(dxf({ header: header({ insunits: 2 }), layers: [W, '0'].map(layer), blocks: [], entities: [line(W, 0, 0, 30, 0), line(W, 30, 0, 30, 30)] }))
+    s().setDxfData(p.entities, p.bbox, p.suggestedScaleImperial, p.cadUnit, { sourceName: 'b.dxf', unitsConfidence: 'declared', diagnostics: [] }, p.blockReferences)
+  }
+  it('setDxfData clears undo/redo so undo cannot restore the previous drawing\'s review state, and drops stale zone obstacles', () => {
+    setup()
+    s().undo(); s().redo()
+    other()
+    expect(s().undoStack).toEqual([])
+    expect(s().redoStack).toEqual([])
+    expect(s().zones[0].obstacles).toBeUndefined()
+    s().undo()
+    expect(s().cadObstacles).toEqual([])
+  })
+  it('clearDxfData clears undo/redo and zone obstacles', () => {
+    setup()
+    s().clearDxfData()
+    expect(s().undoStack).toEqual([])
+    expect(s().redoStack).toEqual([])
+    expect(s().zones[0].obstacles).toBeUndefined()
+  })
+})

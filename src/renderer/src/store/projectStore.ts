@@ -742,15 +742,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       cadLevel:0,cadBlockReferences:blockReferences??[],
       activePreview:null,
       project,
-      zones:state.zones.map(zone=>{
+      // Undo history refers to the previous drawing's review state; restoring it would resurrect that drawing's roles and obstacles.
+      undoStack:[],redoStack:[],
+      zones:syncZoneObstacles(state.zones,semantics.obstacles).map(zone=>{
         const evaluation=calculateZoneLoadSafely(zone,project);
         return {...zone,engineeringStatus:evaluation.error?'blocked' as const:'stale' as const,engineeringError:evaluation.error,engineeringNotice:undefined};
       })};
     });
   },
 
-  clearDxfData: () => set({ dxfEntities: [], dxfBoundingBox: null, dxfLayers: {},cadImport:null,activePreview:null,
-    cadLayerRoles:EMPTY_LAYER_ROLES,cadOpenings:[],cadObstacles:[],cadLevel:0,cadBlockReferences:[] }),
+  clearDxfData: () => set((state) => ({ dxfEntities: [], dxfBoundingBox: null, dxfLayers: {},cadImport:null,activePreview:null,
+    cadLayerRoles:EMPTY_LAYER_ROLES,cadOpenings:[],cadObstacles:[],cadLevel:0,cadBlockReferences:[],
+    undoStack:[],redoStack:[],zones:syncZoneObstacles(state.zones,[]) })),
 
   setCadLayerRole: (layer, role) => {
     const state=get();
