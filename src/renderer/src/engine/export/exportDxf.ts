@@ -4,6 +4,7 @@ import {requirePositive,requireNonnegative,measureSimplePolygon} from '../engine
 import {calculateZoneLoadSafely} from '../loadCalc';
 import {getProjectDeploymentRevision,getZoneDeploymentRevision} from '../deploymentValidation';
 import type {StoredCadObstacle,StoredCadOpening} from '../cad/cadSemanticState';
+import {resolvedJustification,dxfTextCodes,mtextAttachmentCode} from '../cad/textJustification';
 import {resolveStandardsSelection} from '../standards/profileRegistry';
 
 /** `cadOpenings`/`cadObstacles` are the review lists; only items with status 'approved' are exported. */
@@ -56,7 +57,17 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
     let span=p1-p0;while(span<0)span+=2*Math.PI;if(Math.abs(span)<1e-12)span=2*Math.PI;
     start('ELLIPSE',layer,entity.color);xyz(entity.x!,entity.y!,zOf(entity));pair(11,e.x*a);pair(21,e.y*a);pair(31,0);pair(40,b/a);pair(41,begin);pair(42,begin+Math.min(span,2*Math.PI));pair(210,0);pair(220,0);pair(230,n);break;
    }
-   case 'TEXT':case 'MTEXT':start(entity.type,layer,entity.color);xyz(entity.x!,entity.y!,zOf(entity));pair(40,entity.textHeight??scale*0.2);pair(50,(entity.rotationDeg??0)*(entity.type==='MTEXT'?Math.PI/180:1));pair(1,entity.text??'');break;
+   case 'TEXT':case 'MTEXT': {
+    start(entity.type,layer,entity.color);xyz(entity.x!,entity.y!,zOf(entity));pair(40,entity.textHeight??scale*0.2);pair(50,(entity.rotationDeg??0)*(entity.type==='MTEXT'?Math.PI/180:1));pair(1,entity.text??'');
+    // x,y is the justified anchor (see cad/textJustification.ts): TEXT writes it as 10 and as the alignment point 11.
+    const {hAlign,vAlign}=resolvedJustification(entity);
+    if(entity.type==='MTEXT'){if(hAlign!=='left'||vAlign!=='top')pair(71,mtextAttachmentCode(hAlign,vAlign));}
+    else if(hAlign!=='left'||vAlign!=='baseline'){
+     const c=dxfTextCodes(hAlign,vAlign);pair(72,c[72]);pair(73,c[73]);
+     pair(11,entity.x!);pair(21,-entity.y!);if(zOf(entity)!==0)pair(31,zOf(entity));
+    }
+    break;
+   }
   }
  }
  for(const z of zones) {

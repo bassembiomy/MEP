@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Stage, Layer, Line, Circle, Text, Group, Shape, Rect } from 'react-konva';
 import { useProjectStore } from '../store/projectStore';
 import { snapToGrid, getPolygonCentroid } from '../engine/geometry';
+import { canvasTextStyle } from '../engine/cad/textJustification';
 import { physicalGridSpacing, snapPoint } from '../engine/cad/drawingSnap';
 import { moveTerminal, moveIndoorUnit, moveOutdoorUnit, translateDuct, type ComponentEdit } from '../engine/cad/componentEdits';
 import { METERS_PER_FOOT } from '../engine/engineeringInputs';
@@ -594,6 +595,9 @@ export const FloorPlanCanvas: React.FC = () => {
                     context.rotate(-(ent.rotationDeg ?? 0)*Math.PI/180);
                     context.font=`${ent.textHeight ?? fontSize}px sans-serif`;
                     context.fillStyle=ent.color??dxfLayers[ent.layer??'0']?.color??'#94a3b8';
+                    // x,y is the justified anchor: draw about it (Konva's Context proxies textAlign / textBaseline).
+                    const style=canvasTextStyle(ent);
+                    context.textAlign=style.textAlign;context.textBaseline=style.textBaseline;
                     context.fillText(ent.text,0,0);
                     context.restore();
                   }
