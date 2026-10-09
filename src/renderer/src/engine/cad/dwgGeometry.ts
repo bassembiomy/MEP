@@ -2,7 +2,7 @@ import type { BoundingBox, DxfEntity } from '../../store/projectStore'
 import {
   aciToHexColor,
   cadUnitsFromInsUnits,
-  suggestCadUnitsFromSpan,
+  resolveCadUnits,
   type CadImportDiagnostic,
   type ParsedDxf
 } from '../dxfParser'
@@ -83,7 +83,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
       ? (input as {
           entities?: unknown[]
           tables?: { BLOCK_RECORD?: { entries?: unknown[] }; HEADER_VARS?: { INSUNITS?: unknown } }
-          header?: { INSUNITS?: unknown; vars?: { INSUNITS?: unknown } }
+          header?: { INSUNITS?: unknown; MEASUREMENT?: unknown; vars?: { INSUNITS?: unknown; MEASUREMENT?: unknown } }
           insUnits?: unknown
         })
       : {}
@@ -513,25 +513,25 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
         ? Number(rawUnits)
         : undefined
   const insUnits = finite(numericUnits) && Number.isInteger(numericUnits) ? numericUnits : undefined
-  const declared = cadUnitsFromInsUnits(insUnits)
-  const suggestion =
-    declared ??
-    suggestCadUnitsFromSpan(
-      Math.max(finalBbox.maxX - finalBbox.minX, finalBbox.maxY - finalBbox.minY)
-    )
-  if (!declared)
+  const rawMeasurement = db.header?.MEASUREMENT ?? db.header?.vars?.MEASUREMENT
+  const measurementValue = typeof rawMeasurement === 'string' ? Number(rawMeasurement) : rawMeasurement
+  const measurement = measurementValue === 0 || measurementValue === 1 ? measurementValue : undefined
+  const units = resolveCadUnits({ insUnits, measurement, entities, bbox: finalBbox })
+  if (!cadUnitsFromInsUnits(insUnits))
     diagnostics.push({
       code: 'estimated-units',
       severity: 'warning',
       message: 'Drawing units are absent or unsupported; estimated units require confirmation.'
     })
+  diagnostics.push(...units.diagnostics)
   return {
     entities,
     bbox: finalBbox,
     diagnostics,
     blockReferences,
     insUnits,
-    unitsConfidence: declared ? 'declared' : 'estimated',
-    ...suggestion
+    measurement,
+    unitsConfidence: units.unitsConfidence === 'unknown' && !entities.length ? 'estimated' : units.unitsConfidence,
+    ...units.suggestion
   }
 }

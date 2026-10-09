@@ -21,6 +21,8 @@ export interface ParsedDxf {
   suggestedScaleMetric?: number;
   diagnostics?: CadImportDiagnostic[];
   unitsConfidence?: 'declared' | 'estimated' | 'unknown';
+  /** $MEASUREMENT header value (0 imperial, 1 metric): secondary evidence only, never selects units. */
+  measurement?: 0 | 1;
   /** INSERTs kept as semantic objects (their exploded children still appear in `entities`). */
   blockReferences?: CadBlockReference[];
 }
@@ -94,6 +96,82 @@ export function suggestCadUnitsFromSpan(maxSpan: number): {
   return { cadUnit: 'ft', suggestedScaleImperial: 10, suggestedScaleMetric: 32.8 };
 }
 
+export type CadKnownUnit = 'mm' | 'cm' | 'dm' | 'm' | 'in' | 'ft' | 'yd';
+const FEET_PER_UNIT: Record<CadKnownUnit, number> = {
+  mm: 0.001 / 0.3048, cm: 0.01 / 0.3048, dm: 0.1 / 0.3048, m: 1 / 0.3048, in: 1 / 12, ft: 1, yd: 3
+};
+
+/**
+ * Drawing units per foot from two picked points and the real-world length between them.
+ * Throws RangeError for non-finite input, coincident points, or a non-positive/unknown length or unit,
+ * so a bad pick can never produce a silent scale.
+ */
+export function calibrateDrawingScale(
+  p1: { x: number; y: number }, p2: { x: number; y: number }, knownLength: number, knownUnit: CadKnownUnit
+): number {
+  if (![p1?.x, p1?.y, p2?.x, p2?.y, knownLength].every(Number.isFinite)) throw new RangeError('Calibration points and length must be finite numbers.');
+  if (!(knownLength > 0)) throw new RangeError('Known length must be greater than zero.');
+  const feetPerUnit = FEET_PER_UNIT[knownUnit];
+  if (!feetPerUnit) throw new RangeError(`Unsupported calibration unit ${String(knownUnit)}.`);
+  const drawn = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  if (!(drawn > 0)) throw new RangeError('Calibration points must not coincide.');
+  const result = drawn / (knownLength * feetPerUnit);
+  if (!Number.isFinite(result) || result <= 0) throw new RangeError('Calibration produced a non-finite scale.');
+  return result;
+}
+
+/**
+ * Shared DXF/DWG unit resolution. $INSUNITS 0 (unspecified) or an unmapped code is 'unknown': the
+ * span-based cadUnit/scale are returned only as a suggestion and a diagnostic says so. A missing
+ * $INSUNITS stays 'estimated'. 10 (yards) and 14 (decimetres) are deliberately unmapped because
+ * the cadUnit union (store type) has no yd/dm member; they surface as 'units-unmapped'.
+ * $MEASUREMENT is secondary evidence: it only produces a warning when it contradicts the units.
+ * Declared units that give extents over 2 km or a largest closed polyline under 1 ft2 get a
+ * 'declared-implausible' warning (confidence stays 'declared'; the store decides what to do).
+ */
+export function resolveCadUnits(input: {
+  insUnits?: number; measurement?: number; entities: DxfEntity[]; bbox: BoundingBox
+}): {
+  suggestion: { cadUnit: 'mm' | 'cm' | 'm' | 'in' | 'ft'; suggestedScaleImperial: number; suggestedScaleMetric: number };
+  unitsConfidence: 'declared' | 'estimated' | 'unknown';
+  diagnostics: CadImportDiagnostic[];
+} {
+  const { insUnits, measurement, entities, bbox } = input;
+  const diagnostics: CadImportDiagnostic[] = [];
+  const declared = cadUnitsFromInsUnits(insUnits);
+  const suggestion = declared ?? suggestCadUnitsFromSpan(Math.max(bbox.maxX - bbox.minX, bbox.maxY - bbox.minY));
+  let unitsConfidence: 'declared' | 'estimated' | 'unknown';
+  if (declared) unitsConfidence = 'declared';
+  else if (insUnits === undefined) unitsConfidence = entities.length ? 'estimated' : 'unknown';
+  else unitsConfidence = 'unknown';
+  if (!declared && entities.length) {
+    if (insUnits === undefined || insUnits === 0)
+      diagnostics.push({ code: 'units-unspecified', severity: 'warning', message: `${insUnits === 0 ? '$INSUNITS is 0 (unspecified)' : 'No $INSUNITS is declared'}; units (${suggestion.cadUnit}) are a guess from the drawing extents and must be confirmed.` });
+    else diagnostics.push({ code: 'units-unmapped', severity: 'warning', message: `$INSUNITS code ${insUnits} is not a supported drawing unit; units (${suggestion.cadUnit}) are a guess from the drawing extents and must be confirmed.` });
+  }
+  if (measurement === 0 || measurement === 1) {
+    const metric = ['mm', 'cm', 'm'].includes(suggestion.cadUnit);
+    if ((measurement === 1) !== metric)
+      diagnostics.push({ code: 'units-measurement-conflict', severity: 'warning', message: `$MEASUREMENT says ${measurement === 1 ? 'metric' : 'imperial'} but the ${declared ? 'declared' : 'estimated'} units are ${suggestion.cadUnit}. Confirm the drawing units.` });
+  }
+  if (declared && entities.length) {
+    const spanM = Math.max(bbox.maxX - bbox.minX, bbox.maxY - bbox.minY) / suggestion.suggestedScaleMetric;
+    let largestFt2 = -1;
+    for (const e of entities) {
+      if ((e.type !== 'LWPOLYLINE' && e.type !== 'POLYLINE') || !e.closed || !e.points || e.points.length < 6) continue;
+      let sum = 0;
+      for (let i = 0; i < e.points.length; i += 2) {
+        const j = (i + 2) % e.points.length;
+        sum += e.points[i] * e.points[j + 1] - e.points[j] * e.points[i + 1];
+      }
+      largestFt2 = Math.max(largestFt2, Math.abs(sum / 2) / (suggestion.suggestedScaleImperial ** 2));
+    }
+    if (spanM > 2000) diagnostics.push({ code: 'declared-implausible', severity: 'warning', message: `Declared ${suggestion.cadUnit} units make the drawing ${(spanM / 1000).toFixed(1)} km across; check the units.` });
+    else if (largestFt2 >= 0 && largestFt2 < 1) diagnostics.push({ code: 'declared-implausible', severity: 'warning', message: `Declared ${suggestion.cadUnit} units make the largest closed outline only ${largestFt2.toFixed(2)} ft2; check the units.` });
+  }
+  return { suggestion, unitsConfidence, diagnostics };
+}
+
 interface DxfPair { code: number; value: string }
 interface DxfRecord { type: string; pairs: DxfPair[] }
 interface DxfBlock { baseX: number; baseY: number; records: DxfRecord[] }
@@ -120,7 +198,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
   // Some producers prefix the file with whitespace outside the DXF pair stream.
   if (lines.length % 2 === 1 && lines.at(-1)?.trim()) diagnose('INCOMPLETE_PAIR', 'Final DXF group code has no value.', undefined, 'error');
   const sections = new Map<string, DxfRecord[]>();
-  let record: DxfRecord | undefined, section = '', insUnits: number | undefined, headerVar = '', sectionOpen=false, sawEof=false;
+  let record: DxfRecord | undefined, section = '', insUnits: number | undefined, measurement: 0 | 1 | undefined, headerVar = '', sectionOpen=false, sawEof=false;
   const maxPairs = 2_000_000;
   if (lines.length > maxPairs * 2) diagnose('PAIR_LIMIT', 'DXF exceeds the supported pair count; remaining data omitted.', undefined, 'error');
   for (let i = 0; i + 1 < Math.min(lines.length, maxPairs * 2); i += 2) {
@@ -147,6 +225,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       if (section === 'HEADER') {
         if (code === 9) headerVar = value.trim();
         if (code === 70 && headerVar === '$INSUNITS' && Number.isInteger(Number(value))) insUnits = Number(value);
+        if (code === 70 && headerVar === '$MEASUREMENT' && (Number(value) === 0 || Number(value) === 1)) measurement = Number(value) as 0 | 1;
       }
     }
   }
@@ -318,7 +397,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     bbox.minY = Math.min(bbox.minY, b.minY); bbox.maxY = Math.max(bbox.maxY, b.maxY);
   }
   if (!entities.length) Object.assign(bbox, { minX: 0, maxX: 500, minY: 0, maxY: 500 });
-  const declared = cadUnitsFromInsUnits(insUnits);
-  const suggestion = declared ?? suggestCadUnitsFromSpan(Math.max(bbox.maxX - bbox.minX, bbox.maxY - bbox.minY));
-  return { entities, bbox, insUnits, ...suggestion, diagnostics, blockReferences, unitsConfidence: declared ? 'declared' : entities.length ? 'estimated' : 'unknown' };
+  const units = resolveCadUnits({ insUnits, measurement, entities, bbox });
+  for (const d of units.diagnostics) diagnose(d.code, d.message);
+  return { entities, bbox, insUnits, measurement, ...units.suggestion, diagnostics, blockReferences, unitsConfidence: units.unitsConfidence };
 }
