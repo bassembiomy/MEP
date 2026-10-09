@@ -5,7 +5,7 @@ import { zoneExtentFt } from '../engine/pressureBudget';
 import { convertProjectDisplayUnits } from '../engine/project/unitConversion';
 import { parseProjectDocument } from '../engine/project/projectSerialization';
 import type { CadImportDiagnostic } from '../engine/dxfParser';
-import type { CadRoomCandidate, CadLayerRole, CadBlockReference, CadRoomRecognitionResult } from '../engine/cad/semanticTypes';
+import type { CadRoomCandidate, CadLayerRole, CadBlockReference, CadRoomRecognitionResult, CadApprovedObstacle } from '../engine/cad/semanticTypes';
 import { recognizeCadRooms } from '../engine/cad/roomRecognition';
 import { buildRoomRecognitionBasis, ceilingHeightSuggestionFor, drawingUnitsPerFoot, type CeilingHeightSuggestionView } from '../engine/cad/roomApprovalInputs';
 import { unitsAutoConfirmed } from '../engine/cad/unitsDecision';
@@ -13,6 +13,7 @@ import { calibrateDrawingScale, type CadKnownUnit } from '../engine/dxfParser';
 import { CAD_LAYER_ROLES } from '../engine/cad/layerClassification';
 import {
   EMPTY_LAYER_ROLES,
+  zoneObstaclesFor,
   recognizeCadSemantics,
   type CadLayerRoleState,
   type CadSemanticSnapshot,
@@ -119,6 +120,8 @@ export interface Zone {
   spaceTypeId: string;
   ceilingHeight: number;
   occupants: number;
+  /** Approved CAD obstacles (with clearance) inside this zone; derived by the store, checked when deploying. */
+  obstacles?: CadApprovedObstacle[];
   lightingOverride?: number;
   equipmentOverride?: number;
   manualCfmOverride?: number;
@@ -335,6 +338,18 @@ function makeSnapshot(s: ProjectState, description: string, withCad: boolean): W
     selectedZoneId: s.selectedZoneId, project: { ...s.project }, description, ...(withCad ? { cad: captureCad(s) } : {}) };
 }
 
+/** Refresh each zone's approved obstacles from the CAD review state; zones whose set changed become stale. */
+function syncZoneObstacles(zones: Zone[], cadObstacles: StoredCadObstacle[]): Zone[] {
+  return zones.map(zone => {
+    const derived=zoneObstaclesFor(zone,cadObstacles);
+    const current=zone.obstacles??[];
+    if(JSON.stringify(derived)===JSON.stringify(current)) return zone;
+    const {obstacles:_old,...rest}=zone;
+    return {...rest,...(derived.length?{obstacles:derived}:{}),
+      engineeringStatus:zone.engineeringStatus==='blocked'?zone.engineeringStatus:'stale' as const,engineeringNotice:undefined};
+  });
+}
+
 const restoreCad = (cad: CadSemanticSnapshot | undefined) => cad ? {
   cadLayerRoles: cad.layerRoles, cadOpenings: cad.openings, cadObstacles: cad.obstacles, cadLevel: cad.level } : {};
 
@@ -474,6 +489,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           level:state.cadLevel,approvedOpeningIds:basis.approvedOpeningIds,boundaryLayers:basis.wallLayers,
           ceilingHeight:{chosen:inputs.ceilingHeight,usedSuggestion:!!suggestion&&Math.abs(suggestion.value-inputs.ceilingHeight)<=1e-6,
             ...(suggestion?{suggestedFt:suggestion.valueFt,confidence:suggestion.confidence,evidence:[...suggestion.evidence]}:{})}}};
+      const roomObstacles=zoneObstaclesFor(zone,state.cadObstacles);
+      if(roomObstacles.length) zone.obstacles=roomObstacles;
       const evaluation=calculateZoneLoadSafely(zone,state.project);
       if(evaluation.error) throw new Error(evaluation.error);
       const previous:WorkspaceSnapshot={snapshotId:`snap-${crypto.randomUUID()}`,timestamp:Date.now(),zones:structuredClone(state.zones),
@@ -521,6 +538,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       maxVelocityLimitFpm: 1200,
       maxSpaceNcLimit: 32
     };
+    const drawnObstacles = zoneObstaclesFor(draftZone, state.cadObstacles);
+    if (drawnObstacles.length) draftZone.obstacles = drawnObstacles;
     const sourceZoneRevision = getZoneDeploymentRevision(draftZone);
     const sourceProjectRevision = getProjectDeploymentRevision(state.project);
 
@@ -605,7 +624,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     activePreview: null,
     zones: state.zones.map(z => {
       if (z.id !== id) return z;
-      const updated = { ...z, ...updates };
+      let updated = { ...z, ...updates };
+      if (updates.points && updates.obstacles === undefined) {
+        // The outline changed, so which approved obstacles lie inside it changed too.
+        const { obstacles: _old, ...rest } = updated;
+        const derived = zoneObstaclesFor(updated, state.cadObstacles);
+        updated = { ...rest, ...(derived.length ? { obstacles: derived } : {}) };
+      }
       const evaluation = calculateZoneLoadSafely(updated, state.project);
       return { ...updated, engineeringStatus: evaluation.error ? 'blocked' as const : 'stale' as const,
         engineeringError: evaluation.error, engineeringNotice: undefined };
@@ -700,7 +725,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if(state.project.cadUnitsConfirmed===false) return {success:false,error:'Confirm CAD units before approving obstacles.'};
     if(typeof clearanceFt!=='number' || !Number.isFinite(clearanceFt) || clearanceFt<0) return {success:false,error:'Clearance must be a finite, non-negative length in feet.'};
     const cadObstacles=state.cadObstacles.map(o=>o.id===id?{...o,status:'approved' as const,clearanceFt,approvedAt:new Date().toISOString()}:o);
-    set({cadObstacles,undoStack:[...state.undoStack,makeSnapshot(state,`Approved CAD obstacle ${id}`,true)],redoStack:[]});
+    set({cadObstacles,zones:syncZoneObstacles(state.zones,cadObstacles),activePreview:null,undoStack:[...state.undoStack,makeSnapshot(state,`Approved CAD obstacle ${id}`,true)],redoStack:[]});
     return {success:true};
   },
   rejectCadObstacle: (id) => {
@@ -711,7 +736,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const {clearanceFt:_c,approvedAt:_a,...rest}=o;
       return {...rest,status:'rejected' as const};
     });
-    set({cadObstacles,undoStack:[...state.undoStack,makeSnapshot(state,`Rejected CAD obstacle ${id}`,true)],redoStack:[]});
+    set({cadObstacles,zones:syncZoneObstacles(state.zones,cadObstacles),activePreview:null,undoStack:[...state.undoStack,makeSnapshot(state,`Rejected CAD obstacle ${id}`,true)],redoStack:[]});
     return {success:true};
   },
 

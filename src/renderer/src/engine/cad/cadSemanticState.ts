@@ -207,3 +207,16 @@ export function obstaclesInZone(zonePoints: number[], obstacles: CadApprovedObst
     return false
   })
 }
+
+/**
+ * Approved obstacles that constrain a zone. A CAD-derived zone takes obstacles of the level it was recognised on;
+ * a hand-drawn zone has no known level, so obstacles of every level apply (the conservative choice).
+ */
+export function zoneObstaclesFor(
+  zone: { points: number[]; cadProvenance?: { level?: number } },
+  obstacles: StoredCadObstacle[]
+): CadApprovedObstacle[] {
+  const level = zone.cadProvenance ? (zone.cadProvenance.level ?? 0) : undefined
+  const eligible = level === undefined ? obstacles : obstacles.filter((o) => o.level === level)
+  return obstaclesInZone(zone.points, approvedObstacles(eligible))
+}

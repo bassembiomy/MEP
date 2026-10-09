@@ -23,6 +23,7 @@ import { Zone, ProjectMetadata, Diffuser, DuctSegment } from '../store/projectSt
 
 import { calculateCanonicalZoneLoad } from './loadCalc';
 import { METERS_PER_FOOT } from './engineeringInputs';
+import { approvedZoneObstacles, detourBranchDuct, ObstacleConflictError } from './obstacleDeployment';
 import { getZoneDeploymentRevision, getProjectDeploymentRevision, validateAppliedDeployment, getEquipmentFootprintWorld } from './deploymentValidation';
 export { getZoneDeploymentRevision, getProjectDeploymentRevision } from './deploymentValidation';
 
@@ -333,6 +334,24 @@ export function buildDeploymentManifest(
   refrigerantLines.forEach(line => { line.points = line.points.map(n => n / planningRatio); });
   condensateDrains.forEach(line => { line.points = line.points.map(n => n / planningRatio); });
 
+  // Approved obstacles: try a detour for each branch duct that crosses one (trunks and returns are never rerouted;
+  // the applied-deployment validation rejects them), otherwise report the conflict.
+  const approvedObstacles = approvedZoneObstacles(zone);
+  if (approvedObstacles.length) {
+    deployedDucts = deployedDucts.map(d => {
+      if (d.type !== 'branch') return d;
+      const detour = detourBranchDuct(d, zone.points, approvedObstacles, drawingUnitsPerFoot);
+      if ('error' in detour) {
+        diagnostics.push({ code: 'ERR_OBSTACLE_CONFLICT', severity: 'error', message: detour.error,
+          remediation: 'Move or re-clear the obstacle, or choose a different layout.' });
+        return d;
+      }
+      if (detour.points === d.points) return d;
+      diagnostics.push({ code: 'WARN_OBSTACLE_DETOUR', severity: 'warning', message: `Branch duct ${d.id} was routed around approved obstacles; its length increased.` });
+      return { ...d, points: detour.points };
+    });
+  }
+
   // Ports follow the real catalog footprint and the ducts that were actually routed: each air port sits where
   // the first segment leaving the unit centre crosses the footprint boundary, in the same direction.
   const attachPorts = (u: MechanicalComponent): MechanicalComponent => {
@@ -587,7 +606,7 @@ export function executeDeploymentTransaction(
     const pressure = validateAppliedDeployment(manifest, updatedZone, allIndoorUnits, currentProject);
     updatedZone.catalogEsp = pressure > 0 ? `${pressure.toFixed(2)} in.wg` : undefined;
   } catch (error) {
-    return reject(`Applied engineering validation failed: ${(error as Error).message}`);
+    return reject(`Applied engineering validation failed: ${(error as Error).message}`, error instanceof ObstacleConflictError ? 'ERR_OBSTACLE_CONFLICT' : 'ERR_APPLY_TRANSACTION_FAILED');
   }
 
   // Post-Commit Verification

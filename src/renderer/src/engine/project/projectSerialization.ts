@@ -235,6 +235,15 @@ function validateState(value:unknown):PersistedProjectState {
       if(componentIds.has(id)) throw new TypeError('Duplicate component ID');componentIds.add(id);
       coordinates(d.points,'Duct coordinates',4);finite(d.widthIn,'Duct width');finite(d.heightIn,'Duct height');finite(d.cfm,'Duct flow');
     }
+    if(z.obstacles!==undefined)
+      for(const o of array(z.obstacles,'Zone obstacles')) {
+        const ob=object(o,'Zone obstacle');text(ob.id,'Zone obstacle ID');
+        if(ob.status!=='approved') throw new TypeError('Zone obstacles must be approved obstacles');
+        requireNonnegative('Zone obstacle clearance',finite(ob.clearanceFt,'Zone obstacle clearance'));
+        if(ob.polygon!==undefined)coordinates(ob.polygon,'Zone obstacle polygon',6);
+        if(ob.circle!==undefined){const c=object(ob.circle,'Zone obstacle circle');point2(c,'Zone obstacle circle');requirePositive('Zone obstacle radius',finite(c.radius,'Zone obstacle radius'));}
+        if(ob.polygon===undefined && ob.circle===undefined) throw new TypeError('Zone obstacle has no geometry');
+      }
     for(const key of ['unitPos','outdoorUnitPos'] as const) if(z[key]!==undefined) position(z[key],key);
     for(const key of ['unitPositions','outdoorUnitPositions'] as const) if(z[key]!==undefined)
       for(const point of array(z[key],key)) position(point,key);

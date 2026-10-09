@@ -11,6 +11,7 @@ import {
 import { ASHRAE_PROFILE } from './standards/designStandards'
 import { isPointInOrOnPolygon, isSegmentInPolygon } from './validation/spatialValidator'
 import { calculateFittingLoss } from './staticPressureCalc'
+import { approvedZoneObstacles, ductObstacleMessage, footprintObstacleMessage, ObstacleConflictError } from './obstacleDeployment'
 import { requiredExternalStaticPressure, availableFanPressureAtFlow } from './pressureBudget'
 
 // Sorted serialization avoids object insertion-order differences and hash collisions.
@@ -64,7 +65,8 @@ export function getZoneDeploymentRevision(zone: Zone): string {
     'distributionPattern',
     'coverageTargetPercent',
     'throwRadiusMode',
-    'customThrowFt'
+    'customThrowFt',
+    'obstacles'
   ]
   return snapshot(Object.fromEntries(fields.map((k) => [k, zone[k]])))
 }
@@ -304,6 +306,13 @@ export function validateAppliedDeployment(
       corners.some((a, k) => !isSegmentInPolygon(a, corners[(k + 1) % 4], zone.points))
     )
       throw new Error('Equipment footprint is outside zone')
+    const blocked = footprintObstacleMessage(
+      `Equipment ${e.model} footprint`,
+      { x: p.x - w / 2, y: p.y - h / 2, width: w, depth: h },
+      approvedZoneObstacles(zone),
+      evidence.drawingUnitsPerFoot
+    )
+    if (blocked) throw new ObstacleConflictError(blocked)
   })
   if (
     evidence.requiresOutdoorUnit &&
@@ -359,6 +368,8 @@ export function validateAppliedDeployment(
         )
       )
         throw new Error('Duct segment leaves zone')
+    const obstructed = ductObstacleMessage(d, approvedZoneObstacles(zone), evidence.drawingUnitsPerFoot)
+    if (obstructed) throw new ObstacleConflictError(obstructed)
   }
   if (!e.capabilities.supportsDuctNetwork) {
     if (zone.ducts.length || zone.diffusers.some((t) => t.type !== 'cassette'))
