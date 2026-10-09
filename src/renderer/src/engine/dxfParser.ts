@@ -544,17 +544,18 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       }
       // Planner decision: planar geometry at one constant non-zero Z is kept (projected onto the plan, `elevation`
       // recorded, ELEVATED_GEOMETRY_PROJECTED warning). Varying Z or tilted/3D data is still dropped.
-      // Group 31 is a point Z (second point / alignment point) for LINE, TEXT and ATTRIB/ATTDEF; for every other
-      // entity it is a direction vector component that must be 0.
+      // Group 31 is a point Z (second point / alignment point) for LINE, TEXT and ATTRIB/ATTDEF and the vertex Z for MLINE
+      // (start 10/20/30, vertex 11/21/31); for every other entity it is a direction vector component that must be 0.
+      // MLINE direction (12/22/32) and miter (13/23/33) are vectors: their Z must be 0 and never feed the elevation.
       const zValues: number[] = []; let badZ = false;
-      const secondPointZ = r.type === 'LINE' || r.type === 'TEXT' || r.type === 'ATTRIB' || r.type === 'ATTDEF';
+      const secondPointZ = r.type === 'LINE' || r.type === 'TEXT' || r.type === 'ATTRIB' || r.type === 'ATTDEF' || r.type === 'MLINE';
       // Aligned text with a second point but no first Z has an implicit first Z of 0, which may differ.
       if (secondPointZ && r.type !== 'LINE' && first(r, 31) !== undefined && first(r, 30) === undefined) zValues.push(0);
       for (const p of r.pairs) {
         if (p.code === 30 || p.code === 38 || (p.code === 31 && secondPointZ)) {
           const z = p.value.trim() === '' ? NaN : Number(p.value);
           if (Number.isFinite(z)) zValues.push(z); else badZ = true;
-        } else if (p.code === 31 && (!Number.isFinite(Number(p.value)) || Number(p.value) !== 0)) badZ = true;
+        } else if ((p.code === 31 || (r.type === 'MLINE' && (p.code === 32 || p.code === 33))) && (!Number.isFinite(Number(p.value)) || Number(p.value) !== 0)) badZ = true;
       }
       const sameZ = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
       if (badZ || !zValues.every(z => sameZ(z, zValues[0]))) {
@@ -707,13 +708,15 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         default:
           diagnose('UNSUPPORTED_ENTITY', `${r.type} is unsupported; source geometry omitted.`, r); continue;
       }
+      let elevationDiagnosed = false; // once per source record, not once per exploded part (MLINE)
       for (const part of parts ?? [ent]) {
         ent = part;
         const invalid = validateCadEntity(ent);
         if (invalid) { diagnose('MALFORMED_ENTITY', invalid, r, 'error'); continue; }
         ent = transformCadEntity(ent, compose(matrix, ocs));
         const entityZ = zScale * (reflected ? -ownZ : ownZ) + zOffset;
-        if (ownZ !== 0) diagnose('ELEVATED_GEOMETRY_PROJECTED', `${r.type} at elevation ${entityZ} is projected onto the plan; its elevation is retained.`, r);
+        if (ownZ !== 0 && !elevationDiagnosed) diagnose('ELEVATED_GEOMETRY_PROJECTED', `${r.type} at elevation ${entityZ} is projected onto the plan; its elevation is retained.`, r);
+        elevationDiagnosed = true;
         if (entityZ !== 0) (ent as DxfEntity & { elevation?: number }).elevation = entityZ;
         const transformedInvalid = validateCadEntity(ent);
         if (transformedInvalid) { diagnose('INVALID_TRANSFORM', transformedInvalid, r, 'error'); continue; }
