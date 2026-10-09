@@ -16,6 +16,10 @@ export const SystemComparisonTable: React.FC = () => {
     setSelectedSystemTypes
   } = useProjectStore();
 
+  // Why the default catalogs could not be (fully) loaded; shown as a non-blocking notice.
+  const [catalogNotices, setCatalogNotices] = React.useState<string[]>([]);
+  const [customLoaded, setCustomLoaded] = React.useState(false);
+
   const selectedZone = zones.find((z) => z.id === selectedZoneId);
 
   // Auto-load default catalogs on mount if not already loaded
@@ -23,6 +27,7 @@ export const SystemComparisonTable: React.FC = () => {
     if (!loadedCatalogs) {
       window.api.loadDefaultCatalogs()
         .then((result) => {
+          setCatalogNotices(result?.errors ?? []);
           if (result && (result.decorative || result.ducted)) {
             setLoadedCatalogs(result);
           }
@@ -43,6 +48,7 @@ export const SystemComparisonTable: React.FC = () => {
           return;
         }
 
+        setCustomLoaded(true);
         const currentDecorative = loadedCatalogs?.decorative || null;
         const currentDucted = loadedCatalogs?.ducted || null;
 
@@ -141,7 +147,10 @@ export const SystemComparisonTable: React.FC = () => {
   let catalogStatusLabel = 'Demo Catalog Active';
   let catalogStatusColor = 'bg-neutral-800 text-neutral-400 border-neutral-700';
 
-  if (isDefaultActive) {
+  if (customLoaded) {
+    catalogStatusLabel = 'Custom Catalogs Active';
+    catalogStatusColor = 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+  } else if (isDefaultActive) {
     catalogStatusLabel = 'Cairo HVAC Catalogs Active';
     catalogStatusColor = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
   } else if (isCustomActive) {
@@ -189,6 +198,15 @@ export const SystemComparisonTable: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {catalogNotices.length > 0 && (
+        <div role="status" className="text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5">
+          <strong>Default catalogs not fully loaded; using the built-in demo catalog where missing.</strong>
+          <ul className="list-disc list-inside mt-1 break-words">
+            {catalogNotices.map((n, i) => <li key={i}>{n}</li>)}
+          </ul>
+        </div>
+      )}
 
       {/* System Selection Toggles (Multiselect checklist) */}
       <div className="flex flex-col gap-1.5 bg-neutral-950 border border-neutral-850/60 p-3 rounded-xl">

@@ -149,6 +149,19 @@ function parseDuctedFile(filePath: string): DuctedUnit[] {
   return catalog
 }
 
+const DECORATIVE_CATALOG_FILE = 'Decorative unit Selection.xlsx'
+const DUCTED_CATALOG_FILE = 'Ducted unit Selection.xlsx'
+const LEGACY_DECORATIVE_PATH = 'G:\\MEP\\hva\\Lecture 05\\' + DECORATIVE_CATALOG_FILE
+const LEGACY_DUCTED_PATH = 'G:\\MEP\\hva\\Lecture 06\\Office building cairo\\' + DUCTED_CATALOG_FILE
+
+/** Where to look for a default catalog: $MEP_CATALOG_DIR, then <userData>/catalogs, then the original author's drive. */
+function defaultCatalogCandidates(fileName: string, legacyPath: string): string[] {
+  const dirs: string[] = []
+  if (process.env['MEP_CATALOG_DIR']) dirs.push(process.env['MEP_CATALOG_DIR'])
+  dirs.push(join(app.getPath('userData'), 'catalogs'))
+  return [...dirs.map((d) => join(d, fileName)), legacyPath]
+}
+
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
@@ -197,40 +210,43 @@ app.whenReady().then(() => {
 
   // Register HVAC catalog loading handlers
   ipcMain.handle('hvac:load-catalogs-default', async () => {
-    const decPath = 'G:\\MEP\\hva\\Lecture 05\\Decorative unit Selection.xlsx'
-    const ductPath = 'G:\\MEP\\hva\\Lecture 06\\Office building cairo\\Ducted unit Selection.xlsx'
-
     const result = {
       decorative: null as any,
       ducted: null as any,
       errors: [] as string[]
     }
 
-    if (fs.existsSync(decPath)) {
+    const decSearch = defaultCatalogCandidates(DECORATIVE_CATALOG_FILE, LEGACY_DECORATIVE_PATH)
+    const decPath = decSearch.find((p) => fs.existsSync(p))
+    if (decPath) {
       try {
         result.decorative = parseDecorativeFile(decPath)
       } catch (err: any) {
         result.errors.push(`Error parsing decorative catalog: ${err.message}`)
       }
     } else {
-      result.errors.push('Default Decorative catalog not found at ' + decPath)
+      result.errors.push('Default Decorative catalog not found. Looked in: ' + decSearch.join('; '))
     }
 
-    if (fs.existsSync(ductPath)) {
+    const ductSearch = defaultCatalogCandidates(DUCTED_CATALOG_FILE, LEGACY_DUCTED_PATH)
+    const ductPath = ductSearch.find((p) => fs.existsSync(p))
+    if (ductPath) {
       try {
         result.ducted = parseDuctedFile(ductPath)
       } catch (err: any) {
         result.errors.push(`Error parsing ducted catalog: ${err.message}`)
       }
     } else {
-      result.errors.push('Default Ducted catalog not found at ' + ductPath)
+      result.errors.push('Default Ducted catalog not found. Looked in: ' + ductSearch.join('; '))
     }
 
     return result
   })
 
-  ipcMain.handle('hvac:load-catalogs-custom', async (_, type: 'decorative' | 'ducted') => {
-    const win = BrowserWindow.getFocusedWindow()
+  ipcMain.handle('hvac:load-catalogs-custom', async (event, type: 'decorative' | 'ducted') => {
+    // Parent the dialog on the window that asked; getFocusedWindow() is null when no window has focus
+    // (e.g. no window manager), which used to make this handler silently do nothing.
+    const win = BrowserWindow.fromWebContents(event.sender)
     if (!win) return null
 
     const dialogResult = await dialog.showOpenDialog(win, {
