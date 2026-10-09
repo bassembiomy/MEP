@@ -173,3 +173,56 @@ describe('R5: approving a room requires the recognition context it was recognise
     expect(s().zones).toEqual([])
   })
 })
+
+describe('R8: clearance bands reaching into a zone from outside', () => {
+  const project10 = { name: 'T', location: 'C', scale: 10, units: 'imperial' as const, outdoorDb: 95, indoorDb: 75, cadUnitsConfirmed: true }
+  const column = (id: string, x: number, clearanceFt: number) => ({
+    id, shape: 'polygon' as const, polygon: [x, 140, x + 20, 140, x + 20, 160, x, 160], widthFt: 2, depthFt: 2, layer: 'S-COLS',
+    sourceHandles: ['C' + id], confidence: 0.8, evidence: ['test'], status: 'approved' as const, level: 0, clearanceFt
+  })
+  const zoneRect = [0, 0, 400, 0, 400, 300, 0, 300]
+  const drawZone = () => {
+    expect(s().addZone(zoneRect).success).toBe(true)
+    return s().zones[0]
+  }
+  beforeEach(() => {
+    useProjectStore.setState({ project: project10, zones: [], dxfEntities: [], selectedZoneId: null, undoStack: [], redoStack: [], cadObstacles: [] })
+  })
+  it('a hand-drawn zone 0.2 ft short of an approved 3 ft column gets it, and a duct inside the band is rejected', async () => {
+    const { generateSystemCandidates, DEFAULT_OPTIMIZATION_WEIGHTS } = await import('../systemDesigner')
+    const { calculateCanonicalZoneLoad } = await import('../loadCalc')
+    useProjectStore.setState({ cadObstacles: [column('near', 402, 3), column('far', 460, 3)] })
+    const drawn = drawZone()
+    expect(drawn.obstacles?.map(o => o.id)).toEqual(['near']) // 0.2 ft away, band 3 ft; 'far' is 6 ft away
+    const zone = { ...drawn, manualCfmOverride: 1200, maxSpaceNcLimit: 30, maxVelocityLimitFpm: 1500 }
+    const load = calculateCanonicalZoneLoad(zone, project10)
+    const cand = generateSystemCandidates(load.totalLoad, load.sensibleLoad, load.supplyCfm, 'office', load.area, true, DEFAULT_OPTIMIZATION_WEIGHTS, ['concealed']).candidates.find(c => c.isValid)!
+    useProjectStore.setState({ zones: [zone], selectedZoneId: zone.id })
+    const before = s()
+    const out = s().applyCandidateTransaction(cand)
+    expect(out.success).toBe(false)
+    expect(out.error).toMatch(/near/)
+    expect(s().zones).toBe(before.zones)
+  })
+  it('an obstacle whose clearance band stops short of the zone is still ignored', () => {
+    useProjectStore.setState({ cadObstacles: [column('far', 440, 2)] })
+    expect(drawZone().obstacles).toBeUndefined()
+  })
+  it('re-syncs zones when the scale changes (setProject and calibration)', () => {
+    useProjectStore.setState({ cadObstacles: [column('edge', 410, 2)] }) // 1 ft away at 10 units/ft
+    expect(drawZone().obstacles?.map(o => o.id)).toEqual(['edge'])
+    s().setProject({ scale: 2 }) // now 5 ft away
+    expect(s().zones[0].obstacles).toBeUndefined()
+    s().setProject({ scale: 10 })
+    expect(s().zones[0].obstacles?.map(o => o.id)).toEqual(['edge'])
+    expect(s().calibrateScaleFromPoints({ x: 0, y: 0 }, { x: 100, y: 0 }, 50, 'ft').success).toBe(true) // 2 units/ft
+    expect(s().zones[0].obstacles).toBeUndefined()
+  })
+  it('approving a CAD room uses the same band rule', () => {
+    const room = [{ type: 'LWPOLYLINE' as const, points: zoneRect, closed: true, handle: 'R1', layer: 'ROOM' }]
+    useProjectStore.setState({ dxfEntities: structuredClone(room), cadObstacles: [column('edge', 410, 2)] })
+    const r = s().recognizeCadRoomCandidates()
+    expect(s().approveCadRoom(r.result!.candidates[0], { name: 'R', spaceTypeId: 'office', ceilingHeight: 10, occupants: 1, sourceCadRevision: r.sourceCadRevision!, drawingUnitsPerFoot: r.drawingUnitsPerFoot!, recognitionContext: r.recognitionContext! }).success).toBe(true)
+    expect(s().zones[0].obstacles?.map(o => o.id)).toEqual(['edge'])
+  })
+})

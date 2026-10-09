@@ -388,9 +388,9 @@ function applyZoneOutlineEdit(set: (partial: Partial<ProjectState>) => void, get
 }
 
 /** Refresh each zone's approved obstacles from the CAD review state; zones whose set changed become stale. */
-function syncZoneObstacles(zones: Zone[], cadObstacles: StoredCadObstacle[]): Zone[] {
+function syncZoneObstacles(zones: Zone[], cadObstacles: StoredCadObstacle[], unitsPerFoot: number): Zone[] {
   return zones.map(zone => {
-    const derived=zoneObstaclesFor(zone,cadObstacles);
+    const derived=zoneObstaclesFor(zone,cadObstacles,unitsPerFoot);
     const current=zone.obstacles??[];
     if(JSON.stringify(derived)===JSON.stringify(current)) return zone;
     const {obstacles:_old,...rest}=zone;
@@ -472,7 +472,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // A hand-edited scale or unit no longer is the calibrated one.
     const dropProvenance=(meta.scale!==undefined||meta.cadUnit!==undefined)&&meta.cadScaleProvenance===undefined;
     const project = { ...converted.project, ...meta, ...(dropProvenance?{cadScaleProvenance:undefined}:{}) };
-    return { project, activePreview: null, zones: converted.zones.map(zone => {
+    // A scale or unit change moves the clearance bands, so which approved obstacles reach each zone changes with it.
+    const synced = syncZoneObstacles(converted.zones, state.cadObstacles, unitsPerFootOf(project));
+    return { project, activePreview: null, zones: synced.map(zone => {
       const evaluation = calculateZoneLoadSafely(zone, project);
       return { ...zone, engineeringStatus: evaluation.error ? 'blocked' as const : 'stale' as const,
         engineeringError: evaluation.error, engineeringNotice: undefined };
@@ -490,7 +492,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         unitsPerFoot:unitsPerFootOf(restored.project),level,overrides:cadLayerOverrides??{}});
       const restoredCadObstacles=cadObstacles??semantics.obstacles;
       // Zone obstacles are derived data: rebuild them from the approved CAD obstacles instead of trusting the file.
-      const zones=syncZoneObstacles(restored.zones,restoredCadObstacles);
+      const zones=syncZoneObstacles(restored.zones,restoredCadObstacles,unitsPerFootOf(restored.project));
       set({...restored,zones,
         cadImport:restored.cadImport??null,
         cadLayerRoles:semantics.layerRoles,
@@ -542,7 +544,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           level:state.cadLevel,approvedOpeningIds:basis.approvedOpeningIds,boundaryLayers:basis.wallLayers,
           ceilingHeight:{chosen:inputs.ceilingHeight,usedSuggestion:!!suggestion&&Math.abs(suggestion.value-inputs.ceilingHeight)<=CEILING_SUGGESTION_TOLERANCE,
             ...(suggestion?{suggestedFt:suggestion.valueFt,confidence:suggestion.confidence,evidence:[...suggestion.evidence]}:{})}}};
-      const roomObstacles=zoneObstaclesFor(zone,state.cadObstacles);
+      const roomObstacles=zoneObstaclesFor(zone,state.cadObstacles,unitsPerFoot);
       if(roomObstacles.length) zone.obstacles=roomObstacles;
       const evaluation=calculateZoneLoadSafely(zone,state.project);
       if(evaluation.error) throw new Error(evaluation.error);
@@ -578,7 +580,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       maxVelocityLimitFpm: 1200,
       maxSpaceNcLimit: 32
     };
-    const drawnObstacles = zoneObstaclesFor(draftZone, state.cadObstacles);
+    const drawnObstacles = zoneObstaclesFor(draftZone, state.cadObstacles, unitsPerFootOf(state.project));
     if (drawnObstacles.length) draftZone.obstacles = drawnObstacles;
     const sourceZoneRevision = getZoneDeploymentRevision(draftZone);
     const sourceProjectRevision = getProjectDeploymentRevision(state.project);
@@ -670,7 +672,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       if (updates.points && updates.obstacles === undefined) {
         // The outline changed, so which approved obstacles lie inside it changed too.
         const { obstacles: _old, ...rest } = updated;
-        const derived = zoneObstaclesFor(updated, state.cadObstacles);
+        const derived = zoneObstaclesFor(updated, state.cadObstacles, unitsPerFootOf(state.project));
         updated = { ...rest, ...(derived.length ? { obstacles: derived } : {}) };
       }
       const evaluation = calculateZoneLoadSafely(updated, state.project);
@@ -750,7 +752,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       project,
       // Undo history refers to the previous drawing's review state; restoring it would resurrect that drawing's roles and obstacles.
       undoStack:[],redoStack:[],
-      zones:syncZoneObstacles(state.zones,semantics.obstacles).map(zone=>{
+      zones:syncZoneObstacles(state.zones,semantics.obstacles,unitsPerFootOf(project)).map(zone=>{
         const evaluation=calculateZoneLoadSafely(zone,project);
         return {...zone,engineeringStatus:evaluation.error?'blocked' as const:'stale' as const,engineeringError:evaluation.error,engineeringNotice:undefined};
       })};
@@ -759,7 +761,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   clearDxfData: () => set((state) => ({ dxfEntities: [], dxfBoundingBox: null, dxfLayers: {},cadImport:null,activePreview:null,
     cadLayerRoles:EMPTY_LAYER_ROLES,cadOpenings:[],cadObstacles:[],cadLevel:0,cadBlockReferences:[],
-    undoStack:[],redoStack:[],zones:syncZoneObstacles(state.zones,[]) })),
+    undoStack:[],redoStack:[],zones:syncZoneObstacles(state.zones,[],unitsPerFootOf(state.project)) })),
 
   setCadLayerRole: (layer, role) => {
     const state=get();
@@ -785,7 +787,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if(state.project.cadUnitsConfirmed===false) return {success:false,error:'Confirm CAD units before approving obstacles.'};
     if(typeof clearanceFt!=='number' || !Number.isFinite(clearanceFt) || clearanceFt<0) return {success:false,error:'Clearance must be a finite, non-negative length in feet.'};
     const cadObstacles=state.cadObstacles.map(o=>o.id===id?{...o,status:'approved' as const,clearanceFt,approvedAt:new Date().toISOString()}:o);
-    set({cadObstacles,zones:syncZoneObstacles(state.zones,cadObstacles),activePreview:null,undoStack:[...state.undoStack,makeSnapshot(state,`Approved CAD obstacle ${id}`,true)],redoStack:[]});
+    set({cadObstacles,zones:syncZoneObstacles(state.zones,cadObstacles,unitsPerFootOf(state.project)),activePreview:null,undoStack:[...state.undoStack,makeSnapshot(state,`Approved CAD obstacle ${id}`,true)],redoStack:[]});
     return {success:true};
   },
   rejectCadObstacle: (id) => {
@@ -796,7 +798,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const {clearanceFt:_c,approvedAt:_a,...rest}=o;
       return {...rest,status:'rejected' as const};
     });
-    set({cadObstacles,zones:syncZoneObstacles(state.zones,cadObstacles),activePreview:null,undoStack:[...state.undoStack,makeSnapshot(state,`Rejected CAD obstacle ${id}`,true)],redoStack:[]});
+    set({cadObstacles,zones:syncZoneObstacles(state.zones,cadObstacles,unitsPerFootOf(state.project)),activePreview:null,undoStack:[...state.undoStack,makeSnapshot(state,`Rejected CAD obstacle ${id}`,true)],redoStack:[]});
     return {success:true};
   },
 
@@ -808,7 +810,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       requirePositive('Drawing scale',scale);
       const project:ProjectMetadata={...state.project,scale,cadUnit:'custom',cadUnitsConfirmed:true,cadScaleProvenance:'user-calibrated'};
       set({project,activePreview:null,
-        zones:state.zones.map(zone=>{
+        zones:syncZoneObstacles(state.zones,state.cadObstacles,unitsPerFootOf(project)).map(zone=>{
           const evaluation=calculateZoneLoadSafely(zone,project);
           return {...zone,engineeringStatus:evaluation.error?'blocked' as const:'stale' as const,engineeringError:evaluation.error,engineeringNotice:undefined};
         }),

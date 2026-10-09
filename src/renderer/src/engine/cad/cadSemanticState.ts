@@ -183,16 +183,58 @@ function segmentsCross(a: number[], b: number[], c: number[], d: number[]): bool
   return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
 }
 
+const pointSegDist = (px: number, py: number, ax: number, ay: number, bx: number, by: number): number => {
+  const dx = bx - ax, dy = by - ay
+  const len2 = dx * dx + dy * dy
+  const u = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2))
+  return Math.hypot(px - (ax + u * dx), py - (ay + u * dy))
+}
+const segSegDist = (a: number[], b: number[], c: number[], d: number[]): number => {
+  if (segmentsCross(a, b, c, d)) return 0
+  return Math.min(
+    pointSegDist(a[0], a[1], c[0], c[1], d[0], d[1]), pointSegDist(b[0], b[1], c[0], c[1], d[0], d[1]),
+    pointSegDist(c[0], c[1], a[0], a[1], b[0], b[1]), pointSegDist(d[0], d[1], a[0], a[1], b[0], b[1])
+  )
+}
+/** Smallest distance (drawing units) between the zone outline and the obstacle outline. */
+function outlineGap(zonePoints: number[], o: CadApprovedObstacle): number {
+  const m = zonePoints.length / 2
+  const zoneEdge = (j: number) => [zonePoints[2 * j], zonePoints[2 * j + 1], zonePoints[2 * ((j + 1) % m)], zonePoints[2 * ((j + 1) % m) + 1]]
+  if (o.circle) {
+    let best = Infinity
+    for (let j = 0; j < m; j++) {
+      const e = zoneEdge(j)
+      best = Math.min(best, pointSegDist(o.circle.x, o.circle.y, e[0], e[1], e[2], e[3]))
+    }
+    return Math.max(0, best - o.circle.radius)
+  }
+  const ring = o.polygon ?? []
+  const n = ring.length / 2
+  let best = Infinity
+  for (let i = 0; i < n; i++) {
+    const a = [ring[2 * i], ring[2 * i + 1]], b = [ring[2 * ((i + 1) % n)], ring[2 * ((i + 1) % n) + 1]]
+    for (let j = 0; j < m; j++) {
+      const e = zoneEdge(j)
+      best = Math.min(best, segSegDist(a, b, [e[0], e[1]], [e[2], e[3]]))
+    }
+  }
+  return best
+}
+
 /**
  * Approved obstacles that belong to a zone: any obstacle vertex inside it, any zone vertex inside the
- * obstacle, or crossing outlines. (Clearance bands of obstacles wholly outside the zone are not considered.)
+ * obstacle, or crossing outlines. With `unitsPerFoot`, an obstacle wholly outside the zone also belongs to it
+ * when its outline is closer to the zone outline than its clearance (its clearance band reaches into the zone).
  */
-export function obstaclesInZone(zonePoints: number[], obstacles: CadApprovedObstacle[]): CadApprovedObstacle[] {
+export function obstaclesInZone(zonePoints: number[], obstacles: CadApprovedObstacle[], unitsPerFoot?: number): CadApprovedObstacle[] {
   if (zonePoints.length < 6) return []
+  const useBand = unitsPerFoot !== undefined && Number.isFinite(unitsPerFoot) && unitsPerFoot > 0
+  const bandReaches = (o: CadApprovedObstacle): boolean =>
+    useBand && o.clearanceFt > 0 && ((o.polygon && o.polygon.length >= 6) || !!o.circle) && outlineGap(zonePoints, o) < o.clearanceFt * unitsPerFoot!
   return obstacles.filter((o) => {
     const ring = o.polygon && o.polygon.length >= 6 ? o.polygon : undefined
     if (!ring) {
-      return o.circle ? pointInRing(o.circle.x, o.circle.y, zonePoints) : false
+      return o.circle ? pointInRing(o.circle.x, o.circle.y, zonePoints) || bandReaches(o) : false
     }
     for (let i = 0; i < ring.length; i += 2) if (pointInRing(ring[i], ring[i + 1], zonePoints)) return true
     for (let i = 0; i < zonePoints.length; i += 2) if (pointInRing(zonePoints[i], zonePoints[i + 1], ring)) return true
@@ -204,21 +246,23 @@ export function obstaclesInZone(zonePoints: number[], obstacles: CadApprovedObst
         if (segmentsCross(a, b, c, d)) return true
       }
     }
-    return false
+    return bandReaches(o)
   })
 }
 
 /**
  * Approved obstacles that constrain a zone. A CAD-derived zone takes obstacles of the level it was recognised on;
- * a hand-drawn zone has no known level, so obstacles of every level apply (the conservative choice).
+ * a hand-drawn zone takes those of the level it was drawn on, or of every level when it has none recorded (the
+ * conservative choice). `unitsPerFoot` enables the clearance-band rule of obstaclesInZone.
  */
 export function zoneObstaclesFor(
-  zone: { points: number[]; cadProvenance?: { level?: number } },
-  obstacles: StoredCadObstacle[]
+  zone: { points: number[]; cadProvenance?: { level?: number }; drawnOnLevel?: number },
+  obstacles: StoredCadObstacle[],
+  unitsPerFoot?: number
 ): CadApprovedObstacle[] {
-  const level = zone.cadProvenance ? (zone.cadProvenance.level ?? 0) : undefined
+  const level = zone.cadProvenance ? (zone.cadProvenance.level ?? 0) : zone.drawnOnLevel
   const eligible = level === undefined ? obstacles : obstacles.filter((o) => o.level === level)
-  return obstaclesInZone(zone.points, approvedObstacles(eligible))
+  return obstaclesInZone(zone.points, approvedObstacles(eligible), unitsPerFoot)
 }
 
 /** Distinct entity elevations (drawing units) present in the drawing, ascending; always includes 0. */
