@@ -11,7 +11,7 @@ import { polylineReducer, initialPolylineState, type PolylineEvent } from '../en
 import { calculateZoneDiffuserCoverage } from '../engine/diffuserPlacer';
 import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
 import { getCadEntityPath } from '../engine/cad/nativeGeometry';
-import { groupCadEntitiesForRendering } from '../engine/cad/renderGroups';
+import { groupCadEntitiesForRendering, snappableCadEntities } from '../engine/cad/renderGroups';
 import { getSupplyAirflowForDisplay } from '../engine/airflowDisplay';
 import { routeOrthogonalRefrigerantPiping } from '../engine/spatialPlanner';
 import { CadLayerManagerModal } from '../components/CadLayerManagerModal';
@@ -39,7 +39,8 @@ export const FloorPlanCanvas: React.FC = () => {
     annotationVisibility,
     activePreview,
     highlightedDuctId,
-    highlightedEntityTag
+    highlightedEntityTag,
+    cadLevel
   } = useProjectStore();
 
   const stageRef = useRef<Konva.Stage>(null);
@@ -53,6 +54,7 @@ export const FloorPlanCanvas: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [stageDimensions, setStageDimensions] = useState<{ width: number; height: number }>({ width: 900, height: 500 });
 
+  const snapEntities=useMemo(()=>snappableCadEntities(dxfEntities,dxfLayers),[dxfEntities,dxfLayers]);
   const cadRenderGroups=useMemo(()=>groupCadEntitiesForRendering(dxfEntities,dxfLayers),[dxfEntities,dxfLayers]);
 
   // Memoized zone geometry, loads, piping, and coverage calculations to eliminate frame drops and freezing
@@ -302,7 +304,7 @@ export const FloorPlanCanvas: React.FC = () => {
   // Physical grid: 0.5 ft (imperial) / 100 mm (metric) expressed in drawing units, whatever the CAD unit is.
   const gridSpacing = useMemo(() => { try { return physicalGridSpacing(project); } catch { return 10; } }, [project.units, project.scale]);
   const snapLocal = (local: { x: number; y: number }, shift: boolean) => snapPoint(local, {
-    entities: dxfEntities, zones, gridSpacing, tolerancePx: 10, stageScale,
+    entities: snapEntities, level: cadLevel, zones, gridSpacing, tolerancePx: 10, stageScale,
     ortho: shift, lastPoint: tempPoints.length >= 2 ? { x: tempPoints[tempPoints.length - 2], y: tempPoints[tempPoints.length - 1] } : undefined
   }).point;
 
@@ -405,7 +407,7 @@ export const FloorPlanCanvas: React.FC = () => {
       const pos = stage?.getPointerPosition();
       if (!stage || !pos) return;
       const local = stage.getAbsoluteTransform().copy().invert().point(pos);
-      const picked = snapPoint(local, { entities: dxfEntities, zones, gridSpacing, tolerancePx: 10, stageScale, ortho: e.evt.shiftKey, lastPoint: measurePoints[0] }).point;
+      const picked = snapPoint(local, { entities: snapEntities, level: cadLevel, zones, gridSpacing, tolerancePx: 10, stageScale, ortho: e.evt.shiftKey, lastPoint: measurePoints[0] }).point;
       if (measurePoints.length === 1 && measuredDistance(measurePoints[0], picked) === 0) { setDrawMessage('Pick a second point away from the first.'); return; }
       setMeasurePoints([...measurePoints, picked]);
       setDrawMessage(null);

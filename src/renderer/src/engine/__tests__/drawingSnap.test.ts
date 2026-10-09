@@ -62,3 +62,27 @@ describe('performance',()=>{
   expect(performance.now()-t).toBeLessThan(200);expect(hits).toBeGreaterThan(0);
  });
 });
+import {snappableCadEntities,groupCadEntitiesForRendering} from '../cad/renderGroups';
+describe('snapping matches what is drawn (F5)',()=>{
+ const layer=(name:string,visible:boolean)=>({name,visible,count:1});
+ const on={...line(0,0,100,0,'ON'),layer:'On'},off={...line(0,50,100,50,'OFF'),layer:'Off'},none=line(0,80,100,80,'NOLAYER');
+ const layers={On:layer('On',true),Off:layer('Off',false),'0':layer('0',true)};
+ it('uses the render visibility rule: hidden layers are dropped, unknown/default layers stay',()=>{
+  expect(snappableCadEntities([on,off,none],layers)).toEqual([on,none]);
+  const drawn=groupCadEntitiesForRendering([on,off,none],layers).flatMap(g=>g.entities);
+  expect(snappableCadEntities([on,off,none],layers).filter(e=>e.type!=='TEXT')).toEqual(drawn);
+  expect(snappableCadEntities([on],Object.create(null))).toEqual([on]);
+  expect(snappableCadEntities([{...on,layer:'constructor'}],{} as never)).toHaveLength(1); // prototype keys are not layers
+ });
+ it('a hidden layer no longer attracts snaps',()=>{
+  const pt={x:99,y:51};
+  expect(snapPoint(pt,{...base,entities:[off]}).kind).toBe('endpoint'); // raw entities would snap
+  expect(snapPoint(pt,{...base,entities:snappableCadEntities([off],layers)}).kind).toBe('none');
+ });
+ it('elevated entities that are drawn snap once their level is passed',()=>{
+  const up={...line(0,0,100,0,'UP'),elevation:3000,layer:'On'};
+  const ents=snappableCadEntities([up],layers);
+  expect(snapPoint({x:99,y:1},{...base,entities:ents}).kind).toBe('none');
+  expect(snapPoint({x:99,y:1},{...base,entities:ents,level:3000})).toMatchObject({kind:'endpoint',sourceHandle:'UP'});
+ });
+});
