@@ -1,5 +1,6 @@
 import type { BoundingBox, DxfEntity, Zone } from '../../store/projectStore';
 import type { CadBlockReference } from './semanticTypes';
+import { canonicalRing } from './roomRecognition';
 
 /**
  * Drawing origin for far-from-origin drawings (survey / UTM / state-plane coordinates).
@@ -7,7 +8,8 @@ import type { CadBlockReference } from './semanticTypes';
  *  I1  every engine coordinate is LOCAL: raw = local + drawingOrigin. The origin lives in the internal Y-down frame, so
  *      DXF X = x + ox and DXF Y = -(y + oy). Z is never localised.
  *  I3  per axis: 0 when the raw bbox already fits within ORIGIN_THRESHOLD drawing units of 0, otherwise the bbox centre
- *      rounded to a power-of-ten step of its span (so components are exact integers and local = raw - origin is exact).
+ *      rounded to a power-of-ten step of its span (so components are integers). local = raw - origin is exact when |origin| >= 2x the
+ *      local extent (Sterbenz); otherwise it is correctly rounded.
  *      The threshold is absolute (drawing units), not relative to the span.
  *  I4  parsers return RAW coordinates; only the store's setDxfData localises them.
  */
@@ -28,13 +30,20 @@ export function pickDrawingOrigin(bbox: BoundingBox): DrawingOrigin {
   return { x: pickAxis(bbox.minX, bbox.maxX), y: pickAxis(bbox.minY, bbox.maxY) };
 }
 
-/** Origin for a new import: the current one while the raw bbox localised with it stays within the threshold (per axis), else a fresh pick. */
+/** Largest |local coordinate| the drawing would have with this origin on one axis. */
+const extent = (min: number, max: number, origin: number): number => Math.max(Math.abs(min - origin), Math.abs(max - origin));
+
+function resolveAxis(min: number, max: number, current: number): number {
+  if (fits(min, max, current)) return current;
+  const picked = pickAxis(min, max);
+  // A span above ~2 * ORIGIN_THRESHOLD fits no origin; keep the current one when it is no worse than the new pick, so the
+  // drawing is not rebased (and evidence cleared) for nothing.
+  return extent(min, max, current) <= extent(min, max, picked) ? current : picked;
+}
+
+/** Origin for a new import: the current one while the raw bbox localised with it stays within the threshold (per axis) or is no worse than a fresh pick, else a fresh pick. */
 export function resolveImportOrigin(rawBbox: BoundingBox, current: DrawingOrigin): DrawingOrigin {
-  const picked = pickDrawingOrigin(rawBbox);
-  return {
-    x: fits(rawBbox.minX, rawBbox.maxX, current.x) ? current.x : picked.x,
-    y: fits(rawBbox.minY, rawBbox.maxY, current.y) ? current.y : picked.y
-  };
+  return { x: resolveAxis(rawBbox.minX, rawBbox.maxX, current.x), y: resolveAxis(rawBbox.minY, rawBbox.maxY, current.y) };
 }
 
 /** Moves the point coordinates only (x, y, points). Vectors (ELLIPSE axes), angles, radii and elevation are untouched. */
@@ -63,6 +72,24 @@ export function translateDrawing(
   };
 }
 
+const ROOM_ID_PREFIX = 'cad-room:';
+const OPENING_ID = /^(cad-opening:[^:]+:)(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/;
+
+/**
+ * CAD candidate ids embed coordinates (room ring, opening centre). They are re-keyed with the shift so an approved room
+ * is still recognised as the same room after a rebase. Ids that do not parse are returned unchanged.
+ */
+export function translateCandidateId(id: string, dx: number, dy: number): string {
+  if (id.startsWith(ROOM_ID_PREFIX)) {
+    const pairs = id.slice(ROOM_ID_PREFIX.length).split(';').map((pair) => pair.split(',').map(Number));
+    if (pairs.length === 0 || pairs.some((v) => v.length !== 2 || !v.every(Number.isFinite))) return id;
+    return ROOM_ID_PREFIX + canonicalRing(pairs.flatMap(([x, y]) => [x + dx, y + dy]));
+  }
+  const m = OPENING_ID.exec(id);
+  if (m) return `${m[1]}${(Number(m[2]) + dx).toFixed(3)},${(Number(m[3]) + dy).toFixed(3)}`;
+  return id;
+}
+
 /**
  * Translates every coordinate a room owns. `obstacles` is dropped: it is derived from the approved CAD obstacles and
  * the store re-syncs it after the rebase.
@@ -72,8 +99,11 @@ export function translateZone(zone: Zone, dx: number, dy: number): Zone {
   const flat = (v: number[]): number[] => v.map((c, i) => c + (i % 2 ? dy : dx));
   const { obstacles: _derived, ...rest } = zone;
   void _derived;
+  const cp = zone.cadProvenance;
   return {
     ...rest,
+    ...(cp ? { cadProvenance: { ...cp, candidateId: translateCandidateId(cp.candidateId, dx, dy),
+      ...(cp.approvedOpeningIds ? { approvedOpeningIds: cp.approvedOpeningIds.map((id) => translateCandidateId(id, dx, dy)) } : {}) } } : {}),
     points: flat(zone.points),
     diffusers: zone.diffusers.map(p),
     ducts: zone.ducts.map((d) => ({ ...d, points: flat(d.points) })),

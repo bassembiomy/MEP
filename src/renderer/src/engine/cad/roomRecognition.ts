@@ -118,7 +118,7 @@ function simplifyRing(points: Point[]): Point[] {
   })
 }
 
-function canonicalRing(polygon: number[]): string {
+export function canonicalRing(polygon: number[]): string {
   const pairs: string[] = []
   for (let i = 0; i < polygon.length; i += 2)
     pairs.push(`${polygon[i].toPrecision(15)},${polygon[i + 1].toPrecision(15)}`)

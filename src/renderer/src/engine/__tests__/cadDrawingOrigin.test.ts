@@ -5,6 +5,9 @@ import { decodeDxfBytes, parseDxfText, type ParsedDxf } from '../dxfParser'
 import { selectPersistedProject, useProjectStore, type BoundingBox, type DxfEntity, type Zone } from '../../store/projectStore'
 import { exportProjectDxf } from '../export/exportDxf'
 import { parseProjectDocument, serializeProject } from '../project/projectSerialization'
+import type { CadRoomCandidate } from '../cad/semanticTypes'
+import { isPointInPolygon } from '../geometry'
+import { canonicalRing } from '../cad/roomRecognition'
 import {
   ORIGIN_THRESHOLD, pickDrawingOrigin, resolveImportOrigin, translateDrawing, translateEntity, translateZone
 } from '../cad/drawingOrigin'
@@ -47,11 +50,11 @@ const importDrawing = (p: ParsedDxf, name = 't.dxf') => {
     { sourceName: name, unitsConfidence: p.unitsConfidence ?? 'unknown', diagnostics: p.diagnostics ?? [] }, p.blockReferences, p.hiddenLayers)
   if (s().project.cadUnitsConfirmed !== true) useProjectStore.setState({ project: { ...s().project, cadUnitsConfirmed: true } })
 }
-const approveFirstRoom = () => {
+const approveFirstRoom = (pick: (cs: CadRoomCandidate[]) => CadRoomCandidate = (cs) => cs[0]) => {
   s().setCadLayerRole('A-AREA', 'wall')
   const run = s().recognizeCadRoomCandidates()
   expect(run.success).toBe(true)
-  const out = s().approveCadRoom(run.result!.candidates[0], { name: 'R', spaceTypeId: 'office', ceilingHeight: 9, occupants: 2,
+  const out = s().approveCadRoom(pick(run.result!.candidates), { name: 'R', spaceTypeId: 'office', ceilingHeight: 9, occupants: 2,
     sourceCadRevision: run.sourceCadRevision!, drawingUnitsPerFoot: run.drawingUnitsPerFoot!, recognitionContext: run.recognitionContext! })
   expect(out.error).toBeUndefined()
   return run
@@ -94,6 +97,22 @@ describe('resolveImportOrigin sticky rule', () => {
     const other = { minX: 700_000_000, maxX: 700_010_000, minY: -3_312_352_300, maxY: -3_312_345_000 }
     expect(resolveImportOrigin(other, cur)).toEqual({ x: pickDrawingOrigin(other).x, y: cur.y })
     expect(resolveImportOrigin({ minX: 0, maxX: 14_400, minY: -7300, maxY: 0 }, cur)).toEqual({ x: 0, y: 0 })
+  })
+})
+
+describe('resolveImportOrigin for spans no origin can fit', () => {
+  it('keeps the current origin when its largest local extent is no worse than a fresh pick', () => {
+    const wide = { minX: 600_000_000, maxX: 600_400_000, minY: 0, maxY: 10 }
+    const cur = { x: 600_200_100, y: 0 }
+    // A slightly different wide drawing: the fresh pick (power-of-ten step 1e5) is not better than cur, so cur is kept.
+    const next = { ...wide, minX: wide.minX + 100, maxX: wide.maxX + 100 }
+    expect(pickDrawingOrigin(next).x).not.toBe(cur.x)
+    expect(resolveImportOrigin(next, cur)).toEqual(cur)
+  })
+  it('re-picks when the current origin is clearly worse', () => {
+    const wide = { minX: 600_000_000, maxX: 600_400_000, minY: 0, maxY: 10 }
+    const picked = pickDrawingOrigin(wide)
+    expect(resolveImportOrigin(wide, { x: 600_000_000, y: 0 })).toEqual({ x: picked.x, y: 0 })
   })
 })
 
@@ -245,11 +264,41 @@ describe('export (I5)', () => {
     expect(by(moved, 'L')).toMatchObject({ x: 1 + origin.x, y: 2 + origin.y, points: [3 + origin.x, 4 + origin.y], elevation: 7 })
     expect(by(moved, 'P')).toMatchObject({ elevation: 7 })
   })
-  it('with origin {0,0} the export bytes are unchanged by an explicit zero origin', () => {
-    importDrawing(load(METRIC))
-    approveFirstRoom()
-    const a = exportProjectDxf(s()).text
-    expect(exportProjectDxf({ ...s(), drawingOrigin: { x: 0, y: 0 } }).text).toBe(a)
+  const project = { name: 'P', location: 'L', units: 'imperial' as const, scale: 12, cadUnit: 'ft' as const, cadUnitsConfirmed: true, outdoorDb: 95, indoorDb: 75 }
+  it('with origin {0,0} the export bytes are a fixed golden string', () => {
+    const line: DxfEntity = { type: 'LINE', x: 1, y: 2, points: [3, 4], layer: 'L' }
+    const text = exportProjectDxf({ project, zones: [], dxfEntities: [line], drawingOrigin: { x: 0, y: 0 } }).text
+    const golden = ['0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1027', '9', '$INSUNITS', '70', '2', '0', 'ENDSEC', '0', 'SECTION', '2', 'TABLES', '0', 'TABLE', '2', 'LAYER', '70', '2',
+      '0', 'LAYER', '2', 'L', '70', '0', '62', '7', '6', 'CONTINUOUS', '0', 'LAYER', '2', 'HVAC-STATUS', '70', '0', '62', '7', '6', 'CONTINUOUS', '0', 'ENDTAB', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES',
+      '0', 'LINE', '8', 'L', '10', '1', '20', '-2', '11', '3', '21', '-4',
+      '0', 'TEXT', '8', 'HVAC-STATUS', '10', '1', '20', '10', '40', '4.800000000000001', '1', 'P | EGYPT | PRELIMINARY - NOT FOR CONSTRUCTION', '0', 'ENDSEC', '0', 'EOF', ''].join('\n')
+    expect(text).toBe(golden)
+    expect(exportProjectDxf({ project, zones: [], dxfEntities: [line] }).text).toBe(golden)
+  })
+  it('a justified TEXT exports 11/21 at raw coordinates and keeps its alignment (F1 x F2)', () => {
+    const origin = { x: 612_350_000, y: -3_312_349_000 }
+    const centred: DxfEntity = { type: 'TEXT', x: 100, y: -200, text: 'CTR', textHeight: 2, layer: 'T', textHAlign: 'center', textVAlign: 'middle' }
+    const back = parseDxfText(exportProjectDxf({ project, zones: [], dxfEntities: [centred], drawingOrigin: origin }).text).entities.find((e) => e.layer === 'T')!
+    expect(back.x).toBe(100 + origin.x)
+    expect(back.y).toBe(-200 + origin.y)
+    expect(back.textHAlign).toBe('center')
+    expect(back.textVAlign).toBe('middle')
+    const raw = exportProjectDxf({ project, zones: [], dxfEntities: [centred], drawingOrigin: origin }).text.split('\n')
+    const i = raw.indexOf('TEXT')
+    const codes = new Map<string, string>(); for (let k = i + 1; k < raw.length && raw[k] !== '0'; k += 2) codes.set(raw[k], raw[k + 1])
+    expect(codes.get('10')).toBe(String(100 + origin.x)); expect(codes.get('20')).toBe(String(-(-200 + origin.y)))
+    expect(codes.get('11')).toBe(codes.get('10')); expect(codes.get('21')).toBe(codes.get('20'))
+  })
+  it('an approved opening LINE exports 10/20 and 11/21 at raw coordinates (F2)', () => {
+    const origin = { x: 612_350_000, y: -3_312_349_000 }
+    const opening = { id: 'cad-opening:door:5.000,0.000', kind: 'door', status: 'approved', level: 0, widthFt: 3, center: { x: 5, y: 0 }, span: { a: { x: 3, y: 0 }, b: { x: 7, y: 0 } } }
+    const out = exportProjectDxf({ project, zones: [], dxfEntities: [], cadOpenings: [opening] as never, drawingOrigin: origin }).text
+    const back = parseDxfText(out).entities.find((e) => e.layer === 'HVAC-CAD-OPENINGS')!
+    expect([back.x, back.y]).toEqual([3 + origin.x, 0 + origin.y])
+    expect(back.points).toEqual([7 + origin.x, 0 + origin.y])
+    const raw = out.split('\n'); const i = raw.indexOf('HVAC-CAD-OPENINGS', raw.indexOf('ENTITIES'))
+    const c = new Map<string, string>(); for (let k = i + 1; raw[k] !== '0'; k += 2) c.set(raw[k], raw[k + 1])
+    expect(c.get('11')).toBe(String(7 + origin.x)); expect(c.get('21')).toBe(String(-(0 + origin.y)))
   })
   it('clearDxfData keeps the origin, and a zone added afterwards is exported with it added back', () => {
     importDrawing(shifted(load(METRIC), DX, -DY))
@@ -266,6 +315,13 @@ describe('export (I5)', () => {
 describe('second import with zones (I2)', () => {
   const rawZone = () => s().zones[0].points.map((v, i) => v + (i % 2 ? s().drawingOrigin.y : s().drawingOrigin.x))
   const farImport = (dx: number, dy: number) => { const p = shifted(load(METRIC), dx, dy); importDrawing(p) }
+  /** The same raw room as farImport(DX, -DY) plus a far-away line, so the bbox leaves the old origin's window and a new origin is picked. */
+  const sameRoomNewFrame = (): ParsedDxf => {
+    const again = shifted(load(METRIC), DX, -DY)
+    again.entities.push({ type: 'LINE', layer: 'FAR', x: again.bbox.minX + 4e5, y: again.bbox.minY, points: [again.bbox.minX + 4e5 + 10, again.bbox.minY] } as DxfEntity)
+    again.bbox = { ...again.bbox, maxX: again.bbox.minX + 4e5 + 10 }
+    return again
+  }
   const seed = () => {
     approveFirstRoom()
     useProjectStore.setState({ tempPoints: [1, 2], deploymentEvidence: { [s().zones[0].id]: {} as never }, deploymentInputs: { [s().zones[0].id]: 'f' },
@@ -303,16 +359,66 @@ describe('second import with zones (I2)', () => {
     expect(s().drawingOrigin).toEqual({ x: 0, y: 0 })
     s().zones[0].points.forEach((v, i) => expect(v).toBeCloseTo(raw[i], 5))
   })
-  it('zone obstacles are re-derived from the new local obstacles after a rebase', () => {
+  it('the same raw room approved in frame A cannot be approved again after a rebase to frame B (R1)', () => {
     farImport(DX, -DY)
     approveFirstRoom()
-    importDrawing(shifted(load(METRIC), 700_000_000, -3_000_000_000))
-    for (const z of s().zones) for (const ob of z.obstacles ?? []) expect(ob.status).toBe('approved')
+    const idA = s().zones[0].cadProvenance!.candidateId
+    const originA = s().drawingOrigin
+    importDrawing(sameRoomNewFrame())
+    expect(s().drawingOrigin).not.toEqual(originA)
+    const idB = s().zones[0].cadProvenance!.candidateId
+    expect(idB).not.toBe(idA)
+    s().setCadLayerRole('A-AREA', 'wall')
+    const run = s().recognizeCadRoomCandidates()
+    expect(run.success).toBe(true)
+    expect(run.result!.candidates.map((c) => c.id)).toContain(idB)
+    const candidate = run.result!.candidates.find((c) => c.id === idB)!
+    const out = s().approveCadRoom(candidate, { name: 'R2', spaceTypeId: 'office', ceilingHeight: 9, occupants: 2,
+      sourceCadRevision: run.sourceCadRevision!, drawingUnitsPerFoot: run.drawingUnitsPerFoot!, recognitionContext: run.recognitionContext! })
+    expect(out.error).toMatch(/already approved/i)
+    expect(s().zones).toHaveLength(1)
+  })
+  it('translateZone re-keys coordinate-embedded candidate and opening ids', () => {
+    const z = { id: 'z', name: 'Z', points: [0, 0, 4, 0, 4, 3, 0, 3], spaceTypeId: 'office', ceilingHeight: 9, occupants: 1, diffusers: [], ducts: [],
+      cadProvenance: { candidateId: 'cad-room:' + canonicalRing([0, 0, 4, 0, 4, 3, 0, 3]), approvedOpeningIds: ['cad-opening:door:2.000,0.000', 'other'] } } as unknown as Zone
+    const t = translateZone(z, 10, -5)
+    expect(t.cadProvenance!.candidateId).toBe('cad-room:' + canonicalRing([10, -5, 14, -5, 14, -2, 10, -2]))
+    expect(t.cadProvenance!.approvedOpeningIds).toEqual(['cad-opening:door:12.000,-5.000', 'other'])
+  })
+  it('zone obstacles are dropped on rebase and re-derived when the same obstacle is approved in the new frame (R3a)', () => {
+    farImport(DX, -DY)
+    const holdsObstacle = (cs: CadRoomCandidate[]) => cs.find((c) => s().cadObstacles.some((o) => { const [x, y] = o.id.split(':')[1].split(',').map(Number); return isPointInPolygon(x, y, c.polygon) }))!
+    approveFirstRoom(holdsObstacle)
+    for (const o of s().cadObstacles) s().approveCadObstacle(o.id, 0.5)
+    const inA = (s().zones[0].obstacles ?? []).map((o) => o.id)
+    expect(inA.length, 'fixture has an obstacle inside the approved room').toBeGreaterThan(0)
+    const originA = s().drawingOrigin
+    const rawCentre = (id: string, o: { x: number; y: number }) => { const [x, y] = id.split(':')[1].split(',').map(Number); return [x + o.x, y + o.y] }
+    const rawA = inA.map((id) => rawCentre(id, originA))
+    importDrawing(sameRoomNewFrame())
+    const originB = s().drawingOrigin
+    expect(originB).not.toEqual(originA)
+    expect((s().zones[0].obstacles ?? []).map((o) => o.id)).toEqual([]) // nothing approved in frame B yet
+    for (const id of inA) expect(s().cadObstacles.find((o) => o.id === id)?.status ?? 'review-required').not.toBe('approved')
+    const sameRaw = s().cadObstacles.filter((o) => rawA.some((r) => rawCentre(o.id, originB).join() === r.join()))
+    expect(sameRaw).toHaveLength(inA.length)
+    for (const o of sameRaw) expect(s().approveCadObstacle(o.id, 0.5).success).toBe(true)
+    const inB = (s().zones[0].obstacles ?? []).map((o) => o.id)
+    expect(inB.length).toBe(inA.length)
+    const rawB = inB.map((id) => rawCentre(id, originB))
+    expect(rawB.sort()).toEqual(rawA.sort())
+    expect(inB.sort()).not.toEqual(inA.sort()) // ids are frame-local
   })
 })
 
 describe('persistence (I7)', () => {
   const doc = () => JSON.parse(serializeProject(selectPersistedProject(s())))
+  it('restoring a document bumps documentLoadCount so the canvas re-fits', () => {
+    const before = s().documentLoadCount
+    expect(s().restoreProjectDocument(serializeProject(selectPersistedProject(s()))).success).toBe(true)
+    expect(s().documentLoadCount).toBe(before + 1)
+    expect('documentLoadCount' in JSON.parse(serializeProject(selectPersistedProject(s())))).toBe(false)
+  })
   it('a non-zero origin writes version 3 and reloads into the store', () => {
     importDrawing(shifted(load(METRIC), DX, -DY))
     approveFirstRoom()

@@ -42,7 +42,8 @@ export const FloorPlanCanvas: React.FC = () => {
     highlightedDuctId,
     highlightedEntityTag,
     cadLevel,
-    drawingOrigin
+    drawingOrigin,
+    documentLoadCount
   } = useProjectStore();
 
   const stageRef = useRef<Konva.Stage>(null);
@@ -272,13 +273,20 @@ export const FloorPlanCanvas: React.FC = () => {
     setMeasurePoints([]); setMeasureInput(''); setDrawMessage(null); setIsPanning(false);
   }, [drawingOrigin]);
 
+  // Opening another project document replaces everything (possibly in another coordinate frame): fit the view again.
+  const loadCountRef = useRef(documentLoadCount);
+  if (loadCountRef.current !== documentLoadCount) {
+    loadCountRef.current = documentLoadCount;
+    hasAutoFittedRef.current = false;
+  }
+
   // Auto-fit ONLY on initial mount or when a new CAD drawing/bounding box is loaded
   useEffect(() => {
     if (!hasAutoFittedRef.current && (zones.length > 0 || dxfBoundingBox)) {
       handleFitDesign();
       hasAutoFittedRef.current = true;
     }
-  }, [dxfBoundingBox, handleFitDesign, zones.length]);
+  }, [dxfBoundingBox, handleFitDesign, zones.length, documentLoadCount]);
 
   // Global keyboard listener for Spacebar panning
   useEffect(() => {

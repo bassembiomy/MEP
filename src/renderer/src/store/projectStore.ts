@@ -257,6 +257,8 @@ interface ProjectState {
    * See engine/cad/drawingOrigin.ts.
    */
   drawingOrigin: DrawingOrigin;
+  /** Bumped by restoreProjectDocument so views re-fit to the loaded document. Not persisted. */
+  documentLoadCount: number;
   dxfLayers: Record<string, DxfLayerInfo>;
   cadImport: CadImportMetadata | null;
   /** Layer-role suggestions plus the user's overrides. Suggestions never act as confirmed walls. */
@@ -503,6 +505,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   dxfEntities: [],
   dxfBoundingBox: null,
   drawingOrigin: { x: 0, y: 0 },
+  documentLoadCount: 0,
   dxfLayers: {},
   cadImport: null,
   cadLayerRoles: EMPTY_LAYER_ROLES,
@@ -551,6 +554,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const zones=syncZoneObstacles(restored.zones,restoredCadObstacles,unitsPerFootOf(restored.project));
       set({...restored,zones,
         drawingOrigin:restored.drawingOrigin??{x:0,y:0},
+        documentLoadCount:state.documentLoadCount+1,
         cadImport:restored.cadImport??null,
         cadLayerRoles:semantics.layerRoles,
         cadOpenings:cadOpenings??semantics.openings,
