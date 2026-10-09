@@ -235,14 +235,15 @@ export function recognizeOpenings(
   }
 
   for (const ref of parsed.blockReferences ?? []) {
-    const nameKind = openingKindFromName(ref.name)
+    const blockName = ref.effectiveName ?? ref.name
+    const nameKind = openingKindFromName(blockName)
     const layerRole = roleOf(ref.layer)
     const layerKind: CadOpeningKind | undefined = layerRole === 'door' || layerRole === 'window' ? layerRole : undefined
     const kind = nameKind ?? layerKind
     if (!kind) continue
     const children = entities.slice(ref.entityRange[0], ref.entityRange[1])
     if (children.length && !atLevel(children[0], level)) continue
-    const evidence: string[] = [nameKind ? `Block name ${ref.name} suggests a ${nameKind}.` : `Block ${ref.name} sits on a ${layerKind} layer.`]
+    const evidence: string[] = [nameKind ? `Block name ${blockName} suggests a ${nameKind}.` : `Block ${blockName} sits on a ${layerKind} layer.`]
     let confidence = 0
     let span: { a: P; b: P } | undefined
     let widthFt: number | undefined
@@ -311,7 +312,7 @@ export function recognizeOpenings(
       evidence.push('Lies along a nearby parallel wall segment; no wall gap found.')
     } else evidence.push('No host wall found near the block.')
     const hostSeg = gap?.segP ?? host
-    emit({ kind, origin: 'block', span, widthFt, hostWall: hostOf(hostSeg), sourceHandles: [ref.handle], blockName: ref.name, confidence, evidence })
+    emit({ kind, origin: 'block', span, widthFt, hostWall: hostOf(hostSeg), sourceHandles: [ref.handle], blockName, confidence, evidence })
   }
 
   // Free-standing door arcs (not inside a block) hinged at a wall-gap endpoint.

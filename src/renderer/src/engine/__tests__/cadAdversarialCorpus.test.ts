@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { aciToHexColor, decodeDxfBytes, parseDxfText, type ParsedDxf } from '../dxfParser'
 import { recognizeCadRooms } from '../cad/roomRecognition'
+import { recognizeOpenings } from '../cad/openingRecognition'
 import { parseDwgDatabase } from '../cad/dwgGeometry'
 
 /**
@@ -131,5 +132,38 @@ describe('C5 noise-2: unsupported objects, XREF, header traps, layer case', () =
     expect(frz).toHaveLength(1)
     expect(p.entities.filter(e => e.layer === t.layers.layerStateTurnsOff)).toHaveLength(t.arcs.length)
     expect(p.hiddenLayers).not.toContain(t.layers.layerStateTurnsOff)
+  })
+})
+
+// ------------------------------------------------------------------------------------------------- C4
+describe('C4 dynamic blocks: doors as anonymous *U## INSERTs', () => {
+  const t = manifest['dynamic-blocks.dxf']
+  const p = parseFile('dynamic-blocks.dxf')
+  const upf = t.unitsPerFoot as number
+  it('declares mm and imports without diagnostics', () => {
+    expect(p.cadUnit).toBe('mm')
+    expect(p.diagnostics ?? []).toEqual([])
+  })
+  it('every *U## reference keeps its anonymous name and gets effectiveName = the real block named by AcDbBlockRepBTag', () => {
+    const refs = p.blockReferences ?? []
+    expect(refs.map(r => r.name).sort()).toEqual(['*U1', '*U2', '*U3', '*U4'])
+    for (const r of refs) expect(r.effectiveName, r.name).toBe(t.effectiveNames[r.name])
+  })
+  it('the children of a *U## block report the real block as sourceBlock', () => {
+    const ref = (p.blockReferences ?? []).find(r => r.name === '*U1')!
+    for (const e of p.entities.slice(ref.entityRange[0], ref.entityRange[1])) expect(e.sourceBlock).toBe('DOOR-DYN-900')
+  })
+  it('recognises the three dynamic-block doors by their effective names (centre and width from construction geometry); the dynamic desk is no door', () => {
+    const { candidates } = recognizeOpenings(p, { unitsPerFoot: upf })
+    const doors = candidates.filter(c => c.kind === 'door')
+    expect(doors).toHaveLength(t.doors.length)
+    for (const d of t.doors) {
+      const hit = doors.find(c => Math.hypot(c.center.x - d.centre[0], c.center.y + d.centre[1]) <= 0.5 * upf)
+      expect(hit, d.effectiveName).toBeDefined()
+      expect(hit!.origin).toBe('block')
+      expect(hit!.blockName).toBe(d.effectiveName)
+      expect(Math.abs(hit!.widthFt - d.widthFt)).toBeLessThanOrEqual(0.05 * d.widthFt)
+    }
+    expect(candidates.filter(c => c.blockName === t.nonDoorAnonymous.effectiveName)).toHaveLength(0)
   })
 })

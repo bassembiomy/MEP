@@ -76,6 +76,11 @@ export type CadLayerOverrides = Record<string, CadLayerRole>
 export interface CadBlockReference {
   handle: string
   name: string
+  /**
+   * Name of the real block an anonymous dynamic-block reference (`*U##`) stands for (BLOCK_RECORD XDATA `AcDbBlockRepBTag`).
+   * Absent when `name` is the real name. Name-based recognition (doors, windows) uses `effectiveName ?? name`.
+   */
+  effectiveName?: string
   layer: string
   /** The block base point after all (nested) transforms. */
   insertion: { x: number; y: number }

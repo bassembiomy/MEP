@@ -1,6 +1,96 @@
 {
  "about": "Ground truth for the adversarial corpus, computed from the generator's construction geometry (scripts/cad-corpus/generate_adversarial.py) and from ezdxf, never from our parser. Coordinates are DXF drawing units, Y up; areas are net ft2.",
  "files": {
+  "dynamic-blocks.dxf": {
+   "doors": [
+    {
+     "anonymous": "*U1",
+     "centre": [
+      1450.0,
+      0.0
+     ],
+     "effectiveName": "DOOR-DYN-900",
+     "hinge": [
+      1000,
+      0
+     ],
+     "latch": [
+      1900,
+      0
+     ],
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "anonymous": "*U2",
+     "centre": [
+      0.0,
+      1400.0
+     ],
+     "effectiveName": "DOOR-DYN-800",
+     "hinge": [
+      0,
+      1000
+     ],
+     "latch": [
+      0,
+      1800
+     ],
+     "widthFt": 2.6246719160104988,
+     "widthMm": 800
+    },
+    {
+     "anonymous": "*U3",
+     "centre": [
+      3500.0,
+      4000.0
+     ],
+     "effectiveName": "DOOR-DYN-1000",
+     "hinge": [
+      4000,
+      4000.0
+     ],
+     "latch": [
+      3000,
+      4000.0
+     ],
+     "widthFt": 3.2808398950131235,
+     "widthMm": 1000
+    }
+   ],
+   "drawingUnit": "mm",
+   "effectiveNames": {
+    "*U1": "DOOR-DYN-900",
+    "*U2": "DOOR-DYN-800",
+    "*U3": "DOOR-DYN-1000",
+    "*U4": "DESK-DYN"
+   },
+   "expected": {
+    "cadUnit": "mm",
+    "unitsConfidence": "declared"
+   },
+   "insunits": 4,
+   "item": "C4",
+   "measurement": 1,
+   "nonDoorAnonymous": {
+    "anonymous": "*U4",
+    "effectiveName": "DESK-DYN"
+   },
+   "room": {
+    "areaSqFt": 215.27820833419443,
+    "polygon": [
+     0,
+     0,
+     5000.0,
+     0,
+     5000.0,
+     4000.0,
+     0,
+     4000.0
+    ]
+   },
+   "unitsPerFoot": 304.8
+  },
   "line-endings-base-lf.dxf": {
    "binarySentinel": "AutoCAD Binary DXF",
    "binaryVariant": "line-endings-binary.dxf",

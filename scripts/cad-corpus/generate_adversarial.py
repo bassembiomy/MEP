@@ -240,11 +240,80 @@ def gen_noise2(manifest):
     }
 
 
+# ------------------------------------------------------------------------------------------------- C4
+def gen_dynamic_blocks(manifest):
+    """Doors as anonymous dynamic-block references: INSERT of '*U#' whose BLOCK_RECORD carries XDATA AcDbBlockRepBTag
+    (1005 = handle of the real, named dynamic block record). The INSERT sits on a neutral layer and the geometry on layer 0,
+    so only the effective block name identifies a door."""
+    doc = new_doc("R2018", 4, 1)
+    add_layers(doc, ["A-WALL", "A-AREA", "A-GEN", "A-ANNO-TEXT"])
+    doc.appids.add("AcDbBlockRepBTag")
+    msp = doc.modelspace()
+
+    def door_geometry(blk, r):
+        blk.add_line((0, 0), (0, r), dxfattribs={"layer": "0"})
+        blk.add_arc((0, 0), r, 0, 90, dxfattribs={"layer": "0"})
+
+    # real (named) dynamic block definitions
+    real = {}
+    for name, r in (("DOOR-DYN-900", 900), ("DOOR-DYN-800", 800), ("DOOR-DYN-1000", 1000)):
+        b = doc.blocks.new(name)
+        door_geometry(b, r)
+        real[name] = b
+    desk = doc.blocks.new("DESK-DYN")
+    desk.add_lwpolyline(rect(0, 0, 1200, 600), close=True, dxfattribs={"layer": "0"})
+    real["DESK-DYN"] = desk
+    # anonymous variants: *U1..*U3 are doors of the three widths, *U4 a desk
+    anon = [("*U1", "DOOR-DYN-900", 900), ("*U2", "DOOR-DYN-800", 800), ("*U3", "DOOR-DYN-1000", 1000), ("*U4", "DESK-DYN", None)]
+    for aname, target, r in anon:
+        b = doc.blocks.new(aname)
+        if r:
+            door_geometry(b, r)
+        else:
+            b.add_lwpolyline(rect(0, 0, 1200, 600), close=True, dxfattribs={"layer": "0"})
+        rec = doc.block_records.get(aname)
+        rec.set_xdata("AcDbBlockRepBTag", [(1005, doc.block_records.get(target).dxf.handle)])
+    W = 5000.0
+    H = 4000.0
+    room = rect(0, 0, W, H)
+    msp.add_lwpolyline(room, close=True, dxfattribs={"layer": "A-AREA"})
+    # walls with door gaps: bottom 1000..1900 (900), left 1000..1800 (800), top 3000..4000 (1000)
+    def wall(a, b):
+        msp.add_line(a, b, dxfattribs={"layer": "A-WALL"})
+    wall((0, 0), (1000, 0)); wall((1900, 0), (W, 0))
+    wall((W, 0), (W, H))
+    wall((W, H), (4000, H)); wall((3000, H), (0, H))
+    wall((0, H), (0, 1800)); wall((0, 1000), (0, 0))
+    doors = [
+        ("*U1", "DOOR-DYN-900", (1000, 0), 0, 900, ((1000, 0), (1900, 0))),
+        ("*U2", "DOOR-DYN-800", (0, 1000), 90, 800, ((0, 1000), (0, 1800))),
+        ("*U3", "DOOR-DYN-1000", (4000, H), 180, 1000, ((4000, H), (3000, H))),
+    ]
+    truth = []
+    for aname, real_name, at, rot, width, (hinge, latch) in doors:
+        msp.add_blockref(aname, at, dxfattribs={"layer": "A-GEN", "rotation": rot})
+        truth.append({"anonymous": aname, "effectiveName": real_name, "widthMm": width, "widthFt": width / MM_PER_FT,
+                      "centre": [(hinge[0] + latch[0]) / 2, (hinge[1] + latch[1]) / 2], "hinge": list(hinge), "latch": list(latch)})
+    msp.add_blockref("*U4", (2000, 2000), dxfattribs={"layer": "A-GEN"})
+    msp.add_text("OFFICE", height=250, dxfattribs={"layer": "A-ANNO-TEXT", "insert": (1500, 3200)})
+    name = "dynamic-blocks.dxf"
+    doc.saveas(path(name))
+    manifest[name] = {
+        "item": "C4", "insunits": 4, "measurement": 1, "drawingUnit": "mm", "unitsPerFoot": MM_PER_FT,
+        "expected": {"cadUnit": "mm", "unitsConfidence": "declared"},
+        "doors": truth,
+        "nonDoorAnonymous": {"anonymous": "*U4", "effectiveName": "DESK-DYN"},
+        "effectiveNames": {a: t for a, t, _ in anon},
+        "room": {"polygon": [c for p in room for c in p], "areaSqFt": poly_area(room) / MM_PER_FT ** 2},
+    }
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     manifest = {}
     gen_line_endings(manifest)
     gen_noise2(manifest)
+    gen_dynamic_blocks(manifest)
     doc = {
         "about": "Ground truth for the adversarial corpus, computed from the generator's construction geometry "
                  "(scripts/cad-corpus/generate_adversarial.py) and from ezdxf, never from our parser. "

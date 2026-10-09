@@ -410,6 +410,23 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     if (frozen) frozenLayers.add(name);
     if (frozen || number(r, 62, 0) < 0) hiddenLayers.add(name);
   }
+  // Anonymous dynamic-block references: the BLOCK_RECORD of '*U##' carries XDATA AcDbBlockRepBTag whose 1005 is the handle of the
+  // real (named) dynamic block's record. Resolve it so INSERTs of '*U12' are known by the name of the block they stand for.
+  const recordNames = new Map<string, string>();
+  for (const r of sections.get('TABLES') ?? []) if (r.type === 'BLOCK_RECORD') {
+    const h = first(r, 5)?.trim().toUpperCase(), n = first(r, 2)?.trim();
+    if (h && n) recordNames.set(h, n);
+  }
+  const effectiveBlockNames = new Map<string, string>();
+  for (const r of sections.get('TABLES') ?? []) if (r.type === 'BLOCK_RECORD') {
+    const n = first(r, 2)?.trim();
+    if (!n || !/^\*U\d*$/i.test(n)) continue;
+    const at = r.pairs.findIndex(p => p.code === 1001 && p.value.trim() === 'AcDbBlockRepBTag');
+    if (at < 0) continue;
+    const target = r.pairs.slice(at + 1).find(p => p.code === 1005 || p.code === 1001);
+    const real = target?.code === 1005 ? recordNames.get(target.value.trim().toUpperCase()) : undefined;
+    if (real && real !== n) effectiveBlockNames.set(n, real);
+  }
   const blocks = new Map<string, DxfBlock>();
   const duplicateBlocks = new Set<string>();
   let block: DxfBlock | undefined;
@@ -516,11 +533,11 @@ export function parseDxfText(dxfText: string): ParsedDxf {
           childBounds.minY = Math.min(childBounds.minY, b.minY); childBounds.maxY = Math.max(childBounds.maxY, b.maxY);
         }
         if (entities.length === childStart) Object.assign(childBounds, { minX: placement.insertion.x, maxX: placement.insertion.x, minY: placement.insertion.y, maxY: placement.insertion.y });
-        blockReferences.push({ handle: first(r, 5)?.trim() ?? `INSERT:${[...stack, name].join('>')}:${index}`, name, layer, ...placement, bounds: childBounds, entityRange: [childStart, entities.length], nestingDepth: stack.length });
+        blockReferences.push({ handle: first(r, 5)?.trim() ?? `INSERT:${[...stack, name].join('>')}:${index}`, name, ...(effectiveBlockNames.has(name) ? { effectiveName: effectiveBlockNames.get(name) } : {}), layer, ...placement, bounds: childBounds, entityRange: [childStart, entities.length], nestingDepth: stack.length });
         if (expansionStopped) return;
         continue;
       }
-      let ent: DxfEntity = { type: r.type as DxfEntity['type'], layer, color: ownColor, handle: first(r, 5)?.trim(), sourceHandle: first(r, 5)?.trim(), sourceBlock: stack.at(-1) };
+      let ent: DxfEntity = { type: r.type as DxfEntity['type'], layer, color: ownColor, handle: first(r, 5)?.trim(), sourceHandle: first(r, 5)?.trim(), sourceBlock: stack.length ? (effectiveBlockNames.get(stack.at(-1)!) ?? stack.at(-1)) : undefined };
       if (stack.length && insertHandle) ent.handle = `${insertHandle}/${ent.sourceHandle ?? `${r.type}:${index}`}`;
       if (layer !== ownLayer) ent.originalLayer = ownLayer;
       switch (r.type) {
