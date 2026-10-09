@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as manager from '../deploymentManager'
-import { planCassetteDistribution, isRectContainedInPolygon } from '../spatialPlanner'
+import { planCassetteDistribution, isRectContainedInPolygon, getFootprintPortLayout } from '../spatialPlanner'
 import { STANDARD_EQUIPMENT_CATALOG } from '../hvacCatalogs'
 import * as validation from '../deploymentValidation'
 import { STANDARD_DIFFUSER_CATALOG } from '../hvacCatalogs'
@@ -714,5 +714,103 @@ describe('cassette count enforcement and footprint containment', () => {
     expect(m.equipment.cassetteUnits?.length).toBe(3)
     expect(m.terminals.length).toBe(3)
     expect(execute(m, [z], project).success).toBe(true)
+  })
+})
+
+describe('ports follow the footprint and the actual duct attachment', () => {
+  const mmProject: ProjectMetadata = { ...project, units: 'metric', scale: 1000, outdoorDb: 35, indoorDb: (75 - 32) / 1.8 }
+  const mmZone = () => zone({ points: [0, 0, 6096, 0, 6096, 6096, 0, 6096], ceilingHeight: 3.048, manualCfmOverride: 283.16846592 })
+  const cases: [string, () => Zone, ProjectMetadata, number][] = [
+    ['scale 10 imperial', () => zone(), project, 10],
+    ['mm metric project', mmZone, mmProject, 304.8]
+  ]
+  const onBoundary = (p: { x: number; y: number }, f: { minX: number; maxX: number; minY: number; maxY: number }, tol: number) => {
+    const inside = p.x >= f.minX - tol && p.x <= f.maxX + tol && p.y >= f.minY - tol && p.y <= f.maxY + tol
+    const edge = Math.abs(p.x - f.minX) < tol || Math.abs(p.x - f.maxX) < tol || Math.abs(p.y - f.minY) < tol || Math.abs(p.y - f.maxY) < tol
+    return inside && edge
+  }
+  const firstFrom = (ducts: any[], unit: { x: number; y: number }, kind: 'supply' | 'return', tol: number) =>
+    ducts.find((d) => (kind === 'return') === (d.type === 'return') && Math.hypot(d.points[0] - unit.x, d.points[1] - unit.y) < tol)
+
+  it.each(cases)('%s: supply and return ports sit on the footprint boundary on the actual first duct segment', (_n, mk, proj, upf) => {
+    const z = mk()
+    const m = manager.buildDeploymentManifest(candidate(), z, [z], proj)
+    expect(m.isEligibleToApply, JSON.stringify(m.diagnostics)).toBe(true)
+    const u = m.equipment.indoorUnit!
+    const tol = 1e-6 * upf
+    const sup = u.ports.find((p) => p.role === 'supply-air-outlet')!
+    const ret = u.ports.find((p) => p.role === 'return-air-inlet')!
+    expect(onBoundary(sup.position, u.footprint, tol)).toBe(true)
+    expect(onBoundary(ret.position, u.footprint, tol)).toBe(true)
+    for (const [port, kind] of [[sup, 'supply'], [ret, 'return']] as const) {
+      const d = firstFrom(m.ducts, u.position, kind, tol)!
+      expect(d, `${kind} duct rooted at unit centre`).toBeDefined()
+      const dx = d.points[2] - d.points[0], dy = d.points[3] - d.points[1], len = Math.hypot(dx, dy)
+      // port lies on the segment ray from the centre, and its direction matches the segment direction
+      const px = port.position.x - u.position.x, py = port.position.y - u.position.y
+      expect(Math.abs(px * dy - py * dx) / len).toBeLessThan(tol)
+      expect(px * dx + py * dy).toBeGreaterThan(0)
+      expect(Math.hypot(px, py)).toBeLessThanOrEqual(len + tol)
+      expect(port.direction.x).toBeCloseTo(dx / len, 9)
+      expect(port.direction.y).toBeCloseTo(dy / len, 9)
+    }
+    expect(Math.hypot(sup.position.x - ret.position.x, sup.position.y - ret.position.y)).toBeGreaterThan(1e-3 * upf)
+    for (const role of ['refrigerant-suction', 'condensate-drain-out'] as const) {
+      const p = u.ports.find((q) => q.role === role)
+      if (p) {
+        const f = u.footprint
+        expect(p.position.x).toBeGreaterThanOrEqual(f.minX - 1e-6 * upf)
+        expect(p.position.x).toBeLessThanOrEqual(f.maxX + 1e-6 * upf)
+        expect(p.position.y).toBeGreaterThanOrEqual(f.minY - 1e-6 * upf)
+        expect(p.position.y).toBeLessThanOrEqual(f.maxY + 1e-6 * upf)
+      }
+    }
+  })
+
+  it('port positions are physically identical across drawing scales', () => {
+    const rel = cases.map(([, mk, proj, upf]) => {
+      const z = mk()
+      const m = manager.buildDeploymentManifest(candidate(), z, [z], proj)
+      const u = m.equipment.indoorUnit!
+      return u.ports.map((p) => [p.role, (p.position.x - u.position.x) / upf, (p.position.y - u.position.y) / upf] as const)
+    })
+    expect(rel[0].length).toBe(rel[1].length)
+    rel[0].forEach(([role, x, y], i) => {
+      expect(rel[1][i][0]).toBe(role)
+      expect(rel[1][i][1]).toBeCloseTo(x, 6)
+      expect(rel[1][i][2]).toBeCloseTo(y, 6)
+    })
+  })
+
+  it('every unit of a two-unit deployment has boundary ports on its own duct roots', () => {
+    const z = zone({ points: [0, 0, 400, 0, 400, 300, 0, 300], manualCfmOverride: 1400 })
+    const m = manager.buildDeploymentManifest(
+      candidate({ quantity: 2, equipment: equipment({ totalCapacityBtuPerHour: 60000, sensibleCapacityBtuPerHour: 48000, minCfm: 500, maxCfm: 1000 }) }), z, [z], project)
+    expect(m.isEligibleToApply, JSON.stringify(m.diagnostics)).toBe(true)
+    for (const u of m.equipment.cassetteUnits!) {
+      for (const [role, kind] of [['supply-air-outlet', 'supply'], ['return-air-inlet', 'return']] as const) {
+        const port = u.ports.find((p) => p.role === role)!
+        const d = firstFrom(m.ducts, u.position, kind, 1e-6)!
+        expect(d).toBeDefined()
+        const dx = d.points[2] - d.points[0], dy = d.points[3] - d.points[1]
+        expect(Math.abs((port.position.x - u.position.x) * dy - (port.position.y - u.position.y) * dx) / Math.hypot(dx, dy)).toBeLessThan(1e-6)
+        expect(onBoundary(port.position, u.footprint, 1e-6)).toBe(true)
+      }
+    }
+  })
+
+  it('getFootprintPortLayout places each port where its ray leaves the rectangle', () => {
+    const layout = getFootprintPortLayout({ x: 100, y: 50 }, 40, 20, 0, { x: 1, y: 0 }, { x: -3, y: -4 })
+    expect(layout.supply.position.x).toBeCloseTo(120, 9)
+    expect(layout.supply.position.y).toBeCloseTo(50, 9)
+    // return ray (-0.6,-0.8) exits through the top edge: t = 10/0.8
+    expect(layout.return.position.x).toBeCloseTo(100 - 0.6 * 12.5, 9)
+    expect(layout.return.position.y).toBeCloseTo(40, 9)
+    expect(layout.return.direction.x).toBeCloseTo(-0.6, 9)
+    expect(layout.drain.position.y).toBeLessThanOrEqual(60 + 1e-9)
+  })
+  it('getFootprintPortLayout separates ports that share a direction', () => {
+    const layout = getFootprintPortLayout({ x: 0, y: 0 }, 40, 20, 0, { x: 1, y: 0 }, { x: 1, y: 0 })
+    expect(Math.hypot(layout.supply.position.x - layout.return.position.x, layout.supply.position.y - layout.return.position.y)).toBeGreaterThan(1)
   })
 })

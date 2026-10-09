@@ -9,7 +9,8 @@ import {
   planOutdoorUnitPlacement,
   planIndoorUnitPlacement,
   planCassetteDistribution,
-  planDuctedAirDistribution
+  planDuctedAirDistribution,
+  getFootprintPortLayout
 } from './spatialPlanner';
 import { solveDirectedNetworkStaticPressure } from './staticPressureCalc';
 import { STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES } from './hvacCatalogs';
@@ -245,6 +246,30 @@ export function buildDeploymentManifest(
   deployedDucts = deployedDucts.map(d => ({ ...d, points: d.points.map(n => n / planningRatio) }));
   refrigerantLines.forEach(line => { line.points = line.points.map(n => n / planningRatio); });
   condensateDrains.forEach(line => { line.points = line.points.map(n => n / planningRatio); });
+
+  // Ports follow the real catalog footprint and the ducts that were actually routed: each air port sits where
+  // the first segment leaving the unit centre crosses the footprint boundary, in the same direction.
+  const attachPorts = (u: MechanicalComponent): MechanicalComponent => {
+    const tol = 1e-6 * drawingUnitsPerFoot;
+    const firstDir = (isReturn: boolean) => {
+      const d = deployedDucts.find(s => (s.type === 'return') === isReturn && Math.hypot(s.points[0] - u.position.x, s.points[1] - u.position.y) < tol);
+      return d ? { x: d.points[2] - d.points[0], y: d.points[3] - d.points[1] } : undefined;
+    };
+    const stored = (role: string) => u.ports.find(p => p.role === role)?.direction;
+    const layout = getFootprintPortLayout(
+      u.position, u.footprint.widthWorld, u.footprint.heightWorld, u.rotationDeg,
+      firstDir(false) ?? stored('supply-air-outlet'), firstDir(true) ?? stored('return-air-inlet')
+    );
+    const place = (role: string): { position: { x: number; y: number }; direction: { x: number; y: number } } | undefined =>
+      role === 'supply-air-outlet' ? layout.supply
+        : role === 'return-air-inlet' ? layout.return
+        : role === 'refrigerant-suction' ? layout.refrigerant
+        : role === 'condensate-drain-out' ? layout.drain
+        : undefined;
+    return { ...u, ports: u.ports.map(p => { const l = place(p.role); return l ? { ...p, position: { ...p.position, ...l.position }, direction: l.direction } : p; }) };
+  };
+  if (indoorUnitComp) indoorUnitComp = attachPorts(indoorUnitComp);
+  cassetteComps = cassetteComps.map(attachPorts);
 
   // 4. Provisional legacy pressure trace; acceptance uses actual connected paths.
   let criticalPath: CriticalPathResult = {

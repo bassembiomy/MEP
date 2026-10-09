@@ -275,6 +275,69 @@ function placePhysicalFootprint(
   return best;
 }
 
+export interface FootprintPort {
+  position: { x: number; y: number };
+  direction: { x: number; y: number };
+}
+export interface FootprintPortLayout {
+  supply: FootprintPort;
+  return: FootprintPort;
+  refrigerant: FootprintPort;
+  drain: FootprintPort;
+}
+
+/** Point where the ray from the rectangle centre along unit direction `d` leaves the axis-aligned w x h rectangle. */
+function rayExitPoint(center: { x: number; y: number }, w: number, h: number, d: { x: number; y: number }) {
+  const tx = Math.abs(d.x) > 1e-12 ? w / 2 / Math.abs(d.x) : Infinity;
+  const ty = Math.abs(d.y) > 1e-12 ? h / 2 / Math.abs(d.y) : Infinity;
+  const t = Math.min(tx, ty);
+  return { x: center.x + d.x * t, y: center.y + d.y * t };
+}
+const unitVector = (v: { x: number; y: number } | undefined, fallback: { x: number; y: number }) => {
+  const len = v ? Math.hypot(v.x, v.y) : 0;
+  return v && len > 1e-12 ? { x: v.x / len, y: v.y / len } : fallback;
+};
+
+/**
+ * Pure port layout for an indoor unit. The footprint is the axis-aligned world rectangle (w x h, already
+ * reflecting the unit rotation) centred on `center`. Supply and return ports are placed where the rays from the
+ * centre along the first duct segment directions cross the rectangle boundary, so the duct passes straight
+ * through its port. Refrigerant is on the boundary opposite the supply; the drain is on the lower edge.
+ * `rotationDeg` supplies the default airflow axis when no duct direction is known. If both ducts leave in
+ * the same direction the return port is slid along the boundary so the ports never coincide.
+ */
+export function getFootprintPortLayout(
+  center: { x: number; y: number },
+  w: number,
+  h: number,
+  rotationDeg: number,
+  supplyDir?: { x: number; y: number },
+  returnDir?: { x: number; y: number }
+): FootprintPortLayout {
+  const rad = (rotationDeg * Math.PI) / 180;
+  const axis = { x: Math.cos(rad), y: Math.sin(rad) };
+  const sDir = unitVector(supplyDir, axis);
+  const rDir = unitVector(returnDir, { x: -sDir.x, y: -sDir.y });
+  const supplyPos = rayExitPoint(center, w, h, sDir);
+  let returnPos = rayExitPoint(center, w, h, rDir);
+  if (Math.hypot(returnPos.x - supplyPos.x, returnPos.y - supplyPos.y) < 1e-6 * Math.max(w, h)) {
+    // Same exit point: slide the return port a quarter of the boundary edge sideways.
+    const tangent = { x: -rDir.y, y: rDir.x };
+    const shift = Math.max(w, h) / 4;
+    returnPos = {
+      x: Math.min(center.x + w / 2, Math.max(center.x - w / 2, returnPos.x + tangent.x * shift)),
+      y: Math.min(center.y + h / 2, Math.max(center.y - h / 2, returnPos.y + tangent.y * shift))
+    };
+  }
+  const refDir = { x: -sDir.x, y: -sDir.y };
+  return {
+    supply: { position: supplyPos, direction: sDir },
+    return: { position: returnPos, direction: rDir },
+    refrigerant: { position: rayExitPoint(center, w, h, refDir), direction: refDir },
+    drain: { position: { x: center.x, y: center.y + h / 2 }, direction: { x: 0, y: 1 } }
+  };
+}
+
 export function planIndoorUnitPlacement(
   points: number[],
   optOduPos: { x: number; y: number },
@@ -954,9 +1017,19 @@ export function planDuctedAirDistribution(
         y: unitPos.y + (cdy / clen) * Math.min(retOffset, clen) * f
       }))
     ];
-    const foundReturnEnd = returnEndCandidates.find(
-      (c) => isPointInOrOnPolygon(c.x, c.y, points) && isSegmentInPolygon({ x: unitPos.x, y: unitPos.y }, c, points)
-    );
+    // The return duct must leave the unit in a different direction than the supply duct so the two air ports
+    // on the footprint boundary stay distinct.
+    const supplyRoot = ducts.find((d) => d.type !== 'return' && d.points[0] === unitPos.x && d.points[1] === unitPos.y);
+    const sdx = supplyRoot ? supplyRoot.points[2] - supplyRoot.points[0] : 0;
+    const sdy = supplyRoot ? supplyRoot.points[3] - supplyRoot.points[1] : 0;
+    const sameAsSupply = (c: { x: number; y: number }) => {
+      const rx = c.x - unitPos.x, ry = c.y - unitPos.y;
+      const cross = Math.abs(sdx * ry - sdy * rx);
+      return supplyRoot !== undefined && cross <= 1e-9 * Math.hypot(sdx, sdy) * Math.hypot(rx, ry) && sdx * rx + sdy * ry > 0;
+    };
+    const usable = (c: { x: number; y: number }) =>
+      isPointInOrOnPolygon(c.x, c.y, points) && isSegmentInPolygon({ x: unitPos.x, y: unitPos.y }, c, points);
+    const foundReturnEnd = returnEndCandidates.find((c) => usable(c) && !sameAsSupply(c)) ?? returnEndCandidates.find(usable);
     if (!foundReturnEnd) {
       diagnostics.push({
         code: 'ERR_COMPONENT_OUTSIDE_ZONE',
