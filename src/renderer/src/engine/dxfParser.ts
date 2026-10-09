@@ -208,7 +208,7 @@ const CODEPAGE_LABELS: Record<string, string> = {
 };
 
 /**
- * Decodes the bytes of a DXF file. DXF R2007+ (AC1021 and later) is UTF-8; older files use the ANSI code page
+ * Decodes the bytes of a DXF file. DXF R2007+ (AC1021 and later) is UTF-8 unless the bytes are not valid UTF-8 (then the code page applies); older files use the ANSI code page
  * named by $DWGCODEPAGE (windows-1252 when absent or unknown). A file without $ACADVER is read as UTF-8 and, only if
  * those bytes are not valid UTF-8, as windows-1252. A UTF-8 BOM always means UTF-8. Never throws on bad bytes.
  */
@@ -222,14 +222,24 @@ export function decodeDxfBytes(bytes: Uint8Array): string {
   if (version === undefined) {
     try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return new TextDecoder('windows-1252').decode(bytes); }
   }
-  if (Number(version) >= 1021) return new TextDecoder('utf-8').decode(bytes);
+  // AC1021+ is UTF-8; but a file that is not valid UTF-8 (a code-page file with a newer version stamp) uses the code page.
+  if (Number(version) >= 1021) { try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { /* fall through to the code page */ } }
   const label = CODEPAGE_LABELS[(headerValue('$DWGCODEPAGE', 3) ?? '').toUpperCase()] ?? 'windows-1252';
   try { return new TextDecoder(label).decode(bytes); } catch { return new TextDecoder('windows-1252').decode(bytes); }
 }
 
 /** Decodes the `\U+XXXX` unicode escapes used by DXF R2004 and earlier for characters outside the code page. */
 const decodeUnicodeEscapes = (text: string): string =>
-  text.replace(/\\U\+([0-9A-Fa-f]{4})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+  text.replace(/\\U\+([0-9A-Fa-f]{4})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/\\M\+([1-4])([0-9A-Fa-f]{4})/g, (whole, page: string, hex: string) => {
+      try { return new TextDecoder(MULTIBYTE_PAGES[page]).decode(Uint8Array.from([parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2), 16)])); } catch { return whole; }
+    });
+
+/**
+ * MTEXT `\M+nXXXX` (n = 1..4) is a double-byte character of a legacy code page: 1 Shift-JIS, 2 Big5, 3 EUC-KR (cp949), 4 GBK.
+ * n = 5 (Johab) has no WHATWG decoder and, like a malformed escape, is left as written.
+ */
+const MULTIBYTE_PAGES: Record<string, string> = { 1: 'shift_jis', 2: 'big5', 3: 'euc-kr', 4: 'gbk' };
 
 const SPLINE_SAMPLES_PER_SPAN = 16, SPLINE_MAX_POINTS = 1024;
 
@@ -322,7 +332,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       if (type === 'ENDSEC' || type === 'EOF') section = '';
       else if (type !== 'SECTION' && section) sections.get(section)!.push(record);
     } else {
-      if (record?.type === 'SECTION' && code === 2 && record.pairs.length === 0) {
+      if (record?.type === 'SECTION' && code === 2 && record.pairs.every(q => q.code === 999)) { // 999 comments may precede the name
         section = value.trim().toUpperCase();
         if (!sections.has(section)) sections.set(section, []);
       }
@@ -392,6 +402,8 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       // 67 is meaningless inside a block definition.
       if (stack.length === 0 && number(r, 67, 0) === 1) {
         paperSpaceSkipped++;
+        // An INSERT with attributes (66 = 1) owns the ATTRIBs up to SEQEND that follow it, whether or not they repeat 67.
+        if (r.type === 'INSERT' && number(r, 66, 0) === 1) while (index + 1 < records.length && (records[index + 1].type === 'ATTRIB' || records[index + 1].type === 'SEQEND')) { const t = records[++index].type; if (t === 'SEQEND') break; }
         if (r.type === 'POLYLINE') while (index + 1 < records.length && (records[index + 1].type === 'VERTEX' || records[index + 1].type === 'SEQEND')) { const t = records[++index].type; if (t === 'SEQEND') break; }
         continue;
       }

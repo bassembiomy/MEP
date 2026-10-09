@@ -59,10 +59,11 @@ function drawingUnitSystem(opts: LevelAnnotationOptions): 'metric' | 'imperial' 
 const ARABIC_DIGITS = '٠١٢٣٤٥٦٧٨٩'
 const PERSIAN_DIGITS = '۰۱۲۳۴۵۶۷۸۹'
 export function normalizeAnnotationText(raw: string): string {
+  // One left-to-right pass over MTEXT formatting: \P / \N break -> space, \~ non-breaking space -> space, \\ \{ \} literals,
+  // parameterless toggles \L \l \O \o \K \k dropped, parameterised codes (\f..; \H..; \C..; \S..;) dropped with their
+  // parameters, bare group braces dropped.
   return raw
-    .replace(/\\P/gi, ' ')
-    .replace(/\\[A-Za-z][^;\\]*;/g, '')
-    .replace(/[{}]/g, '')
+    .replace(/\\([\\{}])|\\[PN~]|\\[LlOoKk]|\\[A-Za-z][^;\\]*;|[{}]/g, (m, literal?: string) => (literal ?? (/^\\[PN~]$/.test(m) ? ' ' : '')))
     .replace(/[٠-٩]/g, (c) => String(ARABIC_DIGITS.indexOf(c)))
     .replace(/[۰-۹]/g, (c) => String(PERSIAN_DIGITS.indexOf(c)))
     .replace(/[٫]/g, '.')
