@@ -2,6 +2,7 @@ import type { DxfEntity } from '../../store/projectStore'
 import { measureSimplePolygon } from '../engineeringInputs'
 import { isPointInPolygon } from '../geometry'
 import { atLevel } from './elevation'
+import { isLevelAnnotation, normalizeAnnotationText } from './levelAnnotations'
 import { getCadEntityPath, validateCadEntity } from './nativeGeometry'
 import type {
   CadRoomCandidate,
@@ -25,6 +26,9 @@ const mergeSources = (a: Source[], b: Source[]): Source[] => [
   ...new Map([...a, ...b].map((s) => [sourceKey(s), s])).values()
 ]
 const WORK_LIMIT = 200_000
+const NUMBER_ONLY = /^[\d\s.,+\-'"]+$/
+/** Door / window tags such as D01, D-1, W2, W12A. */
+const OPENING_TAG = /^[DW]\s?-?\d{1,3}[A-Z]?$/i
 const APPROVED_OPENING_SNAP_FT = 0.75
 const APPROVED_OPENING_LAYER = '(approved opening)'
 const isOpeningSource = (s: Source): boolean => s.layer === APPROVED_OPENING_LAYER
@@ -481,19 +485,57 @@ export function recognizeCadRooms(
           diagnostic('nested-boundaries', condition)
         }
       }
-    for (const candidate of allCandidates) {
-      const labels: string[] = []
-      for (const entity of entities) {
-        spend(candidate.polygon.length / 2)
-        if (
-          (entity.type === 'TEXT' || entity.type === 'MTEXT') &&
-          atLevel(entity, level) &&
-          !validateCadEntity(entity) &&
-          isPointInPolygon(entity.x!, entity.y!, candidate.polygon)
-        )
-          labels.push(entity.text!)
+    // Eligible room-name texts are collected once (normalised, level notes / pure numbers / door-window tags dropped)
+    // and sorted by x, so each candidate only scans the texts inside its x-range; work is charged per text actually
+    // examined, not per entity per candidate.
+    interface RoomLabel { x: number; y: number; height: number; text: string }
+    const labelTexts: RoomLabel[] = []
+    for (const entity of entities) {
+      spend()
+      if ((entity.type !== 'TEXT' && entity.type !== 'MTEXT') || !atLevel(entity, level) || validateCadEntity(entity)) continue
+      const text = normalizeAnnotationText(entity.text!)
+      if (!text || isLevelAnnotation(entity.text!) || NUMBER_ONLY.test(text) || OPENING_TAG.test(text)) continue
+      labelTexts.push({ x: entity.x!, y: entity.y!, height: Number.isFinite(entity.textHeight) ? entity.textHeight! : 0, text })
+    }
+    labelTexts.sort((a, b) => a.x - b.x)
+    const lowerBound = (x: number): number => {
+      let lo = 0, hi = labelTexts.length
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if (labelTexts[mid].x < x) lo = mid + 1
+        else hi = mid
       }
-      const names = [...new Set(labels)].sort()
+      return lo
+    }
+    for (const candidate of allCandidates) {
+      const poly = candidate.polygon
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, cx = 0, cy = 0
+      for (let i = 0; i < poly.length; i += 2) {
+        minX = Math.min(minX, poly[i]); maxX = Math.max(maxX, poly[i])
+        minY = Math.min(minY, poly[i + 1]); maxY = Math.max(maxY, poly[i + 1])
+        cx += poly[i]; cy += poly[i + 1]
+      }
+      cx /= poly.length / 2; cy /= poly.length / 2
+      const found = new Map<string, { height: number; distance: number }>()
+      spend(Math.ceil(Math.log2(labelTexts.length + 2)))
+      for (let k = lowerBound(minX); k < labelTexts.length && labelTexts[k].x <= maxX; k++) {
+        const label = labelTexts[k]
+        spend()
+        if (label.y < minY || label.y > maxY) continue
+        spend(poly.length / 2)
+        if (!isPointInPolygon(label.x, label.y, poly)) continue
+        const distance = Math.hypot(label.x - cx, label.y - cy)
+        const known = found.get(label.text)
+        if (!known) found.set(label.text, { height: label.height, distance })
+        else {
+          known.height = Math.max(known.height, label.height)
+          known.distance = Math.min(known.distance, distance)
+        }
+      }
+      // Largest text first, then the most central, then alphabetical.
+      const names = [...found.entries()]
+        .sort((a, b) => b[1].height - a[1].height || a[1].distance - b[1].distance || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+        .map(([text]) => text)
       if (names.length) {
         candidate.name = names[0]
         candidate.evidence.push(`Interior text label suggestion: ${names.join(' / ')}`)

@@ -280,7 +280,7 @@ describe('corpus: arch-metric-mm-r2018 (double-line walls, rotated/mirrored door
       expect(r.diagnostics.filter(d => d.severity === 'error')).toEqual([])
       expectRoomsMatch(r.candidates, t.rooms, upf(name))
     })
-    gap('KNOWN GAP: room names come from the raw alphabetically-first interior text (MTEXT formatting codes and CH annotations leak into the name)', () => {
+    it('room names are normalised and exclude CH notes (MTEXT formatting codes stripped)', () => {
       const r = pathA(name)
       for (const room of t.rooms) expect(matchRoom(r.candidates, room)!.name, room.name).toBe(room.name)
     })
@@ -364,7 +364,7 @@ describe('corpus: arch-imperial-in-r2010 (inches, single-line centreline walls)'
   it('rooms path A: 4 rooms with areas within 0.5%', () => {
     expectRoomsMatch(pathA(name).candidates, t.rooms, upf(name))
   })
-  gap('KNOWN GAP: room names come from the raw alphabetically-first interior text (CLG HT / CH annotations beat the room name)', () => {
+  it('room names are normalised and exclude CLG HT / CH notes', () => {
     const r = pathA(name)
     for (const room of t.rooms) expect(matchRoom(r.candidates, room)!.name, room.name).toBe(room.name)
   })
@@ -537,7 +537,7 @@ describe('corpus: large-office-20k.dxf.gz (48 bays, ~20k entities after block ex
     const r = recognizeCadRooms(only, { drawingUnitsPerFoot: upf(name), layers: ['A-AREA'] })
     expectRoomsMatch(r.candidates, t.rooms, upf(name))
   })
-  gap('KNOWN GAP: room recognition on a ~20k-entity plan exhausts the 200k work budget in the room-label loop (rooms x all entities) and returns 0 candidates', () => {
+  it('room recognition on the ~20k-entity plan stays within the work budget and recognises all 48 rooms', () => {
     const r = pathA(name)
     expect(r.diagnostics.map(d => d.code)).not.toContain('recognition-budget-exceeded')
     expectRoomsMatch(r.candidates, t.rooms, upf(name))

@@ -107,6 +107,12 @@ const PATTERNS: { kind: CadLevelAnnotation['kind']; re: RegExp }[] = [
   { kind: 'soffit', re: /\bSOFFIT(?:\s*(?:LEVEL|LVL))?\.?\s*[:=]?\s*(?=[+-]?\s*\d)/i }
 ]
 
+/** True for TEXT/MTEXT that is a level note (CH / CLG HT / FFL / FCL / SOFFIT): never a room name. */
+export function isLevelAnnotation(raw: string): boolean {
+  const clean = normalizeAnnotationText(raw)
+  return PATTERNS.some(({ re }) => re.test(clean))
+}
+
 export function suggestCeilingHeight(
   entities: DxfEntity[],
   room: Pick<CadRoomCandidate, 'polygon'>,
