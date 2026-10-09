@@ -123,10 +123,13 @@ const boundsKey = (polygon: number[]): string => {
   return `${minX.toFixed(4)},${minY.toFixed(4)},${maxX.toFixed(4)},${maxY.toFixed(4)}`
 }
 
-/** Same obstacle object: shared source entity handle, or the same layer and outline bounds. */
+/**
+ * Same obstacle object: shared real source entity handle, or the same layer and outline bounds. The synthetic `entity-<index>`
+ * handles recognition invents for handle-less entities (R12) are positional and shift when a hidden layer is shown, so they never match.
+ */
 export const sameObstacleObject = (a: StoredCadObstacle, b: StoredCadObstacle): boolean =>
   a.level === b.level &&
-  (a.sourceHandles.some((h) => b.sourceHandles.includes(h)) || (a.layer === b.layer && boundsKey(a.polygon) === boundsKey(b.polygon)))
+  (a.sourceHandles.some((h) => !h.startsWith('entity-') && b.sourceHandles.includes(h)) || (a.layer === b.layer && boundsKey(a.polygon) === boundsKey(b.polygon)))
 
 export interface SemanticRecognitionInput {
   entities: DxfEntity[]
@@ -196,7 +199,8 @@ export function recognizeCadSemantics(input: SemanticRecognitionInput): Semantic
     obstacles = mergeCandidates(
       obstacles,
       rescale(input.prior.obstacles, (o) => ({ ...o, widthFt: o.widthFt * ratio, depthFt: o.depthFt * ratio })),
-      sameObstacleObject
+      // Ids are stable at the same scale, so only a rescale (ids embed feet) needs object matching.
+      ratio !== 1 ? sameObstacleObject : undefined
     )
   }
   return { layerRoles, openings, obstacles }
