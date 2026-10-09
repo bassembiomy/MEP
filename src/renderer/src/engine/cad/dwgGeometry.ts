@@ -48,6 +48,9 @@ interface RawEntity {
   valign?: number
   /** DWG TEXT / ATTRIB `dataflags` (attached by dwgParser): bit 0x02 set means the alignment point is not stored (default: the insertion point). */
   textDataFlags?: number
+  /** BLOCK_HEADER of an external reference (attached by dwgParser from `blkisxref` / `xref_pname`): the geometry lives in another file. */
+  isXref?: boolean
+  xrefPath?: string
   attachmentPoint?: number
   columnCount?: number
   rowCount?: number
@@ -581,6 +584,10 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
             'missing-block',
             `Block ${raw.name ?? '(unnamed)'} is missing its definition.`
           )
+          continue
+        }
+        if (block.isXref) {
+          diagnose(raw, 'xref-not-loaded', `External reference ${raw.name}${block.xrefPath ? ` (${block.xrefPath})` : ''} is not loaded; its geometry is not part of this drawing.`)
           continue
         }
         if (ancestors.has(raw.name!)) {

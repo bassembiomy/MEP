@@ -55,6 +55,25 @@ function attachTextElevations(libredwg: LibreDwg, dwgData: Parameters<LibreDwg['
 }
 
 /**
+ * libredwg-web's converted BLOCK_RECORD exposes `flag` (always 64 in files LibreDWG reads) but neither `blkisxref` nor the xref path.
+ * Read both from the typed BLOCK_HEADER and mark the converted block record (matched by name) so an INSERT of an external reference
+ * can be reported instead of silently expanding an empty block. NOT verified against a real xref DWG: dxf2dwg 0.13.3 drops the xref
+ * flag and path, so no such file can be produced here (documented in the corpus README).
+ */
+function attachXrefs(libredwg: LibreDwg, dwgData: Parameters<LibreDwg['convert']>[0], db: unknown): void {
+  const xrefs = new Map<string, string>()
+  for (const tio of libredwg.dwg_getall_object_by_type(dwgData, Dwg_Object_Type.DWG_TYPE_BLOCK_HEADER)) {
+    if (!libredwg.dwg_dynapi_entity_data<number>(tio, 'blkisxref')) continue
+    const name = libredwg.dwg_dynapi_entity_data<string>(tio, 'name')
+    const path = libredwg.dwg_dynapi_entity_data<string>(tio, 'xref_pname')
+    if (typeof name === 'string') xrefs.set(name, typeof path === 'string' ? path : '')
+  }
+  if (!xrefs.size) return
+  for (const block of (db as { tables?: { BLOCK_RECORD?: { entries?: { name?: string; isXref?: boolean; xrefPath?: string }[] } } }).tables?.BLOCK_RECORD?.entries ?? [])
+    if (typeof block.name === 'string' && xrefs.has(block.name)) { block.isXref = true; block.xrefPath = xrefs.get(block.name) }
+}
+
+/**
  * Decode DWG bytes with an already created LibreDwg instance. Environment independent: the browser entry point
  * below supplies the instance created from the bundled ?url wasm, tests supply one created in Node from the wasm file.
  */
@@ -66,6 +85,7 @@ export async function parseDwgWith(libredwg: LibreDwg, uint8Array: Uint8Array): 
   try {
     const db = libredwg.convert(dwgData)
     attachTextElevations(libredwg, dwgData, db)
+    attachXrefs(libredwg, dwgData, db)
     return parseDwgDatabase(db)
   } finally {
     libredwg.dwg_free(dwgData)

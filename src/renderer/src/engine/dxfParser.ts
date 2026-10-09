@@ -189,7 +189,7 @@ export function resolveCadUnits(input: {
 
 interface DxfPair { code: number; value: string }
 interface DxfRecord { type: string; pairs: DxfPair[] }
-interface DxfBlock { baseX: number; baseY: number; baseZ: number; records: DxfRecord[] }
+interface DxfBlock { baseX: number; baseY: number; baseZ: number; records: DxfRecord[]; /** Path of an external reference (BLOCK flag 4); its geometry lives in another file. */ xrefPath?: string }
 const first = (r: DxfRecord, code: number) => r.pairs.find(p => p.code === code)?.value;
 const number = (r: DxfRecord, code: number, fallback = NaN) => {
   const value = first(r, code);
@@ -398,9 +398,13 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     return Number.isInteger(aci) && aci > 0 && aci < 256 ? aciToHexColor(aci) : undefined;
   };
   const layers = new Map<string, string | undefined>();
+  // Layer names are case-insensitive in AutoCAD: an entity on 'walls' is on the table layer 'WALLS' (colour, frozen/off state, role).
+  const layerCase = new Map<string, string>();
+  const canonicalLayer = (name: string) => layerCase.get(name.toLowerCase()) ?? name;
   const hiddenLayers = new Set<string>(), frozenLayers = new Set<string>();
   for (const r of sections.get('TABLES') ?? []) if (r.type === 'LAYER') {
     const name = first(r, 2)?.trim() ?? '0';
+    if (!layerCase.has(name.toLowerCase())) layerCase.set(name.toLowerCase(), name);
     layers.set(name, color(r));
     const frozen = (number(r, 70, 0) & 1) !== 0;
     if (frozen) frozenLayers.add(name);
@@ -417,7 +421,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
   for (const r of sections.get('BLOCKS') ?? []) {
     if (r.type === 'BLOCK') {
       incompleteBlock();
-      block = { baseX: number(r, 10, 0), baseY: -number(r, 20, 0), baseZ: number(r, 30, 0), records: [] };
+      block = { baseX: number(r, 10, 0), baseY: -number(r, 20, 0), baseZ: number(r, 30, 0), records: [], ...((number(r, 70, 0) & 4) !== 0 ? { xrefPath: (first(r, 1) ?? '').trim() } : {}) };
       blockName = first(r, 2)?.trim(); blockRecord = r;
       if (!blockName) diagnose('MALFORMED_BLOCK', 'Block has no name.', r);
     } else if (r.type === 'ENDBLK') {
@@ -454,7 +458,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         if (r.type === 'POLYLINE') while (index + 1 < records.length && (records[index + 1].type === 'VERTEX' || records[index + 1].type === 'SEQEND')) { const t = records[++index].type; if (t === 'SEQEND') break; }
         continue;
       }
-      const rawLayer = first(r, 8)?.trim() || '0', ownLayer = rawLayer === '0' ? inheritedLayer : rawLayer, layer = frozenBy && !hiddenLayers.has(ownLayer) ? frozenBy : ownLayer;
+      const rawLayer = canonicalLayer(first(r, 8)?.trim() || '0'), ownLayer = rawLayer === '0' ? inheritedLayer : rawLayer, layer = frozenBy && !hiddenLayers.has(ownLayer) ? frozenBy : ownLayer;
       const aci = number(r, 62), ownColor = color(r) ?? (aci === 0 ? inheritedColor : layers.get(ownLayer));
       if (number(r, 39, 0) !== 0) { diagnose('UNSUPPORTED_THICKNESS', 'Volumetric entity thickness cannot be represented in the 2D drawing; entity omitted.', r); continue; }
       const nx = number(r, 210, 0), ny = number(r, 220, 0), nz = number(r, 230, 1);
@@ -486,6 +490,8 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         if (number(r, 70, 1) !== 1 || number(r, 71, 1) !== 1) { diagnose('UNSUPPORTED_INSERT_ARRAY', 'INSERT arrays are unsupported; entity omitted.', r); continue; }
         const name = first(r, 2)?.trim() ?? '', child = blocks.get(name);
         if (!child) { diagnose('MISSING_BLOCK', `INSERT references missing block ${name}.`, r, 'error'); continue; }
+        // An external reference's geometry is in another file: its block definition is empty, so say so instead of importing nothing silently.
+        if (child.xrefPath !== undefined) { diagnose('XREF_NOT_LOADED', `External reference ${name}${child.xrefPath ? ` (${child.xrefPath})` : ''} is not loaded; its geometry is not part of this drawing.`, r); continue; }
         if (stack.includes(name)) { diagnose('CYCLIC_BLOCK', `Cyclic block reference ${[...stack, name].join(' -> ')}.`, r, 'error'); continue; }
         if (stack.length >= 32) { diagnose('BLOCK_DEPTH_LIMIT', 'Nested block depth exceeded 32; remaining geometry omitted.', r, 'error'); continue; }
         const x = number(r, 10, 0), y = -number(r, 20, 0), sx = number(r, 41, 1), sy = number(r, 42, 1), sz = number(r, 43, 1), theta = number(r, 50, 0) * Math.PI / 180;

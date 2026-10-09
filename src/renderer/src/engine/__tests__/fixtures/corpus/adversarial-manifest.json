@@ -34,6 +34,110 @@
     "line-endings-trailing-ws.dxf"
    ],
    "unitsPerFoot": 304.8
+  },
+  "noise-2.dxf": {
+   "arcs": [
+    {
+     "centre": [
+      8000.0,
+      1000.0
+     ],
+     "end": [
+      7878.446275633149,
+      1689.3654271085456
+     ],
+     "endAngleDeg": 100.0,
+     "radius": 700.0,
+     "start": [
+      8657.784834550135,
+      1239.414100327968
+     ],
+     "startAngleDeg": 20.0
+    },
+    {
+     "centre": [
+      8000.0,
+      3000.0
+     ],
+     "end": [
+      8383.02222155949,
+      3321.3938048432697
+     ],
+     "endAngleDeg": 40.0,
+     "radius": 500.0,
+     "start": [
+      8250.0,
+      2566.9872981077806
+     ],
+     "startAngleDeg": 300.0
+    }
+   ],
+   "drawingUnit": "mm",
+   "expected": {
+    "cadUnit": "mm",
+    "unitsConfidence": "declared"
+   },
+   "expectedEntityCount": 9,
+   "headerTraps": {
+    "angbaseRad": 1.5707963267948966,
+    "angdir": 1,
+    "insbase": [
+     12345.0,
+     6789.0,
+     0.0
+    ],
+    "ucsRotationDeg": 90
+   },
+   "hiddenLayers": [
+    "A-FRZ"
+   ],
+   "insunits": 4,
+   "item": "C5",
+   "layers": {
+    "entityCase": "walls",
+    "frozenEntityCase": "a-frz",
+    "frozenTable": "A-FRZ",
+    "layerStateTurnsOff": "A-FURN",
+    "tableCase": "WALLS",
+    "wallAci": 1
+   },
+   "measurement": 1,
+   "paperSpaceSkipped": true,
+   "room": {
+    "areaSqFt": 322.91731250129163,
+    "name": "OFFICE 1",
+    "polygon": [
+     0,
+     0,
+     6000,
+     0,
+     6000,
+     5000,
+     0,
+     5000
+    ]
+   },
+   "sourceUnsupported": {
+    "ACAD_PROXY_ENTITY": 1,
+    "ACAD_TABLE": 1,
+    "IMAGE": 1,
+    "OLE2FRAME": 1,
+    "WIPEOUT": 1
+   },
+   "tableTexts": [
+    "ROOM SCHEDULE",
+    "CONFERENCE ROOM",
+    "OPEN OFFICE",
+    "STORAGE",
+    "212 m2"
+   ],
+   "unitsPerFoot": 304.8,
+   "viewportTwistDeg": 33.0,
+   "xref": {
+    "block": "SITE-PLAN",
+    "insertions": 1,
+    "path": "C:\\Projects\\Campus\\site-plan.dwg"
+   }
   }
  },
  "generator": {
