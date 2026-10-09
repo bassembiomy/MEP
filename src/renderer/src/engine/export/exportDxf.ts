@@ -29,7 +29,7 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
   start('LWPOLYLINE',layer,color);pair(90,points.length/2);pair(70,closed?1:0);if(elevation!==0)pair(38,elevation);
   for(let i=0;i<points.length;i+=2){xy(points[i],points[i+1]);if(bulges?.[i/2])pair(42,bulges[i/2]);}
  };
- const text=(value:string,x:number,y:number,layer='HVAC-TAGS',height=scale*0.2)=>{start('TEXT',layer);xy(x,y);pair(40,height);pair(1,value);};
+ const text=(value:string,x:number,y:number,layer='HVAC-TAGS',height=scale*0.2,z=0)=>{start('TEXT',layer);xyz(x,y,z);pair(40,height);pair(1,value);};
  const limitations=['PRELIMINARY — not for construction.','Egyptian code adoption, detailed thermal inputs, operating-condition manufacturer evidence, barriers, 3D coordination and service clearances require review.','Equipment and terminal symbols are schematic; they are not verified catalog footprints.'];
  for(const entity of state.dxfEntities) {
   const invalid=validateCadEntity(entity);if(invalid)throw new Error(invalid);
@@ -60,36 +60,38 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
   }
  }
  for(const z of zones) {
-  measureSimplePolygon(z.points);poly(z.points,'HVAC-ROOMS',true);
-  const cx=z.points[0],cy=z.points[1];text(`${z.name} | ${z.engineeringStatus??'stale'} | PRELIMINARY`,cx,cy,'HVAC-ROOM-TAGS');
+  measureSimplePolygon(z.points);
+  // A room recognised on a level keeps that level's Z on everything derived from it.
+  const zl=z.cadProvenance?.level??0;poly(z.points,'HVAC-ROOMS',true,undefined,undefined,zl);
+  const cx=z.points[0],cy=z.points[1];text(`${z.name} | ${z.engineeringStatus??'stale'} | PRELIMINARY`,cx,cy,'HVAC-ROOM-TAGS',undefined,zl);
   for(const d of z.ducts) {
    requireNonnegative('Duct flow',d.cfm);
-   const layer=d.type==='return'?'HVAC-RETURN-DUCTS':'HVAC-SUPPLY-DUCTS';poly(d.points,layer);
+   const layer=d.type==='return'?'HVAC-RETURN-DUCTS':'HVAC-SUPPLY-DUCTS';poly(d.points,layer,false,undefined,undefined,zl);
    requirePositive('Duct width',d.widthIn);requirePositive('Duct height',d.heightIn);
    const label=project.units==='metric'?`${(d.widthIn*25.4).toFixed(0)} x ${(d.heightIn*25.4).toFixed(0)} mm`:`${d.widthIn} x ${d.heightIn} in`;
-   text(`${d.id}: ${label}; ${d.cfm} CFM`,d.points[0],d.points[1],'HVAC-DUCT-SIZES');
+   text(`${d.id}: ${label}; ${d.cfm} CFM`,d.points[0],d.points[1],'HVAC-DUCT-SIZES',undefined,zl);
   }
   for(const t of z.diffusers) {
    requireNonnegative('Terminal flow',t.cfm);
    const prefix=t.type==='return'?'RETURN':t.type==='exhaust'?'EXHAUST':'SUPPLY';const r=scale*0.25;
-   poly([t.x-r,t.y-r,t.x+r,t.y-r,t.x+r,t.y+r,t.x-r,t.y+r],`HVAC-${prefix}-TERMINALS`,true);
-   text(`${t.id}: ${t.cfm} CFM (${t.size})`,t.x+r,t.y,'HVAC-TERMINAL-TAGS');
+   poly([t.x-r,t.y-r,t.x+r,t.y-r,t.x+r,t.y+r,t.x-r,t.y+r],`HVAC-${prefix}-TERMINALS`,true,undefined,undefined,zl);
+   text(`${t.id}: ${t.cfm} CFM (${t.size})`,t.x+r,t.y,'HVAC-TERMINAL-TAGS',undefined,zl);
   }
   const units=z.unitPositions?.length?z.unitPositions:z.unitPos?[z.unitPos]:[];
-  for(const [i,p] of units.entries()){start('CIRCLE','HVAC-EQUIPMENT');xy(p.x,p.y);pair(40,scale*0.25);text(`${z.catalogModel??'Unselected equipment'} #${i+1} — schematic symbol`,p.x,p.y+scale*0.5,'HVAC-EQUIPMENT-TAGS');}
+  for(const [i,p] of units.entries()){start('CIRCLE','HVAC-EQUIPMENT');xyz(p.x,p.y,zl);pair(40,scale*0.25);text(`${z.catalogModel??'Unselected equipment'} #${i+1} — schematic symbol`,p.x,p.y+scale*0.5,'HVAC-EQUIPMENT-TAGS',undefined,zl);}
  }
  for(const o of state.cadOpenings??[]) {
   if(o.status!=='approved')continue;
-  start('LINE','HVAC-CAD-OPENINGS');xy(o.span.a.x,o.span.a.y);pair(11,o.span.b.x);pair(21,-o.span.b.y);
-  text(`${o.id}: approved ${o.kind}, ${o.widthFt.toFixed(1)} ft`,o.center.x,o.center.y,'HVAC-CAD-OPENING-TAGS');
+  start('LINE','HVAC-CAD-OPENINGS');xyz(o.span.a.x,o.span.a.y,o.level);pair(11,o.span.b.x);pair(21,-o.span.b.y);if(o.level!==0)pair(31,o.level);
+  text(`${o.id}: approved ${o.kind}, ${o.widthFt.toFixed(1)} ft`,o.center.x,o.center.y,'HVAC-CAD-OPENING-TAGS',undefined,o.level);
  }
  for(const o of state.cadObstacles??[]) {
   if(o.status!=='approved'||o.clearanceFt===undefined)continue;
   requireNonnegative('Obstacle clearance',o.clearanceFt);
   let tagX:number,tagY:number;
-  if(o.shape==='circle'&&o.circle){start('CIRCLE','HVAC-CAD-OBSTACLES');xy(o.circle.x,o.circle.y);pair(40,o.circle.radius);tagX=o.circle.x;tagY=o.circle.y;}
-  else {poly(o.polygon,'HVAC-CAD-OBSTACLES',true);tagX=o.polygon[0];tagY=o.polygon[1];}
-  text(`${o.id}: approved obstacle, clearance ${o.clearanceFt.toFixed(1)} ft`,tagX,tagY,'HVAC-CAD-OBSTACLE-TAGS');
+  if(o.shape==='circle'&&o.circle){start('CIRCLE','HVAC-CAD-OBSTACLES');xyz(o.circle.x,o.circle.y,o.level);pair(40,o.circle.radius);tagX=o.circle.x;tagY=o.circle.y;}
+  else {poly(o.polygon,'HVAC-CAD-OBSTACLES',true,undefined,undefined,o.level);tagX=o.polygon[0];tagY=o.polygon[1];}
+  text(`${o.id}: approved obstacle, clearance ${o.clearanceFt.toFixed(1)} ft`,tagX,tagY,'HVAC-CAD-OBSTACLE-TAGS',undefined,o.level);
  }
  const bounds=state.dxfEntities.map(getCadEntityBounds);const titleX=bounds.length?bounds.reduce((min,b)=>Math.min(min,b.minX),Infinity):0,titleY=bounds.length?bounds.reduce((min,b)=>Math.min(min,b.minY),Infinity)-scale: -scale;
  text(`${project.name} | EGYPT | PRELIMINARY - NOT FOR CONSTRUCTION`,titleX,titleY,'HVAC-STATUS',scale*0.4);

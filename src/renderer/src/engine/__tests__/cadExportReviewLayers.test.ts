@@ -53,3 +53,32 @@ describe('approved openings and obstacles export on their own layers', () => {
     expect(plain.text).not.toContain('HVAC-CAD-')
   })
 })
+
+describe('R6: approved review items and CAD rooms keep their level Z in the export', () => {
+  const lvl = 3
+  const zone = {
+    id: 'z1', name: 'Upper office', points: [0, 0, 100, 0, 100, -80, 0, -80], spaceTypeId: 'office', ceilingHeight: 10, occupants: 2,
+    diffusers: [{ id: 'T1', x: 20, y: -20, cfm: 200, size: '12x12', type: 'supply' as const }],
+    ducts: [{ id: 'D1', type: 'trunk' as const, points: [10, -10, 60, -10], widthIn: 12, heightIn: 8, cfm: 200, sizeLabel: '12x8' }],
+    unitPos: { x: 50, y: -40 },
+    cadProvenance: { candidateId: 'room-1', sourceHandles: ['H'], sourceLayers: ['ROOM'], evidence: [], unresolvedConditions: [], drawingUnitsPerFoot: 10, approvedAt: 't', level: lvl }
+  }
+  const at = (n: number) => ({ ...opening('door-up', 'approved', 0), level: n })
+  const out = exportProjectDxf({
+    project, zones: [zone], dxfEntities: [],
+    cadOpenings: [at(lvl)],
+    cadObstacles: [{ ...obstacle('col-up', 'approved', 1.5), level: lvl }, { ...roundCircle, id: 'round-up', level: lvl }]
+  })
+  const entities = parseDxfText(out.text).entities
+  it('writes elevation 3 for every exported engineering and review entity, including the second point of a LINE', () => {
+    const hvac = entities.filter(e => (e.layer ?? '').startsWith('HVAC-') && e.layer !== 'HVAC-STATUS')
+    expect(hvac.length).toBeGreaterThan(10)
+    for (const e of hvac) expect(e.elevation, `${e.layer} ${e.type}`).toBe(lvl)
+    expect(out.text).toMatch(/\n31\n3\n/)
+  })
+  it('level 0 items stay without an elevation field', () => {
+    const flat = parseDxfText(exportProjectDxf({ project, zones: [], dxfEntities: [], cadOpenings: [at(0)], cadObstacles: [obstacle('c', 'approved', 1)] }).text).entities
+    expect(flat.length).toBeGreaterThan(0)
+    for (const e of flat) expect(e.elevation).toBeUndefined()
+  })
+})
