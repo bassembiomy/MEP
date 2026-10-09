@@ -44,7 +44,7 @@ export const Toolbar: React.FC = () => {
       if(request!==importRequestRef.current) return;
       const units=useProjectStore.getState().project.units;
       setDxfData(parsed.entities,parsed.bbox,units==='imperial'?parsed.suggestedScaleImperial:parsed.suggestedScaleMetric,parsed.cadUnit,
-        {sourceName:file.name,diagnostics:parsed.diagnostics??[],unitsConfidence:parsed.unitsConfidence??'unknown'});
+        {sourceName:file.name,diagnostics:parsed.diagnostics??[],unitsConfidence:parsed.unitsConfidence??'unknown'},parsed.blockReferences);
       setFileName(file.name);
     } catch(error) {
       if(request===importRequestRef.current) setFileError(error instanceof Error?error.message:String(error));
@@ -209,7 +209,7 @@ export const Toolbar: React.FC = () => {
       </div>
 
       {cadImport && <div className="rounded-xl border border-amber-800/60 p-2 text-[10px] text-amber-300">
-        <p>{cadImport.unitsConfidence === 'declared' ? 'Drawing units read from CAD header.' : 'Drawing units estimated. Confirm the scale before engineering.'}</p>
+        <p>{project.cadUnitsConfirmed===false ? 'Drawing units are not confirmed. Confirm or calibrate the scale before engineering.' : cadImport.unitsConfidence === 'declared' ? 'Drawing units read from CAD header.' : 'Drawing units confirmed by you.'}</p>
         {cadImport.diagnostics.length>0 && <details className="mt-1"><summary>{cadImport.diagnostics.length} import diagnostic(s)</summary>
           <ul className="max-h-40 overflow-auto mt-1">{cadImport.diagnostics.map((d,i)=><li key={i} className="mb-1">{d.severity}: {d.message}</li>)}</ul>
         </details>}

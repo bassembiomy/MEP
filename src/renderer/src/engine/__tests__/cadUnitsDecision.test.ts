@@ -120,3 +120,20 @@ describe('calibrateScaleFromPoints (W2)', () => {
     expect(() => parseProjectDocument(JSON.stringify(doc))).toThrow(/provenance/i)
   })
 })
+
+import { describeUnitsStatus } from '../cad/unitsDecision'
+import { listCadLevels } from '../cad/cadSemanticState'
+describe('panel view helpers (W5)', () => {
+  it('describes unit status for the panel', () => {
+    expect(describeUnitsStatus({ cadUnitsConfirmed: true }, meta('declared')).confirmed).toBe(true)
+    const doubtful = describeUnitsStatus({ cadUnitsConfirmed: false }, { unitsConfidence: 'declared', diagnostics: [{ code: 'declared-implausible', severity: 'warning', message: 'too big' }] })
+    expect(doubtful.confirmed).toBe(false)
+    expect(doubtful.reasons).toEqual(['too big'])
+    expect(describeUnitsStatus({ cadUnitsConfirmed: false }, meta('estimated')).reasons[0]).toMatch(/estimated/)
+    expect(describeUnitsStatus({ cadUnitsConfirmed: true, cadScaleProvenance: 'user-calibrated' }, meta('unknown')).label).toMatch(/calibrated/i)
+  })
+  it('lists the drawing levels', () => {
+    expect(listCadLevels([])).toEqual([0])
+    expect(listCadLevels([{ type: 'LINE', elevation: 3.2 }, { type: 'LINE' }, { type: 'LINE', elevation: 3.2 }, { type: 'LINE', elevation: -1 }] as never)).toEqual([-1, 0, 3.2])
+  })
+})

@@ -3,9 +3,11 @@ import {validateCadEntity,getCadEntityBounds} from '../cad/nativeGeometry';
 import {requirePositive,requireNonnegative,measureSimplePolygon} from '../engineeringInputs';
 import {calculateZoneLoadSafely} from '../loadCalc';
 import {getProjectDeploymentRevision,getZoneDeploymentRevision} from '../deploymentValidation';
+import type {StoredCadObstacle,StoredCadOpening} from '../cad/cadSemanticState';
 import {resolveStandardsSelection} from '../standards/profileRegistry';
 
-interface ExportState {project:ProjectMetadata;zones:Zone[];dxfEntities:DxfEntity[]}
+/** `cadOpenings`/`cadObstacles` are the review lists; only items with status 'approved' are exported. */
+interface ExportState {project:ProjectMetadata;zones:Zone[];dxfEntities:DxfEntity[];cadOpenings?:StoredCadOpening[];cadObstacles?:StoredCadObstacle[]}
 export interface CadExportReport {
  status:'preliminary';issueReady:false;projectName:string;jurisdiction:'Egypt';sourceProjectRevision:string;
  standards:ReturnType<typeof resolveStandardsSelection>;
@@ -73,6 +75,19 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
   }
   const units=z.unitPositions?.length?z.unitPositions:z.unitPos?[z.unitPos]:[];
   for(const [i,p] of units.entries()){start('CIRCLE','HVAC-EQUIPMENT');xy(p.x,p.y);pair(40,scale*0.25);text(`${z.catalogModel??'Unselected equipment'} #${i+1} — schematic symbol`,p.x,p.y+scale*0.5,'HVAC-EQUIPMENT-TAGS');}
+ }
+ for(const o of state.cadOpenings??[]) {
+  if(o.status!=='approved')continue;
+  start('LINE','HVAC-CAD-OPENINGS');xy(o.span.a.x,o.span.a.y);pair(11,o.span.b.x);pair(21,-o.span.b.y);
+  text(`${o.id}: approved ${o.kind}, ${o.widthFt.toFixed(1)} ft`,o.center.x,o.center.y,'HVAC-CAD-OPENING-TAGS');
+ }
+ for(const o of state.cadObstacles??[]) {
+  if(o.status!=='approved'||o.clearanceFt===undefined)continue;
+  requireNonnegative('Obstacle clearance',o.clearanceFt);
+  let tagX:number,tagY:number;
+  if(o.shape==='circle'&&o.circle){start('CIRCLE','HVAC-CAD-OBSTACLES');xy(o.circle.x,o.circle.y);pair(40,o.circle.radius);tagX=o.circle.x;tagY=o.circle.y;}
+  else {poly(o.polygon,'HVAC-CAD-OBSTACLES',true);tagX=o.polygon[0];tagY=o.polygon[1];}
+  text(`${o.id}: approved obstacle, clearance ${o.clearanceFt.toFixed(1)} ft`,tagX,tagY,'HVAC-CAD-OBSTACLE-TAGS');
  }
  const bounds=state.dxfEntities.map(getCadEntityBounds);const titleX=bounds.length?bounds.reduce((min,b)=>Math.min(min,b.minX),Infinity):0,titleY=bounds.length?bounds.reduce((min,b)=>Math.min(min,b.minY),Infinity)-scale: -scale;
  text(`${project.name} | EGYPT | PRELIMINARY - NOT FOR CONSTRUCTION`,titleX,titleY,'HVAC-STATUS',scale*0.4);

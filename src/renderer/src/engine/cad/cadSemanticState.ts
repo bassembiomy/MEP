@@ -220,3 +220,13 @@ export function zoneObstaclesFor(
   const eligible = level === undefined ? obstacles : obstacles.filter((o) => o.level === level)
   return obstaclesInZone(zone.points, approvedObstacles(eligible))
 }
+
+/** Distinct entity elevations (drawing units) present in the drawing, ascending; always includes 0. */
+export function listCadLevels(entities: DxfEntity[]): number[] {
+  const levels = new Set<number>([0])
+  for (const e of entities) {
+    const z = e.elevation
+    if (typeof z === 'number' && Number.isFinite(z)) levels.add(z)
+  }
+  return [...levels].sort((a, b) => a - b)
+}

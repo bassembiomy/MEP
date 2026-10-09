@@ -11,3 +11,28 @@ export const UNITS_DOUBT_CODES: readonly string[] = ['declared-implausible', 'un
 export function unitsAutoConfirmed(metadata: Pick<CadImportMetadata, 'unitsConfidence' | 'diagnostics'>): boolean {
   return metadata.unitsConfidence === 'declared' && !metadata.diagnostics.some((d) => UNITS_DOUBT_CODES.includes(d.code))
 }
+
+export interface UnitsStatusView {
+  confirmed: boolean
+  /** One line for the UI. */
+  label: string
+  /** Why explicit confirmation or calibration is needed (empty when none is). */
+  reasons: string[]
+}
+
+/** Plain-language status of the drawing units for the CAD panel. */
+export function describeUnitsStatus(
+  project: { cadUnitsConfirmed?: boolean; cadScaleProvenance?: 'user-calibrated' },
+  cadImport: Pick<CadImportMetadata, 'unitsConfidence' | 'diagnostics'> | null
+): UnitsStatusView {
+  const confirmed = project.cadUnitsConfirmed !== false
+  const reasons: string[] = []
+  if (cadImport) {
+    if (cadImport.unitsConfidence === 'estimated') reasons.push('The file does not declare its units; they were estimated from the drawing size.')
+    if (cadImport.unitsConfidence === 'unknown') reasons.push('The file has no usable unit declaration.')
+    for (const d of cadImport.diagnostics) if (UNITS_DOUBT_CODES.includes(d.code)) reasons.push(d.message)
+  }
+  if (project.cadScaleProvenance === 'user-calibrated') return { confirmed: true, label: 'Scale calibrated from a known length.', reasons: [] }
+  if (confirmed) return { confirmed: true, label: cadImport?.unitsConfidence === 'declared' ? 'Units declared in the file and confirmed.' : 'Units confirmed by you.', reasons: [] }
+  return { confirmed: false, label: 'Units not confirmed: confirm them or calibrate the scale before approving anything.', reasons }
+}
