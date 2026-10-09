@@ -93,6 +93,8 @@ export interface Zone {
   id: string;
   engineeringStatus?: 'stale' | 'blocked' | 'preliminary';
   engineeringError?: string;
+  /** Non-blocking note, e.g. which higher-ranked candidates auto-deploy skipped. */
+  engineeringNotice?: string;
   name: string;
   points: number[];
   spaceTypeId: string;
@@ -251,6 +253,8 @@ interface ProjectState {
   undo: () => void;
   redo: () => void;
 }
+
+const MAX_AUTO_DEPLOY_ATTEMPTS = 5;
 
 /** Explains why no candidate was feasible, quoting the blocking diagnostics of the best-ranked rejects. */
 function describeNoFeasibleCandidate(candidates: SystemDesignCandidate[]): string {
@@ -425,11 +429,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           zoneExtentFt(draftZone.points, currentState.project)
         );
 
-        const bestCandidate = recommendations.bestOverall;
-
-        if (bestCandidate) {
+        // Try the valid candidates in rank order: the best-ranked pick can still fail deployment for
+        // reasons the generator cannot see (footprint, routing), so fall through to the next ones.
+        const ranked = recommendations.candidates.filter(c => c.isValid).slice(0, MAX_AUTO_DEPLOY_ATTEMPTS);
+        const skipped: string[] = [];
+        let deployed = false;
+        for (const candidate of ranked) {
           const manifest = buildDeploymentManifest(
-            bestCandidate,
+            candidate,
             draftZone,
             currentState.zones,
             currentState.project,
@@ -439,18 +446,24 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           const txResult = executeDeploymentTransaction(manifest, currentState.zones, currentState.project);
           if (txResult.success) {
             const deployedZone = txResult.updatedZones.find(z => z.id === id)!;
+            const notice = skipped.length ? `Skipped higher-ranked candidates: ${skipped.join(' | ')}` : undefined;
             // Apply the computed deployment to the existing zone
             set((s) => ({
               zones: s.zones.map((z) => (z.id === id ? { ...z, ...deployedZone, id,
-                engineeringStatus: 'preliminary', engineeringError: undefined } : z))
+                engineeringStatus: 'preliminary', engineeringError: undefined, engineeringNotice: notice } : z))
             }));
-          } else {
-            set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked',
-              engineeringError: manifest.diagnostics.find(d=>d.severity==='error')?.message ?? txResult.errorDiagnostic?.message ?? 'Design cannot be deployed.' } : z) }));
+            deployed = true;
+            break;
           }
-        } else {
+          const reason = manifest.diagnostics.find(d => d.severity === 'error')?.message ?? txResult.errorDiagnostic?.message ?? 'Design cannot be deployed.';
+          skipped.push(`${candidate.equipment.model} x${candidate.quantity}: ${reason}`);
+        }
+        if (!deployed) {
+          const message = skipped.length
+            ? `No ranked candidate could be deployed. ${skipped.join(' | ')}`
+            : describeNoFeasibleCandidate(recommendations.candidates);
           set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked',
-            engineeringError: describeNoFeasibleCandidate(recommendations.candidates) } : z) }));
+            engineeringError: message } : z) }));
         }
       } catch (err) {
         set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked',

@@ -197,6 +197,7 @@ export const OptimizerStudioPanel: React.FC = () => {
     <div className="flex flex-col gap-6 bg-neutral-900 border border-neutral-800 p-5 rounded-2xl backdrop-blur-md shadow-2xl">
       <p className="text-xs text-amber-300">Preliminary HVAC design. Detailed loads, manufacturer operating conditions and construction coordination require verification.</p>
       {selectedZone.engineeringError && <p role="alert" className="text-xs text-red-300">{selectedZone.engineeringError}</p>}
+      {selectedZone.engineeringNotice && <p className="text-xs text-amber-300">{selectedZone.engineeringNotice}</p>}
       {/* Header */}
       <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-3 border-b border-neutral-800 pb-4">
         <div>
