@@ -15,7 +15,10 @@ import type {
  *
  * Number interpretation, in order:
  *  1. explicit unit: 2700mm, 2.7m, 270cm, 9ft, 9'-6" (feet-inches), 108" / 108in;
- *  2. unitless with a decimal point and |value| < 10: metres ("CH 2.70" = 2.70 m);
+ *  2. unitless with a decimal point and |value| < 10: metres ("CH 2.70" = 2.70 m) ONLY when the drawing is metric
+ *     (options.unitSystem 'metric', or confirmed units whose unitsPerFoot is a metric scale). In an imperial drawing
+ *     (confirmed, or options.unitSystem 'imperial') it is read as feet ("CH 9.5" = 9.5 ft). Without a metric or
+ *     confirmed-imperial indication it is unresolved, never guessed;
  *  3. any other unitless number: drawing units, but only when the drawing units are confirmed
  *     (unitsConfirmed) - otherwise the annotation is reported as unresolved, never guessed.
  * Arabic-Indic digits and the Arabic decimal separator are normalised for parsing; the original text is
@@ -35,6 +38,22 @@ export interface LevelAnnotationOptions {
   unitsConfirmed?: boolean
   /** Elevation (drawing units) of the level whose text to read; default 0. */
   level?: number
+  /**
+   * Unit system of the drawing, when known independently of unitsPerFoot (e.g. the store's confirmed cadUnit).
+   * If omitted it is derived from unitsPerFoot, but only when unitsConfirmed.
+   */
+  unitSystem?: 'metric' | 'imperial'
+}
+
+const near = (a: number, b: number) => Math.abs(a - b) <= 0.01 * Math.max(a, b)
+const METRIC_UNITS_PER_FOOT = [304.8, 30.48, 3.048, 0.3048]
+const IMPERIAL_UNITS_PER_FOOT = [1, 12, 1 / 3]
+function drawingUnitSystem(opts: LevelAnnotationOptions): 'metric' | 'imperial' | undefined {
+  if (opts.unitSystem) return opts.unitSystem
+  if (!opts.unitsConfirmed || !Number.isFinite(opts.unitsPerFoot)) return undefined
+  if (METRIC_UNITS_PER_FOOT.some((k) => near(k, opts.unitsPerFoot))) return 'metric'
+  if (IMPERIAL_UNITS_PER_FOOT.some((k) => near(k, opts.unitsPerFoot))) return 'imperial'
+  return undefined
 }
 
 const ARABIC_DIGITS = '٠١٢٣٤٥٦٧٨٩'
@@ -69,7 +88,12 @@ function parseQuantity(rest: string, opts: LevelAnnotationOptions): Quantity | n
   if (!Number.isFinite(value)) return null
   const sign = m[1] === '-' ? -1 : 1
   if (m[3]) return { valueFt: sign * value * FT_PER[m[3].toLowerCase() as keyof typeof FT_PER], how: `explicit unit ${m[3]}` }
-  if (decimal && Math.abs(value) < 10) return { valueFt: (sign * value) / 0.3048, how: 'decimal number under 10 read as metres' }
+  if (decimal && Math.abs(value) < 10) {
+    const system = drawingUnitSystem(opts)
+    if (system === 'metric') return { valueFt: (sign * value) / 0.3048, how: 'decimal number under 10 read as metres (metric drawing)' }
+    if (system === 'imperial' && opts.unitsConfirmed) return { valueFt: sign * value, how: 'decimal number under 10 read as feet (imperial drawing)' }
+    return { how: 'unitless', problem: `"${m[2]}" has no unit and the drawing is not confirmed metric or imperial` }
+  }
   if (opts.unitsConfirmed && Number.isFinite(opts.unitsPerFoot) && opts.unitsPerFoot > 0)
     return { valueFt: (sign * value) / opts.unitsPerFoot, how: 'confirmed drawing units', viaDrawingUnits: true }
   return { how: 'unitless', problem: `"${m[2]}" has no unit and the drawing units are not confirmed` }
