@@ -634,7 +634,7 @@ describe('layout records, layers, paper space, attributes and splines (shapes re
     text: { text: value, startPoint: { x: 30, y: 40 }, textHeight: 5, rotation: Math.PI / 2 },
     ...extra
   })
-  it('draws each visible INSERT attribute as TEXT in WCS and drops invisible, empty and constant-template ones', async () => {
+  it('draws each visible INSERT attribute as TEXT in WCS and drops invisible (flag 1 or isVisible false) and empty ones', async () => {
     const block = { name: 'Door', basePoint: point(0, 0), entities: [line()] }
     const result = await parse(database([insert('Door', point(100, 0), { rotation: Math.PI / 2, attribs: [attrib('D01'), attrib('D02', { flags: 1 }), attrib('D03', { isVisible: false }), attrib('   ')] })], [block]))
     const texts = result.entities.filter((e) => e.type === 'TEXT')
