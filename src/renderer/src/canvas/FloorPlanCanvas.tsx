@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Stage, Layer, Line, Circle, Text, Group, Shape, Rect } from 'react-konva';
 import { useProjectStore } from '../store/projectStore';
 import { snapToGrid, getPolygonCentroid } from '../engine/geometry';
+import { snapPoint, physicalGridSpacing } from '../engine/cad/drawingSnap';
 import { calculateZoneDiffuserCoverage } from '../engine/diffuserPlacer';
 import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
 import { getCadEntityPath } from '../engine/cad/nativeGeometry';
@@ -294,7 +295,12 @@ export const FloorPlanCanvas: React.FC = () => {
     };
   }, [drawMode, isPanning, isSpacePressed]);
 
-  const gridSpacing = project.units === 'imperial' ? 10 : 10;
+  // Physical grid: 0.5 ft (imperial) / 100 mm (metric) expressed in drawing units, whatever the CAD unit is.
+  const gridSpacing = useMemo(() => { try { return physicalGridSpacing(project); } catch { return 10; } }, [project.units, project.scale]);
+  const snapLocal = (local: { x: number; y: number }, shift: boolean) => snapPoint(local, {
+    entities: dxfEntities, zones, gridSpacing, tolerancePx: 10, stageScale,
+    ortho: shift, lastPoint: tempPoints.length >= 2 ? { x: tempPoints[tempPoints.length - 2], y: tempPoints[tempPoints.length - 1] } : undefined
+  }).point;
 
   const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = stageRef.current;
@@ -305,8 +311,7 @@ export const FloorPlanCanvas: React.FC = () => {
       const pos = stage.getPointerPosition();
       if (pos) {
         const localPos = transform.point(pos);
-        const snappedX = snapToGrid(localPos.x, gridSpacing);
-        const snappedY = snapToGrid(localPos.y, gridSpacing);
+        const { x: snappedX, y: snappedY } = snapLocal(localPos, e.evt.shiftKey);
         setMousePos((prev) => {
           if (prev.x === snappedX && prev.y === snappedY) return prev;
           return { x: snappedX, y: snappedY };
@@ -348,8 +353,7 @@ export const FloorPlanCanvas: React.FC = () => {
       const pos = stage.getPointerPosition();
       if (pos) {
         const localPos = transform.point(pos);
-        const sx = snapToGrid(localPos.x, gridSpacing);
-        const sy = snapToGrid(localPos.y, gridSpacing);
+        const { x: sx, y: sy } = snapLocal(localPos, e.evt.shiftKey);
         addTempPoint(sx, sy);
       }
     }
@@ -681,10 +685,11 @@ export const FloorPlanCanvas: React.FC = () => {
   const drawGridLines = () => {
     if (!annotationVisibility.grid || lodTier === 1) return null; // Declutter grid at far zoom or if hidden
     const lines: React.ReactNode[] = [];
-    const size = 3000;
     const step = gridSpacing * 5;
-    for (let i = -size; i < size; i += step) {
-      const isMajor = i % (gridSpacing * 25) === 0;
+    const size = step * 60;
+    for (let k = -60; k < 60; k++) {
+      const i = k * step;
+      const isMajor = k % 5 === 0;
       const strokeColor = isMajor ? '#2c2c2c' : '#1a1a1a';
       const strokeWidth = getStrokeWidth(isMajor ? 0.8 : 0.4, 0.5);
 
