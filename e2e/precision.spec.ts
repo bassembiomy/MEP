@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { Page } from '@playwright/test'
 import { test, expect, CORPUS, store, toScreen, waitStageSettled } from './fixtures'
+import { circle, dxf, header, layer, line, lwpolyline } from '../src/renderer/src/engine/__tests__/fixtures/dxfBuilder'
 
 /**
  * Precision at a far origin. Drawings written by scripts/cad-corpus/generate_adversarial.py: one plan 20 ft (or 20 m) wide, at the
@@ -109,6 +110,11 @@ for (const unit of ['ft', 'mm']) {
     const diff = pixelDiff(far, twin)
     test.info().annotations.push({ type: 'pixel-diff', description: JSON.stringify(diff) })
     expect(diff.nonBlank, 'the canvas is not blank').toBeGreaterThan(2000)
+    // Why the painted-pixel counts differ ~40x for the same plan (ft 249,938 vs mm 6,226): the background grid. The fitted view of the 20 ft plan
+    // is zoomed in (stage scale >= 0.35, LOD tier >= 2) so 120 grid lines per axis cross the whole canvas; the 20 m / 20,000 mm plan fits at a
+    // scale of ~0.04 px per unit (LOD tier 1), where FloorPlanCanvas hides the grid, leaving only the plan itself. nonBlank sets the
+    // tolerance below, so the mm run allows ceil(6,226 x 1e-4) = 1 differing pixel and the ft run 25; asserting the tier makes this explicit.
+    expect(viewFar.scale >= 0.35, `grid ${unit === 'ft' ? 'drawn' : 'hidden'} at stage scale ${viewFar.scale}`).toBe(unit === 'ft')
     // Identical local coordinates and an identical fitted view give identical pixels: 0 differing pixels were observed (ft 249,938 and mm 6,226
     // painted pixels). Documented allowance for other GPUs / rasterisers: one level of antialiasing noise on at most 0.01 % of the painted pixels.
     expect(diff.maxDelta).toBeLessThanOrEqual(1)
@@ -130,11 +136,105 @@ for (const unit of ['ft', 'mm']) {
     await expect.poll(() => store(page, (s) => s.drawingOrigin.x)).not.toBe(o1.x)
     const o2 = await store(page, (s) => s.drawingOrigin)
     expect(o2.x).toBe(t.centreB[0])
+    expect(o2.y).toBe(-t.centreB[1]) // internal Y is the negated DXF Y
     const zone = await store(page, (s) => s.zones[0].points.slice())
     // I1: raw = local + origin is unchanged for the retained zone (exact: these are integers well below 2^53)
     for (let i = 0; i < zone.length; i++) expect(zone[i] + (i % 2 ? o2.y : o2.x)).toBe(rawBefore[i] + (i % 2 ? o1.y : o1.x))
     // the canvas origin-change effect pans the stage by -(old - new) * scale, so the zone stays on the same screen pixel
     await waitStageSettled(page)
+    const after = await toScreen(page, zone[0], zone[1])
+    expect(Math.abs(after.x - before.x)).toBeLessThan(0.5)
+    expect(Math.abs(after.y - before.y)).toBeLessThan(0.5)
+  })
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Offsets that are NOT a multiple of the origin step: the real float risk. The importer rounds the bbox centre to a power-of-ten step, so a
+// non-multiple offset leaves a fractional local centre (3.7 ft, 3700.37 mm) that is computed as raw - origin from a ~2e6 / 6e8 raw value.
+// The twin is the same plan written at the origin at exactly that local centre, so its local coordinates are what the far import should give.
+// ---------------------------------------------------------------------------------------------------------------------------------
+interface Plan { unit: 'ft' | 'mm'; insunits: number; half: number; step: number; c: [number, number]; cB: [number, number] }
+const PLANS: Plan[] = [
+  { unit: 'ft', insunits: 2, half: 10, step: 10, c: [2_000_003.7, 2_000_007.3], cB: [500_002.9, 500_004.1] },
+  { unit: 'mm', insunits: 4, half: 10000, step: 10000, c: [6e8 + 3700.37, 6e8 + 7300.73], cB: [2e8 + 2900.29, 2e8 + 4100.41] }
+]
+/** The plan of the adversarial corpus (outer wall, inner room, column) centred on (cx, cy), as DXF text. */
+function planText(p: Plan, cx: number, cy: number): string {
+  const h = p.half
+  const outer: [number, number][] = [[cx - h, cy - h], [cx + h, cy - h], [cx + h, cy + h], [cx - h, cy + h]]
+  return dxf({
+    header: header({ insunits: p.insunits, measurement: p.unit === 'ft' ? 0 : 1 }), layers: ['A-WALL', 'A-AREA'].map((n) => layer(n)), blocks: [],
+    entities: [
+      ...outer.map((a, i) => line('A-WALL', a[0], a[1], outer[(i + 1) % 4][0], outer[(i + 1) % 4][1])),
+      lwpolyline('A-AREA', [[cx - h / 2, cy - h / 4], [cx + h / 2, cy - h / 4], [cx + h / 2, cy + h / 4], [cx - h / 2, cy + h / 4]], true),
+      circle('A-WALL', cx + h / 2, cy + h / 2, h / 10)
+    ]
+  })
+}
+const roundToStep = (v: number, step: number): number => Math.round(v / step) * step
+async function importText(page: Page, name: string, text: string): Promise<void> {
+  await page.setInputFiles('input[type=file][accept=".dxf,.dwg"]', { name, mimeType: 'application/octet-stream', buffer: Buffer.from(text) })
+}
+const localLines = (page: Page) => store(page, (s) => s.dxfEntities.filter((e) => e.type === 'LINE').map((e) => [e.x!, e.y!, e.points![0], e.points![1]]))
+
+for (const p of PLANS) {
+  test(`non-multiple offset ${p.unit}: local coordinates, view and canvas pixels equal the at-origin twin at the same local centre`, async ({ page }) => {
+    const ox = roundToStep(p.c[0], p.step), oy = roundToStep(p.c[1], p.step)
+    await page.goto('/')
+    await importText(page, `far-${p.unit}-offset.dxf`, planText(p, p.c[0], p.c[1]))
+    await page.waitForFunction(() => window.__mep.store.getState().dxfEntities.length > 0)
+    await waitStageSettled(page)
+    const origin = await store(page, (s) => s.drawingOrigin)
+    expect(origin.x).toBe(ox)
+    expect(origin.y).toBe(-oy)
+    const farLines = await localLines(page)
+    const viewFar = await stageView(page)
+    const far = await canvasBytes(page)
+
+    // the twin: the same plan at the origin, centred on the far import's local centre (raw - origin)
+    await page.goto('/')
+    await importText(page, `twin-${p.unit}-offset.dxf`, planText(p, p.c[0] - ox, p.c[1] - oy))
+    await page.waitForFunction(() => window.__mep.store.getState().dxfEntities.length > 0)
+    await waitStageSettled(page)
+    expect(await store(page, (s) => s.drawingOrigin)).toEqual({ x: 0, y: 0 })
+    const twinLines = await localLines(page)
+    expect(twinLines.length).toBe(farLines.length)
+    // raw - origin of a ~2e6 ft / 6e8 mm value carries at most one ulp of the raw magnitude (2.3e-10 ft, 1.2e-7 mm)
+    for (let i = 0; i < farLines.length; i++) for (let k = 0; k < 4; k++) expect(Math.abs(farLines[i][k] - twinLines[i][k]), `line ${i} coordinate ${k}`).toBeLessThan(1e-6)
+    const viewTwin = await stageView(page)
+    expect(viewTwin.scale).toBeCloseTo(viewFar.scale, 9)
+    expect(viewTwin.x).toBeCloseTo(viewFar.x, 6)
+    expect(viewTwin.y).toBeCloseTo(viewFar.y, 6)
+    const diff = pixelDiff(far, await canvasBytes(page))
+    test.info().annotations.push({ type: 'pixel-diff', description: JSON.stringify(diff) })
+    expect(diff.nonBlank, 'the canvas is not blank').toBeGreaterThan(2000)
+    // same tolerance as the multiple-of-step test: one level of antialiasing noise on at most 0.01 % of the painted pixels
+    expect(diff.maxDelta).toBeLessThanOrEqual(1)
+    expect(diff.differing).toBeLessThanOrEqual(Math.ceil(diff.nonBlank * 0.0001))
+  })
+
+  test(`non-multiple offset ${p.unit}: a second far drawing keeps a zone on the same screen pixel and the same raw coordinates (both axes)`, async ({ page }) => {
+    await page.goto('/')
+    await importText(page, `far-${p.unit}-offset.dxf`, planText(p, p.c[0], p.c[1]))
+    await page.waitForFunction(() => window.__mep.store.getState().dxfEntities.length > 0)
+    await waitStageSettled(page)
+    const o1 = await store(page, (s) => s.drawingOrigin)
+    const h = p.half
+    await page.evaluate(([a, b]) => window.__mep.store.getState().addZone([-a, -b, a, -b, a, b, -a, b]), [h / 4, h / 8])
+    await expect.poll(() => store(page, (s) => s.zones.length)).toBe(1)
+    await waitStageSettled(page)
+    const rawBefore = await store(page, (s) => s.zones[0].points.slice())
+    const before = await toScreen(page, rawBefore[0], rawBefore[1])
+
+    await importText(page, `far-${p.unit}-offset-b.dxf`, planText(p, p.cB[0], p.cB[1]))
+    await expect.poll(() => store(page, (s) => s.drawingOrigin.x)).not.toBe(o1.x)
+    const o2 = await store(page, (s) => s.drawingOrigin)
+    expect(o2.x).toBe(roundToStep(p.cB[0], p.step))
+    expect(o2.y).toBe(-roundToStep(p.cB[1], p.step))
+    await waitStageSettled(page)
+    const zone = await store(page, (s) => s.zones[0].points.slice())
+    // raw = local + origin is preserved; the origin is an integer multiple of the step so the shift is exact up to one ulp of the raw magnitude
+    for (let i = 0; i < zone.length; i++) expect(Math.abs(zone[i] + (i % 2 ? o2.y : o2.x) - (rawBefore[i] + (i % 2 ? o1.y : o1.x))), `zone coordinate ${i}`).toBeLessThan(1e-6)
     const after = await toScreen(page, zone[0], zone[1])
     expect(Math.abs(after.x - before.x)).toBeLessThan(0.5)
     expect(Math.abs(after.y - before.y)).toBeLessThan(0.5)

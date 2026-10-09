@@ -248,6 +248,9 @@ export const Toolbar: React.FC = () => {
               else if (u === 'in') newScale = isImp ? 12 : (1 / 0.0254);
               else if (u === 'm') newScale = isImp ? 0.3048 : 1;
               else if (u === 'ft') newScale = isImp ? 1 : (1 / 0.3048);
+              // setProject re-runs CAD recognition when the scale moves. This is a <select>: one change event per pick, never a
+              // per-keystroke stream, so the synchronous recognition runs once per edit and is not debounced (debouncing would
+              // delay the scale and make the e2e specs depend on a timer). Calibration is likewise a single action.
               setProject({ scale: newScale, cadUnit: u, cadUnitsConfirmed:true });
             }}
             className="bg-neutral-900 border border-neutral-800 text-neutral-200 text-xs px-2 py-1.5 rounded-lg focus:outline-none focus:border-teal-500"
