@@ -167,3 +167,39 @@ describe('C4 dynamic blocks: doors as anonymous *U## INSERTs', () => {
     expect(candidates.filter(c => c.blockName === t.nonDoorAnonymous.effectiveName)).toHaveLength(0)
   })
 })
+
+// ------------------------------------------------------------------------------------------------- C3
+describe('C3 MLINE walls: STANDARD and custom styles, zero/top/bottom justification, closed, caps and joints', () => {
+  const t = manifest['mline-walls.dxf']
+  const p = parseFile('mline-walls.dxf')
+  const segs = (handle: string) => p.entities
+    .filter(e => e.type === 'LINE' && e.sourceHandle === handle)
+    .map(e => [e.x!, -e.y!, e.points![0], -e.points![1]])
+  it('declares mm; the only diagnostic is the omitted round caps (one per round-cap MLINE)', () => {
+    expect(p.cadUnit).toBe('mm')
+    expect(codes(p)).toEqual(t.roundCapMlines.map(() => 'MLINE_CAP_OMITTED'))
+    expect(p.entities.every(e => e.type === 'LINE' || e.type === 'TEXT')).toBe(true)
+  })
+  for (const m of t.mlines as any[]) {
+    it(`MLINE ${m.role} (style ${m.style}, justification ${m.justification}, ${m.closed ? 'closed' : 'open'}) explodes to the same LINEs as ezdxf MLine.virtual_entities()`, () => {
+      const got = segs(m.handle)
+      expect(got).toHaveLength(m.lines.length)
+      const unused = [...got]
+      for (const want of m.lines as number[][]) {
+        const at = unused.findIndex(g => g.every((v, i) => Math.abs(v - want[i]) <= 1e-6))
+        expect(at, `ezdxf line ${want.join(', ')}`).toBeGreaterThanOrEqual(0)
+        unused.splice(at, 1)
+      }
+      expect(unused).toEqual([])
+    })
+  }
+  it('the three closed-MLINE rooms are recognised from the wall layer with the clear area of the inner element loop', () => {
+    const cands = recognizeCadRooms(p.entities, { drawingUnitsPerFoot: t.unitsPerFoot, layers: ['A-WALL'] }).candidates
+    expect(cands).toHaveLength(t.rooms.length) // the joint-split wall bodies are below the room threshold, not rooms
+    for (const room of t.rooms as any[]) {
+      const c = cands.find(x => x.name === room.name)
+      expect(c, room.name).toBeDefined()
+      expect(Math.abs(c!.areaSqFt - room.areaSqFt), `${room.name}: ${c!.areaSqFt} vs ${room.areaSqFt} ft2`).toBeLessThanOrEqual(0.005 * room.areaSqFt)
+    }
+  })
+})

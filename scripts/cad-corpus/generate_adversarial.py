@@ -308,12 +308,89 @@ def gen_dynamic_blocks(manifest):
     }
 
 
+# ------------------------------------------------------------------------------------------------- C3
+MLINE_MITER, MLINE_START_SQUARE, MLINE_START_ROUND, MLINE_END_SQUARE, MLINE_END_ROUND = 2, 16, 64, 256, 1024
+JUSTIFICATION = {"top": 0, "zero": 1, "bottom": 2}
+
+
+def r6(v):
+    v = round(float(v), 6)
+    return 0.0 if v == 0 else v
+
+
+def mline_truth(ml, doc, role):
+    """Segments of MLine.virtual_entities() (ezdxf's own explosion of the stored MLINE geometry): LINEs only, ARC / HATCH counted."""
+    ve = list(ml.virtual_entities())
+    lines = [[r6(e.dxf.start.x), r6(e.dxf.start.y), r6(e.dxf.end.x), r6(e.dxf.end.y)] for e in ve if e.dxftype() == "LINE"]
+    return {
+        "handle": ml.dxf.handle, "role": role, "style": ml.dxf.style_name, "closed": bool(ml.is_closed),
+        "justification": ml.dxf.justification, "scale": ml.dxf.scale_factor,
+        "vertices": [[r6(v.x), r6(v.y)] for v in ml.get_locations()],
+        "lines": lines, "arcCaps": sum(1 for e in ve if e.dxftype() == "ARC"), "fill": sum(1 for e in ve if e.dxftype() == "HATCH"),
+    }
+
+
+def gen_mline_walls(manifest):
+    doc = new_doc("R2018", 4, 1)
+    add_layers(doc, ["A-WALL", "A-GEN", "A-ANNO-TEXT"])
+    st = doc.mline_styles.new("WALL-200")
+    st.elements.append(100)
+    st.elements.append(-100)
+    st.dxf.flags = MLINE_MITER | MLINE_START_SQUARE | MLINE_END_SQUARE
+    st3 = doc.mline_styles.new("WALL-3EL")
+    for off in (150, 0, -150):
+        st3.elements.append(off)
+    st3.dxf.flags = MLINE_MITER
+    stround = doc.mline_styles.new("ROUND-CAP")
+    stround.elements.append(100)
+    stround.elements.append(-100)
+    stround.dxf.flags = MLINE_START_ROUND | MLINE_END_ROUND
+    msp = doc.modelspace()
+    truth, rooms = [], []
+    # three closed rooms 6 x 4 m (centre line), one per justification, wall style WALL-200 (two elements 200 apart)
+    for i, (just, label) in enumerate((("zero", "ROOM A"), ("top", "ROOM B"), ("bottom", "ROOM C"))):
+        x0 = i * 8000.0
+        ml = msp.add_mline([(x0 + a, b) for a, b in rect(0, 0, 6000, 4000)], close=True,
+                           dxfattribs={"layer": "A-WALL", "style_name": "WALL-200", "scale_factor": 1.0, "justification": JUSTIFICATION[just]})
+        t = mline_truth(ml, doc, "room-wall")
+        # inner loop = the element whose closed path has the smaller area (read from the virtual LINEs: line k*2+e belongs to element e)
+        n_el = 2
+        element_lines = t["lines"][:4 * n_el]  # 4 closed segments x elements come first; the miter joint lines follow
+        loops = [[(l[0], l[1]) for k, l in enumerate(element_lines) if k % n_el == e] for e in range(n_el)]
+        inner = min(loops, key=poly_area)
+        t["innerLoop"] = [list(p) for p in inner]
+        truth.append(t)
+        msp.add_text(label, height=250, dxfattribs={"layer": "A-ANNO-TEXT", "insert": (x0 + 1000, 2000)})
+        rooms.append({"name": label, "justification": just, "polygon": [c for p in inner for c in p],
+                      "areaSqFt": poly_area(inner) / MM_PER_FT ** 2})
+    # accessory MLINEs (geometry compared line by line with ezdxf; not rooms)
+    acc = [
+        ("standard-L", "Standard", 150.0, "zero", [(0, 6000), (3000, 6000), (3000, 8000)], False),
+        ("3-element-zigzag", "WALL-3EL", 1.0, "zero", [(0, 9500), (2000, 9500), (3500, 10500), (5000, 9800)], False),
+        ("round-cap", "ROUND-CAP", 1.0, "bottom", [(8000, 6000), (11000, 6000)], False),
+        ("closed-3-element", "WALL-3EL", 1.0, "top", [(16000, 6000), (19000, 6000), (19000, 8500), (16000, 8500)], True),
+    ]
+    for name, style, scale, just, verts, closed in acc:
+        ml = msp.add_mline(verts, close=closed, dxfattribs={"layer": "A-GEN", "style_name": style, "scale_factor": scale, "justification": JUSTIFICATION[just]})
+        t = mline_truth(ml, doc, name)
+        truth.append(t)
+    fname = "mline-walls.dxf"
+    doc.saveas(path(fname))
+    manifest[fname] = {
+        "item": "C3", "insunits": 4, "measurement": 1, "drawingUnit": "mm", "unitsPerFoot": MM_PER_FT,
+        "expected": {"cadUnit": "mm", "unitsConfidence": "declared"},
+        "mlines": truth, "rooms": rooms,
+        "roundCapMlines": [t["handle"] for t in truth if t["arcCaps"]],
+    }
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     manifest = {}
     gen_line_endings(manifest)
     gen_noise2(manifest)
     gen_dynamic_blocks(manifest)
+    gen_mline_walls(manifest)
     doc = {
         "about": "Ground truth for the adversarial corpus, computed from the generator's construction geometry "
                  "(scripts/cad-corpus/generate_adversarial.py) and from ezdxf, never from our parser. "

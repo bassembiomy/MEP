@@ -348,6 +348,63 @@ function applyTextJustification(ent: DxfEntity, r: DxfRecord, diagnose: (code: s
   Object.assign(ent, storedJustification(ent.type, hAlign, vAlign));
 }
 
+const MLINE_MITER = 2, MLINE_START_SQUARE = 16, MLINE_START_ARCS = 32 | 64, MLINE_END_SQUARE = 256, MLINE_END_ARCS = 512 | 1024;
+
+/**
+ * Explodes an MLINE into LINEs (raw DXF Y-up coordinates flipped to the canvas frame like every other entity). The vertices carry
+ * the FINAL geometry (scale, justification and miter stretch are already in the element offsets): element k of segment i runs from
+ * `vertex_i + miter_i * offset_k` to the same point of the next vertex (and from the last back to the first when closed).
+ * The MLINESTYLE (when found) adds the square start/end cap lines and, with the "display miters" flag, a line across every joint,
+ * exactly as ezdxf's MLine.virtual_entities() does. Round / inner-arc caps and the fill are not drawn (arc caps raise a warning).
+ */
+function explodeMline(
+  r: DxfRecord, base: DxfEntity, style: { flags: number; offsets: number[] } | undefined,
+  diagnose: (code: string, message: string, r?: DxfRecord, severity?: 'warning' | 'error') => void
+): DxfEntity[] | undefined {
+  const vertices: { x: number; y: number; mx: number; my: number; offsets: number[] }[] = [];
+  const elementCount = number(r, 73, NaN), declared = number(r, 72, NaN), closed = (number(r, 71, 0) & 2) !== 0;
+  let vertex: (typeof vertices)[number] | undefined, remaining = 0, firstParam = false;
+  for (const p of r.pairs) {
+    const v = p.value.trim() === '' ? NaN : Number(p.value);
+    if (p.code === 11) { vertex = { x: v, y: NaN, mx: NaN, my: NaN, offsets: [] }; vertices.push(vertex); remaining = 0; }
+    else if (!vertex) continue;
+    else if (p.code === 21) vertex.y = v;
+    else if (p.code === 13) vertex.mx = v;
+    else if (p.code === 23) vertex.my = v;
+    else if (p.code === 74) { remaining = v; firstParam = true; if (!(v > 0)) vertex.offsets.push(0); }
+    else if (p.code === 41 && remaining > 0) { if (firstParam) vertex.offsets.push(v); firstParam = false; remaining--; }
+  }
+  const finite = (n: number) => Number.isFinite(n);
+  if (!Number.isInteger(elementCount) || elementCount < 1 || vertices.length !== declared || vertices.length < 2 ||
+    vertices.some(v => ![v.x, v.y, v.mx, v.my].every(finite) || v.offsets.length !== elementCount || !v.offsets.every(finite))) {
+    diagnose('MALFORMED_MLINE', 'MLINE vertices, miter directions or element offsets are missing or inconsistent; entity omitted.', r, 'error');
+    return undefined;
+  }
+  const miterPoints = vertices.map(v => v.offsets.map(o => ({ x: v.x + v.mx * o, y: -(v.y + v.my * o) })));
+  if (closed) miterPoints.push(miterPoints[0]);
+  const parts: DxfEntity[] = [];
+  const line = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+    const k = parts.length;
+    parts.push({ ...base, type: 'LINE', x: a.x, y: a.y, points: [b.x, b.y], ...(base.handle ? { handle: `${base.handle}:${k}` } : {}) });
+  };
+  for (let i = 1; i < miterPoints.length; i++) for (let e = 0; e < elementCount; e++) line(miterPoints[i - 1][e], miterPoints[i][e]);
+  const flags = style && style.offsets.length === elementCount ? style.flags : 0;
+  if (flags) {
+    const bottom = style!.offsets.indexOf(Math.min(...style!.offsets)), top = style!.offsets.indexOf(Math.max(...style!.offsets));
+    // A cap / joint line runs from the outermost element to the middle of the two outermost elements and on to the other one.
+    const across = (m: { x: number; y: number }[]) => {
+      const mid = { x: (m[top].x + m[bottom].x) / 2, y: (m[top].y + m[bottom].y) / 2 };
+      line(m[top], mid); line(m[bottom], mid);
+    };
+    if (!closed && (flags & MLINE_START_SQUARE)) across(miterPoints[0]);
+    if (flags & MLINE_MITER) for (let i = closed ? 0 : 1; i < miterPoints.length - 1; i++) across(miterPoints[i]);
+    if (!closed && (flags & MLINE_END_SQUARE)) across(miterPoints[miterPoints.length - 1]);
+    if (!closed && (flags & (MLINE_START_ARCS | MLINE_END_ARCS)))
+      diagnose('MLINE_CAP_OMITTED', 'MLINE round / inner-arc end caps are not drawn; the element lines are imported.', r);
+  }
+  return parts;
+}
+
 /** Parses DXF records before resolving INSERTs. Empty values never shift code/value pairs. */
 export function parseDxfText(dxfText: string): ParsedDxf {
   const diagnostics: CadImportDiagnostic[] = [], entities: DxfEntity[] = [], blockReferences: CadBlockReference[] = [];
@@ -427,6 +484,9 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     const real = target?.code === 1005 ? recordNames.get(target.value.trim().toUpperCase()) : undefined;
     if (real && real !== n) effectiveBlockNames.set(n, real);
   }
+  const mlineStyles = new Map<string, { flags: number; offsets: number[] }>();
+  for (const r of sections.get('OBJECTS') ?? []) if (r.type === 'MLINESTYLE')
+    mlineStyles.set((first(r, 2) ?? '').trim().toUpperCase(), { flags: number(r, 70, 0), offsets: r.pairs.filter(p => p.code === 49).map(p => Number(p.value)) });
   const blocks = new Map<string, DxfBlock>();
   const duplicateBlocks = new Set<string>();
   let block: DxfBlock | undefined;
@@ -501,7 +561,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         diagnose('UNSUPPORTED_ELEVATION', 'Nonplanar geometry (varying Z) cannot be represented in the 2D drawing; entity omitted.', r); continue;
       }
       let ownZ = zValues[0] ?? 0;
-      const reflected = nz < 0 && !['LINE', 'ELLIPSE', 'SPLINE'].includes(r.type);
+      const reflected = nz < 0 && !['LINE', 'ELLIPSE', 'SPLINE', 'MLINE'].includes(r.type);
       const ocs: CadAffineMatrix = reflected ? { a: -1, b: 0, c: 0, d: 1, tx: 0, ty: 0 } : identity;
       if (r.type === 'INSERT') {
         if (number(r, 70, 1) !== 1 || number(r, 71, 1) !== 1) { diagnose('UNSUPPORTED_INSERT_ARRAY', 'INSERT arrays are unsupported; entity omitted.', r); continue; }
@@ -537,6 +597,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         if (expansionStopped) return;
         continue;
       }
+      let parts: DxfEntity[] | undefined;
       let ent: DxfEntity = { type: r.type as DxfEntity['type'], layer, color: ownColor, handle: first(r, 5)?.trim(), sourceHandle: first(r, 5)?.trim(), sourceBlock: stack.length ? (effectiveBlockNames.get(stack.at(-1)!) ?? stack.at(-1)) : undefined };
       if (stack.length && insertHandle) ent.handle = `${insertHandle}/${ent.sourceHandle ?? `${r.type}:${index}`}`;
       if (layer !== ownLayer) ent.originalLayer = ownLayer;
@@ -602,6 +663,14 @@ export function parseDxfText(dxfText: string): ParsedDxf {
           ent.geometryApproximation = `SPLINE sampled as a polyline from its ${sampled.how}; the curve is approximate`;
           break;
         }
+        case 'MLINE': {
+          // The vertices carry the FINAL geometry (scale, justification and miter stretch are already in the element offsets), so
+          // each element is the polyline vertex + miter * offset; the style only adds cap and joint lines.
+          const exploded = explodeMline(r, ent, mlineStyles.get((first(r, 2) ?? '').trim().toUpperCase()), diagnose);
+          if (!exploded) continue;
+          parts = exploded;
+          break;
+        }
         case 'SEQEND': continue; // terminator of an INSERT's attribute list; carries no geometry
         case 'ATTDEF':
         case 'ATTRIB': {
@@ -638,17 +707,20 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         default:
           diagnose('UNSUPPORTED_ENTITY', `${r.type} is unsupported; source geometry omitted.`, r); continue;
       }
-      const invalid = validateCadEntity(ent);
-      if (invalid) { diagnose('MALFORMED_ENTITY', invalid, r, 'error'); continue; }
-      ent = transformCadEntity(ent, compose(matrix, ocs));
-      const entityZ = zScale * (reflected ? -ownZ : ownZ) + zOffset;
-      if (ownZ !== 0) diagnose('ELEVATED_GEOMETRY_PROJECTED', `${r.type} at elevation ${entityZ} is projected onto the plan; its elevation is retained.`, r);
-      if (entityZ !== 0) (ent as DxfEntity & { elevation?: number }).elevation = entityZ;
-      const transformedInvalid = validateCadEntity(ent);
-      if (transformedInvalid) { diagnose('INVALID_TRANSFORM', transformedInvalid, r, 'error'); continue; }
-      if (!Object.values(getCadEntityBounds(ent)).every(Number.isFinite)) { diagnose('GEOMETRY_OVERFLOW', 'Native geometry exceeds finite drawing bounds; entity omitted.', r, 'error'); continue; }
-      if (ent.geometryApproximation) diagnose('APPROXIMATED_GEOMETRY', ent.geometryApproximation, r);
-      entities.push(ent);
+      for (const part of parts ?? [ent]) {
+        ent = part;
+        const invalid = validateCadEntity(ent);
+        if (invalid) { diagnose('MALFORMED_ENTITY', invalid, r, 'error'); continue; }
+        ent = transformCadEntity(ent, compose(matrix, ocs));
+        const entityZ = zScale * (reflected ? -ownZ : ownZ) + zOffset;
+        if (ownZ !== 0) diagnose('ELEVATED_GEOMETRY_PROJECTED', `${r.type} at elevation ${entityZ} is projected onto the plan; its elevation is retained.`, r);
+        if (entityZ !== 0) (ent as DxfEntity & { elevation?: number }).elevation = entityZ;
+        const transformedInvalid = validateCadEntity(ent);
+        if (transformedInvalid) { diagnose('INVALID_TRANSFORM', transformedInvalid, r, 'error'); continue; }
+        if (!Object.values(getCadEntityBounds(ent)).every(Number.isFinite)) { diagnose('GEOMETRY_OVERFLOW', 'Native geometry exceeds finite drawing bounds; entity omitted.', r, 'error'); continue; }
+        if (ent.geometryApproximation) diagnose('APPROXIMATED_GEOMETRY', ent.geometryApproximation, r);
+        entities.push(ent);
+      }
     }
   }
   expand(sections.get('ENTITIES') ?? [], identity, []);
