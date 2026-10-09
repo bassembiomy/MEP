@@ -1,0 +1,26 @@
+diff --git a/src/dwg.spec b/src/dwg.spec
+index dc91f71b..1d998336 100644
+--- a/src/dwg.spec
++++ b/src/dwg.spec
+@@ -3705,7 +3705,20 @@ DWG_TABLE (LAYER)
+   }
+   SINCE (R_2000b) {
+     // separate DXF flag 70 from the internal DWG flag0 bitmask
+-    int flag0 = FIELD_VALUE (flag0);
++    int flag0;
++    ENCODER {
++      // MEP patch: dxf2dwg never derived the DWG flag word from the parsed fields, so frozen/off/locked layers were
++      // written as flag0 = 0. R2000+ stores "off" as flag0 bit 2 with a positive colour index.
++      FIELD_VALUE (flag0) = (FIELD_VALUE (frozen) ? 1 : 0)
++        | ((FIELD_VALUE (color.index) < 0 || !FIELD_VALUE (on)) ? 2 : 0)
++        | (FIELD_VALUE (frozen_in_new) ? 4 : 0)
++        | (FIELD_VALUE (locked) ? 8 : 0)
++        | (FIELD_VALUE (plotflag) ? 16 : 0)
++        | ((FIELD_VALUE (linewt) & 0x1f) << 5);
++      if (FIELD_VALUE (color.index) < 0)
++        FIELD_VALUE (color.index) = -FIELD_VALUE (color.index);
++    }
++    flag0 = FIELD_VALUE (flag0);
+     FIELD_BSx (flag0, 0); // -> 70,290,370
+     flag0 = FIELD_VALUE (flag0);
+     // DWG: frozen (1), on (2), frozen by default (4),

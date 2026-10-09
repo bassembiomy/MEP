@@ -61,7 +61,7 @@
     }
    },
    "measurement": 0,
-   "sha256": "52b48e722d5c13143b46e8223c2857ac6c7d1d80e8f94a38ea40b3ff02c5890d",
+   "sha256": "c879437876ee408a5699b4f76df01828eeae8d260023db827180b13896bbae3e",
    "texts": [
     {
      "height": 5.0,
@@ -113,7 +113,7 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
-     "layer table (frozen/off/locked/colour)",
+     "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
@@ -215,7 +215,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "fbeaf4d3737aeb12ad278b66cc8ceea67648bb905f2668c0c05b6fa229f00f63",
+   "sha256": "3d17471ab6eac0a6d65b6c343e043457c629c9f465da102906efcf90c40eead5",
    "texts": [
     {
      "height": 150.0,
@@ -281,7 +281,7 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
-     "layer table (frozen/off/locked/colour)",
+     "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
@@ -362,7 +362,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "3bb0eca3edaca697eb298fcbef82329909c373caefa418798742385c75da7e8d",
+   "sha256": "949c1f744f57dfb32b55c4588be3825881fb69bccc628676c51d8c3d0f9f3b3b",
    "texts": [
     {
      "height": 150.0,
@@ -428,7 +428,7 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
-     "layer table (frozen/off/locked/colour)",
+     "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
@@ -457,7 +457,7 @@
     "_CLOSEDBLANK",
     "_CLOSEDFILLED"
    ],
-   "bytes": 27857,
+   "bytes": 27858,
    "dwgVersion": "r2000",
    "ezdxfCounts": {
     "dimensionBlocks": 3,
@@ -568,7 +568,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "c7d9b556ceb1d129a71aee0e72ac3a6f5dd0ad28f57191cd24252ddc9610db59",
+   "sha256": "931c902e71fb3c33c41be4b64b518016397db8cbb6cb7e6f346a3c8ad66c8f34",
    "texts": [
     {
      "height": 150.0,
@@ -634,7 +634,7 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
-     "layer table (frozen/off/locked/colour)",
+     "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
@@ -650,17 +650,6 @@
        150.0,
        250.0
       ]
-     },
-     "layer:A-FRZ": {
-      "cause": "LibreDWG 0.13.3 dxf2dwg drops the layer frozen/locked flags",
-      "dwg": {
-       "frozen": false,
-       "locked": false
-      },
-      "source": {
-       "frozen": true,
-       "locked": false
-      }
      }
     },
     "status": "pass-with-exclusions"
@@ -746,7 +735,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "38e7ab62c3b8adba552a6ed27ea51e5cdadbc60cd4272f59aba0653d6cf7572b",
+   "sha256": "0856f5c0d8f9b24244d426ceba1ce1d65bb986cb7cdfc55c2832c4776aa19909",
    "texts": [
     {
      "height": 150.0,
@@ -812,7 +801,7 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
-     "layer table (frozen/off/locked/colour)",
+     "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
@@ -913,7 +902,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "e8735196d1fd0557e5deef9c2cdc0ab94664ebc9ac8d578a97e247d4b7812007",
+   "sha256": "45f56f7d7d1c9602753cc2a83cd937ce6f6f887c80bbb9482eb2d985cf326b55",
    "texts": [
     {
      "height": 150.0,
@@ -979,7 +968,7 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
-     "layer table (frozen/off/locked/colour)",
+     "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
@@ -1007,6 +996,13 @@
  "handleNormalisation": "entity handles are renumbered before dxf2dwg (modelspace last) to avoid LibreDWG 0.13.3 first/last handle-range entity leaks",
  "libredwg": {
   "commit": "97c7225596c17430b82fd0161e7eff6beb5b1034",
+  "patches": [
+   {
+    "file": "scripts/cad-corpus/patches/libredwg-0.13.3-layer-flags.patch",
+    "purpose": "dxf2dwg writes the layer frozen/off/locked flag word (0.13.3 writes 0 and loses them)",
+    "sha256": "35c01da2cc9ce3fbfa801123bda3397da5cd6b379f513c8e3ba314dcdaecf933"
+   }
+  ],
   "tag": "0.13.3",
   "version": "dxf2dwg 0.13.3"
  },
@@ -1069,8 +1065,9 @@
    "version": "r2004"
   },
   {
-   "diffCount": 1,
+   "diffCount": 2,
    "diffs": [
+    "layer A-OFF: source {'frozen': False, 'locked': False, 'off': True, 'color': 5}, dwg {'frozen': False, 'locked': False, 'off': False, 'color': 5}",
     "$INSUNITS: source 4, dwg 0"
    ],
    "reason": "writer check differs from the ezdxf source",

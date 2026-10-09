@@ -239,6 +239,25 @@ def summary_from_dxf_tags(path):
             "lunits": header.get("$LUNITS", 2)}
 
 
+def layers_from_dwg(dwgread, dwg, tmp):
+    """Layer flags straight from the DWG via LibreDWG's own JSON dump (dwg2dxf cannot express "off" without a negative
+    colour). flag0 is the DWG flag word: 1 frozen, 2 off, 4 frozen in new viewports, 8 locked."""
+    out = os.path.join(tmp, os.path.basename(dwg) + ".json")
+    r = run([dwgread, "-O", "json", "-o", out, dwg])
+    if r.returncode != 0 or not os.path.exists(out):
+        return None
+    with open(out, encoding="utf-8", errors="replace") as fh:
+        data = json.load(fh)
+    layers = {}
+    for o in data.get("OBJECTS", []):
+        if o.get("object") == "LAYER":
+            f = int(o.get("flag0", 0))
+            c = o.get("color", 7)
+            c = c.get("index", 7) if isinstance(c, dict) else c
+            layers[o["name"]] = {"frozen": bool(f & 1), "locked": bool(f & 8), "off": bool(f & 2), "color": abs(int(c))}
+    return layers
+
+
 def compare(src, back):
     """Return (diffs, exclusions). A diff is a human-readable string; exclusions are per-type losses of KNOWN_LOSS_TYPES."""
     diffs, exclusions = [], {}
@@ -291,8 +310,8 @@ def compare(src, back):
         if a != b:
             if a and b and {k for k in a if a[k] != b[k]} <= {"frozen", "locked"} and not (b["frozen"] and not a["frozen"]) \
                     and not (b["locked"] and not a["locked"]):
-                # dxf2dwg 0.13.3 (R2000) never derives the DWG layer flag word from the DXF frozen/locked bits
-                # (dwg.spec writes the unset `flag0`), so those two flags are lost. Off (negative colour) survives.
+                # Unpatched dxf2dwg 0.13.3 never derives the DWG layer flag word (dwg.spec writes the unset `flag0`), so
+                # frozen/locked/off are lost; the build script applies a patch for that. This stays as a safety net.
                 exclusions[f"layer:{n}"] = {"source": {k: a[k] for k in ("frozen", "locked")},
                                             "dwg": {k: b[k] for k in ("frozen", "locked")},
                                             "cause": "LibreDWG 0.13.3 dxf2dwg drops the layer frozen/locked flags"}
@@ -322,6 +341,12 @@ def main():
             versions = a.split("=", 1)[1].split(",")
     bin_dir = find_bin()
     dxf2dwg, dwg2dxf = os.path.join(bin_dir, "dxf2dwg"), os.path.join(bin_dir, "dwg2dxf")
+    dwgread = os.path.join(bin_dir, "dwgread")
+    patch_file = os.path.join(HERE, "patches", "libredwg-0.13.3-layer-flags.patch")
+    patch_sha = sha256(patch_file)
+    stamp = os.path.join(os.path.dirname(bin_dir), ".patch-sha256")
+    if not os.path.exists(stamp) or open(stamp).read().strip() != patch_sha:
+        sys.exit("LibreDWG build lacks patches/libredwg-0.13.3-layer-flags.patch: run scripts/cad-corpus/build_libredwg.sh")
     ver_out = run([dxf2dwg, "--version"]).stdout.strip().splitlines()[0]
     if LIBREDWG_TAG not in ver_out:
         sys.exit(f"expected LibreDWG {LIBREDWG_TAG}, found '{ver_out}' (rebuild with build_libredwg.sh)")
@@ -354,7 +379,13 @@ def main():
                     rejected.append({"twin": twin, "version": ver, "reason": f"dwg2dxf of the written file failed (exit {r.returncode})",
                                      "log": [l.replace(tmp, "<tmp>") for l in r.stdout.splitlines() if "ERROR" in l][:5]})
                     continue
-                diffs, exclusions = compare(src, summary_from_dxf_tags(back_path))
+                back = summary_from_dxf_tags(back_path)
+                native_layers = layers_from_dwg(dwgread, dwg, tmp)
+                if native_layers is None:
+                    rejected.append({"twin": twin, "version": ver, "reason": "dwgread -O json of the written file failed"})
+                    continue
+                back["layers"] = native_layers
+                diffs, exclusions = compare(src, back)
                 if diffs:
                     rejected.append({"twin": twin, "version": ver, "reason": "writer check differs from the ezdxf source",
                                      "diffs": diffs[:20], "diffCount": len(diffs)})
@@ -370,7 +401,7 @@ def main():
                     "insunits": src["insunits"], "measurement": src["measurement"],
                     "writerCheck": {"status": "pass-with-exclusions" if exclusions else "pass",
                                     "compared": ["entity counts by type", "entity counts by type and layer",
-                                                 "paper-space entities by type", "INSERT attribute count", "layer table (frozen/off/locked/colour)",
+                                                 "paper-space entities by type", "INSERT attribute count", "layer table (frozen/off/locked/colour, from dwgread JSON)",
                                                  "block names", "anonymous dimension blocks", "$INSUNITS/$MEASUREMENT/$LUNITS"],
                                     "exclusions": exclusions},
                 }
@@ -381,7 +412,9 @@ def main():
         "about": "Binary DWG fixtures written by LibreDWG dxf2dwg from the R2000 ezdxf twins in this directory. Counts, layers and "
                  "blocks come from the ezdxf SOURCE document, never from our parsers. A file is committed only if LibreDWG's own "
                  "dwg2dxf round trip matches the source (writerCheck). Rejected (twin, version) pairs are listed with the reason.",
-        "libredwg": {"tag": LIBREDWG_TAG, "commit": LIBREDWG_COMMIT, "version": ver_out},
+        "libredwg": {"tag": LIBREDWG_TAG, "commit": LIBREDWG_COMMIT, "version": ver_out,
+                     "patches": [{"file": "scripts/cad-corpus/patches/libredwg-0.13.3-layer-flags.patch", "sha256": patch_sha,
+                                  "purpose": "dxf2dwg writes the layer frozen/off/locked flag word (0.13.3 writes 0 and loses them)"}]},
         "generator": {"ezdxf": ezdxf.__version__},
         "handleNormalisation": "entity handles are renumbered before dxf2dwg (modelspace last) to avoid LibreDWG 0.13.3 first/last handle-range entity leaks",
         "files": files,
