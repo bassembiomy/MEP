@@ -33,11 +33,15 @@ $ npm run build:mac
 $ npm run build:linux
 ```
 
+Packaging is unverified: no installer has been built, installed or signed in testing, and `electron-builder.yml` still uses the placeholder product name `-`.
+
 
 ## Engineering validation
 
 Run all engine tests with `npm test` (Vitest suites plus legacy assertion and Node tests). Run only Vitest suites with `npm run test:engine`, or filter by basename: `npm test -- deploymentIntegrity`. Use `npm run typecheck` and `npm run build` for application verification.
 
+GUI checks: `npm run test:gui` (headless Chromium, `e2e/`) and `npm run test:electron` (real Electron, Linux/Xvfb only).
+
 The engine uses canonical feet, Btu/h and CFM internally. Project units and drawing scale are normalized before calculations. Invalid geometry and loads block calculations; no feasible catalog record blocks selection. Optimizer Studio applies CAD designs through a transaction that rechecks current inputs, locked components, flow, connected pressure paths and geometry. Air Distribution Schedules are preliminary and cannot bypass that transaction.
 
-These checks do not certify a construction-ready design. All outputs are preliminary (`issueReady: false`). The application has not been verified through live Electron GUI testing, CAD import is tested only with synthetic DXF/DWG fixtures, the bundled catalogs have no verified manufacturer provenance, and the duct pressure model is simplified. The shared load model is preliminary; building envelope/solar inputs, manufacturer operating conditions, outdoor-air arrangements, 3D coordination and full safety review still require verification. Review [the audit](docs/audits/2026-10-08-cad-hvac-engine-audit.md) and [current implementation status](docs/audits/2026-10-08-engineering-integrity-status.md) before engineering use.
+These checks do not certify a construction-ready design. All outputs are preliminary (`issueReady: false`). The real-Electron smoke suite (`npm run test:electron`) runs on Linux under Xvfb only; Windows/macOS builds, installers and signing are unverified. CAD import is tested only with generated fixtures (DXF written by ezdxf, DWG written by LibreDWG, which is also the app's DWG reader), never with drawings authored in AutoCAD or Revit. Excel catalogs loaded in the app do not affect equipment recommendations, the bundled catalogs have no verified manufacturer provenance, and the duct pressure model is simplified. The shared load model is preliminary; building envelope/solar inputs, manufacturer operating conditions, outdoor-air arrangements, 3D coordination and full safety review still require verification. Review [the audit](docs/audits/2026-10-08-cad-hvac-engine-audit.md) and [current implementation status](docs/audits/2026-10-08-engineering-integrity-status.md) before engineering use.
