@@ -129,6 +129,7 @@ function validateReviewCommon(o:Record<string,unknown>,name:string):void {
   finite(o.level,`${name} level`);finite(o.confidence,`${name} confidence`);
   stringList(o.evidence,`${name} evidence`);stringList(o.sourceHandles,`${name} source handles`);
   if(o.approvedAt!==undefined) text(o.approvedAt,`${name} approval date`);
+  if(o.evidenceUnitsPerFoot!==undefined) requirePositive(`${name} evidence scale`,finite(o.evidenceUnitsPerFoot,`${name} evidence scale`));
 }
 function validateCadOpenings(value:unknown):StoredCadOpening[] {
   return array(value,'CAD openings').map((v,i)=>{

@@ -181,3 +181,39 @@ it('rejects malformed lock flags and source approval provenance',()=>{
 it('rejects overflowed CAD extents before JSON turns Infinity into null',()=>{
  expect(()=>serializeProject({...state(),zones:[],dxfEntities:[{type:'CIRCLE',x:1e308,y:0,radius:1e308}]})).toThrow(/finite|bounds|extent/i);
 });
+
+describe('persisted CAD evidence scale validation',()=>{
+  const opening={id:'door-1',status:'review-required',level:0,confidence:1,evidence:['door 3 ft'],sourceHandles:['A2'],kind:'door',origin:'block',
+    center:{x:0,y:0},span:{a:{x:-18,y:0},b:{x:18,y:0}},widthFt:3,adjacentRoomIds:['z1']};
+  const obstacle={id:'obs-1',status:'review-required',level:0,confidence:1,evidence:['column 2 ft'],sourceHandles:['A4'],shape:'polygon',
+    polygon:[0,0,24,0,24,24,0,24],layer:'COLUMNS',widthFt:2,depthFt:2};
+  it('round trips a positive evidence scale on openings and obstacles',()=>{
+    const saved={...state(),cadOpenings:[{...opening,evidenceUnitsPerFoot:12}],cadObstacles:[{...obstacle,evidenceUnitsPerFoot:12.5}]};
+    const restored=parseProjectDocument(serializeProject(saved as unknown as Parameters<typeof serializeProject>[0]));
+    expect(restored.cadOpenings?.[0].evidenceUnitsPerFoot).toBe(12);
+    expect(restored.cadObstacles?.[0].evidenceUnitsPerFoot).toBe(12.5);
+  });
+  it.each([
+    ['null (non-finite)',null],['infinite','1e400'],['zero',0],['negative',-12],['string','12'],
+  ])('rejects %s evidenceUnitsPerFoot on an opening atomically',(_label,bad)=>{
+    const doc=JSON.parse(serializeProject({...state(),cadOpenings:[{...opening}]} as unknown as Parameters<typeof serializeProject>[0]));
+    const source=JSON.stringify({...doc,cadOpenings:[{...doc.cadOpenings[0],evidenceUnitsPerFoot:bad}]}).replace('"evidenceUnitsPerFoot":"1e400"','"evidenceUnitsPerFoot":1e400');
+    expect(()=>parseProjectDocument(source)).toThrow(/evidence|finite|positive|number/i);
+    const before=useProjectStore.getState();
+    expect(before.restoreProjectDocument(source).success).toBe(false);
+    expect(useProjectStore.getState()).toBe(before);
+  });
+  it.each([
+    ['null (non-finite)',null],['infinite','1e400'],['zero',0],['negative',-12],['string','12'],
+  ])('rejects %s evidenceUnitsPerFoot on an obstacle atomically',(_label,bad)=>{
+    const doc=JSON.parse(serializeProject({...state(),cadObstacles:[{...obstacle}]} as unknown as Parameters<typeof serializeProject>[0]));
+    const source=JSON.stringify({...doc,cadObstacles:[{...doc.cadObstacles[0],evidenceUnitsPerFoot:bad}]}).replace('"evidenceUnitsPerFoot":"1e400"','"evidenceUnitsPerFoot":1e400');
+    expect(()=>parseProjectDocument(source)).toThrow(/evidence|finite|positive|number/i);
+    const before=useProjectStore.getState();
+    expect(before.restoreProjectDocument(source).success).toBe(false);
+    expect(useProjectStore.getState()).toBe(before);
+  });
+  it('rejects a non-finite evidence scale before writing a document',()=>{
+    expect(()=>serializeProject({...state(),cadOpenings:[{...opening,evidenceUnitsPerFoot:NaN}]} as unknown as Parameters<typeof serializeProject>[0])).toThrow(/finite/i);
+  });
+});
