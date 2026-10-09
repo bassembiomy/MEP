@@ -472,11 +472,19 @@ export function parseDxfText(dxfText: string): ParsedDxf {
   const layers = new Map<string, string | undefined>();
   // Layer names are case-insensitive in AutoCAD: an entity on 'walls' is on the table layer 'WALLS' (colour, frozen/off state, role).
   const layerCase = new Map<string, string>();
-  const canonicalLayer = (name: string) => layerCase.get(name.toLowerCase()) ?? name;
+  // A layer that is not in the table (entity-only) registers its first-seen spelling, so 'foo' / 'FOO' end up on one layer.
+  const canonicalLayer = (name: string) => {
+    const known = layerCase.get(name.toLowerCase());
+    if (known !== undefined) return known;
+    layerCase.set(name.toLowerCase(), name);
+    return name;
+  };
   const hiddenLayers = new Set<string>(), frozenLayers = new Set<string>();
   for (const r of sections.get('TABLES') ?? []) if (r.type === 'LAYER') {
     const name = first(r, 2)?.trim() ?? '0';
-    if (!layerCase.has(name.toLowerCase())) layerCase.set(name.toLowerCase(), name);
+    const known = layerCase.get(name.toLowerCase());
+    if (known === undefined) layerCase.set(name.toLowerCase(), name);
+    else if (known !== name) diagnose('LAYER_CASE_COLLISION', `Layers '${known}' and '${name}' differ only by case; AutoCAD treats them as one layer, so entities on either are placed on '${known}' (the first spelling).`, r);
     layers.set(name, color(r));
     const frozen = (number(r, 70, 0) & 1) !== 0;
     if (frozen) frozenLayers.add(name);
@@ -497,7 +505,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     if (at < 0) continue;
     const target = r.pairs.slice(at + 1).find(p => p.code === 1005 || p.code === 1001);
     const real = target?.code === 1005 ? recordNames.get(target.value.trim().toUpperCase()) : undefined;
-    if (real && real !== n) effectiveBlockNames.set(n, real);
+    if (real && real !== n && !real.startsWith('*')) effectiveBlockNames.set(n, real); // a target that is itself anonymous names nothing
   }
   const mlineStyles = new Map<string, { flags: number; offsets: number[] }>();
   for (const r of sections.get('OBJECTS') ?? []) if (r.type === 'MLINESTYLE')

@@ -203,6 +203,7 @@ DWG XREF caveat: `dxf2dwg` 0.13.3 does not write the xref flag/path of a block r
 Gaps still open after the adversarial corpus (none is a `gap()` test, each is documented behaviour):
 
 - DWG: no XREF flag/path can be produced (dxf2dwg drops them), dynamic-block `AcDbBlockRepBTag` and MLINE are not read from DWG (libredwg-web exposes neither).
-- MLINE: round / inner-arc caps, fill and element colours/linetypes are not drawn.
+- MLINE: round / inner-arc caps, fill and element colours/linetypes are not drawn. Entity flag bits 4 / 8 (suppress start / end cap) are honoured, which AutoCAD does and ezdxf's `virtual_entities()` does not, so such a record intentionally differs from the ezdxf explosion. A miter longer than 10x the widest element offset raises `MLINE_LONG_MITER`; a style whose element count differs from the entity raises `MLINE_STYLE_MISMATCH` (its caps and joints are not drawn).
+- Layer case (DXF only): layer names are case-insensitive and resolve to the first spelling (the table's, else the first entity's). Two TABLE layers differing only by case raise `LAYER_CASE_COLLISION`. A layer-role override saved under an entity spelling that is no longer the first on re-import (e.g. `foo` saved, file now lists `FOO` first) is orphaned: the layer is then classified afresh. DWG import is unaffected.
 - ACAD_TABLE, WIPEOUT, IMAGE, OLE2FRAME and proxy objects are reported as `UNSUPPORTED_ENTITY` and omitted by design (the table's text is therefore never a room label).
 - Absolute tolerances in `cadSemanticState.ts`, `componentEdits.ts` and `deploymentValidation.ts` were reviewed, not changed (no failure demonstrated on a 0.02-unit plan).
