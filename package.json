@@ -27,7 +27,8 @@
     "test:gui": "vite build --config e2e/vite.e2e.config.ts && playwright test -c e2e/playwright.config.ts",
     "test:electron": "node scripts/run-electron-tests.mjs",
     "check:no-test-hook": "node scripts/check-no-test-hook.mjs",
-    "corpus:generate": "python3 scripts/cad-corpus/generate_corpus.py"
+    "corpus:generate": "python3 scripts/cad-corpus/generate_corpus.py",
+    "corpus:generate-dwg": "python3 scripts/cad-corpus/generate_corpus.py --r2000-twins && python3 scripts/cad-corpus/generate_dwg_corpus.py"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",

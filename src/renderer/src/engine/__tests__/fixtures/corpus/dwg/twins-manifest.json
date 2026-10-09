@@ -1,0 +1,1024 @@
+{
+ "about": "Ground truth for the R2000 DXF twins of the corpus, computed from the generator's construction geometry (scripts/cad-corpus/generate_corpus.py --r2000-twins), never from our parser. Same conventions as ../manifest.json.",
+ "files": {
+  "arch-imperial-in-r2000.dxf": {
+   "columns": [],
+   "drawingUnit": "in",
+   "dxfVersion": "AC1015",
+   "expected": {
+    "cadUnit": "in",
+    "unitsConfidence": "declared"
+   },
+   "expectedEntityCount": 34,
+   "insunits": 1,
+   "lunits": 4,
+   "measurement": 0,
+   "modelBBox": {
+    "maxX": 480.0,
+    "maxY": 264.0,
+    "minX": -2.482695181138038e-15,
+    "minY": 0.0
+   },
+   "openings": [
+    {
+     "block": "DOOR-36",
+     "centre": {
+      "x": 72,
+      "y": 168
+     },
+     "id": "D01",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 3.0,
+     "widthIn": 36
+    },
+    {
+     "block": "DOOR-36",
+     "centre": {
+      "x": 216,
+      "y": 168
+     },
+     "id": "D02",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 180,
+     "widthFt": 3.0,
+     "widthIn": 36
+    },
+    {
+     "block": "DOOR-36",
+     "centre": {
+      "x": 384,
+      "y": 168
+     },
+     "id": "D03",
+     "kind": "door",
+     "mirrored": true,
+     "rotationDeg": 0,
+     "widthFt": 3.0,
+     "widthIn": 36
+    },
+    {
+     "block": "DOOR-36",
+     "centre": {
+      "x": 0,
+      "y": 210
+     },
+     "id": "D04",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 270,
+     "widthFt": 3.0,
+     "widthIn": 36
+    },
+    {
+     "block": "DOOR-36",
+     "centre": {
+      "x": 480,
+      "y": 210
+     },
+     "id": "D05",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 90,
+     "widthFt": 3.0,
+     "widthIn": 36
+    }
+   ],
+   "rooms": [
+    {
+     "areaSqFt": 168.0,
+     "ceilingAnnotation": "CLG HT 9'-0\"",
+     "ceilingHeightFt": 9.0,
+     "name": "OFFICE A",
+     "polygon": [
+      0,
+      0,
+      144,
+      0,
+      144,
+      168,
+      0,
+      168
+     ]
+    },
+    {
+     "areaSqFt": 168.0,
+     "ceilingAnnotation": "CLG HT 9'-0\"",
+     "ceilingHeightFt": 9.0,
+     "name": "OFFICE B",
+     "polygon": [
+      144,
+      0,
+      288,
+      0,
+      288,
+      168,
+      144,
+      168
+     ]
+    },
+    {
+     "areaSqFt": 224.0,
+     "ceilingAnnotation": "CH 8'-6\"",
+     "ceilingHeightFt": 8.5,
+     "name": "CONFERENCE",
+     "polygon": [
+      288,
+      0,
+      480,
+      0,
+      480,
+      168,
+      288,
+      168
+     ]
+    },
+    {
+     "areaSqFt": 320.0,
+     "ceilingAnnotation": "CH 8'-6\"",
+     "ceilingHeightFt": 8.5,
+     "name": "LOBBY",
+     "polygon": [
+      0,
+      168,
+      480,
+      168,
+      480,
+      264,
+      0,
+      264
+     ]
+    }
+   ],
+   "sourceUnsupported": {
+    "ATTDEF": 5,
+    "ATTRIB": 5,
+    "SEQEND": 5
+   },
+   "unitsPerFoot": 12.0
+  },
+  "arch-metric-mm-r2000.dxf": {
+   "columns": [
+    {
+     "centre": {
+      "x": 9500,
+      "y": 2500
+     },
+     "shape": "square",
+     "sizeFt": 1.3123359580052494,
+     "sizeMm": 400
+    },
+    {
+     "centre": {
+      "x": 12900,
+      "y": 2500
+     },
+     "shape": "square",
+     "sizeFt": 1.3123359580052494,
+     "sizeMm": 400
+    },
+    {
+     "centre": {
+      "x": 6100,
+      "y": 6100
+     },
+     "shape": "circle",
+     "sizeFt": 1.4763779527559056,
+     "sizeMm": 450
+    }
+   ],
+   "drawingUnit": "mm",
+   "dxfVersion": "AC1015",
+   "expected": {
+    "cadUnit": "mm",
+    "unitsConfidence": "declared"
+   },
+   "expectedEntityCount": 90,
+   "insunits": 4,
+   "measurement": 1,
+   "modelBBox": {
+    "maxX": 14400.0,
+    "maxY": 7300.0,
+    "minX": -200.0,
+    "minY": -200.0
+   },
+   "openings": [
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 2000,
+      "y": 5050
+     },
+     "hinge": {
+      "x": 1550.0,
+      "y": 5050.0
+     },
+     "id": "D01",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 6100,
+      "y": 5050
+     },
+     "hinge": {
+      "x": 6550.0,
+      "y": 5050.0
+     },
+     "id": "D02",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 180,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 11200,
+      "y": 5050
+     },
+     "hinge": {
+      "x": 11650.0,
+      "y": 5050.0
+     },
+     "id": "D03",
+     "kind": "door",
+     "mirrored": true,
+     "rotationDeg": 0,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": -100,
+      "y": 6100
+     },
+     "hinge": {
+      "x": -99.99999999999991,
+      "y": 6550.0
+     },
+     "id": "D04",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 270,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 14300,
+      "y": 6100
+     },
+     "hinge": {
+      "x": 14300.0,
+      "y": 5650.0
+     },
+     "id": "D05",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 90,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "WIN-1200",
+     "centre": {
+      "x": 2000,
+      "y": -100
+     },
+     "id": "W@2000",
+     "kind": "window",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 3.9370078740157477,
+     "widthMm": 1200
+    },
+    {
+     "block": "WIN-1200",
+     "centre": {
+      "x": 6100,
+      "y": -100
+     },
+     "id": "W@6100",
+     "kind": "window",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 3.9370078740157477,
+     "widthMm": 1200
+    },
+    {
+     "block": "WIN-1200",
+     "centre": {
+      "x": 11200,
+      "y": -100
+     },
+     "id": "W@11200",
+     "kind": "window",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 3.9370078740157477,
+     "widthMm": 1200
+    }
+   ],
+   "rooms": [
+    {
+     "areaSqFt": 215.27820833419443,
+     "ceilingAnnotation": "CH 2700",
+     "ceilingHeightFt": 8.858267716535433,
+     "name": "OFFICE 1",
+     "polygon": [
+      0,
+      0,
+      4000,
+      0,
+      4000,
+      5000,
+      0,
+      5000
+     ]
+    },
+    {
+     "areaSqFt": 215.27820833419443,
+     "ceilingAnnotation": "C.H. = 2.70 m",
+     "ceilingHeightFt": 8.858267716535433,
+     "name": "OFFICE 2",
+     "polygon": [
+      4100,
+      0,
+      8100,
+      0,
+      8100,
+      5000,
+      4100,
+      5000
+     ]
+    },
+    {
+     "areaSqFt": 322.91731250129163,
+     "ceilingAnnotation": "CH 3000",
+     "ceilingHeightFt": 9.84251968503937,
+     "name": "MEETING ROOM",
+     "polygon": [
+      8200,
+      0,
+      14200,
+      0,
+      14200,
+      5000,
+      8200,
+      5000
+     ]
+    },
+    {
+     "areaSqFt": 305.6950558345561,
+     "ceilingAnnotation": "C.H. = 2.40 m",
+     "ceilingHeightFt": 7.874015748031495,
+     "name": "CORRIDOR",
+     "polygon": [
+      0,
+      5100,
+      14200,
+      5100,
+      14200,
+      7100,
+      0,
+      7100
+     ]
+    }
+   ],
+   "sourceUnsupported": {
+    "ATTDEF": 5,
+    "ATTRIB": 5,
+    "SEQEND": 5
+   },
+   "unitsPerFoot": 304.8,
+   "wallSegments": 48
+  },
+  "elevated-levels-r2000.dxf": {
+   "columns": [],
+   "drawingUnit": "mm",
+   "dxfVersion": "AC1015",
+   "elevatedTopLevelEntities": 18,
+   "expected": {
+    "cadUnit": "mm",
+    "unitsConfidence": "declared"
+   },
+   "expectedEntityCount": 40,
+   "insunits": 4,
+   "levels": {
+    "0": [
+     {
+      "areaSqFt": 215.27820833419443,
+      "ceilingAnnotation": "CH 2700",
+      "ceilingHeightFt": 8.858267716535433,
+      "door": {
+       "widthFt": 2.952755905511811,
+       "x": 2000.0,
+       "y": 5000
+      },
+      "name": "GF OFFICE",
+      "polygon": [
+       0,
+       0,
+       4000,
+       0,
+       4000,
+       5000,
+       0,
+       5000
+      ]
+     },
+     {
+      "areaSqFt": 129.16692500051667,
+      "ceilingAnnotation": "CH 2400",
+      "ceilingHeightFt": 7.874015748031495,
+      "door": {
+       "widthFt": 2.952755905511811,
+       "x": 5600.0,
+       "y": 4000
+      },
+      "name": "GF STORE",
+      "polygon": [
+       4100,
+       0,
+       7100,
+       0,
+       7100,
+       4000,
+       4100,
+       4000
+      ]
+     }
+    ],
+    "3500": [
+     {
+      "areaSqFt": 269.097760417743,
+      "ceilingAnnotation": "CH 2800",
+      "ceilingHeightFt": 9.186351706036744,
+      "door": {
+       "widthFt": 2.952755905511811,
+       "x": 2500.0,
+       "y": 5000
+      },
+      "name": "UF OPEN OFFICE",
+      "polygon": [
+       0,
+       0,
+       5000,
+       0,
+       5000,
+       5000,
+       0,
+       5000
+      ]
+     },
+     {
+      "areaSqFt": 172.22256666735555,
+      "ceilingAnnotation": "CH 3000",
+      "ceilingHeightFt": 9.84251968503937,
+      "door": {
+       "widthFt": 2.952755905511811,
+       "x": 7100.0,
+       "y": 4000
+      },
+      "name": "UF MEETING",
+      "polygon": [
+       5100,
+       0,
+       9100,
+       0,
+       9100,
+       4000,
+       5100,
+       4000
+      ]
+     }
+    ]
+   },
+   "measurement": 1,
+   "modelBBox": {
+    "maxX": 9100.0,
+    "maxY": 5900.0,
+    "minX": 0.0,
+    "minY": 0.0
+   },
+   "nonPlanarLines": 1,
+   "openings": [],
+   "rooms": [],
+   "sourceUnsupported": {},
+   "unitsPerFoot": 304.8
+  },
+  "noise-dim-hatch-spline-paper-r2000.dxf": {
+   "columns": [
+    {
+     "centre": {
+      "x": 9500,
+      "y": 2500
+     },
+     "shape": "square",
+     "sizeFt": 1.3123359580052494,
+     "sizeMm": 400
+    },
+    {
+     "centre": {
+      "x": 12900,
+      "y": 2500
+     },
+     "shape": "square",
+     "sizeFt": 1.3123359580052494,
+     "sizeMm": 400
+    },
+    {
+     "centre": {
+      "x": 6100,
+      "y": 6100
+     },
+     "shape": "circle",
+     "sizeFt": 1.4763779527559056,
+     "sizeMm": 450
+    }
+   ],
+   "drawingUnit": "mm",
+   "dxfVersion": "AC1015",
+   "ellipseCount": 1,
+   "expected": {
+    "cadUnit": "mm",
+    "unitsConfidence": "declared"
+   },
+   "expectedEntityCount": 85,
+   "hiddenLayerEntityCount": 2,
+   "hiddenLayers": [
+    "A-FRZ",
+    "A-OFF"
+   ],
+   "insunits": 4,
+   "measurement": 1,
+   "modelBBox": {
+    "maxX": 14400.0,
+    "maxY": 7300.0,
+    "minX": -200.0,
+    "minY": -200.0
+   },
+   "openings": [
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 2000,
+      "y": 5050
+     },
+     "hinge": {
+      "x": 1550.0,
+      "y": 5050.0
+     },
+     "id": "D01",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 6100,
+      "y": 5050
+     },
+     "hinge": {
+      "x": 6550.0,
+      "y": 5050.0
+     },
+     "id": "D02",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 180,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 11200,
+      "y": 5050
+     },
+     "hinge": {
+      "x": 11650.0,
+      "y": 5050.0
+     },
+     "id": "D03",
+     "kind": "door",
+     "mirrored": true,
+     "rotationDeg": 0,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": -100,
+      "y": 6100
+     },
+     "hinge": {
+      "x": -99.99999999999991,
+      "y": 6550.0
+     },
+     "id": "D04",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 270,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 14300,
+      "y": 6100
+     },
+     "hinge": {
+      "x": 14300.0,
+      "y": 5650.0
+     },
+     "id": "D05",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 90,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "WIN-1200",
+     "centre": {
+      "x": 2000,
+      "y": -100
+     },
+     "id": "W@2000",
+     "kind": "window",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 3.9370078740157477,
+     "widthMm": 1200
+    },
+    {
+     "block": "WIN-1200",
+     "centre": {
+      "x": 6100,
+      "y": -100
+     },
+     "id": "W@6100",
+     "kind": "window",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 3.9370078740157477,
+     "widthMm": 1200
+    },
+    {
+     "block": "WIN-1200",
+     "centre": {
+      "x": 11200,
+      "y": -100
+     },
+     "id": "W@11200",
+     "kind": "window",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 3.9370078740157477,
+     "widthMm": 1200
+    }
+   ],
+   "paperSpace": {
+    "layout1Entities": 5,
+    "layout1Texts": [
+     "TITLE BLOCK"
+    ],
+    "layout2Viewports": 1
+   },
+   "rooms": [
+    {
+     "areaSqFt": 215.27820833419443,
+     "ceilingAnnotation": "CH 2700",
+     "ceilingHeightFt": 8.858267716535433,
+     "name": "OFFICE 1",
+     "polygon": [
+      0,
+      0,
+      4000,
+      0,
+      4000,
+      5000,
+      0,
+      5000
+     ]
+    },
+    {
+     "areaSqFt": 215.27820833419443,
+     "ceilingAnnotation": "C.H. = 2.70 m",
+     "ceilingHeightFt": 8.858267716535433,
+     "name": "OFFICE 2",
+     "polygon": [
+      4100,
+      0,
+      8100,
+      0,
+      8100,
+      5000,
+      4100,
+      5000
+     ]
+    },
+    {
+     "areaSqFt": 322.91731250129163,
+     "ceilingAnnotation": "CH 3000",
+     "ceilingHeightFt": 9.84251968503937,
+     "name": "MEETING ROOM",
+     "polygon": [
+      8200,
+      0,
+      14200,
+      0,
+      14200,
+      5000,
+      8200,
+      5000
+     ]
+    },
+    {
+     "areaSqFt": 305.6950558345561,
+     "ceilingAnnotation": "C.H. = 2.40 m",
+     "ceilingHeightFt": 7.874015748031495,
+     "name": "CORRIDOR",
+     "polygon": [
+      0,
+      5100,
+      14200,
+      5100,
+      14200,
+      7100,
+      0,
+      7100
+     ]
+    }
+   ],
+   "sourceUnsupported": {
+    "DIMENSION": 3,
+    "HATCH": 2,
+    "POINT": 3,
+    "SPLINE": 1
+   },
+   "splineCount": 1,
+   "unitsPerFoot": 304.8
+  },
+  "unitless-insunits0-r2000.dxf": {
+   "columns": [
+    {
+     "centre": {
+      "x": 9500,
+      "y": 2500
+     },
+     "shape": "square",
+     "sizeFt": 1.3123359580052494,
+     "sizeMm": 400
+    },
+    {
+     "centre": {
+      "x": 12900,
+      "y": 2500
+     },
+     "shape": "square",
+     "sizeFt": 1.3123359580052494,
+     "sizeMm": 400
+    },
+    {
+     "centre": {
+      "x": 6100,
+      "y": 6100
+     },
+     "shape": "circle",
+     "sizeFt": 1.4763779527559056,
+     "sizeMm": 450
+    }
+   ],
+   "drawingUnit": "mm (undeclared)",
+   "dxfVersion": "AC1015",
+   "expected": {
+    "cadUnit": "mm",
+    "unitsConfidence": "unknown"
+   },
+   "expectedEntityCount": 82,
+   "insunits": 0,
+   "measurement": 1,
+   "modelBBox": {
+    "maxX": 14400.0,
+    "maxY": 7300.0,
+    "minX": -200.0,
+    "minY": -200.0
+   },
+   "openings": [
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 2000,
+      "y": 5050
+     },
+     "hinge": {
+      "x": 1550.0,
+      "y": 5050.0
+     },
+     "id": "D01",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 6100,
+      "y": 5050
+     },
+     "hinge": {
+      "x": 6550.0,
+      "y": 5050.0
+     },
+     "id": "D02",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 180,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 11200,
+      "y": 5050
+     },
+     "hinge": {
+      "x": 11650.0,
+      "y": 5050.0
+     },
+     "id": "D03",
+     "kind": "door",
+     "mirrored": true,
+     "rotationDeg": 0,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": -100,
+      "y": 6100
+     },
+     "hinge": {
+      "x": -99.99999999999991,
+      "y": 6550.0
+     },
+     "id": "D04",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 270,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "DOOR-SGL-900",
+     "centre": {
+      "x": 14300,
+      "y": 6100
+     },
+     "hinge": {
+      "x": 14300.0,
+      "y": 5650.0
+     },
+     "id": "D05",
+     "kind": "door",
+     "mirrored": false,
+     "rotationDeg": 90,
+     "widthFt": 2.952755905511811,
+     "widthMm": 900
+    },
+    {
+     "block": "WIN-1200",
+     "centre": {
+      "x": 2000,
+      "y": -100
+     },
+     "id": "W@2000",
+     "kind": "window",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 3.9370078740157477,
+     "widthMm": 1200
+    },
+    {
+     "block": "WIN-1200",
+     "centre": {
+      "x": 6100,
+      "y": -100
+     },
+     "id": "W@6100",
+     "kind": "window",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 3.9370078740157477,
+     "widthMm": 1200
+    },
+    {
+     "block": "WIN-1200",
+     "centre": {
+      "x": 11200,
+      "y": -100
+     },
+     "id": "W@11200",
+     "kind": "window",
+     "mirrored": false,
+     "rotationDeg": 0,
+     "widthFt": 3.9370078740157477,
+     "widthMm": 1200
+    }
+   ],
+   "rooms": [
+    {
+     "areaSqFt": 215.27820833419443,
+     "ceilingAnnotation": "CH 2700",
+     "ceilingHeightFt": 8.858267716535433,
+     "name": "OFFICE 1",
+     "polygon": [
+      0,
+      0,
+      4000,
+      0,
+      4000,
+      5000,
+      0,
+      5000
+     ]
+    },
+    {
+     "areaSqFt": 215.27820833419443,
+     "ceilingAnnotation": "C.H. = 2.70 m",
+     "ceilingHeightFt": 8.858267716535433,
+     "name": "OFFICE 2",
+     "polygon": [
+      4100,
+      0,
+      8100,
+      0,
+      8100,
+      5000,
+      4100,
+      5000
+     ]
+    },
+    {
+     "areaSqFt": 322.91731250129163,
+     "ceilingAnnotation": "CH 3000",
+     "ceilingHeightFt": 9.84251968503937,
+     "name": "MEETING ROOM",
+     "polygon": [
+      8200,
+      0,
+      14200,
+      0,
+      14200,
+      5000,
+      8200,
+      5000
+     ]
+    },
+    {
+     "areaSqFt": 305.6950558345561,
+     "ceilingAnnotation": "C.H. = 2.40 m",
+     "ceilingHeightFt": 7.874015748031495,
+     "name": "CORRIDOR",
+     "polygon": [
+      0,
+      5100,
+      14200,
+      5100,
+      14200,
+      7100,
+      0,
+      7100
+     ]
+    }
+   ],
+   "sourceUnsupported": {},
+   "unitsPerFoot": 304.8
+  }
+ },
+ "generator": {
+  "ezdxf": "1.4.4"
+ }
+}

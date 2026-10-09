@@ -1,0 +1,696 @@
+{
+ "about": "Binary DWG fixtures written by LibreDWG dxf2dwg from the R2000 ezdxf twins in this directory. Counts, layers and blocks come from the ezdxf SOURCE document, never from our parsers. A file is committed only if LibreDWG's own dwg2dxf round trip matches the source (writerCheck). Rejected (twin, version) pairs are listed with the reason.",
+ "files": {
+  "arch-imperial-in-r2000.dwg": {
+   "blocks": [
+    "DOOR-36",
+    "_ARCHTICK",
+    "_CLOSEDBLANK",
+    "_CLOSEDFILLED"
+   ],
+   "bytes": 22136,
+   "dwgVersion": "r2000",
+   "ezdxfCounts": {
+    "dimensionBlocks": 0,
+    "insertAttributes": 5,
+    "modelSpaceByType": {
+     "INSERT": 5,
+     "LINE": 12,
+     "LWPOLYLINE": 4,
+     "MTEXT": 8
+    },
+    "paperSpaceByType": {}
+   },
+   "insunits": 1,
+   "layers": {
+    "0": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-ANNO-TEXT": {
+     "color": 3,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-AREA": {
+     "color": 4,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-DOOR": {
+     "color": 2,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-WALL": {
+     "color": 1,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "Defpoints": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    }
+   },
+   "measurement": 0,
+   "sha256": "ecd0a746d331f1198f21b4cae0ee8235789b4293c70208481dd98a6211bd6586",
+   "twin": "arch-imperial-in-r2000.dxf",
+   "writerCheck": {
+    "compared": [
+     "entity counts by type",
+     "entity counts by type and layer",
+     "paper-space entities by type",
+     "INSERT attribute count",
+     "layer table (frozen/off/locked/colour)",
+     "block names",
+     "anonymous dimension blocks",
+     "$INSUNITS/$MEASUREMENT/$LUNITS"
+    ],
+    "exclusions": {},
+    "status": "pass"
+   }
+  },
+  "arch-metric-mm-r2000.dwg": {
+   "blocks": [
+    "DESK-1200",
+    "DOOR-SGL-900",
+    "WIN-1200",
+    "_ARCHTICK",
+    "_CLOSEDBLANK",
+    "_CLOSEDFILLED"
+   ],
+   "bytes": 25165,
+   "dwgVersion": "r2000",
+   "ezdxfCounts": {
+    "dimensionBlocks": 0,
+    "insertAttributes": 5,
+    "modelSpaceByType": {
+     "CIRCLE": 1,
+     "INSERT": 10,
+     "LINE": 48,
+     "LWPOLYLINE": 6,
+     "MTEXT": 8
+    },
+    "paperSpaceByType": {}
+   },
+   "insunits": 4,
+   "layers": {
+    "0": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-ANNO-TEXT": {
+     "color": 5,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-AREA": {
+     "color": 6,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-DOOR": {
+     "color": 2,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-FURN": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-GLAZ": {
+     "color": 3,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-WALL": {
+     "color": 1,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "Defpoints": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "S-COLS": {
+     "color": 4,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    }
+   },
+   "measurement": 1,
+   "sha256": "9d8b1d89f534d73b839619136e4b0244dced5c806a71da1ab38235eea75c4a13",
+   "twin": "arch-metric-mm-r2000.dxf",
+   "writerCheck": {
+    "compared": [
+     "entity counts by type",
+     "entity counts by type and layer",
+     "paper-space entities by type",
+     "INSERT attribute count",
+     "layer table (frozen/off/locked/colour)",
+     "block names",
+     "anonymous dimension blocks",
+     "$INSUNITS/$MEASUREMENT/$LUNITS"
+    ],
+    "exclusions": {},
+    "status": "pass"
+   }
+  },
+  "elevated-levels-r2000.dwg": {
+   "blocks": [
+    "DOOR-SGL-900",
+    "_ARCHTICK",
+    "_CLOSEDBLANK",
+    "_CLOSEDFILLED"
+   ],
+   "bytes": 22120,
+   "dwgVersion": "r2000",
+   "ezdxfCounts": {
+    "dimensionBlocks": 0,
+    "insertAttributes": 0,
+    "modelSpaceByType": {
+     "INSERT": 4,
+     "LINE": 21,
+     "LWPOLYLINE": 4,
+     "TEXT": 8
+    },
+    "paperSpaceByType": {}
+   },
+   "insunits": 4,
+   "layers": {
+    "0": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-ANNO-TEXT": {
+     "color": 4,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-AREA": {
+     "color": 3,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-DOOR": {
+     "color": 2,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-WALL": {
+     "color": 1,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "Defpoints": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    }
+   },
+   "measurement": 1,
+   "sha256": "d887eee546f7b7240cfd936124850e474159fc0d9eb5f2e234f98f3e3de88ca2",
+   "twin": "elevated-levels-r2000.dxf",
+   "writerCheck": {
+    "compared": [
+     "entity counts by type",
+     "entity counts by type and layer",
+     "paper-space entities by type",
+     "INSERT attribute count",
+     "layer table (frozen/off/locked/colour)",
+     "block names",
+     "anonymous dimension blocks",
+     "$INSUNITS/$MEASUREMENT/$LUNITS"
+    ],
+    "exclusions": {},
+    "status": "pass"
+   }
+  },
+  "noise-dim-hatch-spline-paper-r2000.dwg": {
+   "blocks": [
+    "DOOR-SGL-900",
+    "WIN-1200",
+    "_ARCHTICK",
+    "_CLOSEDBLANK",
+    "_CLOSEDFILLED"
+   ],
+   "bytes": 27857,
+   "dwgVersion": "r2000",
+   "ezdxfCounts": {
+    "dimensionBlocks": 3,
+    "insertAttributes": 0,
+    "modelSpaceByType": {
+     "CIRCLE": 1,
+     "DIMENSION": 3,
+     "ELLIPSE": 1,
+     "HATCH": 2,
+     "INSERT": 8,
+     "LINE": 50,
+     "LWPOLYLINE": 6,
+     "MTEXT": 8,
+     "POINT": 3,
+     "SPLINE": 1
+    },
+    "paperSpaceByType": {
+     "LINE": 5,
+     "TEXT": 1,
+     "VIEWPORT": 1
+    }
+   },
+   "insunits": 4,
+   "layers": {
+    "0": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-ANNO-TEXT": {
+     "color": 5,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-AREA": {
+     "color": 6,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-DIMS": {
+     "color": 2,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-DOOR": {
+     "color": 2,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-FRZ": {
+     "color": 4,
+     "frozen": true,
+     "locked": false,
+     "off": false
+    },
+    "A-FURN": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-GLAZ": {
+     "color": 3,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-HATCH": {
+     "color": 3,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-OFF": {
+     "color": 5,
+     "frozen": false,
+     "locked": false,
+     "off": true
+    },
+    "A-WALL": {
+     "color": 1,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-WALL-CURVE": {
+     "color": 6,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "Defpoints": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "S-COLS": {
+     "color": 4,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    }
+   },
+   "measurement": 1,
+   "sha256": "063c45e91d9efe0dbc8f6729d642417ec0490efff874451256a207022f8bf83c",
+   "twin": "noise-dim-hatch-spline-paper-r2000.dxf",
+   "writerCheck": {
+    "compared": [
+     "entity counts by type",
+     "entity counts by type and layer",
+     "paper-space entities by type",
+     "INSERT attribute count",
+     "layer table (frozen/off/locked/colour)",
+     "block names",
+     "anonymous dimension blocks",
+     "$INSUNITS/$MEASUREMENT/$LUNITS"
+    ],
+    "exclusions": {
+     "layer:A-FRZ": {
+      "cause": "LibreDWG 0.13.3 dxf2dwg drops the layer frozen/locked flags",
+      "dwg": {
+       "frozen": false,
+       "locked": false
+      },
+      "source": {
+       "frozen": true,
+       "locked": false
+      }
+     }
+    },
+    "status": "pass-with-exclusions"
+   }
+  },
+  "unitless-insunits0-r14.dwg": {
+   "blocks": [
+    "DOOR-SGL-900",
+    "WIN-1200",
+    "_ARCHTICK",
+    "_CLOSEDBLANK",
+    "_CLOSEDFILLED"
+   ],
+   "bytes": 23770,
+   "dwgVersion": "r14",
+   "ezdxfCounts": {
+    "dimensionBlocks": 0,
+    "insertAttributes": 0,
+    "modelSpaceByType": {
+     "CIRCLE": 1,
+     "INSERT": 8,
+     "LINE": 48,
+     "LWPOLYLINE": 6,
+     "MTEXT": 8
+    },
+    "paperSpaceByType": {}
+   },
+   "insunits": 0,
+   "layers": {
+    "0": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-ANNO-TEXT": {
+     "color": 5,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-AREA": {
+     "color": 6,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-DOOR": {
+     "color": 2,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-FURN": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-GLAZ": {
+     "color": 3,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-WALL": {
+     "color": 1,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "Defpoints": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "S-COLS": {
+     "color": 4,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    }
+   },
+   "measurement": 1,
+   "sha256": "64f09cfb7606c0aa287ee6496f4ede781cf0ef09a80b3fc470c5bb7f8dd91888",
+   "twin": "unitless-insunits0-r2000.dxf",
+   "writerCheck": {
+    "compared": [
+     "entity counts by type",
+     "entity counts by type and layer",
+     "paper-space entities by type",
+     "INSERT attribute count",
+     "layer table (frozen/off/locked/colour)",
+     "block names",
+     "anonymous dimension blocks",
+     "$INSUNITS/$MEASUREMENT/$LUNITS"
+    ],
+    "exclusions": {},
+    "status": "pass"
+   }
+  },
+  "unitless-insunits0-r2000.dwg": {
+   "blocks": [
+    "DOOR-SGL-900",
+    "WIN-1200",
+    "_ARCHTICK",
+    "_CLOSEDBLANK",
+    "_CLOSEDFILLED"
+   ],
+   "bytes": 24033,
+   "dwgVersion": "r2000",
+   "ezdxfCounts": {
+    "dimensionBlocks": 0,
+    "insertAttributes": 0,
+    "modelSpaceByType": {
+     "CIRCLE": 1,
+     "INSERT": 8,
+     "LINE": 48,
+     "LWPOLYLINE": 6,
+     "MTEXT": 8
+    },
+    "paperSpaceByType": {}
+   },
+   "insunits": 0,
+   "layers": {
+    "0": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-ANNO-TEXT": {
+     "color": 5,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-AREA": {
+     "color": 6,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-DOOR": {
+     "color": 2,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-FURN": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-GLAZ": {
+     "color": 3,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "A-WALL": {
+     "color": 1,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "Defpoints": {
+     "color": 7,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    },
+    "S-COLS": {
+     "color": 4,
+     "frozen": false,
+     "locked": false,
+     "off": false
+    }
+   },
+   "measurement": 1,
+   "sha256": "e09997d5abc3a69e54840ec0358f5a683327577808be365ea7cefc11b1734a9a",
+   "twin": "unitless-insunits0-r2000.dxf",
+   "writerCheck": {
+    "compared": [
+     "entity counts by type",
+     "entity counts by type and layer",
+     "paper-space entities by type",
+     "INSERT attribute count",
+     "layer table (frozen/off/locked/colour)",
+     "block names",
+     "anonymous dimension blocks",
+     "$INSUNITS/$MEASUREMENT/$LUNITS"
+    ],
+    "exclusions": {},
+    "status": "pass"
+   }
+  }
+ },
+ "generator": {
+  "ezdxf": "1.4.4"
+ },
+ "handleNormalisation": "entity handles are renumbered before dxf2dwg (modelspace last) to avoid LibreDWG 0.13.3 first/last handle-range entity leaks",
+ "libredwg": {
+  "commit": "97c7225596c17430b82fd0161e7eff6beb5b1034",
+  "tag": "0.13.3",
+  "version": "dxf2dwg 0.13.3"
+ },
+ "rejected": [
+  {
+   "diffCount": 1,
+   "diffs": [
+    "$INSUNITS: source 1, dwg 0"
+   ],
+   "reason": "writer check differs from the ezdxf source",
+   "twin": "arch-imperial-in-r2000.dxf",
+   "version": "r14"
+  },
+  {
+   "log": [
+    "ERROR: Invalid System Section Page Map type 0x1 != 0x41630e3b",
+    "ERROR: Failed to decode file: <tmp>/arch-imperial-in-r2004.dwg 0x100",
+    "READ ERROR 0x100"
+   ],
+   "reason": "dwg2dxf of the written file failed (exit 1)",
+   "twin": "arch-imperial-in-r2000.dxf",
+   "version": "r2004"
+  },
+  {
+   "diffCount": 1,
+   "diffs": [
+    "$INSUNITS: source 4, dwg 0"
+   ],
+   "reason": "writer check differs from the ezdxf source",
+   "twin": "arch-metric-mm-r2000.dxf",
+   "version": "r14"
+  },
+  {
+   "log": [
+    "ERROR: Invalid System Section Page Map type 0x1 != 0x41630e3b",
+    "ERROR: Failed to decode file: <tmp>/arch-metric-mm-r2004.dwg 0x100",
+    "READ ERROR 0x100"
+   ],
+   "reason": "dwg2dxf of the written file failed (exit 1)",
+   "twin": "arch-metric-mm-r2000.dxf",
+   "version": "r2004"
+  },
+  {
+   "diffCount": 1,
+   "diffs": [
+    "$INSUNITS: source 4, dwg 0"
+   ],
+   "reason": "writer check differs from the ezdxf source",
+   "twin": "elevated-levels-r2000.dxf",
+   "version": "r14"
+  },
+  {
+   "log": [
+    "ERROR: Invalid System Section Page Map type 0x1 != 0x41630e3b",
+    "ERROR: Failed to decode file: <tmp>/elevated-levels-r2004.dwg 0x100",
+    "READ ERROR 0x100"
+   ],
+   "reason": "dwg2dxf of the written file failed (exit 1)",
+   "twin": "elevated-levels-r2000.dxf",
+   "version": "r2004"
+  },
+  {
+   "diffCount": 1,
+   "diffs": [
+    "$INSUNITS: source 4, dwg 0"
+   ],
+   "reason": "writer check differs from the ezdxf source",
+   "twin": "noise-dim-hatch-spline-paper-r2000.dxf",
+   "version": "r14"
+  },
+  {
+   "log": [
+    "ERROR: Invalid System Section Page Map type 0x1 != 0x41630e3b",
+    "ERROR: Failed to decode file: <tmp>/noise-dim-hatch-spline-paper-r2004.dwg 0x100",
+    "READ ERROR 0x100"
+   ],
+   "reason": "dwg2dxf of the written file failed (exit 1)",
+   "twin": "noise-dim-hatch-spline-paper-r2000.dxf",
+   "version": "r2004"
+  },
+  {
+   "log": [
+    "ERROR: Invalid System Section Page Map type 0x1 != 0x41630e3b",
+    "ERROR: Failed to decode file: <tmp>/unitless-insunits0-r2004.dwg 0x100",
+    "READ ERROR 0x100"
+   ],
+   "reason": "dwg2dxf of the written file failed (exit 1)",
+   "twin": "unitless-insunits0-r2000.dxf",
+   "version": "r2004"
+  }
+ ]
+}

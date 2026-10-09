@@ -2,6 +2,7 @@
 """Independent-writer CAD corpus for the MEP importer tests.
 
 Regenerate with:  python3 scripts/cad-corpus/generate_corpus.py      (requires ezdxf==1.4.4)
+                  python3 scripts/cad-corpus/generate_corpus.py --r2000-twins   (R2000 DXF twins in fixtures/corpus/dwg/)
 
 The DXF files are written by ezdxf, an independent DXF writer, and manifest.json holds GROUND TRUTH computed
 from the construction geometry below. It is never computed from, or compared against, our own parser's output.
@@ -12,6 +13,7 @@ import io
 import json
 import math
 import os
+import re
 import sys
 
 if os.environ.get("PYTHONHASHSEED") != "0":  # ezdxf's OBJECTS order follows set iteration; pin it for byte-stable output
@@ -34,6 +36,15 @@ SUPPORTED = {"LINE", "LWPOLYLINE", "POLYLINE", "CIRCLE", "ARC", "ELLIPSE", "TEXT
 
 
 # --------------------------------------------------------------------------------------------- helpers
+def out_name(name):
+    """Twin mode: arch-metric-mm-r2018.dxf -> arch-metric-mm-r2000.dxf (the construction geometry is identical)."""
+    if not TWIN_VERSION:
+        return name
+    stem = name[:-4]
+    stem = re.sub(r"-r20\d\d.*$", "", stem)
+    return f"{stem}-r2000.dxf"
+
+
 def poly_area(pts):
     s = 0.0
     for i in range(len(pts)):
@@ -51,8 +62,12 @@ def flat(pts):
     return [c for p in pts for c in p]
 
 
+TWIN_VERSION = None  # set by --r2000-twins: every gen_* writes an R2000 document into OUT_DIR under a twin name
+OUT_DIR = None
+
+
 def new_doc(version, unit_code, measurement, lunits, codepage=None):
-    doc = ezdxf.new(version, setup=True)
+    doc = ezdxf.new(TWIN_VERSION or version, setup=True)
     doc.units = unit_code
     doc.header["$MEASUREMENT"] = measurement
     doc.header["$LUNITS"] = lunits
@@ -346,8 +361,8 @@ def gen_metric(manifest):
     doc = new_doc("R2018", ez_units.MM, 1, 2)
     msp = doc.modelspace()
     openings, cols = build_metric_plan(doc, msp)
-    name = "arch-metric-mm-r2018.dxf"
-    doc.saveas(os.path.join(OUT, name))
+    name = out_name("arch-metric-mm-r2018.dxf")
+    doc.saveas(os.path.join(OUT_DIR or OUT, name))
     manifest[name] = metric_file_truth(doc, msp, openings, cols, "mm", 4, 1,
                                        expected={"cadUnit": "mm", "unitsConfidence": "declared"},
                                        wallSegments=sum(1 for e in msp if e.dxftype() == "LINE" and e.dxf.layer == "A-WALL"))
@@ -357,8 +372,8 @@ def gen_unitless(manifest):
     doc = new_doc("R2013", 0, 1, 2)
     msp = doc.modelspace()
     openings, cols = build_metric_plan(doc, msp, attribs=False, door_attdef=False, furniture=False)
-    name = "unitless-insunits0.dxf"
-    doc.saveas(os.path.join(OUT, name))
+    name = out_name("unitless-insunits0.dxf")
+    doc.saveas(os.path.join(OUT_DIR or OUT, name))
     manifest[name] = metric_file_truth(doc, msp, openings, cols, "mm (undeclared)", 0, 1,
                                        expected={"cadUnit": "mm", "unitsConfidence": "unknown"})
 
@@ -398,8 +413,8 @@ def gen_imperial(manifest):
         mtext(msp, ch, cx, cy - 12, 5, "A-ANNO-TEXT")
         room_truth.append({"name": name, "polygon": flat(poly), "areaSqFt": poly_area(poly) / 144.0,
                            "ceilingAnnotation": ch, "ceilingHeightFt": ch_ft})
-    name = "arch-imperial-in-r2010.dxf"
-    doc.saveas(os.path.join(OUT, name))
+    name = out_name("arch-imperial-in-r2010.dxf")
+    doc.saveas(os.path.join(OUT_DIR or OUT, name))
     ents = list(msp)
     manifest[name] = {
         "dxfVersion": doc.dxfversion, "insunits": 1, "measurement": 0, "lunits": 4, "drawingUnit": "in",
@@ -421,8 +436,11 @@ def gen_noise(manifest):
         d = msp.add_linear_dim(base=(0, -1200 - 400 * i), p1=(x0, 0), p2=(x1, 0),
                                dimstyle="EZDXF", dxfattribs={"layer": "A-DIMS"})
         d.render()
-    msp.add_linear_dim(base=(-1200, 0), p1=(0, 0), p2=(0, 5000), angle=90, dimstyle="EZDXF",
-                       dxfattribs={"layer": "A-DIMS"}).render()
+    if not TWIN_VERSION:
+        # The rotated (vertical) dimension is omitted from the R2000 twin: LibreDWG 0.13.3's DXF reader rejects the
+        # MTEXT group 50 (rotation) that ezdxf writes inside its anonymous *D block ("Invalid DXF code 50 for MTEXT").
+        msp.add_linear_dim(base=(-1200, 0), p1=(0, 0), p2=(0, 5000), angle=90, dimstyle="EZDXF",
+                           dxfattribs={"layer": "A-DIMS"}).render()
     # Defpoints (what AutoCAD leaves behind for dimensions)
     for p in ((0, 0), (4000, 0), (14200, 0)):
         msp.add_point(p, dxfattribs={"layer": "Defpoints"})
@@ -453,8 +471,8 @@ def gen_noise(manifest):
     l2 = doc.layouts.new("Layout2")
     l2.add_viewport(center=(210, 148), size=(380, 250), view_center_point=(7100, 3500), view_height=9000)
     l2.add_line((10, 10), (410, 10))
-    name = "noise-dim-hatch-spline-paper.dxf"
-    doc.saveas(os.path.join(OUT, name))
+    name = out_name("noise-dim-hatch-spline-paper.dxf")
+    doc.saveas(os.path.join(OUT_DIR or OUT, name))
     ents = list(msp)
     hidden = [e for e in ents if e.dxf.layer in ("A-FRZ", "A-OFF")]
     manifest[name] = metric_file_truth(
@@ -496,8 +514,8 @@ def gen_elevated(manifest):
             })
     # one non-planar 3D line (varies in Z): must be dropped
     msp.add_line((100, 100, 0), (4000, 4000, 3500), dxfattribs={"layer": "A-WALL"})
-    name = "elevated-levels.dxf"
-    doc.saveas(os.path.join(OUT, name))
+    name = out_name("elevated-levels.dxf")
+    doc.saveas(os.path.join(OUT_DIR or OUT, name))
     ents = list(msp)
     nonplanar = [e for e in ents if e.dxftype() == "LINE" and e.dxf.start.z != e.dxf.end.z]
     elevated = [e for e in ents if e.dxftype() != "LINE" or e.dxf.start.z == e.dxf.end.z]
@@ -628,8 +646,8 @@ def gen_legacy(manifest):
             h = 2.80
         truth.append({"name": name, "polygon": flat(poly), "areaSqFt": poly_area(poly) / MM_PER_FT ** 2,
                       "ceilingAnnotation": ch or arabic, "ceilingHeightFt": h / 0.3048})
-    name = "legacy-r2000-cp1252.dxf"
-    doc.saveas(os.path.join(OUT, name))
+    name = out_name("legacy-r2000-cp1252.dxf")
+    doc.saveas(os.path.join(OUT_DIR or OUT, name))
     ents = list(msp)
     manifest[name] = {
         "dxfVersion": doc.dxfversion, "insunits": 4, "measurement": 1, "drawingUnit": "mm", "unitsPerFoot": MM_PER_FT,
@@ -640,7 +658,36 @@ def gen_legacy(manifest):
     }
 
 
+TWIN_SOURCES = (gen_metric, gen_imperial, gen_unitless, gen_noise, gen_elevated)
+
+
+def main_twins():
+    """R2000 DXF twins (same construction geometry, DXF version AC1015) for the DWG corpus.
+
+    They are the inputs of generate_dwg_corpus.py (dxf2dwg --as r2000). Ground truth for each twin is the same
+    construction truth as its R2018/R2010/R2013 original, recomputed here from the ezdxf document, never from our parser."""
+    global TWIN_VERSION, OUT_DIR
+    TWIN_VERSION, OUT_DIR = "R2000", os.path.join(OUT, "dwg")
+    os.makedirs(OUT_DIR, exist_ok=True)
+    manifest = {}
+    for gen in TWIN_SOURCES:
+        gen(manifest)
+    doc = {
+        "about": "Ground truth for the R2000 DXF twins of the corpus, computed from the generator's construction geometry "
+                 "(scripts/cad-corpus/generate_corpus.py --r2000-twins), never from our parser. Same conventions as ../manifest.json.",
+        "generator": {"ezdxf": ezdxf.__version__},
+        "files": manifest,
+    }
+    with open(os.path.join(OUT_DIR, "twins-manifest.json"), "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=1, ensure_ascii=False, sort_keys=True)
+        fh.write("\n")
+    for n in sorted(manifest):
+        print(n, os.path.getsize(os.path.join(OUT_DIR, n)), "bytes; expected entities", manifest[n]["expectedEntityCount"])
+
+
 def main():
+    if "--r2000-twins" in sys.argv[1:]:
+        return main_twins()
     os.makedirs(OUT, exist_ok=True)
     manifest = {}
     gen_metric(manifest)
