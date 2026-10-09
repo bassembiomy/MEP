@@ -8,7 +8,9 @@ import {resolvedJustification,dxfTextCodes,mtextAttachmentCode} from '../cad/tex
 import {resolveStandardsSelection} from '../standards/profileRegistry';
 
 /** `cadOpenings`/`cadObstacles` are the review lists; only items with status 'approved' are exported. */
-interface ExportState {project:ProjectMetadata;zones:Zone[];dxfEntities:DxfEntity[];cadOpenings?:StoredCadOpening[];cadObstacles?:StoredCadObstacle[];dxfLayers?:Record<string,Pick<DxfLayerInfo,'visible'|'sourceHidden'>>}
+interface ExportState {project:ProjectMetadata;zones:Zone[];dxfEntities:DxfEntity[];cadOpenings?:StoredCadOpening[];cadObstacles?:StoredCadObstacle[];dxfLayers?:Record<string,Pick<DxfLayerInfo,'visible'|'sourceHidden'>>;
+ /** raw = local + drawingOrigin (internal Y-down frame). Added to every POINT group code; never to vectors (ELLIPSE 11/21, 210-230) or Z codes. Absent means {0,0}. */
+ drawingOrigin?:{x:number;y:number}}
 export interface CadExportReport {
  status:'preliminary';issueReady:false;projectName:string;jurisdiction:'Egypt';sourceProjectRevision:string;
  standards:ReturnType<typeof resolveStandardsSelection>;
@@ -22,9 +24,12 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
  const body:string[]=[];const layerNames=new Set<string>();
  const pair=(code:number,value:string|number)=>{if(typeof value==='number'&&!Number.isFinite(value))throw new Error('Export coordinates must be finite.');body.push(String(code),String(value).replace(/[\r\n]/g,' '));};
  const start=(type:string,layer:string,color?:string)=>{layerNames.add(layer);pair(0,type);pair(8,layer);if(color&&/^#[a-f\d]{6}$/i.test(color))pair(420,parseInt(color.slice(1),16));};
- const xy=(x:number,y:number)=>{pair(10,x);pair(20,-y);};
+ // `point` writes a DXF point (codeX, codeX+10[, codeX+20]) from local engine coordinates; with origin {0,0} the output is byte-identical.
+ const ox=state.drawingOrigin?.x??0,oy=state.drawingOrigin?.y??0;
+ const point=(codeX:number,x:number,y:number,z=0)=>{pair(codeX,ox===0?x:x+ox);pair(codeX+10,-(oy===0?y:y+oy));if(z!==0)pair(codeX+20,z);};
+ const xy=(x:number,y:number)=>point(10,x,y);
  const zOf=(e:DxfEntity)=>e.elevation??0;
- const xyz=(x:number,y:number,z:number)=>{xy(x,y);if(z!==0)pair(30,z);};
+ const xyz=(x:number,y:number,z:number)=>point(10,x,y,z);
  const poly=(points:number[],layer:string,closed=false,bulges?:number[],color?:string,elevation=0)=>{
   if(points.length<4||points.length%2)throw new Error('Invalid export polyline.');
   start('LWPOLYLINE',layer,color);pair(90,points.length/2);pair(70,closed?1:0);if(elevation!==0)pair(38,elevation);
@@ -37,7 +42,7 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
   const layer=entity.layer??'0';
   if(entity.geometryApproximation)limitations.push(`CAD ${entity.handle??layer}: ${entity.geometryApproximation}`);
   switch(entity.type) {
-   case 'LINE':start('LINE',layer,entity.color);xyz(entity.x!,entity.y!,zOf(entity));pair(11,entity.points![0]);pair(21,-entity.points![1]);if(zOf(entity)!==0)pair(31,zOf(entity));break;
+   case 'LINE':start('LINE',layer,entity.color);xyz(entity.x!,entity.y!,zOf(entity));point(11,entity.points![0],entity.points![1],zOf(entity));break;
    case 'LWPOLYLINE':case 'POLYLINE':poly(entity.points!,layer,entity.closed,entity.bulges,entity.color,zOf(entity));break;
    case 'CIRCLE':case 'ARC':start(entity.type,layer,entity.color);xyz(entity.x!,entity.y!,zOf(entity));pair(40,entity.radius!);if(entity.type==='ARC'){pair(50,entity.startAngleDeg!);pair(51,entity.endAngleDeg!);}break;
    case 'ELLIPSE': {
@@ -64,7 +69,7 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
     if(entity.type==='MTEXT'){if(hAlign!=='left'||vAlign!=='top')pair(71,mtextAttachmentCode(hAlign,vAlign));}
     else if(hAlign!=='left'||vAlign!=='baseline'){
      const c=dxfTextCodes(hAlign,vAlign);pair(72,c[72]);pair(73,c[73]);
-     pair(11,entity.x!);pair(21,-entity.y!);if(zOf(entity)!==0)pair(31,zOf(entity));
+     point(11,entity.x!,entity.y!,zOf(entity));
     }
     break;
    }
@@ -93,7 +98,7 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
  }
  for(const o of state.cadOpenings??[]) {
   if(o.status!=='approved')continue;
-  start('LINE','HVAC-CAD-OPENINGS');xyz(o.span.a.x,o.span.a.y,o.level);pair(11,o.span.b.x);pair(21,-o.span.b.y);if(o.level!==0)pair(31,o.level);
+  start('LINE','HVAC-CAD-OPENINGS');xyz(o.span.a.x,o.span.a.y,o.level);point(11,o.span.b.x,o.span.b.y,o.level);
   text(`${o.id}: approved ${o.kind}, ${o.widthFt.toFixed(1)} ft`,o.center.x,o.center.y,'HVAC-CAD-OPENING-TAGS',undefined,o.level);
  }
  for(const o of state.cadObstacles??[]) {
