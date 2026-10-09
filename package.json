@@ -11,7 +11,8 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck:e2e": "tsc --noEmit -p e2e/tsconfig.json",
-    "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:e2e",
+    "typecheck:electron-e2e": "tsc --noEmit -p e2e-electron/tsconfig.json",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:e2e && npm run typecheck:electron-e2e",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
@@ -24,6 +25,7 @@
     "test:watch": "vitest",
     "test:engine": "vitest run",
     "test:gui": "vite build --config e2e/vite.e2e.config.ts && playwright test -c e2e/playwright.config.ts",
+    "test:electron": "node scripts/run-electron-tests.mjs",
     "check:no-test-hook": "node scripts/check-no-test-hook.mjs",
     "corpus:generate": "python3 scripts/cad-corpus/generate_corpus.py"
   },

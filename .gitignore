@@ -14,3 +14,5 @@ out-e2e/
 test-results/
 playwright-report/
 *.tsbuildinfo
+test-results-electron/
+playwright-report-electron/
