@@ -138,7 +138,7 @@ function pathBStore(name: string) {
 }
 
 /** Generic checks shared by the plan files. */
-function describeUnitsAndImport(name: string, opts: { paperLeak?: boolean } = {}) {
+function describeUnitsAndImport(name: string) {
   const t = manifest[name]
   it(`declares ${t.drawingUnit} units from $INSUNITS ${t.insunits} / $MEASUREMENT ${t.measurement} (confidence ${t.expected.unitsConfidence})`, () => {
     const { parsed } = load(name)
@@ -173,6 +173,7 @@ function describeUnitsAndImport(name: string, opts: { paperLeak?: boolean } = {}
     for (const [type, n] of Object.entries(t.sourceUnsupported)) if (!GAP_UNSUPPORTED.includes(type)) expected[`UNSUPPORTED_ENTITY:${type}`] = n
     if (t.elevatedTopLevelEntities) expected.ELEVATED_GEOMETRY_PROJECTED = t.elevatedTopLevelEntities
     if (t.nonPlanarLines) expected.UNSUPPORTED_ELEVATION = t.nonPlanarLines
+    if (t.paperSpace) expected.PAPER_SPACE_SKIPPED = 1
     const actual = histogram(parsed, d => !isUnitsDiag(d) && !(d.code === 'UNSUPPORTED_ENTITY' && GAP_UNSUPPORTED.includes(d.entityType ?? '')))
     expect(actual).toEqual(expected)
   })
@@ -183,8 +184,7 @@ function describeUnitsAndImport(name: string, opts: { paperLeak?: boolean } = {}
       expect(noisy).toHaveLength(0)
     })
   }
-  const countTest = opts.paperLeak ? gap : it
-  countTest(`${opts.paperLeak ? 'KNOWN GAP (paper-space leak, see below): ' : ''}imports the manifest entity count (${t.expectedEntityCount}) after block expansion`, () => {
+  it(`imports the manifest entity count (${t.expectedEntityCount}) after block expansion`, () => {
     expect(load(name).parsed.entities).toHaveLength(t.expectedEntityCount)
   })
   it('keeps the drawing bbox within the manifest model extents (+-1 unit, Y negated)', () => {
@@ -200,10 +200,9 @@ function describeUnitsAndImport(name: string, opts: { paperLeak?: boolean } = {}
     expect(parsed.bbox.minY).toBeLessThanOrEqual(-b.maxY + 1)
     expect(parsed.bbox.maxY).toBeGreaterThanOrEqual(-b.minY - 1)
   })
-  if (!opts.paperLeak)
-    it('leaks no paper-space text', () => {
-      expect(load(name).parsed.entities.some(e => /TITLE BLOCK/.test(e.text ?? ''))).toBe(false)
-    })
+  it('leaks no paper-space text', () => {
+    expect(load(name).parsed.entities.some(e => /TITLE BLOCK/.test(e.text ?? ''))).toBe(false)
+  })
 }
 
 function describeOpenings(name: string, expectStrayOpenings = false) {
@@ -418,7 +417,7 @@ describe('corpus: unitless-insunits0 ($INSUNITS 0)', () => {
 describe('corpus: noise-dim-hatch-spline-paper (dimensions, hatches, spline, XDATA, hidden layers, paper space)', () => {
   const name = NOISE
   const t = manifest[name]
-  describeUnitsAndImport(name, { paperLeak: true })
+  describeUnitsAndImport(name, )
   it('reports dimensions, hatches and Defpoints points as unsupported, exactly once each', () => {
     const h = histogram(load(name).parsed, d => d.code === 'UNSUPPORTED_ENTITY')
     expect(h['UNSUPPORTED_ENTITY:DIMENSION']).toBe(t.sourceUnsupported.DIMENSION)
@@ -433,12 +432,12 @@ describe('corpus: noise-dim-hatch-spline-paper (dimensions, hatches, spline, XDA
     expect((parsed.diagnostics ?? []).filter(d => d.entityType === 'SPLINE')).toHaveLength(0)
     expect(parsed.entities.filter(e => e.layer === 'A-WALL-CURVE').length).toBeGreaterThan(0)
   })
-  it('the model-space entity count matches the manifest once the Layout1 title-block entities are subtracted', () => {
-    expect(load(name).parsed.entities.length - t.paperSpace!.layout1Entities).toBe(t.expectedEntityCount)
-  })
-  gap('KNOWN GAP: paper-space (group 67) entities of Layout1 are imported into the model — the parser never checks group 67', () => {
+  it('paper-space (group 67) entities of Layout1 are skipped with one aggregated PAPER_SPACE_SKIPPED diagnostic', () => {
     const { parsed } = load(name)
     expect(parsed.entities.filter(e => (e.text ?? '') === 'TITLE BLOCK')).toHaveLength(0)
+    const d = (parsed.diagnostics ?? []).filter(x => x.code === 'PAPER_SPACE_SKIPPED')
+    expect(d).toHaveLength(1)
+    expect(d[0].message).toContain(`${t.paperSpace!.layout1Entities} paper-space`)
   })
   gap('KNOWN GAP: geometry on frozen / off layers is imported as if visible — layer flags (group 70 bit 1, negative colour) are ignored', () => {
     const { parsed } = load(name)

@@ -275,7 +275,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     else if (block) block.records.push(r);
   }
   incompleteBlock();
-  let visited = 0, expansionStopped = false;
+  let visited = 0, expansionStopped = false, paperSpaceSkipped = 0;
   function expand(records: DxfRecord[], matrix: CadAffineMatrix, stack: string[], inheritedLayer = '0', inheritedColor?: string, insertHandle?: string, zScale = 1, zOffset = 0) {
     // Elevation of a child at block-space Z `cz` is zScale * cz + zOffset (affine, composed per nested INSERT).
     for (let index = 0; index < records.length; index++) {
@@ -283,6 +283,13 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       if (++visited > 100_000) {
         if (!expansionStopped) diagnose('ENTITY_LIMIT', 'Entity expansion exceeded 100000 records; drawing is incomplete.', r, 'error');
         expansionStopped = true; return;
+      }
+      // Top-level paper-space records (group 67 = 1) are layout content, not model geometry. Blocks are not filtered:
+      // 67 is meaningless inside a block definition.
+      if (stack.length === 0 && number(r, 67, 0) === 1) {
+        paperSpaceSkipped++;
+        if (r.type === 'POLYLINE') while (index + 1 < records.length && (records[index + 1].type === 'VERTEX' || records[index + 1].type === 'SEQEND')) { const t = records[++index].type; if (t === 'SEQEND') break; }
+        continue;
       }
       const rawLayer = first(r, 8)?.trim() || '0', layer = rawLayer === '0' ? inheritedLayer : rawLayer;
       const aci = number(r, 62), ownColor = color(r) ?? (aci === 0 ? inheritedColor : layers.get(layer));
@@ -435,6 +442,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     }
   }
   expand(sections.get('ENTITIES') ?? [], identity, []);
+  if (paperSpaceSkipped) diagnose('PAPER_SPACE_SKIPPED', `${paperSpaceSkipped} paper-space (layout) entit${paperSpaceSkipped === 1 ? 'y was' : 'ies were'} skipped; only model space is imported.`);
   const bbox: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
   for (const ent of entities) {
     const b = getCadEntityBounds(ent);
