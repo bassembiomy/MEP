@@ -417,6 +417,20 @@ function refreshSemanticsForVisibility(state: ProjectState, layers: Record<strin
     zones: syncZoneObstacles(state.zones, semantics.obstacles, unitsPerFootOf(state.project)) };
 }
 
+/**
+ * The drawing scale (units per foot) changed: opening and obstacle suggestions embed it (leaf widths in ft, clearances, the
+ * ~90 degree swing test), so the undecided ones from the old scale are stale. Recompute them; decided ones are kept exactly as
+ * the user saw them (see mergeCandidates). A no-op when the scale did not move or there is no CAD drawing.
+ */
+function refreshSemanticsForScale(state: ProjectState, project: ProjectMetadata): Partial<ProjectState> {
+  const before = unitsPerFootOf(state.project), after = unitsPerFootOf(project);
+  if (!state.dxfEntities.length || !(after > 0) || Math.abs(after - before) <= 1e-12 * Math.max(before, after)) return {};
+  const semantics = recognizeCadSemantics({ entities: recognitionEntities(state.dxfEntities, state.dxfLayers), bbox: state.dxfBoundingBox, blockReferences: state.cadBlockReferences,
+    unitsPerFoot: after, level: state.cadLevel, overrides: state.cadLayerRoles.overrides, suggestions: state.cadLayerRoles.suggestions,
+    prior: { openings: state.cadOpenings, obstacles: state.cadObstacles } });
+  return { cadOpenings: semantics.openings, cadObstacles: semantics.obstacles };
+}
+
 const captureCad = (s: ProjectState): CadSemanticSnapshot => ({
   layerRoles: s.cadLayerRoles, openings: s.cadOpenings, obstacles: s.cadObstacles, level: s.cadLevel
 });
@@ -532,8 +546,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const dropProvenance=(meta.scale!==undefined||meta.cadUnit!==undefined)&&meta.cadScaleProvenance===undefined;
     const project = { ...converted.project, ...meta, ...(dropProvenance?{cadScaleProvenance:undefined}:{}) };
     // A scale or unit change moves the clearance bands, so which approved obstacles reach each zone changes with it.
-    const synced = syncZoneObstacles(converted.zones, state.cadObstacles, unitsPerFootOf(project));
-    return { project, activePreview: null, zones: synced.map(zone => {
+    const refreshed = refreshSemanticsForScale(state, project);
+    const synced = syncZoneObstacles(converted.zones, refreshed.cadObstacles ?? state.cadObstacles, unitsPerFootOf(project));
+    return { project, ...refreshed, activePreview: null, zones: synced.map(zone => {
       const evaluation = calculateZoneLoadSafely(zone, project);
       return { ...zone, engineeringStatus: evaluation.error ? 'blocked' as const : 'stale' as const,
         engineeringError: evaluation.error, engineeringNotice: undefined };
@@ -897,12 +912,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const scale=state.project.units==='metric'?unitsPerFoot/METERS_PER_FOOT:unitsPerFoot;
       requirePositive('Drawing scale',scale);
       const project:ProjectMetadata={...state.project,scale,cadUnit:'custom',cadUnitsConfirmed:true,cadScaleProvenance:'user-calibrated'};
-      set({project,activePreview:null,
-        zones:syncZoneObstacles(state.zones,state.cadObstacles,unitsPerFootOf(project)).map(zone=>{
+      const refreshed=refreshSemanticsForScale(state,project);
+      set({project,...refreshed,activePreview:null,
+        zones:syncZoneObstacles(state.zones,refreshed.cadObstacles??state.cadObstacles,unitsPerFootOf(project)).map(zone=>{
           const evaluation=calculateZoneLoadSafely(zone,project);
           return {...zone,engineeringStatus:evaluation.error?'blocked' as const:'stale' as const,engineeringError:evaluation.error,engineeringNotice:undefined};
         }),
-        undoStack:[...state.undoStack,makeSnapshot(state,`Calibrated drawing scale to ${unitsPerFoot.toPrecision(6)} units/ft`,false)],redoStack:[]});
+        undoStack:[...state.undoStack,makeSnapshot(state,`Calibrated drawing scale to ${unitsPerFoot.toPrecision(6)} units/ft`,refreshed.cadOpenings!==undefined)],redoStack:[]});
       return {success:true};
     } catch(error) {return {success:false,error:error instanceof Error?error.message:'Scale calibration failed.'};}
   },

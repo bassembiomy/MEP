@@ -1155,6 +1155,130 @@
     "insertions": 1,
     "path": "C:\\Projects\\Campus\\site-plan.dwg"
    }
+  },
+  "tiny-metres.dxf": {
+   "calibration": {
+    "knownLength": 4.0,
+    "knownUnit": "m",
+    "p1": [
+     0.0,
+     0.0
+    ],
+    "p2": [
+     4.0,
+     0.0
+    ]
+   },
+   "door": {
+    "centre": [
+     4.0,
+     1.45
+    ],
+    "widthDrawingUnits": 0.9,
+    "widthFt": 2.952755905511811
+   },
+   "drawingUnitsPerMetre": 1.0,
+   "expected": {
+    "cadUnit": "m",
+    "unitsConfidence": "declared"
+   },
+   "insunits": 6,
+   "item": "C8",
+   "measurement": 1,
+   "rooms": [
+    {
+     "areaSqFt": 172.22256666735555,
+     "name": "ROOM 1",
+     "polygon": [
+      0.0,
+      0.0,
+      4.0,
+      0.0,
+      4.0,
+      4.0,
+      0.0,
+      4.0
+     ]
+    },
+    {
+     "areaSqFt": 172.22256666735555,
+     "name": "ROOM 2",
+     "polygon": [
+      4.0,
+      0.0,
+      8.0,
+      0.0,
+      8.0,
+      4.0,
+      4.0,
+      4.0
+     ]
+    }
+   ],
+   "span": 8.0,
+   "unitsPerFoot": 0.3048
+  },
+  "tiny-unitless.dxf": {
+   "calibration": {
+    "knownLength": 4.0,
+    "knownUnit": "m",
+    "p1": [
+     0.0,
+     0.0
+    ],
+    "p2": [
+     0.01,
+     0.0
+    ]
+   },
+   "door": {
+    "centre": [
+     0.01,
+     0.0036249999999999998
+    ],
+    "widthDrawingUnits": 0.0022500000000000003,
+    "widthFt": 2.952755905511811
+   },
+   "drawingUnitsPerMetre": 0.0025,
+   "expected": {
+    "diagnostic": "units-unspecified",
+    "unitsConfidence": "unknown"
+   },
+   "insunits": 0,
+   "item": "C8",
+   "measurement": 1,
+   "rooms": [
+    {
+     "areaSqFt": 172.22256666735555,
+     "name": "ROOM 1",
+     "polygon": [
+      0.0,
+      0.0,
+      0.01,
+      0.0,
+      0.01,
+      0.01,
+      0.0,
+      0.01
+     ]
+    },
+    {
+     "areaSqFt": 172.22256666735555,
+     "name": "ROOM 2",
+     "polygon": [
+      0.01,
+      0.0,
+      0.02,
+      0.0,
+      0.02,
+      0.01,
+      0.01,
+      0.01
+     ]
+    }
+   ],
+   "span": 0.02,
+   "unitsPerFoot": 0.0007620000000000001
   }
  },
  "generator": {

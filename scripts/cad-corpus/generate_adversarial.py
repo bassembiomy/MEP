@@ -454,6 +454,47 @@ def gen_legacy(manifest):
                                       provenance="SEMI-SYNTHETIC: ezdxf R2000 twin -> LibreDWG 0.13.3 dxf2dwg --as r14 -> dwg2dxf --as r14 (the bytes are LibreDWG's R14 DXF writer)")
 
 
+# ------------------------------------------------------------------------------------------------- C8
+M_PER_FT = 0.3048
+
+
+def gen_tiny(manifest):
+    """The same two 4 x 4 m rooms with a 0.9 m door, drawn (a) in metres with $INSUNITS 6 and (b) unitless at 0.0025 drawing
+    units per metre, so the whole plan is 0.02 units across. Walls are single lines; the partition has a 0.9 m door gap."""
+    for fname, insunits, k in (("tiny-metres.dxf", 6, 1.0), ("tiny-unitless.dxf", 0, 0.0025)):
+        doc = new_doc("R2018", insunits, 1)
+        add_layers(doc, ["A-WALL", "A-AREA", "A-DOOR", "A-ANNO-TEXT"])
+        msp = doc.modelspace()
+        r = 0.9 * k
+        blk = doc.blocks.new("DOOR-SGL-900")
+        blk.add_line((0, 0), (0, r), dxfattribs={"layer": "0"})
+        blk.add_arc((0, 0), r, 0, 90, dxfattribs={"layer": "0"})
+
+        def wall(a, b):
+            msp.add_line((a[0] * k, a[1] * k), (b[0] * k, b[1] * k), dxfattribs={"layer": "A-WALL"})
+
+        for a, b in (((0, 0), (4, 0)), ((4, 0), (8, 0)), ((8, 0), (8, 4)), ((8, 4), (4, 4)), ((4, 4), (0, 4)), ((0, 4), (0, 0)),
+                     ((4, 0), (4, 1.0)), ((4, 1.9), (4, 4))):
+            wall(a, b)
+        rooms = []
+        for name, x0 in (("ROOM 1", 0.0), ("ROOM 2", 4.0)):
+            poly = [(x * k, y * k) for x, y in rect(x0, 0, x0 + 4, 4)]
+            msp.add_lwpolyline(poly, close=True, dxfattribs={"layer": "A-AREA"})
+            msp.add_text(name, height=0.25 * k, dxfattribs={"layer": "A-ANNO-TEXT", "insert": ((x0 + 1) * k, 2 * k)})
+            rooms.append({"name": name, "polygon": [c for p in poly for c in p], "areaSqFt": 16.0 / M_PER_FT ** 2})
+        msp.add_blockref("DOOR-SGL-900", (4 * k, 1.0 * k), dxfattribs={"layer": "A-DOOR", "rotation": 90})
+        doc.saveas(path(fname))
+        extents = 8 * k
+        manifest[fname] = {
+            "item": "C8", "insunits": insunits, "measurement": 1, "drawingUnitsPerMetre": k, "span": extents,
+            "unitsPerFoot": k * M_PER_FT,  # drawing units per foot = (units per metre) x (metres per foot)
+            "rooms": rooms,
+            "door": {"centre": [4 * k, 1.45 * k], "widthFt": 0.9 / M_PER_FT, "widthDrawingUnits": 0.9 * k},
+            "calibration": {"p1": [0.0, 0.0], "p2": [4 * k, 0.0], "knownLength": 4.0, "knownUnit": "m"},
+            "expected": ({"cadUnit": "m", "unitsConfidence": "declared"} if insunits else {"unitsConfidence": "unknown", "diagnostic": "units-unspecified"}),
+        }
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     manifest = {}
@@ -462,6 +503,7 @@ def main():
     gen_dynamic_blocks(manifest)
     gen_mline_walls(manifest)
     gen_legacy(manifest)
+    gen_tiny(manifest)
     doc = {
         "about": "Ground truth for the adversarial corpus, computed from the generator's construction geometry "
                  "(scripts/cad-corpus/generate_adversarial.py) and from ezdxf, never from our parser. "

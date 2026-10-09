@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { useProjectStore } from '../../store/projectStore'
 import { aciToHexColor, decodeDxfBytes, parseDxfText, type ParsedDxf } from '../dxfParser'
 import { recognizeCadRooms } from '../cad/roomRecognition'
 import { recognizeOpenings } from '../cad/openingRecognition'
@@ -244,4 +245,122 @@ describe.each([
     expect(rooms[0].name).toBe(t.room.name)
     expect(Math.abs(rooms[0].areaSqFt - t.room.areaSqFt)).toBeLessThanOrEqual(0.005 * t.room.areaSqFt)
   })
+})
+
+// ------------------------------------------------------------------------------------------------- C8
+const store = () => useProjectStore.getState()
+function loadIntoStore(name: string): ParsedDxf {
+  const parsed = parseFile(name)
+  store().clearDxfData()
+  useProjectStore.setState({ project: { name: 'P', location: 'L', units: 'imperial', scale: 10, outdoorDb: 95, indoorDb: 75 }, zones: [], undoStack: [], redoStack: [] })
+  // same call as Toolbar.handleFileChange
+  store().setDxfData(parsed.entities, parsed.bbox, parsed.suggestedScaleImperial, parsed.cadUnit,
+    { sourceName: name, unitsConfidence: parsed.unitsConfidence ?? 'unknown', diagnostics: parsed.diagnostics ?? [] }, parsed.blockReferences, parsed.hiddenLayers)
+  return parsed
+}
+function expectBothRooms(t: any, cands: { name: string; areaSqFt: number }[]) {
+  expect(cands).toHaveLength(t.rooms.length)
+  for (const room of t.rooms) {
+    const c = cands.find(x => x.name === room.name)
+    expect(c, room.name).toBeDefined()
+    expect(Math.abs(c!.areaSqFt - room.areaSqFt), `${room.name}: ${c!.areaSqFt} vs ${room.areaSqFt} ft2`).toBeLessThanOrEqual(0.005 * room.areaSqFt)
+  }
+}
+
+describe('C8 tiny coordinates', () => {
+  beforeEach(() => { store().clearDxfData() })
+  describe('tiny-metres.dxf ($INSUNITS 6, 8 m across)', () => {
+    const t = manifest['tiny-metres.dxf']
+    it('declares metres with auto-confirmed units', () => {
+      const parsed = loadIntoStore('tiny-metres.dxf')
+      expect(parsed).toMatchObject({ cadUnit: 'm', unitsConfidence: 'declared' })
+      expect(store().project.cadUnitsConfirmed).toBe(true)
+      expect(store().project.scale).toBeCloseTo(t.unitsPerFoot / 1, 9) // imperial project: drawing units per foot
+    })
+    it('recognises both rooms from the area layer and from the walls (Path B with the approved door), and the door', () => {
+      const parsed = loadIntoStore('tiny-metres.dxf')
+      expectBothRooms(t, recognizeCadRooms(parsed.entities, { drawingUnitsPerFoot: t.unitsPerFoot, layers: ['A-AREA'] }).candidates)
+      const doors = store().cadOpenings.filter(o => o.kind === 'door')
+      expect(doors).toHaveLength(1)
+      expect(Math.hypot(doors[0].center.x - t.door.centre[0], doors[0].center.y + t.door.centre[1])).toBeLessThanOrEqual(0.5 * t.unitsPerFoot)
+      expect(Math.abs(doors[0].widthFt - t.door.widthFt)).toBeLessThanOrEqual(0.05 * t.door.widthFt)
+      expect(store().setCadLayerRole('A-WALL', 'wall').success).toBe(true)
+      for (const o of store().cadOpenings.filter(c => c.kind !== 'opening')) store().approveCadOpening(o.id)
+      expectBothRooms(t, store().recognizeCadRoomCandidates().result!.candidates)
+    })
+  })
+  describe('tiny-unitless.dxf ($INSUNITS 0, the whole plan is 0.02 units across)', () => {
+    const t = manifest['tiny-unitless.dxf']
+    it('has unknown units, says so, and is not auto-confirmed; recognition is refused until the user confirms or calibrates', () => {
+      const parsed = loadIntoStore('tiny-unitless.dxf')
+      expect(parsed.unitsConfidence).toBe('unknown')
+      expect(codes(parsed)).toContain('units-unspecified')
+      expect(parsed.bbox.maxX - parsed.bbox.minX).toBeCloseTo(t.span, 12)
+      expect(store().project.cadUnitsConfirmed).toBe(false)
+      const refused = store().recognizeCadRoomCandidates()
+      expect(refused.success).toBe(false)
+      expect(refused.error).toMatch(/Confirm CAD units/)
+    })
+    it('after calibration from a picked 4 m wall the rooms (area layer and walls) and the door are recognised like the metres file', () => {
+      const parsed = loadIntoStore('tiny-unitless.dxf')
+      const c = t.calibration
+      expect(store().calibrateScaleFromPoints({ x: c.p1[0], y: c.p1[1] }, { x: c.p2[0], y: c.p2[1] }, c.knownLength, c.knownUnit).success).toBe(true)
+      expect(store().project.cadUnitsConfirmed).toBe(true)
+      expect(store().project.scale).toBeCloseTo(t.unitsPerFoot, 12)
+      expectBothRooms(t, recognizeCadRooms(parsed.entities, { drawingUnitsPerFoot: t.unitsPerFoot, layers: ['A-AREA'] }).candidates)
+      expect(store().setCadLayerRole('A-WALL', 'wall').success).toBe(true)
+      const doors = store().cadOpenings.filter(o => o.kind === 'door')
+      expect(doors).toHaveLength(1)
+      expect(Math.hypot(doors[0].center.x - t.door.centre[0], doors[0].center.y + t.door.centre[1])).toBeLessThanOrEqual(0.5 * t.unitsPerFoot)
+      expect(Math.abs(doors[0].widthFt - t.door.widthFt)).toBeLessThanOrEqual(0.05 * t.door.widthFt)
+      for (const o of store().cadOpenings.filter(x => x.kind !== 'opening')) store().approveCadOpening(o.id)
+      expectBothRooms(t, store().recognizeCadRoomCandidates().result!.candidates)
+    })
+    it('the door is already recognised right after calibration (openings are recomputed with the calibrated scale, not left from the import guess)', () => {
+      loadIntoStore('tiny-unitless.dxf')
+      const c = t.calibration
+      store().calibrateScaleFromPoints({ x: c.p1[0], y: c.p1[1] }, { x: c.p2[0], y: c.p2[1] }, c.knownLength, c.knownUnit)
+      const doors = store().cadOpenings.filter(o => o.kind === 'door')
+      expect(doors).toHaveLength(1)
+      expect(Math.abs(doors[0].widthFt - t.door.widthFt)).toBeLessThanOrEqual(0.05 * t.door.widthFt)
+    })
+    it('a hand-edited scale refreshes the undecided opening suggestions too, and undoing the calibration restores the old ones with the old scale', () => {
+      loadIntoStore('tiny-unitless.dxf')
+      const before = store().cadOpenings, scaleBefore = store().project.scale
+      const c = t.calibration
+      store().calibrateScaleFromPoints({ x: c.p1[0], y: c.p1[1] }, { x: c.p2[0], y: c.p2[1] }, c.knownLength, c.knownUnit)
+      expect(store().cadOpenings).not.toEqual(before)
+      store().undo()
+      expect(store().project.scale).toBe(scaleBefore)
+      expect(store().cadOpenings).toEqual(before)
+      store().setProject({ scale: t.unitsPerFoot })
+      const doors = store().cadOpenings.filter(o => o.kind === 'door')
+      expect(doors).toHaveLength(1)
+      expect(Math.abs(doors[0].widthFt - t.door.widthFt)).toBeLessThanOrEqual(0.05 * t.door.widthFt)
+    })
+  })
+})
+
+describe('C8 recognition tolerances follow the drawing scale (metres plan shrunk by 1, 1e-2, 1e-4, 1e-6 with the units-per-foot)', () => {
+  const t = manifest['tiny-metres.dxf']
+  const base = parseFile('tiny-metres.dxf')
+  const scaled = (f: number) => base.entities.map(e => ({
+    ...e, ...(e.x !== undefined ? { x: e.x * f } : {}), ...(e.y !== undefined ? { y: e.y * f } : {}),
+    ...(e.points ? { points: e.points.map(v => v * f) } : {}), ...(e.radius !== undefined ? { radius: e.radius * f } : {}),
+    ...(e.textHeight !== undefined ? { textHeight: e.textHeight * f } : {})
+  }))
+  // the door leaf (hinge -> latch) from the construction geometry, canvas Y
+  const door = { id: 'door', a: { x: 4, y: -1.0 }, b: { x: 4, y: -1.9 } }
+  for (const f of [1, 1e-2, 1e-4, 1e-6]) {
+    it(`factor ${f}: both rooms from the area layer and from the walls closed by the approved door`, () => {
+      const upf = t.unitsPerFoot * f
+      const entities = scaled(f)
+      expectBothRooms(t, recognizeCadRooms(entities, { drawingUnitsPerFoot: upf, layers: ['A-AREA'] }).candidates)
+      const walls = recognizeCadRooms(entities, {
+        drawingUnitsPerFoot: upf, layers: ['A-WALL'],
+        approvedOpenings: [{ id: door.id, a: { x: door.a.x * f, y: door.a.y * f }, b: { x: door.b.x * f, y: door.b.y * f } }]
+      })
+      expectBothRooms(t, walls.candidates)
+    })
+  }
 })
