@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { test, expect, captureNonBlank, corpusPath, mockOpenDialog, captureDownloads } from './fixtures'
-import { manifest } from './manifest'
+import { manifest, twinTruth } from './manifest'
 import { writeDefaultCatalogs, writeXlsx, DECORATIVE_ROWS, DUCTED_ROWS } from './catalogs'
 
 test('0. userData is isolated under the temp XDG_CONFIG_HOME', async ({ electronApp, configHome }) => {
@@ -210,14 +210,19 @@ test('E4. DXF import through the real file input renders the corpus drawing', as
 
 // ---------------------------------------------------------------------------------------------
 // E5: DWG through the real file input. Production loads libredwg-web-*.wasm over file://, which
-// nothing else tests. Skipped until Phase B produces the fixture.
+// nothing else tests. The fixture is committed; a missing file must FAIL (no skip).
 // ---------------------------------------------------------------------------------------------
-const DWG_FIXTURE = corpusPath('dwg/arch-metric-mm-r2000.dwg')
+const DWG_NAME = 'dwg/arch-metric-mm-r2000.dwg'
 test('E5. DWG import through the real file input (wasm loaded over file://)', async ({ page, electronApp }, info) => {
-  test.skip(!existsSync(DWG_FIXTURE), 'fixtures/corpus/dwg/arch-metric-mm-r2000.dwg not present yet (Phase B)')
+  const fixture = corpusPath(DWG_NAME)
+  expect(existsSync(fixture), `${fixture} must be committed (npm run corpus:generate-dwg)`).toBe(true)
   await bigWindow(electronApp)
-  await page.setInputFiles(CAD_INPUT, DWG_FIXTURE)
+  await page.setInputFiles(CAD_INPUT, fixture)
   await expect(page.getByText(/CAD Elements:\s*[1-9]/)).toBeVisible({ timeout: 60_000 })
+  // Exactly what the twin manifest (ezdxf ground truth) says the plan holds, plus one TEXT per visible INSERT attribute.
+  const truth = twinTruth(DWG_NAME)
+  const expected = truth.expectedEntityCount + (truth.sourceUnsupported.ATTRIB ?? 0)
+  await expect(page.getByText(new RegExp(`CAD Elements:\\s*${expected}\\b`))).toBeVisible()
   await expect(page.getByRole('alert')).toHaveCount(0)
   await page.waitForTimeout(500)
   expect((await captureNonBlank(electronApp)).nonBackground).toBeGreaterThan(10_000)

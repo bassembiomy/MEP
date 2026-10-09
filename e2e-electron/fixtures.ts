@@ -30,6 +30,8 @@ export interface Diagnostics {
   errors: string[]
   /** Pull main-process uncaughtException / unhandledRejection records into `errors`. */
   collectMain: () => Promise<void>
+  /** Record a trailing stderr line that never got its newline. Call after the process has ended. */
+  flushStderr: () => void
 }
 
 export interface Launched {
@@ -56,12 +58,22 @@ export async function launchApp(opts: LaunchOptions): Promise<Launched> {
     } as Record<string, string>
   })
   const errors: string[] = []
+  // A 'data' chunk can end in the middle of a line: keep the partial tail and complete it with the next chunk.
+  let pending = ''
+  const record = (line: string): void => {
+    const t = line.trim()
+    if (t && !STDERR_ALLOWLIST.some((a) => a.re.test(t))) errors.push(`stderr: ${t}`)
+  }
+  const flushStderr = (): void => {
+    record(pending)
+    pending = ''
+  }
   app.process().stderr?.on('data', (buf: Buffer) => {
-    for (const line of buf.toString().split('\n')) {
-      const t = line.trim()
-      if (t && !STDERR_ALLOWLIST.some((a) => a.re.test(t))) errors.push(`stderr: ${t}`)
-    }
+    const lines = (pending + buf.toString()).split('\n')
+    pending = lines.pop() ?? ''
+    lines.forEach(record)
   })
+  app.process().stderr?.on('end', flushStderr)
   await app.evaluate(() => {
     const g = globalThis as unknown as { __mainDiag?: string[] }
     g.__mainDiag = []
@@ -83,7 +95,16 @@ export async function launchApp(opts: LaunchOptions): Promise<Launched> {
         })
         .catch(() => [] as string[])
       errors.push(...got)
-    }
+    },
+    flushStderr: () => undefined
+  }
+  diag.flushStderr = flushStderr
+  // Main-process errors can only be read while the process is alive: closing the app (E7 closes the first instance
+  // mid-test) must collect them first, otherwise collectMain() at teardown fails to evaluate and returns [].
+  const close = app.close.bind(app)
+  app.close = async () => {
+    await diag.collectMain()
+    await close()
   }
   await page.waitForLoadState('domcontentloaded')
   return { app, page, diag }
@@ -132,12 +153,12 @@ export const test = base.extend<Fixtures>({
       launched.push(l)
       return l
     })
-    // E8: every instance must have produced zero errors. Collected before closing.
+    // E8: every instance must have produced zero errors. close() collects the main-process records before it ends the process.
     const all: string[] = []
     for (const l of launched) {
-      await l.diag.collectMain()
+      await l.app.close().catch(() => undefined) // collects the main-process records first (see launchApp)
+      l.diag.flushStderr()
       all.push(...l.diag.errors)
-      await l.app.close().catch(() => undefined)
     }
     expect(all, 'no console/page/main-process/stderr errors').toEqual([])
   },
