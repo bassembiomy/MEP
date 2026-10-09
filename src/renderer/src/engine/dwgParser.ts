@@ -13,8 +13,11 @@ async function getLibreDwgInstance(): Promise<LibreDwg> {
   return libredwgInstance
 }
 
-export async function parseDwgBuffer(uint8Array: Uint8Array): Promise<ParsedDxf> {
-  const libredwg = await getLibreDwgInstance()
+/**
+ * Decode DWG bytes with an already created LibreDwg instance. Environment independent: the browser entry point
+ * below supplies the instance created from the bundled ?url wasm, tests supply one created in Node from the wasm file.
+ */
+export async function parseDwgWith(libredwg: LibreDwg, uint8Array: Uint8Array): Promise<ParsedDxf> {
   // Copy exactly this view's bytes (including subarray offsets) to the
   // ArrayBuffer expected by LibreDWG's public API.
   const dwgData = libredwg.dwg_read_data(new Uint8Array(uint8Array).buffer, Dwg_File_Type.DWG)
@@ -24,4 +27,8 @@ export async function parseDwgBuffer(uint8Array: Uint8Array): Promise<ParsedDxf>
   } finally {
     libredwg.dwg_free(dwgData)
   }
+}
+
+export async function parseDwgBuffer(uint8Array: Uint8Array): Promise<ParsedDxf> {
+  return parseDwgWith(await getLibreDwgInstance(), uint8Array)
 }
