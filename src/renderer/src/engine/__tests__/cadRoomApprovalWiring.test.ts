@@ -92,7 +92,7 @@ describe('ceiling height suggestion wiring (W3)', () => {
     expect(sug.suggestion?.value).toBeCloseTo(2.8 / 0.3048, 6)
     expect(sug.suggestion?.unit).toBe('ft')
     expect(sug.suggestion?.evidence.length).toBeGreaterThan(0)
-    useProjectStore.setState({ project: { ...s().project, units: 'metric', scale: 0.3048 } })
+    useProjectStore.setState({ project: { ...s().project, units: 'metric', scale: 3.2808 } }) // a feet drawing is 3.2808 units per metre
     expect(selectCeilingHeightSuggestion(s(), candidate).suggestion).toMatchObject({ unit: 'm' })
     expect(selectCeilingHeightSuggestion(s(), candidate).suggestion!.value).toBeCloseTo(2.8, 6)
   })
@@ -147,5 +147,44 @@ describe('ceiling height suggestion wiring (W3)', () => {
     expect(out.success).toBe(false)
     expect(out.error).toMatch(/recognize rooms again/i)
     expect(s().zones).toEqual([])
+  })
+})
+
+describe('ceiling height unit system comes from the confirmed drawing unit, never from the display preference (R9)', () => {
+  const ch = (txt: string, w: number, h: number) => ({
+    type: 'TEXT' as const, x: w / 2, y: -h / 2, text: txt, textHeight: 1, layer: 'A-ANNO'
+  })
+  const suggest = (project: Record<string, unknown>, w: number, h: number, txt: string) => {
+    useProjectStore.setState({
+      project: { name: 'P', location: 'L', outdoorDb: 95, indoorDb: 75, ...project } as ReturnType<typeof s>['project'],
+      dxfEntities: [ch(txt, w, h)], cadLevel: 0
+    })
+    return selectCeilingHeightSuggestion(s(), { polygon: [0, 0, w, 0, w, -h, 0, -h] })
+  }
+  it("'CH 9.5' in an inch drawing with metric display is 9.5 ft", () => {
+    const r = suggest({ units: 'metric', scale: 12 / 0.3048, cadUnit: 'in', cadUnitsConfirmed: true }, 240, 180, 'CH 9.5')
+    expect(r.suggestion?.valueFt).toBeCloseTo(9.5, 9)
+    expect(r.suggestion?.unit).toBe('m')
+    expect(r.suggestion?.value).toBeCloseTo(9.5 * 0.3048, 9)
+  })
+  it("'CH 2.70' in an mm drawing with imperial display is 2.70 m", () => {
+    const r = suggest({ units: 'imperial', scale: 304.8, cadUnit: 'mm', cadUnitsConfirmed: true }, 6000, 4000, 'CH 2.70')
+    expect(r.suggestion?.valueFt).toBeCloseTo(2.7 / 0.3048, 9)
+    expect(r.suggestion?.unit).toBe('ft')
+  })
+  it('uses the confirmed unit even when the scale was edited to a value that does not look metric', () => {
+    const r = suggest({ units: 'imperial', scale: 100, cadUnit: 'mm', cadUnitsConfirmed: true }, 6000, 4000, 'CH 2.70')
+    expect(r.suggestion?.valueFt).toBeCloseTo(2.7 / 0.3048, 9)
+  })
+  it('unconfirmed units give no suggestion and an unresolved reason', () => {
+    for (const confirmed of [false, undefined]) {
+      const r = suggest({ units: 'metric', scale: 304.8 * 0.3048, cadUnit: 'mm', cadUnitsConfirmed: confirmed }, 6000, 4000, 'CH 2.70')
+      expect(r.suggestion).toBeUndefined()
+      expect(r.unresolved).toBe(true)
+    }
+  })
+  it('a custom (calibrated) unit is not guessed from the unit name', () => {
+    const r = suggest({ units: 'imperial', scale: 50, cadUnit: 'custom', cadUnitsConfirmed: true }, 6000, 4000, 'CH 2.70')
+    expect(r.suggestion).toBeUndefined()
   })
 })

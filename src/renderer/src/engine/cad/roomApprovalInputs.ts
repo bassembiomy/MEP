@@ -58,16 +58,31 @@ export interface CeilingHeightSuggestionView {
   evidence: string[]
 }
 
+/**
+ * Unit system of the drawing's own coordinates, taken from the CONFIRMED CAD unit (mm/cm/m metric, in/ft imperial).
+ * `project.units` is a display preference and says nothing about the drawing, so it is never used. A custom or
+ * unset unit, or units the user has not confirmed, give no answer (the annotation reader then decides conservatively).
+ */
+export function drawingUnitSystem(project: Pick<ProjectMetadata, 'cadUnit' | 'cadUnitsConfirmed'>): 'metric' | 'imperial' | undefined {
+  if (project.cadUnitsConfirmed !== true) return undefined
+  switch (project.cadUnit) {
+    case 'mm': case 'cm': case 'm': return 'metric'
+    case 'in': case 'ft': return 'imperial'
+    default: return undefined
+  }
+}
+
 export function ceilingHeightSuggestionFor(
   entities: DxfEntity[],
   polygon: number[],
-  project: Pick<ProjectMetadata, 'units' | 'scale' | 'cadUnitsConfirmed'>,
+  project: Pick<ProjectMetadata, 'units' | 'scale' | 'cadUnit' | 'cadUnitsConfirmed'>,
   level: number
 ): { suggestion?: CeilingHeightSuggestionView; unresolved: boolean; reasons: string[] } {
   try {
     const result = suggestCeilingHeight(entities, { polygon }, {
       unitsPerFoot: drawingUnitsPerFoot(project),
       unitsConfirmed: project.cadUnitsConfirmed === true,
+      ...(drawingUnitSystem(project) ? { unitSystem: drawingUnitSystem(project) } : {}),
       level
     })
     const s = result.ceilingHeightSuggestion
