@@ -2,6 +2,8 @@ import type { DxfEntity, BoundingBox } from '../store/projectStore';
 import { getCadEntityBounds, transformCadEntity, validateCadEntity } from './cad/nativeGeometry';
 import type { CadAffineMatrix } from './cad/nativeGeometry';
 import type { CadBlockReference } from './cad/semanticTypes';
+import { dxfTextJustification, mtextAttachment, storedJustification } from './cad/textJustification';
+import type { TextHAlign, TextVAlign } from './cad/textJustification';
 import { describeInsertTransform, insertTransformHasShear } from './cad/blockReferences';
 
 export interface CadImportDiagnostic {
@@ -311,6 +313,36 @@ export function sampleSplineData(spline: { closed: boolean; degree: number; cont
 }
 
 /** Parses DXF records before resolving INSERTs. Empty values never shift code/value pairs. */
+/**
+ * Sets the justified anchor (x, y: internal Y-down frame, before the INSERT matrix) and textHAlign / textVAlign on a
+ * TEXT / ATTRIB / ATTDEF / MTEXT entity whose group 10 has already been stored in x, y. See cad/textJustification.ts.
+ * Vertical justification is group 73 on TEXT but 74 on ATTRIB / ATTDEF (73 there is the field length); MTEXT uses group
+ * 71 about group 10 (its 11/21 is a direction vector and 72/73 are flow / spacing, not justification).
+ */
+function applyTextJustification(ent: DxfEntity, r: DxfRecord, diagnose: (code: string, message: string, r?: DxfRecord, severity?: 'warning' | 'error') => void): void {
+  let hAlign: TextHAlign = 'left', vAlign: TextVAlign = ent.type === 'MTEXT' ? 'top' : 'baseline';
+  if (r.type === 'MTEXT') {
+    if (first(r, 71) !== undefined) {
+      const a = mtextAttachment(number(r, 71));
+      if (a) ({ hAlign, vAlign } = a);
+      else diagnose('TEXT_JUSTIFICATION_UNSUPPORTED', `MTEXT attachment point ${first(r, 71)?.trim()} is not 1..9; top-left used.`, r);
+    }
+  } else {
+    const attribute = r.type === 'ATTRIB' || r.type === 'ATTDEF';
+    const j = dxfTextJustification(number(r, 72, 0), number(r, attribute ? 74 : 73, 0));
+    if (j.invalid) diagnose('TEXT_JUSTIFICATION_UNSUPPORTED', `${r.type} justification (72=${first(r, 72)?.trim() ?? 0}, ${attribute ? 74 : 73}=${first(r, attribute ? 74 : 73)?.trim() ?? 0}) is not supported; left/baseline at the insertion point used.`, r);
+    else if (j.anchor !== 'p10') {
+      const x11 = first(r, 11) === undefined ? NaN : number(r, 11), y11 = -number(r, 21, 0);
+      if (Number.isFinite(x11) && Number.isFinite(y11)) {
+        ({ hAlign, vAlign } = j);
+        // Aligned / fit: the midpoint of the two baseline points (lossy: the fitted width and 10 -> 11 direction are not kept).
+        if (j.anchor === 'p11') { ent.x = x11; ent.y = y11; } else { ent.x = (ent.x! + x11) / 2; ent.y = (ent.y! + y11) / 2; }
+      } else diagnose('TEXT_ALIGNMENT_POINT_MISSING', `${r.type} is justified but has no usable alignment point (group 11/21); left/baseline at the insertion point used.`, r);
+    }
+  }
+  Object.assign(ent, storedJustification(ent.type, hAlign, vAlign));
+}
+
 export function parseDxfText(dxfText: string): ParsedDxf {
   const diagnostics: CadImportDiagnostic[] = [], entities: DxfEntity[] = [], blockReferences: CadBlockReference[] = [];
   const diagnose = (code: string, message: string, r?: DxfRecord, severity: 'warning' | 'error' = 'warning') => {
@@ -555,6 +587,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         case 'TEXT':
         case 'MTEXT':
           ent.x = number(r, 10); ent.y = -number(r, 20);
+          applyTextJustification(ent, r, diagnose);
           // TEXT has only group 1; MTEXT splits long text into 3 chunks followed by 1. On ATTRIB/ATTDEF group 3 is the PROMPT
           // string (not content), so attributes use group 1 only.
           const attribute = r.type === 'ATTRIB' || r.type === 'ATTDEF';
