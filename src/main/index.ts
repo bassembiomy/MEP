@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, screen } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -162,15 +162,25 @@ function defaultCatalogCandidates(fileName: string, legacyPath: string): string[
   return [...dirs.map((d) => join(d, fileName)), legacyPath]
 }
 
+/**
+ * The default window is 1400x900 with a 1100x700 minimum, but never larger than the primary display's work area (a 1366x768
+ * laptop would otherwise get a window taller than the screen, with its bottom edge unreachable).
+ */
+function windowSizeFor(workArea: { width: number; height: number }): { width: number; height: number; minWidth: number; minHeight: number } {
+  return {
+    width: Math.min(1400, workArea.width),
+    height: Math.min(900, workArea.height),
+    minWidth: Math.min(1100, workArea.width),
+    minHeight: Math.min(700, workArea.height)
+  }
+}
+
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
     // The fixed 260 px left and 330 px right docks leave the drawing canvas ~300 px wide at 900x670, which clips its toolbars:
     // 1400x900 gives ~810 px, and the minimum keeps at least ~510 px (e2e-electron E1b asserts >= 450 px).
-    width: 1400,
-    height: 900,
-    minWidth: 1100,
-    minHeight: 700,
+    ...windowSizeFor(screen.getPrimaryDisplay().workAreaSize),
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),

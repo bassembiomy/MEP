@@ -31,9 +31,14 @@ test('E1. boots: one window, non-blank, hardened renderer, preload bridge, defau
   expect(globals.hasApi).toBe('function')
   expect(globals.electronVersion).toBe(await electronApp.evaluate(() => process.versions.electron))
 
-  // Real default window size: 1400x900 (src/main/index.ts). Report horizontal overflow / clipping as a finding.
-  const size = await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())
-  expect(size).toEqual([1400, 900])
+  // Real default window size: 1400x900 clamped to the primary display's work area (src/main/index.ts), so the expected value
+  // is computed from the app's own workAreaSize (Xvfb is 1920x1080 under test:electron, 1280x1024 by default).
+  // Report horizontal overflow / clipping as a finding.
+  const { size, workArea } = await electronApp.evaluate(({ BrowserWindow, screen }) => ({
+    size: BrowserWindow.getAllWindows()[0].getSize(),
+    workArea: screen.getPrimaryDisplay().workAreaSize
+  }))
+  expect(size).toEqual([Math.min(1400, workArea.width), Math.min(900, workArea.height)])
   const overflow = await page.evaluate(() => ({
     scrollW: document.documentElement.scrollWidth,
     clientW: document.documentElement.clientWidth,
