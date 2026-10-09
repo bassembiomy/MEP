@@ -1,4 +1,5 @@
 import {describe,it,expect,beforeEach,vi,afterEach} from 'vitest';
+import {moveTerminal,moveIndoorUnit} from '../cad/componentEdits';
 import {moveVertex,insertVertex,deleteVertex,offsetEdge} from '../cad/zoneGeometryEdits';
 import {useProjectStore,type Zone} from '../../store/projectStore';
 const L=[0,0,100,0,100,40,40,40,40,100,0,100]; // concave L
@@ -60,5 +61,34 @@ describe('store zone edits',()=>{
   useProjectStore.getState().moveZoneVertex('z',2,110,110);
   expect(z().cadProvenance?.userModified?.edits).toHaveLength(1);expect(z().cadProvenance?.candidateId).toBe('c1');
   useProjectStore.getState().undo();expect(z().cadProvenance?.userModified).toBeUndefined();
+ });
+});
+
+describe('component drags are undoable steps',()=>{
+ const zone=():Zone=>({id:'z',name:'R',points:[0,0,400,0,400,300,0,300],spaceTypeId:'office',ceilingHeight:10,occupants:2,systemType:'concealed',unitPos:{x:20,y:150},unitPositions:[{x:20,y:150}],
+  diffusers:[{id:'S1',type:'supply',x:100,y:50,cfm:150,size:'12x12',deltaPInWg:0.05}],
+  ducts:[{id:'T',type:'trunk',points:[20,150,300,150],widthIn:10,heightIn:8,cfm:150,sizeLabel:'10x8'},{id:'B1',type:'branch',points:[100,150,100,50],widthIn:10,heightIn:8,cfm:150,sizeLabel:'10x8'}],engineeringStatus:'preliminary'});
+ beforeEach(()=>{useProjectStore.setState({project:{name:'P',location:'Cairo',units:'imperial',scale:10,outdoorDb:95,indoorDb:75},zones:[zone()],selectedZoneId:'z',undoStack:[],redoStack:[],cadObstacles:[]})});
+ const z=()=>useProjectStore.getState().zones[0];
+ const s=()=>useProjectStore.getState();
+ it('each accepted drag pushes one snapshot; undo reverts only that drag, not the earlier outline edit',()=>{
+  expect(s().moveZoneVertex('z',2,420,300).success).toBe(true);
+  const afterOutline=structuredClone(z());
+  const t=moveTerminal(z(),'S1',140,60,{drawingUnitsPerFoot:10});expect(t.ok).toBe(true);if(!t.ok)return;
+  expect(s().applyComponentEdit('z',t)).toMatchObject({success:true});
+  expect(s().undoStack).toHaveLength(2);expect(z().diffusers[0]).toMatchObject({x:140,y:60});expect(z().engineeringStatus).toBe('stale');
+  const u=moveIndoorUnit(z(),0,40,160,{drawingUnitsPerFoot:10});expect(u.ok).toBe(true);if(!u.ok)return;
+  expect(s().applyComponentEdit('z',u).success).toBe(true);expect(s().undoStack).toHaveLength(3);
+  s().undo();expect(z().unitPos).toEqual({x:20,y:150});expect(z().diffusers[0]).toMatchObject({x:140,y:60});
+  s().undo();expect(z().diffusers[0]).toMatchObject({x:100,y:50});expect(z().points).toEqual(afterOutline.points);
+  s().redo();expect(z().diffusers[0]).toMatchObject({x:140,y:60});
+  s().undo();s().undo();expect(z().points).toEqual(zone().points);
+ });
+ it('a refused edit changes nothing and pushes no snapshot',()=>{
+  const bad=moveTerminal(z(),'S1',900,50,{drawingUnitsPerFoot:10});expect(bad.ok).toBe(false);
+  const before=structuredClone(z());
+  expect(s().applyComponentEdit('z',bad)).toMatchObject({success:false,error:expect.stringMatching(/outside/)});
+  expect(z()).toEqual(before);expect(s().undoStack).toHaveLength(0);
+  expect(s().applyComponentEdit('nope',{ok:true,patch:{},warnings:[]}).success).toBe(false);
  });
 });

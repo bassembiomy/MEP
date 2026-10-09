@@ -22,7 +22,7 @@ import {
 } from '../engine/cad/cadSemanticState';
 import { validateZonePolygon } from '../engine/cad/zonePolygon';
 import type { DeploymentManifest } from '../engine/deploymentTypes';
-import { verifyEditedZone, zoneInputsFingerprint } from '../engine/cad/componentEdits';
+import { verifyEditedZone, zoneInputsFingerprint, type ComponentEdit } from '../engine/cad/componentEdits';
 import { moveVertex, insertVertex, deleteVertex, offsetEdge, type PolygonEdit } from '../engine/cad/zoneGeometryEdits';
 import { measureSimplePolygon, requirePositive, requireNonnegative, METERS_PER_FOOT } from '../engine/engineeringInputs';
 import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
@@ -280,6 +280,8 @@ interface ProjectState {
   /** Validated outline edits: a rejected edit leaves the zone and undo stack untouched; accepted ones push an undo snapshot and mark the zone stale. */
   /** Explicit apply step for dragged components: re-runs validateAppliedDeployment against the deployment evidence. Failure marks the room blocked with the error; success marks it preliminary. */
   verifyZoneEdits: (id: string) => {success:boolean;error?:string;pressureInWg?:number};
+  /** Applies an already-validated componentEdits result as one undoable step (snapshot first); a refused edit changes nothing. */
+  applyComponentEdit: (id: string, edit: ComponentEdit) => {success:boolean;error?:string;warnings?:string[]};
   moveZoneVertex: (id: string, index: number, x: number, y: number) => {success:boolean;error?:string};
   insertZoneVertex: (id: string, edgeIndex: number, x: number, y: number) => {success:boolean;error?:string};
   deleteZoneVertex: (id: string, index: number) => {success:boolean;error?:string};
@@ -719,6 +721,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       ? { ...z, ...(result.pressureInWg > 0 ? { catalogEsp: `${result.pressureInWg.toFixed(2)} in.wg` } : {}), engineeringStatus: 'preliminary' as const, engineeringError: undefined, engineeringNotice: undefined }
       : { ...z, engineeringStatus: 'blocked' as const, engineeringError: result.error }) });
     return result.ok ? { success: true, pressureInWg: result.pressureInWg } : { success: false, error: result.error };
+  },
+  applyComponentEdit: (id, edit) => {
+    const state = get();
+    const zone = state.zones.find(z => z.id === id);
+    if (!zone) return { success: false, error: 'Room not found.' };
+    if (!edit.ok) return { success: false, error: edit.error };
+    set({ undoStack: [...state.undoStack, makeSnapshot(state, `Edited components of ${zone.name}`, false)], redoStack: [] });
+    get().updateZone(id, edit.patch); // marks the room stale (or blocked) and drops any preview
+    return { success: true, warnings: edit.warnings };
   },
   moveZoneVertex: (id, index, x, y) => applyZoneOutlineEdit(set, get, id, `Moved vertex ${index}`, z => moveVertex(z.points, index, x, y)),
   insertZoneVertex: (id, edgeIndex, x, y) => applyZoneOutlineEdit(set, get, id, `Inserted vertex on edge ${edgeIndex}`, z => insertVertex(z.points, edgeIndex, x, y)),

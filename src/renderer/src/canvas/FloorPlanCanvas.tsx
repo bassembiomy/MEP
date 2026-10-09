@@ -30,7 +30,7 @@ export const FloorPlanCanvas: React.FC = () => {
     verifyZoneEdits,
     calibrateScaleFromPoints,
     selectZone,
-    updateZone,
+    applyComponentEdit: applyStoreComponentEdit,
     project,
     setProject,
     dxfEntities,
@@ -491,10 +491,9 @@ export const FloorPlanCanvas: React.FC = () => {
   const applyComponentEdit = (zoneId: string, build: (zone: Zone) => ComponentEdit): boolean => {
     const zone = zones.find(z => z.id === zoneId);
     if (!zone) return false;
-    const result = build(zone);
-    if (!result.ok) { setDrawMessage(`Edit refused: ${result.error}`); return false; }
-    updateZone(zoneId, result.patch);
-    setDrawMessage(`Layout edited and marked stale; verify before relying on it.${result.warnings.length ? ' ' + result.warnings.join(' ') : ''}`);
+    const result = applyStoreComponentEdit(zoneId, build(zone));
+    if (!result.success) { setDrawMessage(`Edit refused: ${result.error}`); return false; }
+    setDrawMessage(`Layout edited and marked stale; verify before relying on it.${result.warnings?.length ? ' ' + result.warnings.join(' ') : ''}`);
     return true;
   };
   const handleDiffuserDrag = (zoneId: string, diffuserId: string, newX: number, newY: number): boolean =>
