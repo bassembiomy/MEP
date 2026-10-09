@@ -8,6 +8,7 @@ import type { CadImportDiagnostic } from '../engine/dxfParser';
 import type { CadRoomCandidate, CadLayerRole, CadBlockReference, CadRoomRecognitionResult, CadApprovedObstacle } from '../engine/cad/semanticTypes';
 import { recognizeCadRooms } from '../engine/cad/roomRecognition';
 import { buildRoomRecognitionBasis, ceilingHeightSuggestionFor, drawingUnitsPerFoot, type CeilingHeightSuggestionView } from '../engine/cad/roomApprovalInputs';
+import { resolveImportOrigin, translateDrawing, translateZone, type DrawingOrigin } from '../engine/cad/drawingOrigin';
 import { unitsAutoConfirmed } from '../engine/cad/unitsDecision';
 import { calibrateDrawingScale, type CadKnownUnit } from '../engine/dxfParser';
 import { CAD_LAYER_ROLES } from '../engine/cad/layerClassification';
@@ -250,6 +251,12 @@ interface ProjectState {
   tempPoints: number[];
   dxfEntities: DxfEntity[];
   dxfBoundingBox: BoundingBox | null;
+  /**
+   * Every engine coordinate is local: raw drawing coordinate = local + drawingOrigin, in the internal Y-down frame
+   * (DXF X = x + ox, DXF Y = -(y + oy)). Changes only in setDxfData and restoreProjectDocument; clearDxfData keeps it.
+   * See engine/cad/drawingOrigin.ts.
+   */
+  drawingOrigin: DrawingOrigin;
   dxfLayers: Record<string, DxfLayerInfo>;
   cadImport: CadImportMetadata | null;
   /** Layer-role suggestions plus the user's overrides. Suggestions never act as confirmed walls. */
@@ -308,6 +315,10 @@ interface ProjectState {
   setHighlightedEntityTag: (tag: string | null) => void;
   addTempPoint: (x: number, y: number) => void;
   clearTempPoints: () => void;
+  /**
+   * Takes the parser's RAW coordinates (entities, bbox, blockReferences) and is the single place they become local: it
+   * resolves the drawing origin, localises the drawing, and rebases retained zones when the origin changes.
+   */
   setDxfData: (entities: DxfEntity[], bbox: BoundingBox, suggestedScale?: number, cadUnit?: 'mm' | 'cm' | 'm' | 'in' | 'ft', metadata?:CadImportMetadata, blockReferences?: CadBlockReference[], hiddenLayers?: string[]) => void;
   /** Set (or with null clear) the user's role for a layer, then refresh opening/obstacle suggestions. */
   setCadLayerRole: (layer: string, role: CadLayerRole | null) => CadActionResult;
@@ -364,7 +375,7 @@ export function selectCeilingHeightSuggestion(
 export function selectPersistedProject(state: ProjectState): PersistedProjectState {
   return {
     project: state.project, zones: state.zones, dxfEntities: state.dxfEntities, dxfBoundingBox: state.dxfBoundingBox, dxfLayers: state.dxfLayers,
-    cadImport: state.cadImport, cadLayerOverrides: state.cadLayerRoles.overrides, cadOpenings: state.cadOpenings, cadObstacles: state.cadObstacles,
+    drawingOrigin: state.drawingOrigin, cadImport: state.cadImport, cadLayerOverrides: state.cadLayerRoles.overrides, cadOpenings: state.cadOpenings, cadObstacles: state.cadObstacles,
     cadLevel: state.cadLevel, annotationVisibility: state.annotationVisibility, selectedSystemTypes: state.selectedSystemTypes,
     optimizationWeights: state.optimizationWeights, loadedCatalogs: state.loadedCatalogs as PersistedProjectState['loadedCatalogs']
   };
@@ -491,6 +502,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   tempPoints: [],
   dxfEntities: [],
   dxfBoundingBox: null,
+  drawingOrigin: { x: 0, y: 0 },
   dxfLayers: {},
   cadImport: null,
   cadLayerRoles: EMPTY_LAYER_ROLES,
@@ -538,6 +550,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // Zone obstacles are derived data: rebuild them from the approved CAD obstacles instead of trusting the file.
       const zones=syncZoneObstacles(restored.zones,restoredCadObstacles,unitsPerFootOf(restored.project));
       set({...restored,zones,
+        drawingOrigin:restored.drawingOrigin??{x:0,y:0},
         cadImport:restored.cadImport??null,
         cadLayerRoles:semantics.layerRoles,
         cadOpenings:cadOpenings??semantics.openings,
@@ -802,20 +815,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         ...(cadUnit?{cadUnit}:{}),
         ...(metadata?{cadUnitsConfirmed:unitsAutoConfirmed(metadata)}:{}),
         ...(suggestedScale!==undefined||cadUnit||metadata?{cadScaleProvenance:undefined}:{})};
+      // Raw -> local. A new origin (only when the frame changed) shifts retained zones by old - new so they keep their raw position.
+      const origin=resolveImportOrigin(bbox,state.drawingOrigin);
+      const rebased=origin.x!==state.drawingOrigin.x||origin.y!==state.drawingOrigin.y;
+      const local=translateDrawing({entities,bbox,blockReferences:blockReferences??[]},-origin.x,-origin.y);
+      const baseZones=rebased?state.zones.map(z=>translateZone(z,state.drawingOrigin.x-origin.x,state.drawingOrigin.y-origin.y)):state.zones;
       // A new drawing starts a fresh review: no inherited overrides, decisions or level.
-      const semantics=recognizeCadSemantics({entities:recognitionEntities(entities,layers),bbox,blockReferences,unitsPerFoot:unitsPerFootOf(project),level:0,overrides:{}});
+      const semantics=recognizeCadSemantics({entities:recognitionEntities(local.entities,layers),bbox:local.bbox,blockReferences:local.blockReferences,unitsPerFoot:unitsPerFootOf(project),level:0,overrides:{}});
       return {
-      dxfEntities: entities,
-      dxfBoundingBox: bbox,
+      dxfEntities: local.entities,
+      dxfBoundingBox: local.bbox,
+      drawingOrigin: origin,
+      // Evidence, inputs and half-drawn outlines refer to positions in the old frame.
+      ...(rebased?{deploymentEvidence:{},deploymentInputs:{},tempPoints:[]}:{}),
       dxfLayers: layers,
       cadImport:metadata??null,
       cadLayerRoles:semantics.layerRoles,cadOpenings:semantics.openings,cadObstacles:semantics.obstacles,
-      cadLevel:0,cadBlockReferences:blockReferences??[],
+      cadLevel:0,cadBlockReferences:local.blockReferences,
       activePreview:null,
       project,
       // Undo history refers to the previous drawing's review state; restoring it would resurrect that drawing's roles and obstacles.
       undoStack:[],redoStack:[],
-      zones:syncZoneObstacles(state.zones,semantics.obstacles,unitsPerFootOf(project)).map(zone=>{
+      zones:syncZoneObstacles(baseZones,semantics.obstacles,unitsPerFootOf(project)).map(zone=>{
         const evaluation=calculateZoneLoadSafely(zone,project);
         return {...zone,engineeringStatus:evaluation.error?'blocked' as const:'stale' as const,engineeringError:evaluation.error,engineeringNotice:undefined};
       })};
