@@ -8,7 +8,7 @@
     "_CLOSEDBLANK",
     "_CLOSEDFILLED"
    ],
-   "bytes": 22050,
+   "bytes": 22085,
    "dwgVersion": "r2000",
    "ezdxfCounts": {
     "dimensionBlocks": 0,
@@ -61,7 +61,7 @@
     }
    },
    "measurement": 0,
-   "sha256": "4846de9a1feeae24702cdf0f946e03221b4da12e887b563c96867468e9110576",
+   "sha256": "09a2e504e8ce6d0082c8b9082896cf913ee786ba501c6efda81685f363b43901",
    "texts": [
     {
      "height": 5.0,
@@ -113,6 +113,8 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
+     "INSERT attribute linkage (first_attrib / last_attrib / seqend resolve to ATTRIB / SEQEND owned by the INSERT, dwgread JSON)",
+     "model-space INSERT -> block name (block_header resolves to the source block, dwgread JSON)",
      "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
@@ -131,7 +133,7 @@
     "_CLOSEDBLANK",
     "_CLOSEDFILLED"
    ],
-   "bytes": 25079,
+   "bytes": 25129,
    "dwgVersion": "r2000",
    "ezdxfCounts": {
     "dimensionBlocks": 0,
@@ -203,7 +205,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "5c955c8b20addbb19526e1f7af8cb8b2e604d62222852d96f9c1a972953d923e",
+   "sha256": "a775fdbacdb1d15adbf3bdc085105bd004e291e7b01571ec87c78f14fe371bf4",
    "texts": [
     {
      "height": 150.0,
@@ -269,6 +271,8 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
+     "INSERT attribute linkage (first_attrib / last_attrib / seqend resolve to ATTRIB / SEQEND owned by the INSERT, dwgread JSON)",
+     "model-space INSERT -> block name (block_header resolves to the source block, dwgread JSON)",
      "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
@@ -338,7 +342,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "4fd805312951948421da6356581ff02796a2f2c93586c7b4cace6bdade55a3a0",
+   "sha256": "ce7948e2e8c13367e6e3a7aeddad996b4e36db0aa8d30c43ddc744d4c1b14097",
    "texts": [
     {
      "height": 150.0,
@@ -404,6 +408,8 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
+     "INSERT attribute linkage (first_attrib / last_attrib / seqend resolve to ATTRIB / SEQEND owned by the INSERT, dwgread JSON)",
+     "model-space INSERT -> block name (block_header resolves to the source block, dwgread JSON)",
      "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
@@ -471,7 +477,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "d362b6344399b6ca2021e86e1bc117b93fbeced0f04032f40448a2fefddccbaf",
+   "sha256": "8d627324cae0bad50c4e0e1d4c7b57d5159b4dc8bd3b6fd9e8d12c1280c05d75",
    "texts": [
     {
      "height": 180.0,
@@ -509,6 +515,8 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
+     "INSERT attribute linkage (first_attrib / last_attrib / seqend resolve to ATTRIB / SEQEND owned by the INSERT, dwgread JSON)",
+     "model-space INSERT -> block name (block_header resolves to the source block, dwgread JSON)",
      "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
@@ -637,7 +645,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "5769e6e55f9ad864c769b8b85e73196d42fb0a3274bbcfd1ea0fd79be5bf92ee",
+   "sha256": "50c97b6f4eb2b3bb8bb8b40ea589cded96f8dd12a434fa05d949adbeb88ccdcf",
    "texts": [
     {
      "height": 150.0,
@@ -703,6 +711,8 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
+     "INSERT attribute linkage (first_attrib / last_attrib / seqend resolve to ATTRIB / SEQEND owned by the INSERT, dwgread JSON)",
+     "model-space INSERT -> block name (block_header resolves to the source block, dwgread JSON)",
      "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
@@ -810,7 +820,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "4a52a708a06d0e8cd2a2899e2f5a2b212bea65d113f6e1a61e40ca441f0efda0",
+   "sha256": "459442d14195102fbb98ab261211e40e80412d60f3c4a570ec419b8ae9cdbed6",
    "texts": [
     {
      "height": 150.0,
@@ -876,13 +886,26 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
+     "INSERT attribute linkage (first_attrib / last_attrib / seqend resolve to ATTRIB / SEQEND owned by the INSERT, dwgread JSON)",
+     "model-space INSERT -> block name (block_header resolves to the source block, dwgread JSON)",
      "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
      "$INSUNITS/$MEASUREMENT/$LUNITS"
     ],
-    "exclusions": {},
-    "status": "pass"
+    "exclusions": {
+     "INSERT.blockName": {
+      "cause": "LibreDWG 0.13.3 R14 defect: native dwgread (not only the libredwg-web WASM build) resolves every INSERT block_header to a BLOCK_HEADER with an empty name in the R14 files dxf2dwg writes",
+      "dwg": [
+       ""
+      ],
+      "source": [
+       "DOOR-SGL-900",
+       "WIN-1200"
+      ]
+     }
+    },
+    "status": "pass-with-exclusions"
    }
   },
   "unitless-insunits0-r2000.dwg": {
@@ -965,7 +988,7 @@
     }
    },
    "measurement": 1,
-   "sha256": "fdd6f4555ae3aefec95b54eb549d08e146b152e9ea861de212b3a38642a0e24e",
+   "sha256": "47da6dc59919317c8a303675ea18daa29f43abbffb7b76ca1570f0e30193ff9c",
    "texts": [
     {
      "height": 150.0,
@@ -1031,6 +1054,8 @@
      "entity counts by type and layer",
      "paper-space entities by type",
      "INSERT attribute count",
+     "INSERT attribute linkage (first_attrib / last_attrib / seqend resolve to ATTRIB / SEQEND owned by the INSERT, dwgread JSON)",
+     "model-space INSERT -> block name (block_header resolves to the source block, dwgread JSON)",
      "layer table (frozen/off/locked/colour, from dwgread JSON)",
      "block names",
      "anonymous dimension blocks",
@@ -1044,7 +1069,7 @@
  "generator": {
   "ezdxf": "1.4.4"
  },
- "handleNormalisation": "entity handles are renumbered before dxf2dwg (modelspace last) to avoid LibreDWG 0.13.3 first/last handle-range entity leaks",
+ "handleNormalisation": "entity handles are renumbered before dxf2dwg (modelspace last; ATTRIB / VERTEX / SEQEND children after it, with their owner re-pointed at the parent's new handle) to avoid LibreDWG 0.13.3 first/last handle-range entity leaks and unlinked INSERT attributes",
  "libredwg": {
   "commit": "97c7225596c17430b82fd0161e7eff6beb5b1034",
   "patches": {
@@ -1055,7 +1080,8 @@
    ],
    "purpose": {
     "layer-flags": "dxf2dwg writes the layer frozen/off/locked flag word (0.13.3 writes 0 and loses them)",
-    "mtext-height": "dxf2dwg stores MTEXT group 40 as text_height (0.13.3 stores rect_width, height 0)"
+    "mtext-height": "dxf2dwg stores MTEXT group 40 as text_height (0.13.3 stores rect_width, height 0)",
+    "text-dataflags": "dxf2dwg sets the TEXT / ATTRIB / ATTDEF dataflags with the right sense (0.13.3 inverted them and dropped elevation, rotation, oblique angle, width factor, generation and alignments)"
    },
    "sha256OfConcatenation": "7d5254c2eadb6c97f0652da6da7ba760e540f47e1ad4a7936dd42ab58c11e986"
   },
@@ -1064,8 +1090,18 @@
  },
  "rejected": [
   {
-   "diffCount": 1,
+   "diffCount": 11,
    "diffs": [
+    "INSERT CF: last_attrib does not resolve to an ATTRIB ([3, 1, 235, 235])",
+    "INSERT CF: seqend does not resolve to a SEQEND ([0, 0])",
+    "INSERT D2: last_attrib does not resolve to an ATTRIB ([3, 1, 237, 237])",
+    "INSERT D2: seqend does not resolve to a SEQEND ([0, 0])",
+    "INSERT D5: last_attrib does not resolve to an ATTRIB ([3, 1, 239, 239])",
+    "INSERT D5: seqend does not resolve to a SEQEND ([0, 0])",
+    "INSERT D8: last_attrib does not resolve to an ATTRIB ([3, 1, 241, 241])",
+    "INSERT D8: seqend does not resolve to a SEQEND ([0, 0])",
+    "INSERT DB: last_attrib does not resolve to an ATTRIB ([3, 1, 243, 243])",
+    "INSERT DB: seqend does not resolve to a SEQEND ([0, 0])",
     "$INSUNITS: source 1, dwg 0"
    ],
    "reason": "writer check differs from the ezdxf source",
@@ -1083,8 +1119,18 @@
    "version": "r2004"
   },
   {
-   "diffCount": 1,
+   "diffCount": 11,
    "diffs": [
+    "INSERT 139: last_attrib does not resolve to an ATTRIB ([3, 2, 354, 354])",
+    "INSERT 139: seqend does not resolve to a SEQEND ([0, 0])",
+    "INSERT 13C: last_attrib does not resolve to an ATTRIB ([3, 2, 356, 356])",
+    "INSERT 13C: seqend does not resolve to a SEQEND ([0, 0])",
+    "INSERT 13F: last_attrib does not resolve to an ATTRIB ([3, 2, 358, 358])",
+    "INSERT 13F: seqend does not resolve to a SEQEND ([0, 0])",
+    "INSERT 142: last_attrib does not resolve to an ATTRIB ([3, 2, 360, 360])",
+    "INSERT 142: seqend does not resolve to a SEQEND ([0, 0])",
+    "INSERT 145: last_attrib does not resolve to an ATTRIB ([3, 2, 362, 362])",
+    "INSERT 145: seqend does not resolve to a SEQEND ([0, 0])",
     "$INSUNITS: source 4, dwg 0"
    ],
    "reason": "writer check differs from the ezdxf source",

@@ -89,13 +89,15 @@ The `.dwg` bytes are not reproducible (LibreDWG stamps them); the sha256 identif
 
 Each DWG is read back by LibreDWG's own `dwg2dxf` / `dwgread -O json` and compared with the ezdxf source document: entity counts by type and by layer, rounded geometry of
 every entity, text content and height, paper-space entities, INSERT attributes, layer flags (frozen / off / locked / colour), block names, anonymous dimension blocks,
-`$INSUNITS` / `$MEASUREMENT` / `$LUNITS`. A (file, version) pair that differs is not written and is listed under `rejected` in `dwg-manifest.json`.
+`$INSUNITS` / `$MEASUREMENT` / `$LUNITS`. Two checks read the DWG natively (`dwgread -O json`): every INSERT with `has_attribs` must have non-null `first_attrib` / `last_attrib`
+resolving to ATTRIBs owned by that INSERT and a `seqend` resolving to a SEQEND, and every model-space INSERT's `block_header` must resolve to the block the source names. A (file, version) pair that differs is not written and is listed under `rejected` in `dwg-manifest.json`.
 
 What LibreDWG 0.13.3 got wrong (found by this check or by reading the DWG), and what was done:
 
 | Writer defect | Handling |
 |---|---|
 | Entity handles of block definitions / paper space interleaved with model-space handles: the model-space entity list (first..last handle, `nolinks`) swallowed 3 LINE + 1 LWPOLYLINE of a block and 5 ATTRIB | input handles renumbered before `dxf2dwg` (model space last, contiguous), see `normalise_handles` |
+| (our generator, not LibreDWG) `normalise_handles` renumbered an INSERT but left its ATTRIB / SEQEND `owner` (group 330) on the old handle, so `dxf2dwg` wrote `has_attribs: 1` with null `first_attrib` / `last_attrib` / `seqend` and every reader saw an INSERT without attributes | children get fresh handles above the model-space range and their owner is re-pointed at the parent's new handle; the native linkage check above fails on such a file |
 | Mirrored INSERT (only group 41 = -1) written with yscale = insertion Y, zscale = 0 | all of 41/42/43/50 forced into the input DXF |
 | Layer frozen / off / locked flags never written (`flag0` = 0) | patch `libredwg-0.13.3-layer-flags.patch` |
 | MTEXT group 40 stored as `rect_width`, text height 0 (every MTEXT then fails our "text height must be positive" check) | patch `libredwg-0.13.3-mtext-height.patch` |
@@ -104,25 +106,37 @@ What LibreDWG 0.13.3 got wrong (found by this check or by reading the DWG), and 
 | A second `*Model_Space` block record is written | importer ignores layout records for ambiguity (see defects below) |
 | R2004 output cannot be read back by LibreDWG itself ("Invalid System Section Page Map") | R2004 rejected |
 | R14 cannot hold `$INSUNITS` (and its offs layer flag differs) | R14 kept only for the unitless drawing |
+| R14: every INSERT's `block_header` resolves to a BLOCK_HEADER with an empty name (LibreDWG R14 defect: native `dwgread` 0.13.3 shows it too, so it is not the WASM reader) | `unitless-insunits0-r14.dwg` kept with the writer-check exclusion `INSERT.blockName`; documented gap below |
 
 ### Importer defects the DWG corpus found (all fixed, tests are plain `it()`)
 
 - `hiddenLayers` was never returned for DWG: `LAYER` entries now give frozen / off layers, and children of a frozen INSERT move onto its layer as in the DXF path.
-  Confirmed on real Autodesk-saved files: `example_2000.dwg` / `example_2004.dwg` carry `ADSK_SYSTEM_LIGHTS` with layer flag 1017 (frozen).
+  The layer flag semantics are **not independently verified** (see "Circularity of the layer-flag evidence" below).
 - Paper-space entities were imported into the plan (title block text and lines, viewport): now skipped with one `paper-space-skipped` warning.
 - A duplicate `*Model_Space` record produced an `ambiguous-block` **error** diagnostic: layout records are no INSERT targets and are ignored.
-- INSERT `attribs` (when present) are drawn as TEXT like the DXF path; SPLINE is sampled (`sampleSplineData`, shared with the DXF parser) instead of dropped.
+- INSERT `attribs` are drawn as TEXT like the DXF path (they were empty only because of our own generator, see the writer table). libredwg-web also appends every top-level INSERT's attributes to `db.entities`
+  as loose `ATTRIB` records (owner = the INSERT); those are skipped silently, so an attribute is drawn once and raises no `unsupported-entity` warning.
+- SPLINE is sampled (`sampleSplineData`, shared with the DXF parser) instead of dropped. Its closure is derived from the geometry (coincident first / last point, periodic control polygon): libredwg-web's `flag` is
+  the DWG `splineflags` (8 = control points, 9 = fit points in R2000-R2013) whose bit 0 is the fit-point method, not "closed" (open fit-point splines 16E / 894 of `example_2000` / `example_2018` used to import closed).
+- TEXT / ATTRIB elevation is lost by libredwg-web `convert()`; `parseDwgWith` reads it from the DWG object (`dwg_getall_entity_by_type` + `dwg_dynapi_entity_data(..., 'elevation')`) by handle.
+- A `-Z` extrusion (the mirrored door's attribute written by ezdxf) is accepted like in the DXF path: OCS entities are mirrored in X and the sign of Z flips; LINE / ELLIPSE / SPLINE ignore it. Any other normal is still skipped as `nonplanar-entity`.
 
 ### Documented gaps (`gap(...)` = `it.fails` unless `CORPUS_SHOW_GAPS=1`)
 
 | Gap | Test | Cause |
 |---|---|---|
-| No TEXT per visible INSERT attribute (door tags D01...) in the DWG import | `draws one TEXT per visible INSERT attribute` (metric, imperial) | libredwg-web 0.7.7 returns `attribs: []` for every INSERT of these R2000 files although the ATTRIB objects exist in the file (`dwg_getall_entity_by_type`) |
-| TEXT elevation lost | `elevated-levels: TEXT keeps its elevation` | libredwg-web `convert()` has no elevation field on TEXT |
-| R14 INSERTs have an empty block name (8 `missing-block` warnings) | `resolves INSERT block names in R14 files` | libredwg-web reader on a LibreDWG-written R14 file (`Open dwg file with error code: 64`) |
+| R14 INSERTs have an empty block name (8 `missing-block` warnings) | `resolves INSERT block names in R14 files` | LibreDWG R14 defect: the `block_header` of every INSERT resolves to an empty-named BLOCK_HEADER, also in native `dwgread` 0.13.3 (not the WASM reader); recorded as writer-check exclusion `INSERT.blockName` |
+
+### Circularity of the layer-flag evidence
+
+The layer frozen / off / locked flags in the corpus are not independent evidence. `libredwg-0.13.3-layer-flags.patch` edits the **encoder** block of the same `dwg.spec` that defines the **decoder**, the writer check
+reads the result with the same LibreDWG (`dwgread`), and libredwg-web is also a LibreDWG build: writer, checker and app reader share one interpretation of `flag0`. What corroborates it from outside:
+`example_2004.dwg` stores `ADSK_SYSTEM_LIGHTS` with `flag0` 1017 (bit 1 set), consistent with "frozen = flag0 bit 1". What has **no independent evidence**: "off = flag0 bit 2", because no external file has a switched-off
+layer. libredwg-web also maps negative layer colours to 256, so a real file that marks a layer "off" only by a negative colour is not detected as hidden.
 
 ### External DWG files (opt-in)
 
 `npm run corpus:fetch-dwg` downloads LibreDWG's `example_2000/2004/2007/2010/2013/2018.dwg` and `sample_2000.dwg` from `raw.githubusercontent.com` at the pinned commit into the
-gitignored `.cache/dwg-external/` (sha256 verified, never vendored: GPL test data). `dwgExternal.test.ts` skips without them. `example_2004`..`example_2018` carry an AppInfo block that
-names AutoCAD build O.48.M.294 (that is the file's own claim); the two R2000 files carry no AppInfo, so their authoring application is not verified.
+gitignored `.cache/dwg-external/` (sha256 verified, never vendored: GPL test data). `dwgExternal.test.ts` skips without them; `REQUIRE_EXTERNAL_DWG=1` turns a missing or mismatching file into a failure.
+`example_2004`..`example_2018` carry an AppInfo block that names AutoCAD build O.48.M.294 (that is the file's own claim, not an independent verification); the two R2000 files (`example_2000`, `sample_2000`) carry
+no AppInfo, so their authoring application is not verified either. Hidden layers: the R2000 / R2004 saves have `*ADSK_SYSTEM_LIGHTS` frozen, from R2007 on it is stored unfrozen (native `flag0` 1008), so those saves hide no layer.

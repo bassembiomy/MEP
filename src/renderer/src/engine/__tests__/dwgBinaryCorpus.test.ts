@@ -11,8 +11,11 @@ import type { DxfEntity } from '../../store/projectStore'
  * Binary DWG corpus: real DWG files written by LibreDWG 0.13.3 `dxf2dwg` from R2000 ezdxf documents (see
  * scripts/cad-corpus/generate_dwg_corpus.py), read back by the libredwg-web WASM build the app ships, and compared with
  * (a) the same drawing imported from its DXF twin and (b) ground truth derived from the ezdxf construction geometry
- * (fixtures/corpus/dwg/*manifest.json). The writer's own defects are documented in dwg-manifest.json `writerCheck.exclusions`
- * (MTEXT height, TEXT elevation) and are excluded from the comparisons, never papered over.
+ * (fixtures/corpus/dwg/*manifest.json). The writer's remaining defects are documented in dwg-manifest.json `writerCheck.exclusions`
+ * (SPLINE.points: empty spline; INSERT.blockName: R14 block names do not resolve, a LibreDWG R14 defect that native dwgread
+ * shows too) and are excluded from the comparisons, never papered over. The writer check also requires every INSERT with
+ * attributes to link them (first_attrib / last_attrib / seqend, read natively) and every model-space INSERT to resolve to the
+ * source's block.
  *
  * KNOWN-GAP POLICY (same as cadRealisticCorpus.test.ts): an assertion that fails because of a real importer defect that
  * cannot be fixed is declared with gap(...) (= it.fails unless CORPUS_SHOW_GAPS=1).
@@ -119,13 +122,12 @@ const hasExclusion = (name: string, key: string): boolean => key in dwgManifest.
 const isAttribTag = (e: DxfEntity): boolean => e.type === 'TEXT' && e.sourceBlock === undefined && /^D\d\d$/.test(e.text ?? '')
 const isSplinePolyline = (e: DxfEntity): boolean => e.type === 'LWPOLYLINE' && /^SPLINE sampled/.test(e.geometryApproximation ?? '')
 /**
- * The DXF twin's entities without what the DWG path cannot receive from this reader/writer pair, each documented:
- *  - one TEXT per visible INSERT attribute: libredwg-web 0.7.7 returns `attribs: []` for every INSERT of an R2000 file
- *    (gap test below);
- *  - the sampled SPLINE when LibreDWG 0.13.3 dxf2dwg wrote an empty spline (writer exclusion SPLINE.points).
+ * The DXF twin's entities without what the DWG file does not contain: the sampled SPLINE when LibreDWG 0.13.3 dxf2dwg wrote
+ * an empty spline (writer exclusion SPLINE.points). Everything else, including one TEXT per visible INSERT attribute, is
+ * compared.
  */
 function dxfComparable(name: string): DxfEntity[] {
-  return loadTwin(name).entities.filter((e) => !isAttribTag(e) && !(hasExclusion(name, 'SPLINE.points') && isSplinePolyline(e)))
+  return loadTwin(name).entities.filter((e) => !(hasExclusion(name, 'SPLINE.points') && isSplinePolyline(e)))
 }
 
 describe('DWG binary corpus (LibreDWG-written R2000 files, libredwg-web reader)', () => {
@@ -175,14 +177,16 @@ describe('DWG binary corpus (LibreDWG-written R2000 files, libredwg-web reader)'
     it('imports the manifest entity count and the same per-type counts as its DXF twin', async () => {
       const dwg = await loadDwg(name)
       const splines = hasExclusion(name, 'SPLINE.points') ? 0 : (truth.sourceUnsupported.SPLINE ?? 0)
-      expect(dwg.entities.filter(isSupportedInPlan)).toHaveLength(truth.expectedEntityCount + splines)
+      // expectedEntityCount counts geometry and text but not the TEXT drawn for each visible INSERT attribute
+      expect(dwg.entities.filter(isSupportedInPlan)).toHaveLength(truth.expectedEntityCount + splines + (truth.sourceUnsupported.ATTRIB ?? 0))
       expect(byType(dwg)).toEqual(histogram(dxfComparable(name).map((e) => e.type)))
     })
 
     if (truth.sourceUnsupported.ATTRIB) {
-      gap('draws one TEXT per visible INSERT attribute like the DXF path (libredwg-web returns attribs: [] for R2000 INSERTs)', async () => {
+      it('draws one TEXT per visible INSERT attribute like the DXF path, with no unsupported-entity warning for the loose ATTRIB records', async () => {
         const dwg = await loadDwg(name)
         expect(dwg.entities.filter(isAttribTag)).toHaveLength(truth.sourceUnsupported.ATTRIB!)
+        expect((dwg.diagnostics ?? []).filter((d) => d.entityType === 'ATTRIB')).toEqual([])
       })
     }
 
@@ -419,7 +423,7 @@ describe('DWG binary corpus (LibreDWG-written R2000 files, libredwg-web reader)'
       'elevated-levels-r2000.dwg': [],
       'entity-units-r2000.dwg': [],
       'noise-dim-hatch-spline-paper-r2000.dwg': ['SPLINE.points'],
-      'unitless-insunits0-r14.dwg': [],
+      'unitless-insunits0-r14.dwg': ['INSERT.blockName'],
       'unitless-insunits0-r2000.dwg': []
     })
   })
@@ -435,7 +439,12 @@ describe('DWG binary corpus (LibreDWG-written R2000 files, libredwg-web reader)'
       expect(byType(r14).CIRCLE).toBe(byType(r2000).CIRCLE)
       expect((r14.diagnostics ?? []).filter((d) => d.code === 'missing-block')).toHaveLength(loadTwin('unitless-insunits0-r14.dwg').blockReferences!.length)
     })
-    gap('resolves INSERT block names in R14 files like in the R2000 sibling (the WASM reader returns name "" for every R14 INSERT)', async () => {
+    it('records the R14 block-name loss as a writer-check exclusion (native dwgread resolves every R14 INSERT to an empty block name too)', () => {
+      const exclusion = dwgManifest.files['unitless-insunits0-r14.dwg'].writerCheck.exclusions['INSERT.blockName'] as { dwg: string[]; cause: string }
+      expect(exclusion.dwg).toEqual([''])
+      expect(exclusion.cause).toMatch(/native dwgread/)
+    })
+    gap('resolves INSERT block names in R14 files like in the R2000 sibling (LibreDWG R14 defect: the block_header of every R14 INSERT has an empty name, also in native dwgread 0.13.3)', async () => {
       const r14 = await loadDwg('unitless-insunits0-r14.dwg')
       const r2000 = await loadDwg('unitless-insunits0-r2000.dwg')
       expect(byType(r14)).toEqual(byType(r2000))

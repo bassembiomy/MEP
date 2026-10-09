@@ -72,8 +72,12 @@ def normalise_handles(src, dst):
     LibreDWG 0.13.3 writes R13-R2000 entity lists as "first handle .. last handle" with nolinks=1. If block-definition
     contents (or paper-space entities) were created between two modelspace entities, their handles fall inside the
     modelspace range and readers (LibreDWG's own dwg2dxf and libredwg-web) attach them to the modelspace:
-    a 3-LINE/1-LWPOLYLINE desk block and 5 ATTRIBs leaked into the 90-entity plan. Only entity handles change; no
-    handle is referenced by anything else in these documents."""
+    a 3-LINE/1-LWPOLYLINE desk block and 5 ATTRIBs leaked into the 90-entity plan.
+
+    Handles ARE referenced by other records: an ATTRIB / SEQEND / VERTEX names its parent INSERT / POLYLINE through its owner
+    (group 330). reset_handle changes only the parent's own handle, so every child's owner is re-pointed at the new handle
+    here. Without that, dxf2dwg wrote INSERTs with has_attribs = 1 but null first_attrib / last_attrib / seqend (dwgread JSON),
+    and readers (libredwg-web) returned `attribs: []`; the writer check below now fails on such a file."""
     # dxf2dwg 0.13.3 leaves yscale/zscale uninitialised (observed: yscale = insertion y, zscale = 0) when a DXF INSERT carries
     # only a non-default xscale (a mirrored door). ezdxf omits default-valued group codes, so force 41/42/43/50 to be written.
     from ezdxf.entities import insert as ez_insert
@@ -85,20 +89,32 @@ def normalise_handles(src, dst):
     def fresh(e):
         db.reset_handle(e, db.next_handle())
 
+    children = []
+
+    def adopt(parent, child):
+        """Defer a child record (ATTRIB, VERTEX, SEQEND): its handle is renumbered after the modelspace range (below) and its
+        owner re-pointed at the parent's new handle."""
+        children.append((parent, child))
+
     layouts = [doc.layouts.get(n) for n in doc.layouts.names() if n != "Model"]
     for layout in layouts + [doc.modelspace()]:
         for e in list(layout):
             fresh(e)
             if e.dxftype() == "INSERT":
                 for a in e.attribs:
-                    fresh(a)
+                    adopt(e, a)
                 if e.attribs and e.seqend is not None:
-                    fresh(e.seqend)
+                    adopt(e, e.seqend)
             if e.dxftype() == "POLYLINE":
                 for v in e.vertices:
-                    fresh(v)
+                    adopt(e, v)
                 if e.seqend is not None:
-                    fresh(e.seqend)
+                    adopt(e, e.seqend)
+    # Children get handles above the modelspace range. Inside it, LibreDWG's first..last handle range would also list them as
+    # loose model-space entities (every ATTRIB counted twice) next to the INSERT's own first_attrib / last_attrib links.
+    for parent, child in children:
+        fresh(child)
+        child.dxf.owner = parent.dxf.handle
     doc.saveas(dst)
 
 
@@ -109,11 +125,13 @@ def summary_from_ezdxf(path):
     by_type, by_layer = collections.Counter(), collections.Counter()
     attribs = 0
     texts = collections.Counter()
+    insert_names = collections.Counter()
     for e in msp:
         by_type[e.dxftype()] += 1
         by_layer[f"{e.dxftype()}|{e.dxf.layer}"] += 1
         if e.dxftype() == "INSERT":
             attribs += len(e.attribs)
+            insert_names[e.dxf.name] += 1
         elif e.dxftype() == "TEXT":
             texts[(e.dxftype(), e.dxf.layer, e.dxf.text, round(float(e.dxf.height), 6))] += 1
         elif e.dxftype() == "MTEXT":
@@ -131,7 +149,7 @@ def summary_from_ezdxf(path):
     anon = sum(1 for b in doc.blocks if b.name.startswith("*D"))
     h = doc.header
     return {"byType": dict(by_type), "byTypeLayer": dict(by_layer), "attribs": attribs, "paperSpace": dict(paper),
-            "layers": layers, "blocks": blocks, "dimBlocks": anon, "texts": texts,
+            "layers": layers, "blocks": blocks, "dimBlocks": anon, "texts": texts, "insertNames": insert_names,
             "insunits": h.get("$INSUNITS", 0), "measurement": h.get("$MEASUREMENT", 0), "lunits": h.get("$LUNITS", 2)}
 
 
@@ -188,6 +206,7 @@ def summary_from_dxf_tags(path):
     texts = collections.Counter()
     geometry = collections.Counter()
     text_z = collections.Counter()
+    insert_names = collections.Counter()
     for ent in structure.get("ENTITIES", [])[1:]:
         t = ent[0].value
         layer = next((x.value for x in ent if x.code == 8), "0")
@@ -202,6 +221,8 @@ def summary_from_dxf_tags(path):
         else:
             by_type[t] += 1
             by_layer[f"{t}|{layer}"] += 1
+            if t == "INSERT":
+                insert_names[next((x.value for x in ent if x.code == 2), "")] += 1
             sig = geometry_signature(t, ent)
             if sig:
                 geometry[(layer,) + sig] += 1
@@ -241,30 +262,60 @@ def summary_from_dxf_tags(path):
             header[key] = tag.value
     return {"byType": dict(by_type), "byTypeLayer": dict(by_layer), "attribs": attribs, "paperSpace": dict(paper),
             "layers": layers, "blocks": sorted(blocks), "dimBlocks": dims, "texts": texts, "geometry": geometry, "textZ": text_z,
+            "insertNames": insert_names,
             "insunits": header.get("$INSUNITS", 0), "measurement": header.get("$MEASUREMENT", 0),
             "lunits": header.get("$LUNITS", 2)}
 
 
-def layers_from_dwg(dwgread, dwg, tmp):
-    """Layer flags straight from the DWG via LibreDWG's own JSON dump (dwg2dxf cannot express "off" without a negative
-    colour). flag0 is the DWG flag word: 1 frozen, 2 off, 4 frozen in new viewports, 8 locked."""
+def native_from_dwg(dwgread, dwg, tmp):
+    """Facts read straight from the DWG via LibreDWG's own JSON dump (no dwg2dxf, no libredwg-web, no app code).
+
+    layers: flag0 is the DWG flag word (1 frozen, 2 off, 4 frozen in new viewports, 8 locked); dwg2dxf cannot express "off"
+    without a negative colour. inserts: for every model-space INSERT, the block name its block_header handle resolves to, and the
+    attribute linkage (has_attribs must come with first_attrib / last_attrib resolving to ATTRIB objects, owned by the INSERT,
+    and a seqend). Returns None when the dump fails."""
     out = os.path.join(tmp, os.path.basename(dwg) + ".json")
     r = run([dwgread, "-O", "json", "-o", out, dwg])
     if r.returncode != 0 or not os.path.exists(out):
         return None
     with open(out, encoding="utf-8", errors="replace") as fh:
         data = json.load(fh)
-    layers = {}
-    for o in data.get("OBJECTS", []):
+    objects = data.get("OBJECTS", [])
+    by_ref = {}
+    for o in objects:
+        h = o.get("handle")
+        if isinstance(h, list) and len(h) == 3:
+            by_ref[h[2]] = o
+    absref = lambda ref: ref[3] if isinstance(ref, list) and len(ref) == 4 else 0
+    layers, block_names, attrib_problems = {}, collections.Counter(), []
+    for o in objects:
         if o.get("object") == "LAYER":
             f = int(o.get("flag0", 0))
             c = o.get("color", 7)
             c = c.get("index", 7) if isinstance(c, dict) else c
             layers[o["name"]] = {"frozen": bool(f & 1), "locked": bool(f & 8), "off": bool(f & 2), "color": abs(int(c))}
-    return layers
+        elif o.get("entity") == "INSERT":
+            # model-space INSERTs have no owner handle in R2000 files written with first..last ranges; INSERTs nested in a
+            # block definition are owned by their BLOCK_HEADER
+            owner = by_ref.get(absref(o.get("ownerhandle")))
+            if absref(o.get("ownerhandle")) == 0 or (owner is not None and str(owner.get("name", "")).lower().startswith("*model_space")):
+                header = by_ref.get(absref(o.get("block_header")))
+                block_names[header.get("name", "") if header and header.get("object") == "BLOCK_HEADER" else ""] += 1
+            if o.get("has_attribs"):
+                me = o["handle"][2]
+                for field in ("first_attrib", "last_attrib"):
+                    target = by_ref.get(absref(o.get(field)))
+                    if target is None or target.get("entity") != "ATTRIB":
+                        attrib_problems.append(f"INSERT {me:X}: {field} does not resolve to an ATTRIB ({o.get(field)})")
+                    elif absref(target.get("ownerhandle")) != me:
+                        attrib_problems.append(f"INSERT {me:X}: ATTRIB {target['handle'][2]:X} is owned by {absref(target.get('ownerhandle')):X}")
+                seqend = by_ref.get(absref(o.get("seqend")))
+                if seqend is None or seqend.get("entity") != "SEQEND":
+                    attrib_problems.append(f"INSERT {me:X}: seqend does not resolve to a SEQEND ({o.get('seqend')})")
+    return {"layers": layers, "insertBlockNames": block_names, "attribProblems": attrib_problems}
 
 
-def compare(src, back):
+def compare(src, back, native, version):
     """Return (diffs, exclusions). A diff is a human-readable string; exclusions are per-type losses of KNOWN_LOSS_TYPES."""
     diffs, exclusions = [], {}
     for key in ("byType", "paperSpace"):
@@ -332,6 +383,17 @@ def compare(src, back):
                                             "cause": "LibreDWG 0.13.3 dxf2dwg drops the layer frozen/locked flags"}
             else:
                 diffs.append(f"layer {n}: source {a}, dwg {b}")
+    # INSERT attribute linkage, read natively (the dwg2dxf count above can be right while the DWG links are broken)
+    diffs.extend(native["attribProblems"])
+    # INSERT -> block linkage: the block each model-space INSERT resolves to natively must be the one the source names
+    if native["insertBlockNames"] != src["insertNames"]:
+        if version == "r14" and set(native["insertBlockNames"]) == {""}:
+            exclusions["INSERT.blockName"] = {
+                "source": sorted(src["insertNames"]), "dwg": [""],
+                "cause": "LibreDWG 0.13.3 R14 defect: native dwgread (not only the libredwg-web WASM build) resolves every INSERT block_header "
+                         "to a BLOCK_HEADER with an empty name in the R14 files dxf2dwg writes"}
+        else:
+            diffs.append(f"INSERT block names: source {dict(src['insertNames'])}, dwg {dict(native['insertBlockNames'])}")
     if src["blocks"] != back["blocks"]:
         diffs.append(f"blocks: source {src['blocks']}, dwg {back['blocks']}")
     if src["dimBlocks"] != back["dimBlocks"]:
@@ -395,12 +457,12 @@ def main():
                                      "log": [l.replace(tmp, "<tmp>") for l in r.stdout.splitlines() if "ERROR" in l][:5]})
                     continue
                 back = summary_from_dxf_tags(back_path)
-                native_layers = layers_from_dwg(dwgread, dwg, tmp)
-                if native_layers is None:
+                native = native_from_dwg(dwgread, dwg, tmp)
+                if native is None:
                     rejected.append({"twin": twin, "version": ver, "reason": "dwgread -O json of the written file failed"})
                     continue
-                back["layers"] = native_layers
-                diffs, exclusions = compare(src, back)
+                back["layers"] = native["layers"]
+                diffs, exclusions = compare(src, back, native, ver)
                 if diffs:
                     rejected.append({"twin": twin, "version": ver, "reason": "writer check differs from the ezdxf source",
                                      "diffs": diffs[:20], "diffCount": len(diffs)})
@@ -416,7 +478,8 @@ def main():
                     "insunits": src["insunits"], "measurement": src["measurement"],
                     "writerCheck": {"status": "pass-with-exclusions" if exclusions else "pass",
                                     "compared": ["entity counts by type", "entity counts by type and layer",
-                                                 "paper-space entities by type", "INSERT attribute count", "layer table (frozen/off/locked/colour, from dwgread JSON)",
+                                                 "paper-space entities by type", "INSERT attribute count", "INSERT attribute linkage (first_attrib / last_attrib / seqend resolve to ATTRIB / SEQEND owned by the INSERT, dwgread JSON)",
+                                                 "model-space INSERT -> block name (block_header resolves to the source block, dwgread JSON)", "layer table (frozen/off/locked/colour, from dwgread JSON)",
                                                  "block names", "anonymous dimension blocks", "$INSUNITS/$MEASUREMENT/$LUNITS"],
                                     "exclusions": exclusions},
                 }
@@ -430,9 +493,10 @@ def main():
         "libredwg": {"tag": LIBREDWG_TAG, "commit": LIBREDWG_COMMIT, "version": ver_out,
                      "patches": {"files": [f"scripts/cad-corpus/patches/{f}" for f in patch_files], "sha256OfConcatenation": patch_sha,
                             "purpose": {"layer-flags": "dxf2dwg writes the layer frozen/off/locked flag word (0.13.3 writes 0 and loses them)",
-                                        "mtext-height": "dxf2dwg stores MTEXT group 40 as text_height (0.13.3 stores rect_width, height 0)"}}},
+                                        "mtext-height": "dxf2dwg stores MTEXT group 40 as text_height (0.13.3 stores rect_width, height 0)",
+                                        "text-dataflags": "dxf2dwg sets the TEXT / ATTRIB / ATTDEF dataflags with the right sense (0.13.3 inverted them and dropped elevation, rotation, oblique angle, width factor, generation and alignments)"}}},
         "generator": {"ezdxf": ezdxf.__version__},
-        "handleNormalisation": "entity handles are renumbered before dxf2dwg (modelspace last) to avoid LibreDWG 0.13.3 first/last handle-range entity leaks",
+        "handleNormalisation": "entity handles are renumbered before dxf2dwg (modelspace last; ATTRIB / VERTEX / SEQEND children after it, with their owner re-pointed at the parent's new handle) to avoid LibreDWG 0.13.3 first/last handle-range entity leaks and unlinked INSERT attributes",
         "files": files,
         "rejected": rejected,
     }
