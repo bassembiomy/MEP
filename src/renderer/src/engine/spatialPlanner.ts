@@ -256,8 +256,11 @@ function placePhysicalFootprint(
     const gx = (v: number) => (centroid.x > v ? Math.ceil(v / 10) * 10 : Math.floor(v / 10) * 10);
     const gy = (v: number) => (centroid.y > v ? Math.ceil(v / 10) * 10 : Math.floor(v / 10) * 10);
     const candidates = [{ x: gx(px), y: gy(py) }, { x: px, y: py }];
-    for (let x = bbox.minX; x <= bbox.maxX; x += 10)
-      for (let y = bbox.minY; y <= bbox.maxY; y += 10) candidates.push({ x, y });
+    for (let x = Math.ceil(bbox.minX / 10) * 10; x <= bbox.maxX; x += 10)
+      for (let y = Math.ceil(bbox.minY / 10) * 10; y <= bbox.maxY; y += 10) candidates.push({ x, y });
+    // Positions flush to the bounding box walls (with the footprint half-extent) catch tight fits.
+    for (const x of [bbox.minX + o.w / 2, bbox.maxX - o.w / 2, (bbox.minX + bbox.maxX) / 2])
+      for (const y of [bbox.minY + o.h / 2, bbox.maxY - o.h / 2, (bbox.minY + bbox.maxY) / 2]) candidates.push({ x, y });
     for (const c of candidates) {
       if (!isRectContainedInPolygon(c.x, c.y, o.w, o.h, points)) continue;
       const score = Math.hypot(c.x - px, c.y - py);
@@ -683,7 +686,7 @@ export function planDuctedAirDistribution(
   // 1. Orthogonal Main Trunk Line
   if (isHorizontal) {
     // If unit is offset from central trunk Y-axis, add direct vertical takeoff duct from indoor unit
-    if (Math.abs(unitPos.y - trunkY) > 5) {
+    if (Math.abs(unitPos.y - trunkY) > 1e-6) {
       const feederSize = sizeDuct(totalCfm, 0.10, fixedHeight);
       const feederVel = Math.round(totalCfm / Math.max(0.1, (feederSize.widthIn * feederSize.heightIn) / 144));
       ducts.push({
@@ -757,7 +760,7 @@ export function planDuctedAirDistribution(
     });
   } else {
     // If unit is offset from central trunk X-axis, add direct horizontal takeoff duct from indoor unit
-    if (Math.abs(unitPos.x - trunkX) > 5) {
+    if (Math.abs(unitPos.x - trunkX) > 1e-6) {
       const feederSize = sizeDuct(totalCfm, 0.10, fixedHeight);
       const feederVel = Math.round(totalCfm / Math.max(0.1, (feederSize.widthIn * feederSize.heightIn) / 144));
       ducts.push({
@@ -862,10 +865,18 @@ export function planDuctedAirDistribution(
         y: unitPos.y + (cdy / clen) * Math.min(retOffset, clen) * f
       }))
     ];
-    const retEnd =
-      returnEndCandidates.find(
-        (c) => isPointInOrOnPolygon(c.x, c.y, points) && isSegmentInPolygon({ x: unitPos.x, y: unitPos.y }, c, points)
-      ) ?? primaryEnd;
+    const foundReturnEnd = returnEndCandidates.find(
+      (c) => isPointInOrOnPolygon(c.x, c.y, points) && isSegmentInPolygon({ x: unitPos.x, y: unitPos.y }, c, points)
+    );
+    if (!foundReturnEnd) {
+      diagnostics.push({
+        code: 'ERR_COMPONENT_OUTSIDE_ZONE',
+        severity: 'error',
+        message: 'No return grille location inside the zone could be connected to the indoor unit.',
+        remediation: 'Adjust the room boundary or indoor unit location.'
+      });
+    }
+    const retEnd = foundReturnEnd ?? primaryEnd;
     const retEndX = retEnd.x;
     const retEndY = retEnd.y;
 
@@ -886,7 +897,7 @@ export function planDuctedAirDistribution(
     ducts.push({
       id: `duct-return-${zoneId}`,
       type: 'return',
-      points: [Math.round(retStartX), Math.round(retStartY), Math.round(retEndX), Math.round(retEndY)],
+      points: [retStartX, retStartY, Math.round(retEndX), Math.round(retEndY)],
       widthIn: returnSize.widthIn,
       heightIn: returnSize.heightIn,
       cfm: returnFlow,

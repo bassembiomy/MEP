@@ -23,9 +23,11 @@ describe('candidate airflow envelope', () => {
     expect(c!.diagnostics.some(d => d.code === 'ERR_AIRFLOW_OUTSIDE_EQUIPMENT_RANGE' && d.severity === 'error')).toBe(true)
   })
 
-  it.each([[15, 15, 2], [30, 25, 2], [40, 30, 6]])('valid ducted candidates stay inside the fan range (%i x %i ft, %i people)', (w, h, n) => {
+  it.each([[15, 15, 2, false], [30, 25, 2, true], [40, 30, 6, true]])('valid ducted candidates stay inside the fan range (%i x %i ft, %i people)', (w, h, n, expectAny) => {
     const { L, result } = candidatesFor(room(w, h, n))
-    for (const c of result.candidates.filter(x => x.isValid && x.equipment.capabilities.supportsDuctNetwork)) {
+    const ducted = result.candidates.filter(x => x.isValid && x.equipment.capabilities.supportsDuctNetwork)
+    if (expectAny) expect(ducted.length).toBeGreaterThan(0)
+    for (const c of ducted) {
       const perUnit = L.supplyCfm / c.quantity
       expect(perUnit).toBeGreaterThanOrEqual(c.equipment.minCfm)
       expect(perUnit).toBeLessThanOrEqual(c.equipment.maxCfm)

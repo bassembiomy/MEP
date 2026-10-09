@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as manager from '../deploymentManager'
 import { planCassetteDistribution } from '../spatialPlanner'
+import * as validation from '../deploymentValidation'
 import { STANDARD_DIFFUSER_CATALOG } from '../hvacCatalogs'
 import type { DeploymentManifest, MechanicalComponent } from '../deploymentTypes'
 import type { EquipmentCatalogItem, SystemDesignCandidate } from '../types'
@@ -616,7 +617,8 @@ describe('engineering flow and footprint integrity for realistic rooms', () => {
 
   it('splits cassette airflow without rounding drift', () => {
     const res = planCassetteDistribution([0, 0, 300, 0, 300, 250, 0, 250], 3, 442.767, 's', 'z', 'Cassette')
-    expect(res.diffusers.length).toBeGreaterThan(0)
+    // Known gap: the placer can return fewer cassettes than requested (2 of 3 here); pin it so a fix updates this test.
+    expect(res.diffusers.length).toBe(2)
     for (const d of res.diffusers) expect(d.cfm).toBeCloseTo(442.767 / 3, 9)
   })
 
@@ -638,6 +640,26 @@ describe('engineering flow and footprint integrity for realistic rooms', () => {
     const m = manager.buildDeploymentManifest(
       candidate({ equipment: equipment({ ...flatFan(300), dimensionsIn: { width: 74, depth: 38, height: 10 } }) }), z, [z], project)
     expect(m.isEligibleToApply).toBe(false)
-    expect(m.diagnostics.some((d) => d.severity === 'error')).toBe(true)
+    expect(m.diagnostics.some((d) => d.severity === 'error' && d.code === 'ERR_COMPONENT_OUTSIDE_ZONE')).toBe(true)
+  })
+
+  it('keeps a tightly fitting unit connected to its ducts', () => {
+    const z = zone({ points: [0, 0, 300, 0, 300, 30, 0, 30], manualCfmOverride: 600 })
+    const m = manager.buildDeploymentManifest(
+      candidate({ equipment: equipment({ ...flatFan(300), dimensionsIn: { width: 62, depth: 28, height: 10 } }) }), z, [z], project)
+    expect(m.diagnostics.filter((d) => d.severity === 'error').map((d) => d.message)).toEqual([])
+    expect(m.isEligibleToApply).toBe(true)
+  })
+
+  it('fits a unit into a corridor only slightly wider than its footprint', () => {
+    const z = zone({ points: [0, 0, 300, 0, 300, 35, 0, 35], manualCfmOverride: 600 })
+    const m = manager.buildDeploymentManifest(
+      candidate({ equipment: equipment({ ...flatFan(300), dimensionsIn: { width: 74, depth: 38, height: 10 } }) }), z, [z], project)
+    expect(m.diagnostics.map((d) => d.message).join('|')).not.toMatch(/cannot fit|footprint is outside zone/i)
+  })
+
+  it('computes the rotated bounding box of a catalog footprint', () => {
+    const fp = validation.getEquipmentFootprintWorld(equipment({ dimensionsIn: { width: 24, depth: 24, height: 10 } }), 10, 45)
+    expect(fp.widthWorld).toBeCloseTo(20 * Math.SQRT2 / 1, 6)
   })
 })
