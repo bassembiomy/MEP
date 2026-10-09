@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { parseDxfText } from '../dxfParser'
-import { selectPersistedProject, useProjectStore } from '../../store/projectStore'
+import { selectCeilingHeightSuggestion, selectPersistedProject, useProjectStore } from '../../store/projectStore'
 import { parseProjectDocument, serializeProject } from '../project/projectSerialization'
-import { dxf, header, layer, lwpolyline } from './fixtures/dxfBuilder'
+import { dxf, header, layer, lwpolyline, text } from './fixtures/dxfBuilder'
 
 const square = (name: string, cx: number) => lwpolyline(name, [[cx - 200, -200], [cx + 200, -200], [cx + 200, 200], [cx - 200, 200]], true)
 const source = (opts: { frozen?: boolean; off?: boolean }) => parseDxfText(dxf({
@@ -98,5 +98,22 @@ describe('room approval notices layer visibility changes', () => {
     const again = s().recognizeCadRoomCandidates()
     expect(again.result!.candidates.length).toBe(2)
     expect(again.recognitionContext).not.toBe(r.recognitionContext)
+  })
+})
+
+describe('ceiling height suggestions ignore hidden-layer annotations', () => {
+  it('a CH note on a frozen layer is not used until the layer is shown', () => {
+    s().clearDxfData()
+    const p = parseDxfText(dxf({
+      header: header({ insunits: 4 }), layers: [layer('0'), layer('A-ROOM'), layer('A-NOTE', { frozen: true })], blocks: [],
+      entities: [lwpolyline('A-ROOM', [[0, 0], [5000, 0], [5000, 4000], [0, 4000]], true), text('A-NOTE', 2500, 2000, 200, 'CH=2.8m')]
+    }))
+    s().setDxfData(p.entities, p.bbox, p.suggestedScaleImperial, p.cadUnit,
+      { unitsConfidence: 'declared', diagnostics: [] }, p.blockReferences, p.hiddenLayers)
+    const cand = s().recognizeCadRoomCandidates().result!.candidates[0]
+    expect(cand).toBeTruthy()
+    expect(selectCeilingHeightSuggestion(s(), cand).suggestion).toBeUndefined()
+    s().setDxfLayerVisibility('A-NOTE', true)
+    expect(selectCeilingHeightSuggestion(s(), cand).suggestion?.valueFt).toBeCloseTo(2.8 / 0.3048, 3)
   })
 })

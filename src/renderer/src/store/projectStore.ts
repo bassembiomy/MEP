@@ -342,10 +342,10 @@ export interface CadRoomRecognitionRun {
 
 /** Annotation-derived ceiling height for a room candidate, in project units. A suggestion, never applied by itself. */
 export function selectCeilingHeightSuggestion(
-  state: Pick<ProjectState, 'dxfEntities' | 'project' | 'cadLevel'>,
+  state: Pick<ProjectState, 'dxfEntities' | 'dxfLayers' | 'project' | 'cadLevel'>,
   candidate: Pick<CadRoomCandidate, 'polygon'>
 ): { suggestion?: CeilingHeightSuggestionView; unresolved: boolean; reasons: string[] } {
-  return ceilingHeightSuggestionFor(state.dxfEntities, candidate.polygon, state.project, state.cadLevel);
+  return ceilingHeightSuggestionFor(recognitionEntities(state.dxfEntities, state.dxfLayers), candidate.polygon, state.project, state.cadLevel);
 }
 
 /**
