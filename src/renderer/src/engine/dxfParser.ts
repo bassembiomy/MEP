@@ -203,8 +203,12 @@ function compose(p: CadAffineMatrix, q: CadAffineMatrix): CadAffineMatrix {
 }
 
 const BINARY_DXF_SENTINEL = 'AutoCAD Binary DXF';
-/** DXF line terminator as written by any platform: CRLF, LF, or a bare CR (classic Mac). */
-const EOL = '(?:\\r\\n|\\r|\\n)';
+/**
+ * DXF line terminator as written by any platform: LF, CRLF (also the doubly converted CR CR LF, whose extra CR is
+ * trailing whitespace), or - only in a file with no LF at all - a bare CR (classic Mac).
+ */
+const eolSource = (text: string): string => (text.includes('\n') ? '\\r*\\n' : '\\r');
+const splitLines = (text: string): string[] => text.split(text.includes('\n') ? /\r*\n/ : /\r/);
 const CODEPAGE_LABELS: Record<string, string> = {
   ANSI_874: 'windows-874', ANSI_932: 'shift_jis', ANSI_936: 'gbk', ANSI_949: 'euc-kr', ANSI_950: 'big5',
   ANSI_1250: 'windows-1250', ANSI_1251: 'windows-1251', ANSI_1252: 'windows-1252', ANSI_1253: 'windows-1253',
@@ -224,6 +228,7 @@ export function decodeDxfBytes(bytes: Uint8Array): string {
   if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return new TextDecoder('utf-8').decode(bytes);
   // The header is ASCII in every encoding handled here, so a byte-preserving latin1 view of its start is safe to scan.
   const head = new TextDecoder('windows-1252').decode(bytes.subarray(0, Math.min(bytes.length, 65536)));
+  const EOL = eolSource(head);
   const headerValue = (variable: string, code: number): string | undefined =>
     new RegExp(`${EOL}\\s*9${EOL}${variable.replace('$', '\\$')}${EOL}\\s*${code}${EOL}([^\\r\\n]*)`, 'i').exec(head)?.[1].trim();
   const version = /^AC(\d{4})$/i.exec(headerValue('$ACADVER', 1) ?? '')?.[1];
@@ -412,7 +417,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     if (diagnostics.length < 1000) diagnostics.push({ code, message, severity, entityType: r?.type, handle: r && first(r, 5) });
     else if (diagnostics.length === 1000) diagnostics.push({ code: 'DIAGNOSTIC_LIMIT', severity: 'error', message: 'Additional import diagnostics suppressed; drawing is incomplete.' });
   };
-  const lines = dxfText.replace(/^\uFEFF/, '').replace(/^(?:[^\S\r\n]*(?:\r\n|\r|\n))+/, '').split(/\r\n|\r|\n/);
+  const lines = splitLines(dxfText.replace(/^\uFEFF/, '').replace(/^(?:[^\S\r\n]*(?:\r*\n|\r))+/, ''));
   // Some producers prefix the file with whitespace outside the DXF pair stream.
   if (lines.length % 2 === 1 && lines.at(-1)?.trim()) diagnose('INCOMPLETE_PAIR', 'Final DXF group code has no value.', undefined, 'error');
   const sections = new Map<string, DxfRecord[]>();
