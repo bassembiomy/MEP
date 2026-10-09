@@ -238,6 +238,17 @@ export function generateSystemCandidates(
         });
       }
 
+      const perUnitCfm = cfm / qty;
+      if (equip.capabilities.supportsDuctNetwork && (perUnitCfm < equip.minCfm || perUnitCfm > equip.maxCfm)) {
+        diagnostics.push({
+          code: 'ERR_AIRFLOW_OUTSIDE_EQUIPMENT_RANGE',
+          severity: 'error',
+          componentId: equip.id,
+          message: `Per-unit airflow (${Math.round(perUnitCfm)} CFM) lies outside the rated fan range ${equip.minCfm}–${equip.maxCfm} CFM.`,
+          remediation: 'Select equipment whose rated airflow range covers the design airflow per unit, or revise the zone airflow.'
+        });
+      }
+
       const distributionOptions = generateDiffuserDistributionOptions(
         cfm,
         areaSqFt,

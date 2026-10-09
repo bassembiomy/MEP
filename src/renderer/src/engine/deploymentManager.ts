@@ -49,6 +49,8 @@ export function buildDeploymentManifest(
   // that physical planning frame, then convert all proposed coordinates back.
   const planningRatio = 10 / drawingUnitsPerFoot;
   const planningPoints = zone.points.map(n => n * planningRatio);
+  const dims = candidate.equipment.dimensionsIn;
+  const physicalFootprint = dims ? { width: (dims.width / 12) * 10, depth: (dims.depth / 12) * 10 } : undefined;
   const requiresOutdoorUnit = !['fcu', 'ahu'].includes(candidate.systemType);
   if (isDucted) {
     diagnostics.push({ code: 'WARN_PREVIEW_PRESSURE_PROVISIONAL', severity: 'warning', message: 'Detailed preview pressure trace is provisional. Apply revalidates actual connected per-fan routes independently.' });
@@ -93,7 +95,8 @@ export function buildDeploymentManifest(
       zone.id,
       'high-wall',
       candidate.equipment.model,
-      zoneTotalCfm
+      zoneTotalCfm,
+      physicalFootprint
     );
     if (iuPlan.component) {
       indoorUnitComp = iuPlan.component;
@@ -105,7 +108,7 @@ export function buildDeploymentManifest(
   } else {
     // Ducted Split, Packaged RTU, VRF ducted, AHU
     const qty = Math.max(1, candidate.quantity || 1);
-    const cfmPerUnit = Math.round(zoneTotalCfm / qty);
+    const cfmPerUnit = zoneTotalCfm / qty;
 
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     const numPoints = planningPoints.length / 2;
@@ -144,7 +147,8 @@ export function buildDeploymentManifest(
         `${zone.id}-${k + 1}`,
         candidate.systemType,
         candidate.equipment.model,
-        cfmPerUnit
+        cfmPerUnit,
+        physicalFootprint
       );
 
       if (iuPlan.component) {
@@ -167,7 +171,7 @@ export function buildDeploymentManifest(
           10,
           {
             quantity: diffusersPerUnit,
-            flowPerDiffuser: Math.round(cfmPerUnit / diffusersPerUnit),
+            flowPerDiffuser: cfmPerUnit / diffusersPerUnit,
             diffuserRecord: candidate.diffusers?.diffuserRecord,
             actualNc: candidate.diffusers?.actualNc || 25,
             throwT50Ft: candidate.diffusers?.throwT50Ft || 12,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as manager from '../deploymentManager'
+import { planCassetteDistribution } from '../spatialPlanner'
 import { STANDARD_DIFFUSER_CATALOG } from '../hvacCatalogs'
 import type { DeploymentManifest, MechanicalComponent } from '../deploymentTypes'
 import type { EquipmentCatalogItem, SystemDesignCandidate } from '../types'
@@ -298,10 +299,10 @@ describe('atomic engineering deployment', () => {
       manager.buildDeploymentManifest(candidate(), imperial10, [imperial10], project),
       manager.buildDeploymentManifest(candidate(), metric, [metric], metricProject)
     ]
-    // The placement rotates this 2ft square by 45 degrees, so its bounding box
-    // is 2*sqrt(2)ft wide/deep in each physically equivalent drawing.
+    // Placement is axis-aligned, so this 2 ft square keeps a 2 ft bounding box
+    // in each physically equivalent drawing (2 ft, 20 drawing units, 0.6096 m).
     for (const [i, expected] of [
-      2.8284271247461903, 28.284271247461902, 0.8621045876226388
+      2, 20, 0.6096
     ].entries()) {
       expect(manifests[i].isEligibleToApply, JSON.stringify(manifests[i].diagnostics)).toBe(true)
       expect(manifests[i].equipment.indoorUnit?.footprint.widthWorld).toBeCloseTo(expected, 8)
@@ -588,5 +589,55 @@ describe('atomic engineering deployment', () => {
     m.ducts[0].points[0] = 1000
     expect(result.updatedZones[0].diffusers[0].cfm).toBe(600)
     expect(result.updatedZones[0].ducts[0].points[0]).toBe(20)
+  })
+})
+
+describe('engineering flow and footprint integrity for realistic rooms', () => {
+  const flatFan = (minCfm: number) => ({
+    minCfm,
+    fanPerformance: {
+      type: 'tabular' as const,
+      table: [{ cfm: minCfm, espInWg: 0.8 }, { cfm: 1000, espInWg: 0.8 }],
+      allowExtrapolation: false
+    }
+  })
+  const big = (overrides: Partial<Zone> = {}) =>
+    zone({ points: [0, 0, 300, 0, 300, 250, 0, 250], manualCfmOverride: undefined, ...overrides })
+
+  it('delivers exactly the calculated supply airflow through a branched 30x25 ft layout for 2 people', () => {
+    const z = big()
+    const m = manager.buildDeploymentManifest(candidate({ equipment: equipment(flatFan(300)) }), z, [z], project)
+    expect(m.diagnostics.map((d) => d.message).join('|')).not.toMatch(/supply or return airflow/)
+    const supply = m.terminals.filter((t) => t.type !== 'return').reduce((s, t) => s + t.cfm, 0)
+    expect(Math.abs(supply - m.engineeringEvidence!.requiredSupplyCfm)).toBeLessThan(1e-6)
+    expect(m.isEligibleToApply).toBe(true)
+    expect(execute(m, [z], project).success).toBe(true)
+  })
+
+  it('splits cassette airflow without rounding drift', () => {
+    const res = planCassetteDistribution([0, 0, 300, 0, 300, 250, 0, 250], 3, 442.767, 's', 'z', 'Cassette')
+    expect(res.diffusers.length).toBeGreaterThan(0)
+    for (const d of res.diffusers) expect(d.cfm).toBeCloseTo(442.767 / 3, 9)
+  })
+
+  it.each([
+    ['53QDMT-24N', { width: 43.3, depth: 27.6, height: 10 }],
+    ['53QDMT-36N', { width: 51.2, depth: 31.5, height: 10 }],
+    ['42CE-16', { width: 62, depth: 28, height: 10 }],
+    ['42QSS120-D', { width: 74, depth: 38, height: 10 }]
+  ])('places %s fully inside a 30x25 ft room', (_name, dimensionsIn) => {
+    const z = big({ manualCfmOverride: 600 })
+    const m = manager.buildDeploymentManifest(candidate({ equipment: equipment({ ...flatFan(300), dimensionsIn }) }), z, [z], project)
+    expect(m.diagnostics.map((d) => d.message).join('|')).not.toMatch(/footprint is outside zone/i)
+    expect(m.isEligibleToApply).toBe(true)
+    expect(execute(m, [z], project).success).toBe(true)
+  })
+
+  it('reports an oversized unit as a planning diagnostic rather than placing it outside the zone', () => {
+    const z = zone({ points: [0, 0, 50, 0, 50, 30, 0, 30], manualCfmOverride: 600 })
+    const m = manager.buildDeploymentManifest(
+      candidate({ equipment: equipment({ ...flatFan(300), dimensionsIn: { width: 74, depth: 38, height: 10 } }) }), z, [z], project)
+    expect(m.isEligibleToApply).toBe(false)
+    expect(m.diagnostics.some((d) => d.severity === 'error')).toBe(true)
   })
 })

@@ -9,6 +9,7 @@ import {
   DeploymentDiagnostic
 } from './deploymentTypes';
 import { Diffuser, DuctSegment } from '../store/projectStore';
+import { isPointInOrOnPolygon, isSegmentInPolygon } from './validation/spatialValidator';
 
 /**
  * Validates that an entire rectangular component footprint is strictly inside a polygon
@@ -218,6 +219,59 @@ export function planOutdoorUnitPlacement(
 /**
  * Scores and places indoor unit (FCU / AHU) inside ceiling corridor zone
  */
+/**
+ * True when an axis-aligned w x h rectangle centred on (cx, cy) lies fully inside the polygon.
+ * Uses the same predicates as deployment acceptance so placement and validation cannot disagree.
+ */
+export function isRectContainedInPolygon(cx: number, cy: number, w: number, h: number, points: number[]): boolean {
+  const corners = [
+    { x: cx - w / 2, y: cy - h / 2 },
+    { x: cx + w / 2, y: cy - h / 2 },
+    { x: cx + w / 2, y: cy + h / 2 },
+    { x: cx - w / 2, y: cy + h / 2 }
+  ];
+  return isPointInOrOnPolygon(cx, cy, points) &&
+    corners.every((a, k) => isSegmentInPolygon(a, corners[(k + 1) % 4], points));
+}
+
+function placePhysicalFootprint(
+  points: number[],
+  target: { x: number; y: number },
+  centroid: { x: number; y: number },
+  fp: { width: number; depth: number }
+): { x: number; y: number; rotationDeg: number; w: number; h: number } | null {
+  const bbox = getPolygonBoundingBox(points);
+  const preferLong = bbox.width >= bbox.height;
+  const orientations = [
+    { rotationDeg: 0, w: fp.width, h: fp.depth },
+    { rotationDeg: 90, w: fp.depth, h: fp.width }
+  ].sort((a, b) => Number(preferLong ? b.w >= b.h : b.h >= b.w) - Number(preferLong ? a.w >= a.h : a.h >= a.w));
+  const margin = 5;
+  let best: { x: number; y: number; rotationDeg: number; w: number; h: number } | null = null;
+  let bestScore = Infinity;
+  for (const o of orientations) {
+    // Preferred centre: step inward from the far vertex by half the footprint plus a placement margin.
+    const px = target.x + Math.sign(centroid.x - target.x) * (o.w / 2 + margin);
+    const py = target.y + Math.sign(centroid.y - target.y) * (o.h / 2 + margin);
+    const gx = (v: number) => (centroid.x > v ? Math.ceil(v / 10) * 10 : Math.floor(v / 10) * 10);
+    const gy = (v: number) => (centroid.y > v ? Math.ceil(v / 10) * 10 : Math.floor(v / 10) * 10);
+    const candidates = [{ x: gx(px), y: gy(py) }, { x: px, y: py }];
+    for (let x = bbox.minX; x <= bbox.maxX; x += 10)
+      for (let y = bbox.minY; y <= bbox.maxY; y += 10) candidates.push({ x, y });
+    for (const c of candidates) {
+      if (!isRectContainedInPolygon(c.x, c.y, o.w, o.h, points)) continue;
+      const score = Math.hypot(c.x - px, c.y - py);
+      if (score < bestScore - 1e-9) {
+        bestScore = score;
+        best = { ...c, rotationDeg: o.rotationDeg, w: o.w, h: o.h };
+      }
+      if (c === candidates[0] || c === candidates[1]) break;
+    }
+    if (best && bestScore === 0) break;
+  }
+  return best;
+}
+
 export function planIndoorUnitPlacement(
   points: number[],
   optOduPos: { x: number; y: number },
@@ -225,7 +279,8 @@ export function planIndoorUnitPlacement(
   zoneId: string,
   systemType: string,
   model: string,
-  supplyCfm: number
+  supplyCfm: number,
+  physicalFootprint?: { width: number; depth: number }
 ): { component: MechanicalComponent | null; diagnostics: DeploymentDiagnostic[] } {
   const diagnostics: DeploymentDiagnostic[] = [];
 
@@ -257,6 +312,29 @@ export function planIndoorUnitPlacement(
     }
   }
 
+  let unitWidth = 44;
+  let unitHeight = 22;
+  let rotationOverride: number | undefined;
+  let snappedX = 0;
+  let snappedY = 0;
+
+  if (physicalFootprint) {
+    const placed = placePhysicalFootprint(points, { x: targetX, y: targetY }, centroid, physicalFootprint);
+    if (!placed) {
+      diagnostics.push({
+        code: 'ERR_COMPONENT_OUTSIDE_ZONE',
+        severity: 'error',
+        message: `Indoor unit (${model}) footprint cannot fit inside zone boundaries.`,
+        remediation: 'Expand room boundaries or select a smaller unit.'
+      });
+      return { component: null, diagnostics };
+    }
+    snappedX = placed.x;
+    snappedY = placed.y;
+    unitWidth = placed.w;
+    unitHeight = placed.h;
+    rotationOverride = placed.rotationDeg;
+  } else {
   // Shift inside towards centroid
   const vx = centroid.x - targetX;
   const vy = centroid.y - targetY;
@@ -265,10 +343,6 @@ export function planIndoorUnitPlacement(
 
   let optimalX = targetX + (vx / len) * offset;
   let optimalY = targetY + (vy / len) * offset;
-
-  // Ensure placement footprint is fully contained inside zone
-  const unitWidth = 44;
-  const unitHeight = 22;
 
   if (!validateFootprintInPolygon(optimalX, optimalY, unitWidth, unitHeight, points)) {
     optimalX = (targetX + centroid.x * 2) / 3;
@@ -311,8 +385,10 @@ export function planIndoorUnitPlacement(
     return { component: null, diagnostics };
   }
 
-  const snappedX = Math.round(optimalX / 10) * 10;
-  const snappedY = Math.round(optimalY / 10) * 10;
+
+  snappedX = Math.round(optimalX / 10) * 10;
+  snappedY = Math.round(optimalY / 10) * 10;
+  }
   const componentId = `comp-iu-${zoneId}`;
 
   // Outlet points towards centroid for direct trunk take-off
@@ -363,10 +439,10 @@ export function planIndoorUnitPlacement(
   ];
 
   const footprint: SpatialFootprint = {
-    minX: snappedX - 22,
-    maxX: snappedX + 22,
-    minY: snappedY - 11,
-    maxY: snappedY + 11,
+    minX: snappedX - unitWidth / 2,
+    maxX: snappedX + unitWidth / 2,
+    minY: snappedY - unitHeight / 2,
+    maxY: snappedY + unitHeight / 2,
     widthWorld: unitWidth,
     heightWorld: unitHeight
   };
@@ -380,7 +456,7 @@ export function planIndoorUnitPlacement(
     model,
     systemType,
     position: { x: snappedX, y: snappedY, z: 9 },
-    rotationDeg: Math.round(Math.atan2(dirY, dirX) * (180 / Math.PI)),
+    rotationDeg: rotationOverride ?? Math.round(Math.atan2(dirY, dirX) * (180 / Math.PI)),
     elevationFt: 9,
     footprint,
     ports,
@@ -404,7 +480,7 @@ export function planCassetteDistribution(
   spaceNcLimit: number = 32
 ): { components: MechanicalComponent[]; diffusers: Diffuser[]; diagnostics: DeploymentDiagnostic[] } {
   const diagnostics: DeploymentDiagnostic[] = [];
-  const flowPerUnit = Math.round(totalCfm / Math.max(1, quantity));
+  const flowPerUnit = totalCfm / Math.max(1, quantity);
   const components: MechanicalComponent[] = [];
   const diffusers: Diffuser[] = [];
 
@@ -530,7 +606,7 @@ export function planDuctedAirDistribution(
 ): { diffusers: Diffuser[]; ducts: DuctSegment[]; diagnostics: DeploymentDiagnostic[] } {
   const diagnostics: DeploymentDiagnostic[] = [];
   const numDiffusers = candidateDiffusers?.quantity || Math.max(1, Math.ceil(totalCfm / 335));
-  const flowPerDiffuser = candidateDiffusers?.flowPerDiffuser || Math.round(totalCfm / numDiffusers);
+  const flowPerDiffuser = candidateDiffusers?.flowPerDiffuser || totalCfm / numDiffusers;
 
   // Distribute diffusers symmetrically on an orthogonal grid aligned with room bounds
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -762,12 +838,36 @@ export function planDuctedAirDistribution(
     const retStartX = unitPos.x;
     const retStartY = unitPos.y;
 
-    const retEndX = isHorizontal
-      ? (unitPos.x > minX + roomW / 2 ? unitPos.x - retOffset : unitPos.x + retOffset)
-      : unitPos.x;
-    const retEndY = isHorizontal
-      ? unitPos.y + (unitPos.y > minY + roomH / 2 ? -retOffset * 0.5 : retOffset * 0.5)
-      : (unitPos.y > minY + roomH / 2 ? unitPos.y - retOffset : unitPos.y + retOffset);
+    const primaryEnd = {
+      x: isHorizontal
+        ? (unitPos.x > minX + roomW / 2 ? unitPos.x - retOffset : unitPos.x + retOffset)
+        : unitPos.x,
+      y: isHorizontal
+        ? unitPos.y + (unitPos.y > minY + roomH / 2 ? -retOffset * 0.5 : retOffset * 0.5)
+        : (unitPos.y > minY + roomH / 2 ? unitPos.y - retOffset : unitPos.y + retOffset)
+    };
+    // The bounding-box heuristic ignores concave outlines, so verify the grille and its run stay
+    // inside the zone and otherwise fall back to alternative directions, then toward the centroid.
+    const zoneCentroid = getPolygonCentroid(points);
+    const cdx = zoneCentroid.x - unitPos.x;
+    const cdy = zoneCentroid.y - unitPos.y;
+    const clen = Math.hypot(cdx, cdy) || 1;
+    const returnEndCandidates = [
+      primaryEnd,
+      { x: primaryEnd.x, y: 2 * unitPos.y - primaryEnd.y },
+      { x: 2 * unitPos.x - primaryEnd.x, y: primaryEnd.y },
+      { x: 2 * unitPos.x - primaryEnd.x, y: 2 * unitPos.y - primaryEnd.y },
+      ...[1, 0.75, 0.5, 0.25].map((f) => ({
+        x: unitPos.x + (cdx / clen) * Math.min(retOffset, clen) * f,
+        y: unitPos.y + (cdy / clen) * Math.min(retOffset, clen) * f
+      }))
+    ];
+    const retEnd =
+      returnEndCandidates.find(
+        (c) => isPointInOrOnPolygon(c.x, c.y, points) && isSegmentInPolygon({ x: unitPos.x, y: unitPos.y }, c, points)
+      ) ?? primaryEnd;
+    const retEndX = retEnd.x;
+    const retEndY = retEnd.y;
 
     // Return Grille Terminal
     diffusers.push({

@@ -38,11 +38,16 @@ Current results: 34 Vitest files (442 tests) and 113 legacy tests pass, and `npm
 
 The stepped-return regression fixture supplies a real grille and asserts that absent grilles produce no fabricated connected return route.
 
-Known engine gaps found (not fixed here):
+Engine gaps found in that stage, now fixed (regression tests in `systemDesignerIntegrity.test.ts` and `deploymentIntegrity.test.ts`):
 
-- `systemDesigner.generateSystemCandidates` does not check per-unit min/max CFM; deployment later rejects such candidates.
-- Ducted indoor-unit placement ignores the physical footprint; larger units can be rejected even in 30 ft x 25 ft rooms.
-- A branched layout at 30 ft x 25 ft with 2 people failed the airflow match, probably from per-diffuser rounding; needs a regression test.
+- `generateSystemCandidates` now rejects ducted candidates whose per-unit airflow lies outside the rated fan range (`ERR_AIRFLOW_OUTSIDE_EQUIPMENT_RANGE`), matching what deployment enforces.
+- Indoor-unit placement now uses the catalog physical footprint, axis-aligned rotation and the same containment predicates as deployment acceptance. Units that cannot fit produce a planning diagnostic. The legacy placement path is unchanged when no footprint is supplied. A footprint-aware placement moved a unit in the L-shaped fixture and exposed a return grille placed outside a concave zone; return grille placement is now verified against the polygon. One test that expected a 45-degree footprint bounding box now expects the axis-aligned 2 ft footprint (physical equivalence across scales is still asserted).
+- Per-unit and per-diffuser airflow is no longer rounded to integers in deployment and cassette planning, so delivered supply equals the calculated demand within the existing 1 CFM tolerance.
+
+New known gaps:
+
+- The generator's estimated external static pressure has no filter allowance or safety factor. With the three fixes above, the only valid real-catalog candidate for a 30 ft x 25 ft, 2-person office (53QDMT-18N x1) is rejected at deployment with "Actual per-unit fan pressure is insufficient" (about 0.30 in.wg available against about 0.36 required). Deployment checks were not loosened.
+- `planCassetteDistribution` may return fewer cassettes than the requested quantity (observed 2 of 3); its per-unit airflow split is exact but the count is not enforced.
 
 ## Release limitations
 
