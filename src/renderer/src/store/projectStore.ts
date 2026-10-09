@@ -5,7 +5,9 @@ import { zoneExtentFt } from '../engine/pressureBudget';
 import { convertProjectDisplayUnits } from '../engine/project/unitConversion';
 import { parseProjectDocument } from '../engine/project/projectSerialization';
 import type { CadImportDiagnostic } from '../engine/dxfParser';
-import type { CadRoomCandidate, CadLayerRole, CadBlockReference } from '../engine/cad/semanticTypes';
+import type { CadRoomCandidate, CadLayerRole, CadBlockReference, CadRoomRecognitionResult } from '../engine/cad/semanticTypes';
+import { recognizeCadRooms } from '../engine/cad/roomRecognition';
+import { buildRoomRecognitionBasis, ceilingHeightSuggestionFor, drawingUnitsPerFoot, type CeilingHeightSuggestionView } from '../engine/cad/roomApprovalInputs';
 import { unitsAutoConfirmed } from '../engine/cad/unitsDecision';
 import { calibrateDrawingScale, type CadKnownUnit } from '../engine/dxfParser';
 import { CAD_LAYER_ROLES } from '../engine/cad/layerClassification';
@@ -102,7 +104,11 @@ export interface BoundingBox {
 }
 
 export interface Zone {
-  cadProvenance?: {sourceCadRevision?:string;candidateId:string;sourceHandles:string[];sourceLayers:string[];evidence:string[];unresolvedConditions:string[];drawingUnitsPerFoot:number;approvedAt:string};
+  cadProvenance?: {sourceCadRevision?:string;candidateId:string;sourceHandles:string[];sourceLayers:string[];evidence:string[];unresolvedConditions:string[];drawingUnitsPerFoot:number;approvedAt:string;
+    /** Level (elevation, drawing units) and approved openings the room was recognised with. */
+    level?:number;approvedOpeningIds?:string[];boundaryLayers?:string[];
+    /** The ceiling height the user chose, next to the annotation-derived suggestion that was shown (never applied automatically). */
+    ceilingHeight?:{chosen:number;usedSuggestion:boolean;suggestedFt?:number;confidence?:number;evidence?:string[]}};
   id: string;
   engineeringStatus?: 'stale' | 'blocked' | 'preliminary';
   engineeringError?: string;
@@ -254,7 +260,10 @@ interface ProjectState {
   restoreProjectDocument: (source: string) => {success: boolean; error?: string};
   setDrawMode: (mode: 'select' | 'polyline' | 'pan') => void;
   addZone: (points: number[]) => void;
-  approveCadRoom: (candidate:CadRoomCandidate, inputs:{name:string;spaceTypeId:string;ceilingHeight:number;occupants:number;sourceCadRevision:string;drawingUnitsPerFoot:number}) => {success:boolean;error?:string};
+  /** Recognise room candidates from the CAD review state (approved openings, user-confirmed wall layers, selected level). */
+  recognizeCadRoomCandidates: () => CadRoomRecognitionRun;
+  /** `ceilingHeight` is the value the caller chose (a suggestion is available via selectCeilingHeightSuggestion). */
+  approveCadRoom: (candidate:CadRoomCandidate, inputs:{name:string;spaceTypeId:string;ceilingHeight:number;occupants:number;sourceCadRevision:string;drawingUnitsPerFoot:number;recognitionContext?:string}) => {success:boolean;error?:string};
   updateZone: (id: string, updates: Partial<Zone>) => void;
   deleteZone: (id: string) => void;
   selectZone: (id: string | null) => void;
@@ -289,6 +298,27 @@ interface ProjectState {
 }
 
 export interface CadActionResult { success: boolean; error?: string }
+
+export interface CadRoomRecognitionRun {
+  success: boolean
+  error?: string
+  result?: CadRoomRecognitionResult
+  /** Pass these back to approveCadRoom so a change to CAD, scale or review decisions is detected. */
+  sourceCadRevision?: string
+  drawingUnitsPerFoot?: number
+  recognitionContext?: string
+  level?: number
+  wallLayers?: string[]
+  approvedOpeningIds?: string[]
+}
+
+/** Annotation-derived ceiling height for a room candidate, in project units. A suggestion, never applied by itself. */
+export function selectCeilingHeightSuggestion(
+  state: Pick<ProjectState, 'dxfEntities' | 'project' | 'cadLevel'>,
+  candidate: Pick<CadRoomCandidate, 'polygon'>
+): { suggestion?: CeilingHeightSuggestionView; unresolved: boolean; reasons: string[] } {
+  return ceilingHeightSuggestionFor(state.dxfEntities, candidate.polygon, state.project, state.cadLevel);
+}
 
 const MAX_AUTO_DEPLOY_ATTEMPTS = 5;
 
@@ -410,12 +440,24 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
   
   setDrawMode: (mode) => set({ drawMode: mode, tempPoints: [] }),
+  recognizeCadRoomCandidates: () => {
+    try {
+      const state=get();
+      if(state.project.cadUnitsConfirmed===false) throw new Error('Confirm CAD units before recognizing rooms.');
+      const basis=buildRoomRecognitionBasis(state);
+      return {success:true,result:recognizeCadRooms(state.dxfEntities,basis.options),sourceCadRevision:JSON.stringify(state.dxfEntities),
+        drawingUnitsPerFoot:basis.options.drawingUnitsPerFoot,recognitionContext:basis.context,level:state.cadLevel,
+        wallLayers:basis.wallLayers,approvedOpeningIds:basis.approvedOpeningIds};
+    } catch(error) {return {success:false,error:error instanceof Error?error.message:'Room recognition failed.'};}
+  },
   approveCadRoom: (candidate,inputs) => {
     try {
       const state=get();
       if(state.project.cadUnitsConfirmed===false) throw new Error('Confirm CAD units before approving rooms.');
       if(JSON.stringify(state.dxfEntities)!==inputs.sourceCadRevision) throw new Error('CAD changed; recognize rooms again.');
-      const unitsPerFoot=state.project.units==='metric'?state.project.scale*METERS_PER_FOOT:state.project.scale;
+      const unitsPerFoot=drawingUnitsPerFoot(state.project);
+      const basis=buildRoomRecognitionBasis(state);
+      if(inputs.recognitionContext!==undefined && inputs.recognitionContext!==basis.context) throw new Error('CAD review decisions changed; recognize rooms again.');
       if(unitsPerFoot!==inputs.drawingUnitsPerFoot) throw new Error('Drawing scale changed; recognize rooms again.');
       requirePositive('Drawing scale',unitsPerFoot);
       measureSimplePolygon(candidate.polygon);
@@ -423,11 +465,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       if(!inputs.name.trim()) throw new Error('Enter a room name.');
       if(!ASHRAE_SPACE_TYPES.some(t=>t.id===inputs.spaceTypeId)) throw new Error('Select a supported room use.');
       if(state.zones.some(z=>z.cadProvenance?.candidateId===candidate.id)) throw new Error('This CAD room is already approved.');
+      const suggestion=selectCeilingHeightSuggestion(state,candidate).suggestion;
       const id=`cad-zone-${crypto.randomUUID()}`;
       const zone:Zone={id,name:inputs.name.trim(),points:[...candidate.polygon],spaceTypeId:inputs.spaceTypeId,
         ceilingHeight:inputs.ceilingHeight,occupants:inputs.occupants,systemType:'concealed',diffusers:[],ducts:[],engineeringStatus:'stale',
         cadProvenance:{sourceCadRevision:inputs.sourceCadRevision,candidateId:candidate.id,sourceHandles:[...candidate.sourceHandles],sourceLayers:[...candidate.sourceLayers],
-          evidence:[...candidate.evidence],unresolvedConditions:[...candidate.unresolvedConditions],drawingUnitsPerFoot:unitsPerFoot,approvedAt:new Date().toISOString()}};
+          evidence:[...candidate.evidence],unresolvedConditions:[...candidate.unresolvedConditions],drawingUnitsPerFoot:unitsPerFoot,approvedAt:new Date().toISOString(),
+          level:state.cadLevel,approvedOpeningIds:basis.approvedOpeningIds,boundaryLayers:basis.wallLayers,
+          ceilingHeight:{chosen:inputs.ceilingHeight,usedSuggestion:!!suggestion&&Math.abs(suggestion.value-inputs.ceilingHeight)<=1e-6,
+            ...(suggestion?{suggestedFt:suggestion.valueFt,confidence:suggestion.confidence,evidence:[...suggestion.evidence]}:{})}}};
       const evaluation=calculateZoneLoadSafely(zone,state.project);
       if(evaluation.error) throw new Error(evaluation.error);
       const previous:WorkspaceSnapshot={snapshotId:`snap-${crypto.randomUUID()}`,timestamp:Date.now(),zones:structuredClone(state.zones),

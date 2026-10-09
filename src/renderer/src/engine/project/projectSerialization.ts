@@ -210,6 +210,15 @@ function validateState(value:unknown):PersistedProjectState {
       for(const key of ['sourceHandles','sourceLayers','evidence','unresolvedConditions'])array(p[key],`CAD provenance ${key}`).forEach(v=>text(v,`CAD provenance ${key}`));
       requirePositive('CAD provenance drawing scale',finite(p.drawingUnitsPerFoot,'CAD provenance drawing scale'));
       text(p.approvedAt,'CAD approval date');
+      if(p.level!==undefined)finite(p.level,'CAD provenance level');
+      for(const key of ['approvedOpeningIds','boundaryLayers'])if(p[key]!==undefined)array(p[key],`CAD provenance ${key}`).forEach(v=>text(v,`CAD provenance ${key}`));
+      if(p.ceilingHeight!==undefined){
+        const c=object(p.ceilingHeight,'CAD provenance ceiling height');
+        finite(c.chosen,'CAD provenance chosen ceiling height');
+        if(typeof c.usedSuggestion!=='boolean')throw new TypeError('CAD provenance usedSuggestion must be boolean');
+        for(const key of ['suggestedFt','confidence'])if(c[key]!==undefined)finite(c[key],`CAD provenance ${key}`);
+        if(c.evidence!==undefined)array(c.evidence,'CAD provenance ceiling evidence').forEach(v=>text(v,'CAD provenance ceiling evidence'));
+      }
     }
     measureSimplePolygon(coordinates(z.points,'Zone polygon',6));
     finite(z.ceilingHeight,'Ceiling height');finite(z.occupants,'Occupants');
