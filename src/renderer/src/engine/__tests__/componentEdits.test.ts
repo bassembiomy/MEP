@@ -285,3 +285,13 @@ describe('cassette rooms keep each terminal at its unit',()=>{
   if(!v.ok)expect(v.error).toMatch(/cassette terminal/i);
  });
 });
+describe('store.applyComponentEdit with a no-op edit',()=>{
+ it('does not push an undo snapshot or mark the room stale for a zero-delta duct drag',()=>{
+  const z={...zone(),engineeringStatus:'preliminary' as const};
+  useProjectStore.setState({project:{name:'T',location:'Cairo',scale:10,units:'imperial',outdoorDb:95,indoorDb:75},zones:[z],undoStack:[],redoStack:[]});
+  const r=useProjectStore.getState().applyComponentEdit('z',translateDuct(z,'B2',0,0,ctx));
+  expect(r.success).toBe(true);
+  expect(useProjectStore.getState().undoStack).toHaveLength(0);
+  expect(useProjectStore.getState().zones[0].engineeringStatus).toBe('preliminary');
+ });
+});

@@ -727,6 +727,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const zone = state.zones.find(z => z.id === id);
     if (!zone) return { success: false, error: 'Room not found.' };
     if (!edit.ok) return { success: false, error: edit.error };
+    if (Object.keys(edit.patch).length === 0) return { success: true, warnings: edit.warnings }; // no-op edit: no undo step, room not staled
     set({ undoStack: [...state.undoStack, makeSnapshot(state, `Edited components of ${zone.name}`, false)], redoStack: [] });
     get().updateZone(id, edit.patch); // marks the room stale (or blocked) and drops any preview
     return { success: true, warnings: edit.warnings };
