@@ -1,6 +1,7 @@
 import { getPolygonCentroid, isPointInPolygon } from './geometry';
 import { DiffuserCatalogItem } from './types';
 import { STANDARD_DIFFUSER_CATALOG } from './hvacCatalogs';
+import { atLevel } from './cad/elevation';
 
 export interface DiffuserPos {
   id: string;
@@ -142,7 +143,9 @@ export function findCadTerminalPositions(
   dxfEntities: any[],
   systemType: 'concealed' | 'packaged' | 'cassette' | 'high-wall' | 'vrf' | 'ahu' | 'fcu',
   maxAllowedTerminals: number = 8,
-  scale: number = 0
+  scale: number = 0,
+  /** Elevation (drawing units) of the level whose terminal symbols to read; default 0 (elevated entities are ignored). */
+  level: number = 0
 ): { x: number; y: number; label?: string }[] {
   if (!dxfEntities || dxfEntities.length === 0 || zonePoints.length < 6) {
     return [];
@@ -150,6 +153,7 @@ export function findCadTerminalPositions(
 
   // Filter ONLY entities belonging to explicit mechanical / HVAC layers
   const hvacEntities = dxfEntities.filter(ent => {
+    if (!atLevel(ent, level)) return false;
     const layer = (ent.layer || '').toLowerCase();
     return (
       layer.includes('hvac') ||
