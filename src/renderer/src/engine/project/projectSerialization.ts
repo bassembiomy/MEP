@@ -268,7 +268,7 @@ function validateState(value:unknown,version:number=VERSION):PersistedProjectSta
   for(const [name,value] of Object.entries(rawLayers)) {
     const layer=object(value,'CAD layer');
     if(typeof layer.visible!=='boolean') throw new TypeError('CAD layer visibility must be boolean');
-    dxfLayers[name]={name,visible:layer.visible,count:0,color:layer.color===undefined?undefined:text(layer.color,'CAD layer color')};
+    dxfLayers[name]={name,visible:layer.visible,count:0,color:layer.color===undefined?undefined:text(layer.color,'CAD layer color'),...(layer.sourceHidden===true?{sourceHidden:true}:{})};
   }
   // Counts and extents come from actual entities, not claims stored in a document.
   let bbox:BoundingBox|null=null;

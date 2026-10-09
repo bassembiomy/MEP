@@ -39,9 +39,9 @@ export function header(options: HeaderOptions = {}): string {
   return section('HEADER', body);
 }
 
-/** LAYER table entry (default color 7, CONTINUOUS linetype). */
-export function layer(name: string): string {
-  return records([0, 'LAYER'], [2, name], [70, 0], [62, 7], [6, 'CONTINUOUS']);
+/** LAYER table entry (default color 7, CONTINUOUS linetype). `frozen` sets flag bit 1, `off` negates the colour. */
+export function layer(name: string, options: { frozen?: boolean; off?: boolean } = {}): string {
+  return records([0, 'LAYER'], [2, name], [70, options.frozen ? 1 : 0], [62, options.off ? -7 : 7], [6, 'CONTINUOUS']);
 }
 
 export function line(layerName: string, x1: number, y1: number, x2: number, y2: number): string {

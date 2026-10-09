@@ -23,6 +23,8 @@ export interface ParsedDxf {
   unitsConfidence?: 'declared' | 'estimated' | 'unknown';
   /** $MEASUREMENT header value (0 imperial, 1 metric): secondary evidence only, never selects units. */
   measurement?: 0 | 1;
+  /** Layers frozen (group 70 bit 1) or switched off (negative colour) in the source: imported, but hidden by default. */
+  hiddenLayers?: string[];
   /** INSERTs kept as semantic objects (their exploded children still appear in `entities`). */
   blockReferences?: CadBlockReference[];
 }
@@ -262,7 +264,7 @@ function sampleSpline(r: DxfRecord): { points: number[]; closed: boolean; how: s
       const t = i === count - 1 ? hi : lo + (hi - lo) * i / (count - 1);
       let k = degree;
       while (k < n - 1 && t >= knots[k + 1]) k++;
-      const d = []; // homogeneous control points of the active span
+      const d: number[][] = []; // homogeneous control points of the active span
       for (let j = 0; j <= degree; j++) { const c = k - degree + j; d.push([control[c][0] * w[c], control[c][1] * w[c], w[c]]); }
       for (let rr = 1; rr <= degree; rr++)
         for (let j = degree; j >= rr; j--) {
@@ -340,7 +342,12 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     return Number.isInteger(aci) && aci > 0 && aci < 256 ? aciToHexColor(aci) : undefined;
   };
   const layers = new Map<string, string | undefined>();
-  for (const r of sections.get('TABLES') ?? []) if (r.type === 'LAYER') layers.set(first(r, 2)?.trim() ?? '0', color(r));
+  const hiddenLayers = new Set<string>();
+  for (const r of sections.get('TABLES') ?? []) if (r.type === 'LAYER') {
+    const name = first(r, 2)?.trim() ?? '0';
+    layers.set(name, color(r));
+    if ((number(r, 70, 0) & 1) !== 0 || number(r, 62, 0) < 0) hiddenLayers.add(name);
+  }
   const blocks = new Map<string, DxfBlock>();
   const duplicateBlocks = new Set<string>();
   let block: DxfBlock | undefined;
@@ -563,5 +570,5 @@ export function parseDxfText(dxfText: string): ParsedDxf {
   if (!entities.length) Object.assign(bbox, { minX: 0, maxX: 500, minY: 0, maxY: 500 });
   const units = resolveCadUnits({ insUnits, measurement, entities, bbox });
   for (const d of units.diagnostics) diagnose(d.code, d.message);
-  return { entities, bbox, insUnits, measurement, ...units.suggestion, diagnostics, blockReferences, unitsConfidence: units.unitsConfidence };
+  return { entities, bbox, insUnits, measurement, ...units.suggestion, diagnostics, blockReferences, unitsConfidence: units.unitsConfidence, ...(hiddenLayers.size ? { hiddenLayers: [...hiddenLayers].sort() } : {}) };
 }

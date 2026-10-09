@@ -44,7 +44,7 @@ export const Toolbar: React.FC = () => {
       if(request!==importRequestRef.current) return;
       const units=useProjectStore.getState().project.units;
       setDxfData(parsed.entities,parsed.bbox,units==='imperial'?parsed.suggestedScaleImperial:parsed.suggestedScaleMetric,parsed.cadUnit,
-        {sourceName:file.name,diagnostics:parsed.diagnostics??[],unitsConfidence:parsed.unitsConfidence??'unknown'},parsed.blockReferences);
+        {sourceName:file.name,diagnostics:parsed.diagnostics??[],unitsConfidence:parsed.unitsConfidence??'unknown'},parsed.blockReferences,parsed.hiddenLayers);
       setFileName(file.name);
     } catch(error) {
       if(request===importRequestRef.current) setFileError(error instanceof Error?error.message:String(error));

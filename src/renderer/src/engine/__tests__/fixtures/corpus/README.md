@@ -30,18 +30,24 @@ Manifest conventions: coordinates are DXF drawing units with **Y up** (`parseDxf
 room areas are net ft2 of the *clear* room (centreline rectangle for the single-line imperial plan); door centre =
 midpoint of hinge and latch, width = swing radius; `expectedEntityCount` is the number of LINE/LWPOLYLINE/CIRCLE/ARC/
 ELLIPSE/TEXT/MTEXT entities after INSERT expansion, counted from the ezdxf document (ATTDEF/ATTRIB/SEQEND, DIMENSION,
-HATCH, POINT, SPLINE and paper space excluded, hidden-layer entities included).
+HATCH, POINT, SPLINE and paper space excluded, hidden-layer entities included; ATTRIB is excluded by convention although the importer now draws each visible ATTRIB as a TEXT, and a SPLINE is excluded although it is now imported as a polyline, so the tests add them).
 
-## Known gaps
+## Known gaps and Round 2 resolutions
 
-Every row is a real defect the corpus found. Its assertion is an `it.fails(...)` ("KNOWN GAP: ..." in the test title),
-so the suite is green today and goes **red when the defect is fixed**; whoever fixes it must turn that test into a
-plain `it()`, delete the row, and keep the manifest unchanged. `CORPUS_SHOW_GAPS=1 npx vitest run cadRealisticCorpus`
-runs the gaps as normal tests and prints the real assertion failures.
+No open gaps: all twelve defects the corpus found are fixed and their former `it.fails` tests are plain `it()` tests.
+The `gap(...)` helper (`it.fails` unless `CORPUS_SHOW_GAPS=1`) is kept for future defects: declare the test with it,
+and delete the row/test marker when the defect is fixed. The manifest was never edited to match importer output.
+Documented behaviour changes that tests now assert:
 
-| # | Gap | Evidence (measured) | Tests (`it.fails`) | Likely fix site (Round 2) |
-|---|---|---|---|---|
-| 8 | Frozen / off layers are imported as visible geometry | 2 entities from `A-FRZ` (frozen) and `A-OFF` (off) are present | `geometry on frozen / off layers ...` | `dxfParser.ts` layer table (group 70 bit 1, negative colour); design question: hide or import-but-hidden |
+- `$INSUNITS` / `$MEASUREMENT` are read (a code-2 value in HEADER is a variable value, not a section name).
+- Top-level paper-space records (group 67 = 1) are skipped with one aggregated `PAPER_SPACE_SKIPPED` warning.
+- A visible `ATTRIB` is imported as a TEXT (door tags `D01`...), `ATTDEF` templates / invisible attributes / `SEQEND` are dropped silently.
+- Room names: MTEXT codes stripped, level notes (CH/CLG HT/FFL/FCL/SOFFIT), pure numbers and door/window tags ignored; the largest text wins, then the most central, then alphabetical.
+- Room recognition collects eligible texts once and charges work per text examined: the 20k-entity plan gives 48 rooms.
+- Path B: an approved opening closes every parallel face pair of a double-line wall (no jamb pockets), and faces with a mean width under 1 ft (wall bodies) are rejected with `wall-body-excluded`.
+- `decodeDxfBytes` (used by `Toolbar.tsx`) decodes pre-R2007 files as `$DWGCODEPAGE` (windows-1252 default) and R2007+ as UTF-8; `\U+XXXX` escapes are decoded.
+- SPLINE becomes an approximated LWPOLYLINE (de Boor for control points + knots, Catmull-Rom for fit points) with one `APPROXIMATED_GEOMETRY` warning; approximated geometry never feeds room recognition.
+- Frozen (`70` bit 1) and off (negative colour) layers are imported but hidden by default (`DxfLayerInfo.sourceHidden`), kept out of snapping, room, opening and obstacle recognition until the user shows them. The manifest note ("hidden-layer entities included") still holds because they remain in `dxfEntities`.
 
 Not defects (documented behaviour, asserted as such): DIMENSION (4), HATCH (2) and POINT (3) are reported once each as
 `UNSUPPORTED_ENTITY`; XDATA, the second layout and its viewport are ignored without diagnostics.

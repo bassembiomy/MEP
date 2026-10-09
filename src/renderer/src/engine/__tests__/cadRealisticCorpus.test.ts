@@ -5,6 +5,7 @@ import { decodeDxfBytes, parseDxfText, type ParsedDxf } from '../dxfParser'
 import { useProjectStore, selectCeilingHeightSuggestion } from '../../store/projectStore'
 import { recognizeCadRooms } from '../cad/roomRecognition'
 import { listCadLevels } from '../cad/cadSemanticState'
+import { snappableCadEntities } from '../cad/renderGroups'
 import type { CadRoomCandidate } from '../cad/semanticTypes'
 
 /**
@@ -83,7 +84,7 @@ function loadStore(name: string, confirm = true): number {
   resetStore()
   const t0 = performance.now()
   s().setDxfData(parsed.entities, parsed.bbox, parsed.suggestedScaleImperial, parsed.cadUnit,
-    { sourceName: name, unitsConfidence: parsed.unitsConfidence ?? 'unknown', diagnostics: parsed.diagnostics ?? [] }, parsed.blockReferences)
+    { sourceName: name, unitsConfidence: parsed.unitsConfidence ?? 'unknown', diagnostics: parsed.diagnostics ?? [] }, parsed.blockReferences, parsed.hiddenLayers)
   const ms = performance.now() - t0
   if (confirm && s().project.cadUnitsConfirmed !== true) useProjectStore.setState({ project: { ...s().project, cadUnitsConfirmed: true } })
   return ms
@@ -456,9 +457,19 @@ describe('corpus: noise-dim-hatch-spline-paper (dimensions, hatches, spline, XDA
     expect(d).toHaveLength(1)
     expect(d[0].message).toContain(`${t.paperSpace!.layout1Entities} paper-space`)
   })
-  gap('KNOWN GAP: geometry on frozen / off layers is imported as if visible — layer flags (group 70 bit 1, negative colour) are ignored', () => {
+  it('frozen (70 bit 1) and off (negative colour) layers are imported but hidden by default, and kept out of recognition', () => {
     const { parsed } = load(name)
-    expect(parsed.entities.filter(e => t.hiddenLayers!.includes(e.layer ?? ''))).toHaveLength(0)
+    // Manifest ground truth counts hidden-layer entities as drawn entities: they are still imported (count test above).
+    expect(parsed.entities.filter(e => t.hiddenLayers!.includes(e.layer ?? ''))).toHaveLength(t.hiddenLayerEntityCount!)
+    expect(parsed.hiddenLayers).toEqual([...t.hiddenLayers!].sort())
+    loadStore(name)
+    for (const layer of t.hiddenLayers!) {
+      expect(s().dxfLayers[layer], layer).toMatchObject({ visible: false, sourceHidden: true })
+      expect(snappableCadEntities(s().dxfEntities, s().dxfLayers).some(e => e.layer === layer), `${layer} snappable`).toBe(false)
+    }
+    expect(s().dxfLayers['A-WALL']?.visible).toBe(true)
+    s().setDxfLayerVisibility('A-FRZ', true)
+    expect(snappableCadEntities(s().dxfEntities, s().dxfLayers).some(e => e.layer === 'A-FRZ')).toBe(true)
   })
   it('XDATA, the second layout and its viewport do not disturb the import (no malformed/limit diagnostics)', () => {
     const codes = (load(name).parsed.diagnostics ?? []).map(d => d.code)

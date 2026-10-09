@@ -168,6 +168,8 @@ export interface DxfLayerInfo {
   color?: string;
   visible: boolean;
   count: number;
+  /** The source drawing froze / switched off this layer. While it is also not visible its entities stay out of CAD recognition. */
+  sourceHidden?: boolean;
 }
 
 export interface AnnotationVisibility {
@@ -297,7 +299,7 @@ interface ProjectState {
   setHighlightedEntityTag: (tag: string | null) => void;
   addTempPoint: (x: number, y: number) => void;
   clearTempPoints: () => void;
-  setDxfData: (entities: DxfEntity[], bbox: BoundingBox, suggestedScale?: number, cadUnit?: 'mm' | 'cm' | 'm' | 'in' | 'ft', metadata?:CadImportMetadata, blockReferences?: CadBlockReference[]) => void;
+  setDxfData: (entities: DxfEntity[], bbox: BoundingBox, suggestedScale?: number, cadUnit?: 'mm' | 'cm' | 'm' | 'in' | 'ft', metadata?:CadImportMetadata, blockReferences?: CadBlockReference[], hiddenLayers?: string[]) => void;
   /** Set (or with null clear) the user's role for a layer, then refresh opening/obstacle suggestions. */
   setCadLayerRole: (layer: string, role: CadLayerRole | null) => CadActionResult;
   approveCadOpening: (id: string) => CadActionResult;
@@ -366,6 +368,32 @@ const MAX_AUTO_DEPLOY_ATTEMPTS = 5;
 
 const unitsPerFootOf = (project: ProjectMetadata): number =>
   project.units === 'metric' ? project.scale * METERS_PER_FOOT : project.scale;
+
+/**
+ * Entities CAD recognition may read: everything except geometry on a layer the source froze / switched off and the
+ * user has not shown. Showing such a layer (setDxfLayerVisibility) brings it back into recognition.
+ */
+const recognitionEntities = (entities: DxfEntity[], layers: Record<string, DxfLayerInfo>): DxfEntity[] => {
+  const hidden = Object.values(layers).filter(l => l.sourceHidden && !l.visible).map(l => l.name);
+  if (!hidden.length) return entities;
+  const set = new Set(hidden);
+  return entities.filter(e => !set.has(e.layer ?? '0'));
+};
+
+/**
+ * A layer the source froze / switched off was shown or hidden again: re-run CAD recognition so its geometry joins or
+ * leaves the candidates. Existing user decisions are carried over by the recogniser (`prior`). Nothing changes when no
+ * source-hidden layer's visibility moved, so ordinary show / hide toggles never touch the review state.
+ */
+function refreshSemanticsForVisibility(state: ProjectState, layers: Record<string, DxfLayerInfo>): Partial<ProjectState> {
+  const moved = Object.values(layers).some(l => l.sourceHidden && state.dxfLayers[l.name]?.visible !== l.visible);
+  if (!moved) return {};
+  const semantics = recognizeCadSemantics({ entities: recognitionEntities(state.dxfEntities, layers), bbox: state.dxfBoundingBox, blockReferences: state.cadBlockReferences,
+    unitsPerFoot: unitsPerFootOf(state.project), level: state.cadLevel, overrides: state.cadLayerRoles.overrides, suggestions: state.cadLayerRoles.suggestions,
+    prior: { openings: state.cadOpenings, obstacles: state.cadObstacles } });
+  return { cadLayerRoles: semantics.layerRoles, cadOpenings: semantics.openings, cadObstacles: semantics.obstacles,
+    zones: syncZoneObstacles(state.zones, semantics.obstacles, unitsPerFootOf(state.project)) };
+}
 
 const captureCad = (s: ProjectState): CadSemanticSnapshot => ({
   layerRoles: s.cadLayerRoles, openings: s.cadOpenings, obstacles: s.cadObstacles, level: s.cadLevel
@@ -495,7 +523,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const level=cadLevel??0;
       // Suggestions are recomputed from the entities. Documents saved before CAD review decisions existed
       // (version 1) get fresh review-required suggestions and no approvals.
-      const semantics=recognizeCadSemantics({entities:restored.dxfEntities,bbox:restored.dxfBoundingBox,
+      const semantics=recognizeCadSemantics({entities:recognitionEntities(restored.dxfEntities,restored.dxfLayers),bbox:restored.dxfBoundingBox,
         unitsPerFoot:unitsPerFootOf(restored.project),level,overrides:cadLayerOverrides??{}});
       const restoredCadObstacles=cadObstacles??semantics.obstacles;
       // Zone obstacles are derived data: rebuild them from the approved CAD obstacles instead of trusting the file.
@@ -523,7 +551,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const state=get();
       if(state.project.cadUnitsConfirmed===false) throw new Error('Confirm CAD units before recognizing rooms.');
       const basis=buildRoomRecognitionBasis(state);
-      return {success:true,result:recognizeCadRooms(state.dxfEntities,basis.options),sourceCadRevision:JSON.stringify(state.dxfEntities),
+      return {success:true,result:recognizeCadRooms(recognitionEntities(state.dxfEntities,state.dxfLayers),basis.options),sourceCadRevision:JSON.stringify(state.dxfEntities),
         drawingUnitsPerFoot:basis.options.drawingUnitsPerFoot,recognitionContext:basis.context,level:state.cadLevel,
         wallLayers:basis.wallLayers,approvedOpeningIds:basis.approvedOpeningIds};
     } catch(error) {return {success:false,error:error instanceof Error?error.message:'Room recognition failed.'};}
@@ -738,7 +766,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   offsetZoneEdge: (id, edgeIndex, distance) => applyZoneOutlineEdit(set, get, id, `Offset edge ${edgeIndex}`, z => offsetEdge(z.points, edgeIndex, distance)),
   clearTempPoints: () => set({ tempPoints: [] }),
   
-  setDxfData: (entities, bbox, suggestedScale, cadUnit, metadata, blockReferences) => {
+  setDxfData: (entities, bbox, suggestedScale, cadUnit, metadata, blockReferences, hiddenLayers) => {
+    const sourceHidden = new Set(hiddenLayers ?? []);
     const layers: Record<string, DxfLayerInfo> = Object.create(null);
     const autoColors = ['#94a3b8', '#38bdf8', '#34d399', '#fbbf24', '#f87171', '#c084fc', '#f472b6', '#a78bfa', '#4ade80'];
     let colorIdx = 0;
@@ -749,8 +778,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         layers[layerName] = {
           name: layerName,
           color: ent.color || autoColors[colorIdx % autoColors.length],
-          visible: true,
-          count: 0
+          visible: !sourceHidden.has(layerName),
+          count: 0,
+          ...(sourceHidden.has(layerName) ? { sourceHidden: true } : {})
         };
         colorIdx++;
       }
@@ -764,7 +794,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         ...(metadata?{cadUnitsConfirmed:unitsAutoConfirmed(metadata)}:{}),
         ...(suggestedScale!==undefined||cadUnit||metadata?{cadScaleProvenance:undefined}:{})};
       // A new drawing starts a fresh review: no inherited overrides, decisions or level.
-      const semantics=recognizeCadSemantics({entities,bbox,blockReferences,unitsPerFoot:unitsPerFootOf(project),level:0,overrides:{}});
+      const semantics=recognizeCadSemantics({entities:recognitionEntities(entities,layers),bbox,blockReferences,unitsPerFoot:unitsPerFootOf(project),level:0,overrides:{}});
       return {
       dxfEntities: entities,
       dxfBoundingBox: bbox,
@@ -793,7 +823,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if(role!==null && !(CAD_LAYER_ROLES as readonly string[]).includes(role)) return {success:false,error:'Unsupported layer role.'};
     const overrides={...state.cadLayerRoles.overrides};
     if(role===null) delete overrides[layer]; else overrides[layer]=role;
-    const semantics=recognizeCadSemantics({entities:state.dxfEntities,bbox:state.dxfBoundingBox,blockReferences:state.cadBlockReferences,
+    const semantics=recognizeCadSemantics({entities:recognitionEntities(state.dxfEntities,state.dxfLayers),bbox:state.dxfBoundingBox,blockReferences:state.cadBlockReferences,
       unitsPerFoot:unitsPerFootOf(state.project),level:state.cadLevel,overrides,suggestions:state.cadLayerRoles.suggestions,
       prior:{openings:state.cadOpenings,obstacles:state.cadObstacles}});
     set({cadLayerRoles:semantics.layerRoles,cadOpenings:semantics.openings,cadObstacles:semantics.obstacles,
@@ -847,7 +877,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const state=get();
     if(typeof level!=='number' || !Number.isFinite(level)) return {success:false,error:'Level must be a finite elevation.'};
     if(level===state.cadLevel) return {success:true};
-    const semantics=recognizeCadSemantics({entities:state.dxfEntities,bbox:state.dxfBoundingBox,blockReferences:state.cadBlockReferences,
+    const semantics=recognizeCadSemantics({entities:recognitionEntities(state.dxfEntities,state.dxfLayers),bbox:state.dxfBoundingBox,blockReferences:state.cadBlockReferences,
       unitsPerFoot:unitsPerFootOf(state.project),level,overrides:state.cadLayerRoles.overrides,suggestions:state.cadLayerRoles.suggestions,
       prior:{openings:state.cadOpenings,obstacles:state.cadObstacles}});
     set({cadLevel:level,cadOpenings:semantics.openings,cadObstacles:semantics.obstacles,activePreview:null,
@@ -855,22 +885,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     return {success:true};
   },
 
-  setDxfLayerVisibility: (layerName, visible) => set((state) => ({
-    dxfLayers: {
-      ...state.dxfLayers,
-      [layerName]: {
-        ...state.dxfLayers[layerName],
-        visible
-      }
-    }
-  })),
+  setDxfLayerVisibility: (layerName, visible) => set((state) => {
+    const dxfLayers = { ...state.dxfLayers, [layerName]: { ...state.dxfLayers[layerName], visible } };
+    return { dxfLayers, ...refreshSemanticsForVisibility(state, dxfLayers) };
+  }),
 
   toggleAllDxfLayers: (visible) => set((state) => {
     const updated: Record<string, DxfLayerInfo> = {};
     for (const [name, info] of Object.entries(state.dxfLayers)) {
       updated[name] = { ...info, visible };
     }
-    return { dxfLayers: updated };
+    return { dxfLayers: updated, ...refreshSemanticsForVisibility(state, updated) };
   }),
 
   setAnnotationVisibility: (key, visible) => set((state) => ({
