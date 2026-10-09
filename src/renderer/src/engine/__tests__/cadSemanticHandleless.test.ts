@@ -52,7 +52,7 @@ describe('rescaling decided items', async () => {
     expect(second.openings).toHaveLength(1)
     expect(second.openings[0]).toMatchObject({ id: decided.id, status: 'approved' })
   })
-  it('at the same scale the new kind is still suggested separately (ids are stable, no object matching)', () => {
+  it('at the same scale a decided opening is kept and no duplicate is suggested (stable ids)', () => {
     const first = recognizeCadSemantics({ ...common, unitsPerFoot: 1 })
     const decided = { ...first.openings[0], status: 'approved' as const }
     const second = recognizeCadSemantics({ ...common, unitsPerFoot: 1, prior: { openings: [decided], obstacles: [] } })
