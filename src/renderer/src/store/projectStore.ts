@@ -6,6 +6,8 @@ import { convertProjectDisplayUnits } from '../engine/project/unitConversion';
 import { parseProjectDocument } from '../engine/project/projectSerialization';
 import type { CadImportDiagnostic } from '../engine/dxfParser';
 import type { CadRoomCandidate, CadLayerRole, CadBlockReference } from '../engine/cad/semanticTypes';
+import { unitsAutoConfirmed } from '../engine/cad/unitsDecision';
+import { calibrateDrawingScale, type CadKnownUnit } from '../engine/dxfParser';
 import { CAD_LAYER_ROLES } from '../engine/cad/layerClassification';
 import {
   EMPTY_LAYER_ROLES,
@@ -194,6 +196,8 @@ export interface ProjectMetadata {
   scale: number; // Drawing units per foot (imperial) or per meter (metric)
   cadUnit?: 'mm' | 'cm' | 'm' | 'in' | 'ft' | 'custom';
   cadUnitsConfirmed?: boolean;
+  /** Set when the scale came from picked points and a known length rather than from the file header. */
+  cadScaleProvenance?: 'user-calibrated';
   equipmentScale?: number; // Visual equipment symbol scale multiplier (0.5x to 5.0x)
   units: 'imperial' | 'metric';
   outdoorDb: number;
@@ -266,6 +270,8 @@ interface ProjectState {
   approveCadObstacle: (id: string, clearanceFt: number) => CadActionResult;
   rejectCadObstacle: (id: string) => CadActionResult;
   setCadLevel: (level: number) => CadActionResult;
+  /** Derive the drawing scale from two picked points and a known real length; confirms units. */
+  calibrateScaleFromPoints: (p1: { x: number; y: number }, p2: { x: number; y: number }, knownLength: number, knownUnit: CadKnownUnit) => CadActionResult;
   clearDxfData: () => void;
   setDxfLayerVisibility: (layerName: string, visible: boolean) => void;
   toggleAllDxfLayers: (visible: boolean) => void;
@@ -368,7 +374,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   setProject: (meta) => set((state) => {
     const converted=convertProjectDisplayUnits(state.project,state.zones,meta.units??state.project.units);
-    const project = { ...converted.project, ...meta };
+    // A hand-edited scale or unit no longer is the calibrated one.
+    const dropProvenance=(meta.scale!==undefined||meta.cadUnit!==undefined)&&meta.cadScaleProvenance===undefined;
+    const project = { ...converted.project, ...meta, ...(dropProvenance?{cadScaleProvenance:undefined}:{}) };
     return { project, activePreview: null, zones: converted.zones.map(zone => {
       const evaluation = calculateZoneLoadSafely(zone, project);
       return { ...zone, engineeringStatus: evaluation.error ? 'blocked' as const : 'stale' as const,
@@ -599,7 +607,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const project={...state.project,
         ...(suggestedScale!==undefined?{scale:suggestedScale}:{}),
         ...(cadUnit?{cadUnit}:{}),
-        ...(metadata?{cadUnitsConfirmed:metadata.unitsConfidence==='declared'}:{})};
+        ...(metadata?{cadUnitsConfirmed:unitsAutoConfirmed(metadata)}:{}),
+        ...(suggestedScale!==undefined||cadUnit||metadata?{cadScaleProvenance:undefined}:{})};
       // A new drawing starts a fresh review: no inherited overrides, decisions or level.
       const semantics=recognizeCadSemantics({entities,bbox,blockReferences,unitsPerFoot:unitsPerFootOf(project),level:0,overrides:{}});
       return {
@@ -658,6 +667,23 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     });
     set({cadObstacles,undoStack:[...state.undoStack,makeSnapshot(state,`Rejected CAD obstacle ${id}`,true)],redoStack:[]});
     return {success:true};
+  },
+
+  calibrateScaleFromPoints: (p1, p2, knownLength, knownUnit) => {
+    try {
+      const state=get();
+      const unitsPerFoot=calibrateDrawingScale(p1,p2,knownLength,knownUnit);
+      const scale=state.project.units==='metric'?unitsPerFoot/METERS_PER_FOOT:unitsPerFoot;
+      requirePositive('Drawing scale',scale);
+      const project:ProjectMetadata={...state.project,scale,cadUnit:'custom',cadUnitsConfirmed:true,cadScaleProvenance:'user-calibrated'};
+      set({project,activePreview:null,
+        zones:state.zones.map(zone=>{
+          const evaluation=calculateZoneLoadSafely(zone,project);
+          return {...zone,engineeringStatus:evaluation.error?'blocked' as const:'stale' as const,engineeringError:evaluation.error,engineeringNotice:undefined};
+        }),
+        undoStack:[...state.undoStack,makeSnapshot(state,`Calibrated drawing scale to ${unitsPerFoot.toPrecision(6)} units/ft`,false)],redoStack:[]});
+      return {success:true};
+    } catch(error) {return {success:false,error:error instanceof Error?error.message:'Scale calibration failed.'};}
   },
 
   setCadLevel: (level) => {

@@ -4,6 +4,7 @@ import { measureSimplePolygon, requireNonnegative, requirePositive } from '../en
 import { calculateZoneLoadSafely } from '../loadCalc';
 import { validateCadEntity, getCadEntityBounds } from '../cad/nativeGeometry';
 import {resolveStandardsSelection} from '../standards/profileRegistry';
+import {unitsAutoConfirmed} from '../cad/unitsDecision';
 import {CAD_LAYER_ROLES} from '../cad/layerClassification';
 import type {CadLayerOverrides,CadLayerRole} from '../cad/semanticTypes';
 import type {StoredCadOpening,StoredCadObstacle} from '../cad/cadSemanticState';
@@ -187,13 +188,14 @@ function validateState(value:unknown):PersistedProjectState {
   const data=object(value,'Project');
   const project={...object(data.project,'Project metadata')} as unknown as ProjectMetadata;
   const cadImport=data.cadImport===undefined?undefined:validateCadImport(data.cadImport);
-  if(cadImport && cadImport.unitsConfidence!=='declared' && project.cadUnitsConfirmed!==true)project.cadUnitsConfirmed=false;
+  if(cadImport && !unitsAutoConfirmed(cadImport) && project.cadUnitsConfirmed!==true)project.cadUnitsConfirmed=false;
   text(project.name,'Project name');text(project.location,'Project location');
   if(project.standardsSelection!==undefined)resolveStandardsSelection(project.standardsSelection);
   if(project.units!=='imperial' && project.units!=='metric') throw new TypeError('Unsupported project unit system');
   requirePositive('Drawing scale',finite(project.scale,'Drawing scale'));
   finite(project.outdoorDb,'Outdoor temperature');finite(project.indoorDb,'Indoor temperature');
   if(project.cadUnit!==undefined && !['mm','cm','m','in','ft','custom'].includes(project.cadUnit)) throw new TypeError('Unsupported CAD units');
+  if(project.cadScaleProvenance!==undefined && project.cadScaleProvenance!=='user-calibrated') throw new TypeError('Unsupported CAD scale provenance');
   if(project.cadUnitsConfirmed!==undefined && typeof project.cadUnitsConfirmed!=='boolean') throw new TypeError('CAD unit confirmation must be boolean');
   const ids=new Set<string>();
   const zones=array(data.zones,'Zones').map((value,index)=>{
