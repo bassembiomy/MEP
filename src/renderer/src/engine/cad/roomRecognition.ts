@@ -24,6 +24,9 @@ const mergeSources = (a: Source[], b: Source[]): Source[] => [
   ...new Map([...a, ...b].map((s) => [sourceKey(s), s])).values()
 ]
 const WORK_LIMIT = 200_000
+const APPROVED_OPENING_SNAP_FT = 0.75
+const APPROVED_OPENING_LAYER = '(approved opening)'
+const isOpeningSource = (s: Source): boolean => s.layer === APPROVED_OPENING_LAYER
 class RecognitionBudgetExceeded extends Error {}
 
 function signedArea(points: Point[]): number {
@@ -147,6 +150,9 @@ export function recognizeCadRooms(
       return
     }
     const key = canonicalRing(polygon)
+    const openingSources = sources.filter(isOpeningSource)
+    sources = sources.filter((s) => !isOpeningSource(s))
+    const openingNotes = [...new Set(openingSources.map((s) => s.handle.slice('opening:'.length)))].sort()
     const previous = candidates.get(key)
     if (previous) {
       previous.sourceHandles = [
@@ -168,6 +174,10 @@ export function recognizeCadRooms(
       unresolvedConditions.push(
         'Native curved boundary is sampled: polygon area is approximate, not the true curved area. Review the source geometry and sampling tolerance/cap.'
       )
+    if (openingNotes.length)
+      unresolvedConditions.push(
+        `Boundary is closed across user-approved opening(s) ${openingNotes.join(', ')}; the room is only enclosed while those openings stay approved.`
+      )
     candidates.set(key, {
       // Store the canonical ring itself: collision-free and stable across source duplicates and traversal direction.
       id: `cad-room:${key}`,
@@ -184,7 +194,8 @@ export function recognizeCadRooms(
           : 'Closed native polyline boundary.',
         approximate
           ? 'Native bulges sampled at requested 0.01 ft sagitta, subject to segment cap.'
-          : 'Simple polygon geometry validated in canonical feet.'
+          : 'Simple polygon geometry validated in canonical feet.',
+        ...openingNotes.map((id) => `Gap closed by approved opening ${id}.`)
       ],
       unresolvedConditions
     })
@@ -258,6 +269,45 @@ export function recognizeCadRooms(
     for (const boundary of direct)
       addCandidate(normalize(boundary.points), boundary.sources, boundary.approximate, false)
 
+    // Only user-approved openings may close a gap. Both ends must snap to existing wall endpoints.
+    const approvedIds = new Map<string, string>()
+    for (const opening of options.approvedOpenings ?? []) {
+      const ends = [opening.a, opening.b]
+      if (!origin || !ends.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))) {
+        diagnostic('approved-opening-not-in-gap', `Approved opening ${opening.id} has no wall geometry to attach to.`)
+        continue
+      }
+      const snapped = ends.map((p) => {
+        const target = { x: (p.x - origin!.x) / scale, y: (p.y - origin!.y) / scale }
+        let best: Point | undefined,
+          bestDistance = APPROVED_OPENING_SNAP_FT
+        for (const seg of segments)
+          for (const end of [seg.a, seg.b]) {
+            spend()
+            const d = distance(end, target)
+            if (d <= bestDistance) {
+              best = end
+              bestDistance = d
+            }
+          }
+        return best
+      })
+      if (!snapped[0] || !snapped[1] || distance(snapped[0], snapped[1]) <= tolerance) {
+        diagnostic(
+          'approved-opening-not-in-gap',
+          `Approved opening ${opening.id} does not span a gap between two wall endpoints; the boundary stays open there.`
+        )
+        continue
+      }
+      const key = `opening:${opening.id}`
+      approvedIds.set(key, opening.id)
+      segments.push({
+        a: snapped[0],
+        b: snapped[1],
+        cuts: [0, 1],
+        sources: [{ handle: key, layer: APPROVED_OPENING_LAYER }]
+      })
+    }
     // Sweep the x bounds, with a strict pair-work cap even for pathological coincident geometry.
     segments.sort((a, b) => Math.min(a.a.x, a.b.x) - Math.min(b.a.x, b.b.x))
     const addProjection = (point: Point, s: Segment): void => {

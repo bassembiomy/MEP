@@ -27,6 +27,11 @@ export interface CadRoomRecognitionOptions {
   endpointToleranceFt?: number
   minAreaSqFt?: number
   maxSegments?: number
+  /**
+   * Openings the user approved. Only an approved opening whose ends both sit on wall endpoints
+   * (within 0.75 ft) closes that gap; suggested openings never do.
+   */
+  approvedOpenings?: CadApprovedOpening[]
 }
 
 export interface CadRoomRecognitionResult {
@@ -64,3 +69,52 @@ export interface CadLayerClassification {
 
 /** Persistable user decisions: layer name -> role. Plain JSON. */
 export type CadLayerOverrides = Record<string, CadLayerRole>
+
+/** A block INSERT kept as a semantic object. All coordinates are canvas coordinates (Y already reflected). */
+export interface CadBlockReference {
+  handle: string
+  name: string
+  layer: string
+  /** The block base point after all (nested) transforms. */
+  insertion: { x: number; y: number }
+  /**
+   * Placement decomposed from the composed transform. Convention: scaleX > 0 and scaleY carries the
+   * sign, so a mirrored insert reports a negative scaleY (and `mirrored: true`) with the matching rotation.
+   */
+  rotationDeg: number
+  scaleX: number
+  scaleY: number
+  mirrored: boolean
+  /** Union of the exploded children's bounds (nested children included). */
+  bounds: { minX: number; maxX: number; minY: number; maxY: number }
+  /** Half-open index range [start, end) of the exploded child entities in the parsed `entities` array. */
+  entityRange: [number, number]
+  nestingDepth: number
+}
+
+export type CadOpeningKind = 'door' | 'window' | 'opening'
+
+export interface CadOpeningCandidate {
+  id: string
+  kind: CadOpeningKind
+  origin: 'block' | 'arc-in-gap' | 'wall-gap' | 'parallel-lines'
+  /** Midpoint of the opening span, canvas coordinates. */
+  center: { x: number; y: number }
+  /** The line the opening occupies in the wall (hinge to latch for doors), canvas coordinates. */
+  span: { a: { x: number; y: number }; b: { x: number; y: number } }
+  widthFt: number
+  hostWall?: { handle: string; layer: string; a: { x: number; y: number }; b: { x: number; y: number } }
+  adjacentRoomIds: string[]
+  sourceHandles: string[]
+  blockName?: string
+  confidence: number
+  evidence: string[]
+  status: 'review-required'
+}
+
+/** An opening the user has explicitly approved. Only these may close a wall gap in room recognition. */
+export interface CadApprovedOpening {
+  id: string
+  a: { x: number; y: number }
+  b: { x: number; y: number }
+}

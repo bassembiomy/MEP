@@ -7,6 +7,8 @@ import {
   type ParsedDxf
 } from '../dxfParser'
 import { getCadEntityBounds, transformCadEntity, validateCadEntity } from './nativeGeometry'
+import { describeInsertTransform } from './blockReferences'
+import type { CadBlockReference } from './semanticTypes'
 
 type Point = { x: number; y: number; z?: number }
 type Matrix = { a: number; b: number; c: number; d: number; tx: number; ty: number }
@@ -87,6 +89,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
       : {}
   const diagnostics: CadImportDiagnostic[] = []
   const entities: DxfEntity[] = []
+  const blockReferences: CadBlockReference[] = []
   const bbox: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
   const blocks = new Map<string, RawEntity>()
   const ambiguousBlocks = new Set<string>()
@@ -428,6 +431,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           diagnose(raw, 'invalid-geometry', 'Composed block transform is nonfinite.', 'error')
           continue
         }
+        const childStart = entities.length
         extract(
           block.entities,
           composed,
@@ -435,6 +439,29 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           raw.name,
           raw.layer && raw.layer !== '0' ? raw.layer : inheritedLayer
         )
+        const placement = describeInsertTransform(composed, { x: base.x, y: -base.y })
+        const childBounds: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
+        for (let k = childStart; k < entities.length; k++) {
+          const b = getCadEntityBounds(entities[k])
+          childBounds.minX = Math.min(childBounds.minX, b.minX)
+          childBounds.maxX = Math.max(childBounds.maxX, b.maxX)
+          childBounds.minY = Math.min(childBounds.minY, b.minY)
+          childBounds.maxY = Math.max(childBounds.maxY, b.maxY)
+        }
+        if (entities.length === childStart)
+          Object.assign(childBounds, {
+            minX: placement.insertion.x, maxX: placement.insertion.x,
+            minY: placement.insertion.y, maxY: placement.insertion.y
+          })
+        blockReferences.push({
+          handle: raw.handle ?? `INSERT:${raw.name}:${blockReferences.length}`,
+          name: raw.name!,
+          layer: raw.layer && raw.layer !== '0' ? raw.layer : (inheritedLayer ?? '0'),
+          ...placement,
+          bounds: childBounds,
+          entityRange: [childStart, entities.length],
+          nestingDepth: ancestors.size
+        })
         continue
       }
       const converted = convert(raw)
@@ -502,6 +529,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
     entities,
     bbox: finalBbox,
     diagnostics,
+    blockReferences,
     insUnits,
     unitsConfidence: declared ? 'declared' : 'estimated',
     ...suggestion

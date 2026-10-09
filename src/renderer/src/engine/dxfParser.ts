@@ -1,6 +1,8 @@
 import type { DxfEntity, BoundingBox } from '../store/projectStore';
 import { getCadEntityBounds, transformCadEntity, validateCadEntity } from './cad/nativeGeometry';
 import type { CadAffineMatrix } from './cad/nativeGeometry';
+import type { CadBlockReference } from './cad/semanticTypes';
+import { describeInsertTransform } from './cad/blockReferences';
 
 export interface CadImportDiagnostic {
   code: string;
@@ -19,6 +21,8 @@ export interface ParsedDxf {
   suggestedScaleMetric?: number;
   diagnostics?: CadImportDiagnostic[];
   unitsConfidence?: 'declared' | 'estimated' | 'unknown';
+  /** INSERTs kept as semantic objects (their exploded children still appear in `entities`). */
+  blockReferences?: CadBlockReference[];
 }
 
 // Standard AutoCAD Color Index (ACI 1-9 & common palette) to HEX colors
@@ -107,7 +111,7 @@ function compose(p: CadAffineMatrix, q: CadAffineMatrix): CadAffineMatrix {
 
 /** Parses DXF records before resolving INSERTs. Empty values never shift code/value pairs. */
 export function parseDxfText(dxfText: string): ParsedDxf {
-  const diagnostics: CadImportDiagnostic[] = [], entities: DxfEntity[] = [];
+  const diagnostics: CadImportDiagnostic[] = [], entities: DxfEntity[] = [], blockReferences: CadBlockReference[] = [];
   const diagnose = (code: string, message: string, r?: DxfRecord, severity: 'warning' | 'error' = 'warning') => {
     if (diagnostics.length < 1000) diagnostics.push({ code, message, severity, entityType: r?.type, handle: r && first(r, 5) });
     else if (diagnostics.length === 1000) diagnostics.push({ code: 'DIAGNOSTIC_LIMIT', severity: 'error', message: 'Additional import diagnostics suppressed; drawing is incomplete.' });
@@ -213,7 +217,17 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         const local = { a: cs * sx, b: -sn * sx, c: sn * sy, d: cs * sy, tx: x, ty: y };
         local.tx -= local.a * child.baseX + local.c * child.baseY;
         local.ty -= local.b * child.baseX + local.d * child.baseY;
-        expand(child.records, compose(matrix, compose(ocs, local)), [...stack, name], layer, ownColor ?? inheritedColor, first(r, 5)?.trim() ?? insertHandle);
+        const composed = compose(matrix, compose(ocs, local)), childStart = entities.length;
+        expand(child.records, composed, [...stack, name], layer, ownColor ?? inheritedColor, first(r, 5)?.trim() ?? insertHandle);
+        const placement = describeInsertTransform(composed, { x: child.baseX, y: child.baseY });
+        const childBounds: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+        for (let k = childStart; k < entities.length; k++) {
+          const b = getCadEntityBounds(entities[k]);
+          childBounds.minX = Math.min(childBounds.minX, b.minX); childBounds.maxX = Math.max(childBounds.maxX, b.maxX);
+          childBounds.minY = Math.min(childBounds.minY, b.minY); childBounds.maxY = Math.max(childBounds.maxY, b.maxY);
+        }
+        if (entities.length === childStart) Object.assign(childBounds, { minX: placement.insertion.x, maxX: placement.insertion.x, minY: placement.insertion.y, maxY: placement.insertion.y });
+        blockReferences.push({ handle: first(r, 5)?.trim() ?? `INSERT:${[...stack, name].join('>')}:${index}`, name, layer, ...placement, bounds: childBounds, entityRange: [childStart, entities.length], nestingDepth: stack.length });
         if (expansionStopped) return;
         continue;
       }
@@ -306,5 +320,5 @@ export function parseDxfText(dxfText: string): ParsedDxf {
   if (!entities.length) Object.assign(bbox, { minX: 0, maxX: 500, minY: 0, maxY: 500 });
   const declared = cadUnitsFromInsUnits(insUnits);
   const suggestion = declared ?? suggestCadUnitsFromSpan(Math.max(bbox.maxX - bbox.minX, bbox.maxY - bbox.minY));
-  return { entities, bbox, insUnits, ...suggestion, diagnostics, unitsConfidence: declared ? 'declared' : entities.length ? 'estimated' : 'unknown' };
+  return { entities, bbox, insUnits, ...suggestion, diagnostics, blockReferences, unitsConfidence: declared ? 'declared' : entities.length ? 'estimated' : 'unknown' };
 }
