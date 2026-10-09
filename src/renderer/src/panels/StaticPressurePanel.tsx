@@ -254,7 +254,7 @@ export const StaticPressurePanel: React.FC = () => {
                           <div className="text-blue-300 font-medium">{item.proposedRemediation}</div>
                         )}
                         {item.warnings.length === 0 && !item.proposedRemediation && (
-                          <span className="text-neutral-600">Acoustically Compliant (Smooth Flow)</span>
+                          <span className="text-neutral-600">Within preliminary NC estimate</span>
                         )}
                       </td>
                     </tr>
@@ -284,7 +284,7 @@ export const StaticPressurePanel: React.FC = () => {
               <div>
                 <p className="text-xs font-bold">
                   {fanResult.isValid
-                    ? 'Fan Static Pressure Capability Verified'
+                    ? 'Fan pressure adequate (preliminary, bundled catalog curve)'
                     : 'Fan External Static Pressure Deficit'}
                 </p>
                 <p className="text-[11px] opacity-80 mt-0.5">

@@ -500,14 +500,14 @@ export function App(): React.JSX.Element {
                 <div className="bg-neutral-950/70 border border-neutral-800/80 p-4 rounded-2xl flex flex-col gap-2.5">
                   <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-300 uppercase tracking-wider">
                     <ShieldCheck size={14} className="text-teal-400" />
-                    Engineering Code Standards
+                    Reference methods (not compliance checks)
                   </div>
                   <div className="text-[11px] text-neutral-400 leading-relaxed space-y-1.5">
                     <p>
-                      <strong className="text-neutral-300">ASHRAE 62.1-2019:</strong> Breathing zone ventilation combined with sensible heat ratio.
+                      <strong className="text-neutral-300">ASHRAE 62.1-2019 (reference only):</strong> breathing-zone outdoor air rates; not checked against the normative text.
                     </p>
                     <p>
-                      <strong className="text-neutral-300">Equal Friction:</strong> 0.08 in. w.g. / 100 ft friction rate, velocity limits, and max 4:1 aspect ratio.
+                      <strong className="text-neutral-300">Equal Friction:</strong> 0.08–0.10 in. w.g./100 ft (simplified; actual fittings and accessories not modelled).
                     </p>
                   </div>
                 </div>

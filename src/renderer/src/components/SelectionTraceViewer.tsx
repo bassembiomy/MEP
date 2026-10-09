@@ -42,7 +42,7 @@ export const SelectionTraceViewer: React.FC<SelectionTraceViewerProps> = ({ trac
                   ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
                   : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
               }`}>
-                {trace.overallPassed ? 'ALL CRITERIA PASSED' : 'DEVIATIONS DETECTED'}
+                {trace.overallPassed ? 'ALL CHECKED CRITERIA PASSED (PRELIMINARY)' : 'DEVIATIONS DETECTED'}
               </span>
             </div>
             <p className="text-[10px] text-neutral-400 mt-0.5">{trace.engineeringRemarks}</p>
@@ -138,7 +138,7 @@ export const SelectionTraceViewer: React.FC<SelectionTraceViewerProps> = ({ trac
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 bg-neutral-950/60 p-2 rounded-lg border border-neutral-850/80">
                     <div className="flex items-center gap-1.5">
                       <ShieldCheck size={12} className="text-emerald-400 shrink-0" />
-                      <span className="text-neutral-400">Compliance Limit: <strong className="text-neutral-200 font-mono">{step.criteria}</strong></span>
+                      <span className="text-neutral-400">Criterion: <strong className="text-neutral-200 font-mono">{step.criteria}</strong></span>
                     </div>
                     {step.notes && (
                       <span className="text-neutral-400 italic text-[9px] sm:text-right">{step.notes}</span>

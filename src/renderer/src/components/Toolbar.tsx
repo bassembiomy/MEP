@@ -180,7 +180,7 @@ export const Toolbar: React.FC = () => {
 
       {/* CAD File Import */}
       <div className="flex flex-col gap-2">
-        <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">AutoCAD Drawing</label>
+        <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">CAD drawing (DXF / DWG)</label>
         <input
           type="file"
           ref={fileInputRef}

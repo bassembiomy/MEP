@@ -124,7 +124,7 @@ export const AiHvacAssistantModal: React.FC<AiHvacAssistantModalProps> = ({ isOp
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-bold text-neutral-100">AI HVAC Design Agent & Sizing Studio</h2>
                 <span className="bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">
-                  ASHRAE 62.1 & 55 Compliant
+                  Preliminary – not a code compliance check
                 </span>
               </div>
               <p className="text-xs text-neutral-400">

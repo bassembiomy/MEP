@@ -55,7 +55,7 @@ export const CadLayerManagerModal: React.FC<CadLayerManagerProps> = ({ isOpen, o
     { key: 'leaderCallout', label: 'Master Engineering Leader Tag', description: 'Top-right complete system breakdown callout box', icon: <Type size={13} className="text-yellow-400" /> },
     { key: 'zoneLabels', label: 'Zone Room Names & Total CFM', description: 'Room centroid title labels and design cooling loads', icon: <Type size={13} className="text-emerald-400" /> },
     { key: 'grid', label: 'CAD Background Grid Lines', description: '10ft / Metric coordinate background snaps', icon: <Grid size={13} className="text-neutral-400" /> },
-    { key: 'dxfText', label: 'DXF Native Text Entities', description: 'Text imported directly from the underlying CAD file', icon: <Type size={13} className="text-purple-400" /> },
+    { key: 'dxfText', label: 'Imported CAD text (DXF / DWG)', description: 'Text imported directly from the underlying CAD file', icon: <Type size={13} className="text-purple-400" /> },
   ];
 
   return (

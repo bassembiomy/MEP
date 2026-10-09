@@ -144,17 +144,17 @@ export const SystemComparisonTable: React.FC = () => {
   const isDefaultActive = loadedCatalogs && !loadedCatalogs.errors?.length;
   const isCustomActive = loadedCatalogs && loadedCatalogs.errors?.length && (loadedCatalogs.decorative || loadedCatalogs.ducted);
 
-  let catalogStatusLabel = 'Demo Catalog Active';
+  let catalogStatusLabel = 'Built-in demo catalog (unverified data)';
   let catalogStatusColor = 'bg-neutral-800 text-neutral-400 border-neutral-700';
 
   if (customLoaded) {
-    catalogStatusLabel = 'Custom Catalogs Active';
+    catalogStatusLabel = 'Custom catalogs loaded (not used for recommendations)';
     catalogStatusColor = 'bg-blue-500/10 text-blue-400 border-blue-500/20';
   } else if (isDefaultActive) {
-    catalogStatusLabel = 'Cairo HVAC Catalogs Active';
+    catalogStatusLabel = 'Cairo catalogs loaded (not used for recommendations)';
     catalogStatusColor = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
   } else if (isCustomActive) {
-    catalogStatusLabel = 'Custom Catalogs Active';
+    catalogStatusLabel = 'Custom catalogs loaded (not used for recommendations)';
     catalogStatusColor = 'bg-blue-500/10 text-blue-400 border-blue-500/20';
   }
 
@@ -201,7 +201,7 @@ export const SystemComparisonTable: React.FC = () => {
 
       {catalogNotices.length > 0 && (
         <div role="status" className="text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5">
-          <strong>Default catalogs not fully loaded; using the built-in demo catalog where missing.</strong>
+          <strong>Default catalogs not fully loaded; recommendations always use the built-in demo catalog.</strong>
           <ul className="list-disc list-inside mt-1 break-words">
             {catalogNotices.map((n, i) => <li key={i}>{n}</li>)}
           </ul>

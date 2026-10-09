@@ -289,7 +289,7 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
         {/* Footer */}
         <div className="p-4 border-t border-neutral-800 bg-neutral-950 flex justify-between items-center">
           <span className="text-[10px] text-neutral-500">
-            Generated according to ASHRAE Handbook of Fundamentals & SMACNA HVAC Standards
+            Preliminary estimate using simplified methods referenced to ASHRAE Fundamentals and SMACNA; not a compliance check
           </span>
           <button
             onClick={onClose}

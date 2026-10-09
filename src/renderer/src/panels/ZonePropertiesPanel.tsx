@@ -268,7 +268,7 @@ export const ZonePropertiesPanel: React.FC = () => {
                 <AlertTriangle size={13} className="text-red-400" />
               )}
               <span className="font-bold">
-                {!hasAcousticFailure ? 'PASS (Acoustically Compliant)' : 'REQUIRES REDESIGN'}
+                {!hasAcousticFailure ? 'PASS (preliminary NC estimate)' : 'REQUIRES REDESIGN'}
               </span>
             </div>
             <span className="font-mono text-[9px] opacity-80">
