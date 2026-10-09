@@ -41,7 +41,8 @@ export const FloorPlanCanvas: React.FC = () => {
     activePreview,
     highlightedDuctId,
     highlightedEntityTag,
-    cadLevel
+    cadLevel,
+    drawingOrigin
   } = useProjectStore();
 
   const stageRef = useRef<Konva.Stage>(null);
@@ -253,6 +254,23 @@ export const FloorPlanCanvas: React.FC = () => {
   }, [selectedZoneId, zones, handleFitDesign]);
 
   const hasAutoFittedRef = useRef<boolean>(false);
+
+  // The drawing origin moved (a new import in another coordinate frame): every stored coordinate shifted by (old - new), so
+  // pan the stage the opposite way and the same part of the drawing stays in view. Picks made in the old frame are dropped.
+  // Declared before the auto-fit effect so the first import (which is fitted from the local bbox) is not shifted.
+  const prevOriginRef = useRef(drawingOrigin);
+  const stageScaleRef = useRef(stageScale);
+  stageScaleRef.current = stageScale;
+  useEffect(() => {
+    const prev = prevOriginRef.current;
+    if (prev.x === drawingOrigin.x && prev.y === drawingOrigin.y) return;
+    prevOriginRef.current = drawingOrigin;
+    if (hasAutoFittedRef.current) {
+      const k = stageScaleRef.current;
+      setStagePos((pos) => ({ x: pos.x - (prev.x - drawingOrigin.x) * k, y: pos.y - (prev.y - drawingOrigin.y) * k }));
+    }
+    setMeasurePoints([]); setMeasureInput(''); setDrawMessage(null); setIsPanning(false);
+  }, [drawingOrigin]);
 
   // Auto-fit ONLY on initial mount or when a new CAD drawing/bounding box is loaded
   useEffect(() => {
