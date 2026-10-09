@@ -30,6 +30,10 @@ const NUMBER_ONLY = /^[\d\s.,+\-'"]+$/
 /** Door / window tags such as D01, D-1, W2, W12A. */
 const OPENING_TAG = /^[DW]\s?-?\d{1,3}[A-Z]?$/i
 const APPROVED_OPENING_SNAP_FT = 0.75
+/** Parallel-ness / span tolerance for pairing the two faces of a double-line wall at an approved opening. */
+const JAMB_PAIR_TOLERANCE_FT = 0.05
+/** Faces whose mean width (2 x area / perimeter) is below this are wall bodies, not rooms. */
+const WALL_BODY_MAX_WIDTH_FT = 1
 const APPROVED_OPENING_LAYER = '(approved opening)'
 const isOpeningSource = (s: Source): boolean => s.layer === APPROVED_OPENING_LAYER
 class RecognitionBudgetExceeded extends Error {}
@@ -152,6 +156,17 @@ export function recognizeCadRooms(
         `Boundary area ${area.toFixed(3)} ft² is below the ${minimumArea} ft² room threshold.`
       )
       return
+    }
+    if (graph) {
+      let perimeter = 0
+      for (let i = 0; i < points.length; i++) perimeter += distance(points[i], points[(i + 1) % points.length])
+      if ((2 * area) / perimeter < WALL_BODY_MAX_WIDTH_FT) {
+        diagnostic(
+          'wall-body-excluded',
+          `A ${area.toFixed(1)} ft² face with a mean width of ${((2 * area) / perimeter).toFixed(2)} ft (under ${WALL_BODY_MAX_WIDTH_FT} ft) is the body of a wall between its two face lines, not a room; it was not proposed.`
+        )
+        return
+      }
     }
     const polygon = points.flatMap((p) => [origin!.x + p.x * scale, origin!.y + p.y * scale])
     if (!polygon.every(Number.isFinite)) {
@@ -289,22 +304,26 @@ export function recognizeCadRooms(
         diagnostic('approved-opening-not-in-gap', `Approved opening ${opening.id} has no wall geometry to attach to.`)
         continue
       }
-      const snapped = ends.map((p) => {
-        const target = { x: (p.x - origin!.x) / scale, y: (p.y - origin!.y) / scale }
+      // Every wall endpoint within the snap radius of each opening end (deduplicated by tolerance).
+      const targets = ends.map((p) => ({ x: (p.x - origin!.x) / scale, y: (p.y - origin!.y) / scale }))
+      const near = targets.map((target) => {
         let best: Point | undefined,
           bestDistance = APPROVED_OPENING_SNAP_FT
+        const all: Point[] = []
         for (const seg of segments)
           for (const end of [seg.a, seg.b]) {
             spend()
             const d = distance(end, target)
+            if (d > APPROVED_OPENING_SNAP_FT) continue
+            if (!all.some((q) => distance(q, end) <= tolerance)) all.push(end)
             if (d <= bestDistance) {
               best = end
               bestDistance = d
             }
           }
-        return best
+        return { best, all }
       })
-      if (!snapped[0] || !snapped[1] || distance(snapped[0], snapped[1]) <= tolerance) {
+      if (!near[0].best || !near[1].best || distance(near[0].best, near[1].best) <= tolerance) {
         diagnostic(
           'approved-opening-not-in-gap',
           `Approved opening ${opening.id} does not span a gap between two wall endpoints; the boundary stays open there.`
@@ -313,12 +332,27 @@ export function recognizeCadRooms(
       }
       const key = `opening:${opening.id}`
       approvedIds.set(key, opening.id)
-      segments.push({
-        a: snapped[0],
-        b: snapped[1],
-        cuts: [0, 1],
-        sources: [{ handle: key, layer: APPROVED_OPENING_LAYER }]
-      })
+      // A double-line wall has a gap in BOTH faces, joined by jamb caps, and the opening is drawn between them.
+      // Close every endpoint pair that runs parallel to the opening (the same span on each face), not just the
+      // pair nearest to the drawn ends: otherwise the room on one side swallows the jamb pocket between the faces
+      // (or a diagonal across it). With no parallel pair the nearest endpoints are used, as for a single-line wall.
+      const open = subtract(targets[1], targets[0]),
+        openLength = Math.hypot(open.x, open.y)
+      const pairs: { a: Point; b: Point; length: number; score: number }[] = []
+      for (const pa of near[0].all)
+        for (const pb of near[1].all) {
+          const v = subtract(pb, pa),
+            length = Math.hypot(v.x, v.y)
+          if (length <= tolerance || Math.abs(cross(open, v)) / openLength > JAMB_PAIR_TOLERANCE_FT) continue
+          pairs.push({ a: pa, b: pb, length, score: distance(pa, targets[0]) + distance(pb, targets[1]) })
+        }
+      let closing: [Point, Point][] = [[near[0].best, near[1].best]]
+      if (pairs.length) {
+        const base = pairs.reduce((m, q) => (q.score < m.score ? q : m))
+        closing = pairs.filter((q) => Math.abs(q.length - base.length) <= JAMB_PAIR_TOLERANCE_FT).map((q) => [q.a, q.b])
+      }
+      for (const [pa, pb] of closing)
+        segments.push({ a: pa, b: pb, cuts: [0, 1], sources: [{ handle: key, layer: APPROVED_OPENING_LAYER }] })
     }
     // Sweep the x bounds, with a strict pair-work cap even for pathological coincident geometry.
     segments.sort((a, b) => Math.min(a.a.x, a.b.x) - Math.min(b.a.x, b.b.x))

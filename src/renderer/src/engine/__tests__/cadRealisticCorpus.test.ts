@@ -292,15 +292,16 @@ describe('corpus: arch-metric-mm-r2018 (double-line walls, rotated/mirrored door
       expect(run.success).toBe(true)
       for (const room of t.rooms.filter(r => r.name !== 'CORRIDOR')) expectRoomMatch(run.result!.candidates, room, upf(name))
     })
-    gap('KNOWN GAP: an approved opening closes the gap on whichever wall face its end snaps to, so the Corridor polygon swallows the exterior door jamb pockets (309.6 ft2 vs 305.7 ft2, +1.3%)', () => {
+    it('an approved opening closes both faces of the double-line wall, so the Corridor does not swallow the door jamb pockets', () => {
       expectRoomMatch(pathBStore(name).result!.candidates, t.rooms.find(r => r.name === 'CORRIDOR')!, upf(name))
     })
-    gap('KNOWN GAP: the 200 mm double-line exterior wall body between its two face lines is returned as a room candidate (33.8 ft2 "Room")', () => {
+    it('the 200 mm double-line exterior wall body between its two face lines is rejected with a wall-body-excluded diagnostic', () => {
       const run = pathBStore(name)
       const known = t.rooms.map(r => r.areaSqFt)
       const strays = run.result!.candidates.filter(c => !known.some(a => near(c.areaSqFt, a, 0.02)))
       expect(strays.map(c => `${c.areaSqFt.toFixed(1)} ft2`)).toEqual([])
       expect(run.result!.candidates).toHaveLength(t.rooms.length)
+      expect(run.result!.diagnostics.map(d => d.code)).toContain('wall-body-excluded')
     })
   })
 

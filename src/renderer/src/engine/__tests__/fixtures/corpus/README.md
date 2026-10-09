@@ -41,8 +41,6 @@ runs the gaps as normal tests and prints the real assertion failures.
 
 | # | Gap | Evidence (measured) | Tests (`it.fails`) | Likely fix site (Round 2) |
 |---|---|---|---|---|
-| 4 | Path B (user-confirmed `A-WALL`, approved openings): an approved opening closes its gap on whichever wall face its end snaps to, so the Corridor polygon swallows jamb pockets | Corridor 309.57 ft2 vs ground truth 305.70 ft2 (+1.27%, limit 0.5%); the three other rooms are exact | `an approved opening closes the gap ...` | `roomRecognition.ts` approved-opening snap |
-| 5 | Path B: the body of a double-line wall (between its two face lines) is returned as a room candidate | 5 candidates for 4 rooms; extra `Room`, 33.8 ft2, 8 vertices; 8 smaller boundaries were already suppressed by the 20 ft2 threshold | `the 200 mm double-line exterior wall body ...` | `roomRecognition.ts` face filtering |
 | 6 | SPLINE is unsupported, so a curved feature wall is dropped | 1 `UNSUPPORTED_ENTITY:SPLINE`, 0 entities on `A-WALL-CURVE` | `SPLINE feature wall is dropped ...` | `dxfParser.ts` (sample to polyline) |
 | 8 | Frozen / off layers are imported as visible geometry | 2 entities from `A-FRZ` (frozen) and `A-OFF` (off) are present | `geometry on frozen / off layers ...` | `dxfParser.ts` layer table (group 70 bit 1, negative colour); design question: hide or import-but-hidden |
 | 10 | cp1252 bytes are decoded as UTF-8 (the UI reads files with `File.text()`) | `Büro` arrives as `B�ro`, `Café` as `Caf�` | `cp1252 bytes ...` | `Toolbar.tsx` / a byte-level DXF entry point honouring `$DWGCODEPAGE` |
