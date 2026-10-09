@@ -21,3 +21,10 @@ export const measuredDistance = (a: { x: number; y: number }, b: { x: number; y:
 export function describeCalibration(drawn: number, length: number, unit: CadKnownUnit): string {
   return `The picked segment is ${drawn.toPrecision(6)} drawing units and will be set to ${length} ${unit}. This rewrites the drawing scale, confirms the units and marks every room stale.`
 }
+
+/** Reference point for ortho/perpendicular snapping: the active tool's anchor, so the hover preview and the click agree. */
+export function snapLastPoint(mode: string, tempPoints: number[], measurePoints: { x: number; y: number }[]): { x: number; y: number } | undefined {
+  if (mode === 'measure') return measurePoints[0]
+  if (mode === 'polyline' && tempPoints.length >= 2) return { x: tempPoints[tempPoints.length - 2], y: tempPoints[tempPoints.length - 1] }
+  return undefined
+}

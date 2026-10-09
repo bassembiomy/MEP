@@ -2,11 +2,11 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Stage, Layer, Line, Circle, Text, Group, Shape, Rect } from 'react-konva';
 import { useProjectStore } from '../store/projectStore';
 import { snapToGrid, getPolygonCentroid } from '../engine/geometry';
-import { snapPoint, physicalGridSpacing } from '../engine/cad/drawingSnap';
+import { physicalGridSpacing, snapPoint } from '../engine/cad/drawingSnap';
 import { moveTerminal, moveIndoorUnit, moveOutdoorUnit, translateDuct, type ComponentEdit } from '../engine/cad/componentEdits';
 import { METERS_PER_FOOT } from '../engine/engineeringInputs';
 import type { Zone } from '../store/projectStore';
-import { parseKnownLength, measuredDistance, describeCalibration } from '../engine/cad/measureTool';
+import { parseKnownLength, measuredDistance, describeCalibration, snapLastPoint } from '../engine/cad/measureTool';
 import { polylineReducer, initialPolylineState, type PolylineEvent } from '../engine/cad/polylineTool';
 import { calculateZoneDiffuserCoverage } from '../engine/diffuserPlacer';
 import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
@@ -305,7 +305,7 @@ export const FloorPlanCanvas: React.FC = () => {
   const gridSpacing = useMemo(() => { try { return physicalGridSpacing(project); } catch { return 10; } }, [project.units, project.scale]);
   const snapLocal = (local: { x: number; y: number }, shift: boolean) => snapPoint(local, {
     entities: snapEntities, level: cadLevel, zones, gridSpacing, tolerancePx: 10, stageScale,
-    ortho: shift, lastPoint: tempPoints.length >= 2 ? { x: tempPoints[tempPoints.length - 2], y: tempPoints[tempPoints.length - 1] } : undefined
+    ortho: shift, lastPoint: snapLastPoint(drawMode, tempPoints, measurePoints)
   }).point;
 
   // Room-outline tool: all decisions live in the pure polylineReducer; this only feeds it events.
@@ -343,6 +343,10 @@ export const FloorPlanCanvas: React.FC = () => {
   drawModeRef.current = drawMode;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (drawModeRef.current === 'measure' && e.key === 'Escape') { // cancel an in-progress measurement (also from the length box)
+        setMeasurePoints([]); setMeasureInput(''); setDrawMessage(null);
+        return;
+      }
       if (drawModeRef.current !== 'polyline' || ['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) return;
       const buffer = typedLengthRef.current;
       if (/^[0-9.]$/.test(e.key)) { setTypedLength(buffer + e.key); return; }
@@ -407,7 +411,7 @@ export const FloorPlanCanvas: React.FC = () => {
       const pos = stage?.getPointerPosition();
       if (!stage || !pos) return;
       const local = stage.getAbsoluteTransform().copy().invert().point(pos);
-      const picked = snapPoint(local, { entities: snapEntities, level: cadLevel, zones, gridSpacing, tolerancePx: 10, stageScale, ortho: e.evt.shiftKey, lastPoint: measurePoints[0] }).point;
+      const picked = snapLocal(local, e.evt.shiftKey); // same options as the hover preview
       if (measurePoints.length === 1 && measuredDistance(measurePoints[0], picked) === 0) { setDrawMessage('Pick a second point away from the first.'); return; }
       setMeasurePoints([...measurePoints, picked]);
       setDrawMessage(null);
