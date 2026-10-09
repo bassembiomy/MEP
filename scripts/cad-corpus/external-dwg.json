@@ -1,0 +1,37 @@
+{
+ "about": "Third-party DWG examples used by dwgExternal.test.ts. Fetched on demand into .cache/dwg-external/ (npm run corpus:fetch-dwg), never vendored: LibreDWG test data is GPL-licensed.",
+ "source": "https://github.com/LibreDWG/libredwg",
+ "commit": "97c7225596c17430b82fd0161e7eff6beb5b1034",
+ "tag": "0.13.3",
+ "directory": "test/test-data/",
+ "files": [
+  {
+   "name": "example_2000.dwg",
+   "sha256": "34574244d7556d1ef7b437443d9b3d1ad8662e1c669c42d80cff6a8a19799be9"
+  },
+  {
+   "name": "example_2004.dwg",
+   "sha256": "e72d5e86d5d36d64b08822fb25a46079f592fd895a6157b1b8d9b07775e06108"
+  },
+  {
+   "name": "example_2007.dwg",
+   "sha256": "fe2d27229f67ae801b64cc01b50d4f7cdf53770de3e23640be9c24a14de5bc12"
+  },
+  {
+   "name": "example_2010.dwg",
+   "sha256": "457fb3d06cacd16dd945b7342651bebdefde03d7eca0d1bd5743c6730e436634"
+  },
+  {
+   "name": "example_2013.dwg",
+   "sha256": "ce80953e4881899cde8c42b97919feb2697259554ca54dc4005b19068a12c18f"
+  },
+  {
+   "name": "example_2018.dwg",
+   "sha256": "7bc7721224003062b237845842b7a976e46771c37eba6833b9ed3712e7a5a65a"
+  },
+  {
+   "name": "sample_2000.dwg",
+   "sha256": "4b8d9b1396a6d0decaa328dfc7cf17a09f2afa716ff8f40e9ca62ad1f1504ffa"
+  }
+ ]
+}

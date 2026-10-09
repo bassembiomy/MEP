@@ -16,3 +16,6 @@ playwright-report/
 *.tsbuildinfo
 test-results-electron/
 playwright-report-electron/
+
+# Third-party DWG examples fetched on demand (npm run corpus:fetch-dwg); GPL test data is never vendored
+.cache/
