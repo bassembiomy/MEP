@@ -283,7 +283,7 @@ interface ProjectState {
   /** Recognise room candidates from the CAD review state (approved openings, user-confirmed wall layers, selected level). */
   recognizeCadRoomCandidates: () => CadRoomRecognitionRun;
   /** `ceilingHeight` is the value the caller chose (a suggestion is available via selectCeilingHeightSuggestion). */
-  approveCadRoom: (candidate:CadRoomCandidate, inputs:{name:string;spaceTypeId:string;ceilingHeight:number;occupants:number;sourceCadRevision:string;drawingUnitsPerFoot:number;recognitionContext?:string}) => {success:boolean;error?:string};
+  approveCadRoom: (candidate:CadRoomCandidate, inputs:{name:string;spaceTypeId:string;ceilingHeight:number;occupants:number;sourceCadRevision:string;drawingUnitsPerFoot:number;recognitionContext:string}) => {success:boolean;error?:string};
   updateZone: (id: string, updates: Partial<Zone>) => void;
   deleteZone: (id: string) => void;
   selectZone: (id: string | null) => void;
@@ -522,7 +522,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       if(JSON.stringify(state.dxfEntities)!==inputs.sourceCadRevision) throw new Error('CAD changed; recognize rooms again.');
       const unitsPerFoot=drawingUnitsPerFoot(state.project);
       const basis=buildRoomRecognitionBasis(state);
-      if(inputs.recognitionContext!==undefined && inputs.recognitionContext!==basis.context) throw new Error('CAD review decisions changed; recognize rooms again.');
+      if(inputs.recognitionContext!==basis.context) throw new Error('CAD review decisions changed; recognize rooms again.');
       if(unitsPerFoot!==inputs.drawingUnitsPerFoot) throw new Error('Drawing scale changed; recognize rooms again.');
       requirePositive('Drawing scale',unitsPerFoot);
       measureSimplePolygon(candidate.polygon);

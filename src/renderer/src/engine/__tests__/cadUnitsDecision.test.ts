@@ -12,9 +12,15 @@ const meta = (unitsConfidence: CadImportMetadata['unitsConfidence'], codes: stri
   sourceName: 'p.dxf', unitsConfidence, diagnostics: codes.map(code => ({ code, severity: 'warning' as const, message: code }))
 })
 const importWith = (m?: CadImportMetadata) => useProjectStore.getState().setDxfData(structuredClone(entities), bbox, 10, 'ft', m)
-const approve = () => useProjectStore.getState().approveCadRoom(candidate, {
-  name: 'Office', spaceTypeId: 'office', ceilingHeight: 10, occupants: 2, sourceCadRevision: JSON.stringify(useProjectStore.getState().dxfEntities), drawingUnitsPerFoot: useProjectStore.getState().project.scale
-})
+const approve = () => {
+  // Approval needs the context of a recognition run; recognition itself refuses while units are unconfirmed, so fall back to the context it would give.
+  const run = useProjectStore.getState().recognizeCadRoomCandidates()
+  const context = run.recognitionContext ?? JSON.stringify({ level: 0, wallLayers: [], openings: [] })
+  return useProjectStore.getState().approveCadRoom(candidate, {
+    name: 'Office', spaceTypeId: 'office', ceilingHeight: 10, occupants: 2, sourceCadRevision: JSON.stringify(useProjectStore.getState().dxfEntities), drawingUnitsPerFoot: useProjectStore.getState().project.scale,
+    recognitionContext: context
+  })
+}
 beforeEach(() => {
   useProjectStore.getState().clearDxfData()
   useProjectStore.setState({ project: { name: 'P', location: 'L', units: 'imperial', scale: 10, outdoorDb: 95, indoorDb: 75 }, zones: [], undoStack: [], redoStack: [] })

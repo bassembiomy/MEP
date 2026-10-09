@@ -3,8 +3,12 @@ import {useProjectStore,type DxfEntity} from '../../store/projectStore';
 import type {CadRoomCandidate} from '../cad/semanticTypes';
 const entities:DxfEntity[]=[{type:'LWPOLYLINE',points:[0,0,200,0,200,150,0,150],closed:true,handle:'R1',layer:'ROOM'}];
 const candidate:CadRoomCandidate={id:'room-R1',name:'Office',polygon:[0,0,200,0,200,150,0,150],areaSqFt:300,sourceHandles:['R1'],sourceLayers:['ROOM'],confidence:1,status:'review-required',evidence:['Closed native polygon'],unresolvedConditions:['Use requires approval']};
-const inputs={name:'Cairo office',spaceTypeId:'office',ceilingHeight:10,occupants:2,sourceCadRevision:JSON.stringify(entities),drawingUnitsPerFoot:10};
-beforeEach(()=>useProjectStore.setState({project:{name:'Egypt',location:'Cairo',units:'imperial',scale:10,outdoorDb:95,indoorDb:75,cadUnitsConfirmed:true},zones:[],dxfEntities:structuredClone(entities),selectedZoneId:null,undoStack:[],redoStack:[]}));
+let inputs={name:'Cairo office',spaceTypeId:'office',ceilingHeight:10,occupants:2,sourceCadRevision:JSON.stringify(entities),drawingUnitsPerFoot:10,recognitionContext:''};
+beforeEach(()=>{
+ useProjectStore.setState({project:{name:'Egypt',location:'Cairo',units:'imperial',scale:10,outdoorDb:95,indoorDb:75,cadUnitsConfirmed:true},zones:[],dxfEntities:structuredClone(entities),selectedZoneId:null,undoStack:[],redoStack:[]});
+ // Approval requires the recognition context of an actual recognition run.
+ inputs={...inputs,recognitionContext:useProjectStore.getState().recognizeCadRoomCandidates().recognitionContext!};
+});
 describe('explicit CAD boundary approval',()=>{
  it('creates an editable stale room with preserved source evidence, no automatic equipment',()=>{
   const result=useProjectStore.getState().approveCadRoom(candidate,inputs);

@@ -333,7 +333,9 @@ describe('obstacle wiring through the store and project file (W4)', () => {
   })
   it('an approved CAD room carries the approved obstacles inside it and they survive save and load', async () => {
     const candidate = { id: 'room-R1', name: 'Office', polygon: [0, 0, 400, 0, 400, 300, 0, 300], areaSqFt: 1200, sourceHandles: ['R1'], sourceLayers: ['ROOM'], confidence: 1, status: 'review-required' as const, evidence: [], unresolvedConditions: [] }
-    const r = useProjectStore.getState().approveCadRoom(candidate, { name: 'Office', spaceTypeId: 'office', ceilingHeight: 10, occupants: 2, sourceCadRevision: JSON.stringify(roomEntities), drawingUnitsPerFoot: 10 })
+    const run = useProjectStore.getState().recognizeCadRoomCandidates()
+    expect(run.success).toBe(true)
+    const r = useProjectStore.getState().approveCadRoom(candidate, { name: 'Office', spaceTypeId: 'office', ceilingHeight: 10, occupants: 2, sourceCadRevision: JSON.stringify(roomEntities), drawingUnitsPerFoot: 10, recognitionContext: run.recognitionContext! })
     expect(r.success).toBe(true)
     const z = useProjectStore.getState().zones[0]
     expect(z.obstacles?.map(o => o.id)).toEqual(['in-room'])

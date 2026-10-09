@@ -38,7 +38,7 @@ export function CadUnderstandingPanel():React.JSX.Element|null {
  };
  const approve=()=>{
   if(!selected||!run?.success)return;
-  const outcome=s.approveCadRoom(selected,{name,spaceTypeId:use,ceilingHeight:Number(height),occupants:Number(occupants),sourceCadRevision:run.sourceCadRevision!,drawingUnitsPerFoot:run.drawingUnitsPerFoot!,recognitionContext:run.recognitionContext});
+  const outcome=s.approveCadRoom(selected,{name,spaceTypeId:use,ceilingHeight:Number(height),occupants:Number(occupants),sourceCadRevision:run.sourceCadRevision!,drawingUnitsPerFoot:run.drawingUnitsPerFoot!,recognitionContext:run.recognitionContext!});
   setMessage(outcome.success?'Room approved. Review its inputs, then select a feasible system in the optimizer.':outcome.error??'Approval failed.');
   if(outcome.success) {s.selectZone(useProjectStore.getState().zones.at(-1)!.id);setSelected(null);}
  };

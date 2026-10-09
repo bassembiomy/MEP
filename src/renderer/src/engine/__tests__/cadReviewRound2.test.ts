@@ -149,3 +149,27 @@ describe('R4: version 1 documents are not trusted for decisions that did not exi
     expect(s().cadObstacles.every(o => o.status === 'review-required')).toBe(true)
   })
 })
+
+describe('R5: approving a room requires the recognition context it was recognised under', () => {
+  const room = [{ type: 'LWPOLYLINE' as const, points: [0, 0, 200, 0, 200, 150, 0, 150], closed: true, handle: 'R1', layer: 'ROOM' }]
+  const setupRoom = () => {
+    useProjectStore.setState({ project: { name: 'P', location: 'L', units: 'imperial', scale: 10, outdoorDb: 95, indoorDb: 75, cadUnitsConfirmed: true }, dxfEntities: structuredClone(room) })
+    const r = s().recognizeCadRoomCandidates()
+    expect(r.success).toBe(true)
+    const inputs = { name: 'Office', spaceTypeId: 'office', ceilingHeight: 10, occupants: 2, sourceCadRevision: r.sourceCadRevision!, drawingUnitsPerFoot: r.drawingUnitsPerFoot!, recognitionContext: r.recognitionContext! }
+    return { candidate: r.result!.candidates[0], inputs }
+  }
+  it('approves with the matching context', () => {
+    const { candidate, inputs } = setupRoom()
+    expect(s().approveCadRoom(candidate, inputs).success).toBe(true)
+  })
+  it('refuses a missing or different context and leaves zones untouched', () => {
+    const { candidate, inputs } = setupRoom()
+    const { recognitionContext: _omit, ...without } = inputs
+    const missing = s().approveCadRoom(candidate, without as typeof inputs)
+    expect(missing.success).toBe(false)
+    expect(missing.error).toMatch(/recognize/i)
+    expect(s().approveCadRoom(candidate, { ...inputs, recognitionContext: '{}' }).success).toBe(false)
+    expect(s().zones).toEqual([])
+  })
+})
