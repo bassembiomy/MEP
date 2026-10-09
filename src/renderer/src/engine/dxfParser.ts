@@ -398,16 +398,33 @@ function explodeMline(
   if (style && !styleMatches && (style.flags & (MLINE_MITER | MLINE_START_SQUARE | MLINE_END_SQUARE | MLINE_START_ARCS | MLINE_END_ARCS)))
     diagnose('MLINE_STYLE_MISMATCH', `MLINE style has ${style.offsets.length} elements but the entity has ${elementCount}; its caps and joint lines are not drawn, the element lines are imported.`, r);
   // An extremely acute joint. Producers (AutoCAD, ezdxf) store a UNIT miter vector and put the stretch 1/sin(theta/2) into the group-41
-  // offsets, so a vertex's reach is |miter| x its widest offset, measured against an UNSTRETCHED reference: the style's offsets (scaled by
-  // group 40) when they match, else the smallest per-vertex reach (for an open MLINE that is a perpendicular end vertex).
+  // offsets, so a vertex's reach is |miter| x its widest offset. The reach is measured against an UNSTRETCHED reference: the style's
+  // widest offset x |group 40| when the style matches and is non-zero. Otherwise (no style, mismatched style, or a style whose offsets
+  // are all 0) there is no stored unstretched width, and "smallest per-vertex reach" is NOT sound (a closed MLINE whose every joint is
+  // acute has no unstretched vertex), so the stretch is measured geometrically instead: the miter's reach divided by its perpendicular
+  // distance to the adjacent segment line, 1/sin(theta/2) for a joint. That needs only the vertex positions and miter vectors.
   // The file stores the final geometry, so the joint is flagged, not clipped.
   const reach = (v: (typeof vertices)[number]) => Math.hypot(v.mx, v.my) * Math.max(...v.offsets.map(Math.abs));
   const scale = Math.abs(number(r, 40, 1));
-  const reference = styleMatches && Number.isFinite(scale) && scale > 0
-    ? Math.max(...style!.offsets.map(Math.abs)) * scale
-    : Math.min(...vertices.map(reach));
-  if (reference > 0 && vertices.some(v => reach(v) > 10 * reference))
-    diagnose('MLINE_LONG_MITER', 'MLINE has a joint whose miter extends more than 10 times the widest element offset (extremely acute angle); the lines are imported as stored.', r);
+  const styleReference = styleMatches && Number.isFinite(scale) && scale > 0 ? Math.max(...style!.offsets.map(Math.abs)) * scale : 0;
+  let longMiter: boolean;
+  if (styleReference > 0) longMiter = vertices.some(v => reach(v) > 10 * styleReference);
+  else {
+    const n = vertices.length;
+    longMiter = vertices.some((v, i) => {
+      const m = Math.hypot(v.mx, v.my);
+      if (!(m > 0) || !(reach(v) > 0)) return false;
+      const neighbours = [i > 0 ? i - 1 : closed ? n - 1 : -1, i < n - 1 ? i + 1 : closed ? 0 : -1].filter(j => j >= 0 && j !== i);
+      return neighbours.some(j => {
+        const dx = vertices[j].x - v.x, dy = vertices[j].y - v.y, len = Math.hypot(dx, dy);
+        if (!(len > 0)) return false;
+        const across = Math.abs(v.mx * dy - v.my * dx) / len; // miter's perpendicular distance to the segment line
+        return m / across > 10;
+      });
+    });
+  }
+  if (longMiter)
+    diagnose('MLINE_LONG_MITER', 'MLINE has a joint whose miter extends more than 10 times the unstretched element offset (extremely acute angle); the lines are imported as stored.', r);
   if (flags) {
     const bottom = style!.offsets.indexOf(Math.min(...style!.offsets)), top = style!.offsets.indexOf(Math.max(...style!.offsets));
     // A cap / joint line runs from the outermost element to the middle of the two outermost elements and on to the other one.

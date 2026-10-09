@@ -83,21 +83,39 @@ describe('MLINE caps, miters and odd records', () => {
   })
 
   // AutoCAD / ezdxf store a UNIT miter vector and put the stretch 1/sin(theta/2) into the group-41 offsets.
-  const stretched = (deg: number, withStyle: boolean) => {
-    const k = 1 / Math.sin(((deg / 2) * Math.PI) / 180), o = [-100 * k, 100 * k]
+  // Real geometry: the line turns back by `deg` at the middle vertex; the stored miter there is the unit bisector and the group-41 offsets carry 1/sin(deg/2).
+  const stretched = (deg: number, styleOffsets: number[] | undefined) => {
+    const a = (deg * Math.PI) / 180, k = 1 / Math.sin(a / 2), o = [-100 * k, 100 * k]
+    const sum = [-Math.sin(a), 1 - Math.cos(a)], len = Math.hypot(sum[0], sum[1])
     return parseDxfText(file([mline({
-      verts: [{ x: 0, y: 0 }, { x: 5000, y: 0, offsets: o }, { x: 0, y: 100, dir: [-1, 0], miter: [0, 1], offsets: [-100, 100] }],
-      offsets: [-100, 100], style: withStyle ? 'W' : 'STANDARD' })], withStyle ? [style('W', 0, [-100, 100])] : []))
+      verts: [{ x: 0, y: 0 }, { x: 5000, y: 0, miter: [sum[0] / len, sum[1] / len], offsets: o },
+        { x: 5000 - 5000 * Math.cos(a), y: 5000 * Math.sin(a), dir: [-Math.cos(a), Math.sin(a)], miter: [-Math.sin(a), -Math.cos(a)], offsets: [-100, 100] }],
+      offsets: [-100, 100], style: styleOffsets ? 'W' : 'STANDARD' })], styleOffsets ? [style('W', 0, styleOffsets)] : []))
   }
   it('an extremely acute joint (unit miter, stretched group-41 offsets) raises MLINE_LONG_MITER once, with or without the style', () => {
     for (const withStyle of [true, false]) {
-      const p = stretched(5, withStyle) // 100 / sin(2.5 deg) = 2292 > 10 x 100
+      const p = stretched(5, withStyle ? [-100, 100] : undefined) // 100 / sin(2.5 deg) = 2292 > 10 x 100
       expect(codes(p).filter(c => c === 'MLINE_LONG_MITER')).toHaveLength(1)
       expect(p.entities.length).toBeGreaterThan(0) // still imported: the geometry is the file's, only flagged
     }
   })
+  it('a style whose offsets are all 0 gives no unstretched width: the joint is still flagged (geometric stretch)', () => {
+    const p = stretched(5, [0, 0])
+    expect(codes(p).filter(c => c === 'MLINE_LONG_MITER')).toHaveLength(1)
+  })
+  it('a closed MLINE with no style whose every joint is acute is flagged (no unstretched vertex to use as a reference)', () => {
+    // A closed hairpin: both joints fold the line back on itself; the miter lies almost along the segment.
+    const p = parseDxfText(file([mline({
+      verts: [{ x: 0, y: 0, miter: [1, 0.01] }, { x: 5000, y: 0, dir: [-1, 0], miter: [1, 0.01] }], offsets: [-100, 100], closed: true })]))
+    expect(codes(p).filter(c => c === 'MLINE_LONG_MITER')).toHaveLength(1)
+  })
+  it('a closed 90 degree room with no style raises nothing', () => {
+    const p = parseDxfText(file([mline({
+      verts: [{ x: 0, y: 0, miter: [1, 1] }, { x: 5000, y: 0, miter: [-1, 1] }, { x: 5000, y: 4000, miter: [-1, -1] }, { x: 0, y: 4000, miter: [1, -1] }], offsets: [-100, 100], closed: true })]))
+    expect(codes(p)).toEqual([])
+  })
   it('a moderate stretched joint (90 degrees) raises nothing', () => {
-    for (const withStyle of [true, false]) expect(codes(stretched(90, withStyle))).toEqual([])
+    for (const withStyle of [true, false]) expect(codes(stretched(90, withStyle ? [-100, 100] : undefined))).toEqual([])
   })
   it('the real corpus mline-walls.dxf (normal 90 degree corners) raises no MLINE_LONG_MITER', () => {
     const text = readFileSync(new URL('./fixtures/corpus/adversarial/mline-walls.dxf', import.meta.url), 'utf8')
