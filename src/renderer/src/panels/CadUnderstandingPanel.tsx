@@ -42,6 +42,7 @@ export function CadUnderstandingPanel():React.JSX.Element|null {
  };
  const approve=()=>{
   if(!selected||!run?.success)return;
+  if(height.trim()===''||occupants.trim()===''){setMessage('Enter a ceiling height and the number of occupants.');return;}
   const outcome=s.approveCadRoom(selected,{name,spaceTypeId:use,ceilingHeight:Number(height),occupants:Number(occupants),sourceCadRevision:run.sourceCadRevision!,drawingUnitsPerFoot:run.drawingUnitsPerFoot!,recognitionContext:run.recognitionContext!});
   setMessage(outcome.success?'Room approved. Review its inputs, then select a feasible system in the optimizer.':outcome.error??'Approval failed.');
   if(outcome.success) {s.selectZone(useProjectStore.getState().zones.at(-1)!.id);setSelected(null);}
@@ -99,7 +100,7 @@ export function CadUnderstandingPanel():React.JSX.Element|null {
     <p className="text-neutral-500">{o.evidence.join(' ')}</p>
     <div className="flex gap-2 mt-1 items-center">
      <label>Clearance (ft)<input type="number" min="0" step="0.1" className="bg-neutral-800 p-1 rounded w-20 ml-1" value={clearances[o.id]??String(o.clearanceFt??1)} onChange={e=>setClearances({...clearances,[o.id]:e.target.value})}/></label>
-     <button className="bg-teal-800 rounded px-2 py-1" onClick={()=>report(s.approveCadObstacle(o.id,Number(clearances[o.id]??o.clearanceFt??1)),'')}>Approve</button>
+     <button className="bg-teal-800 rounded px-2 py-1" onClick={()=>{const raw=clearances[o.id]??String(o.clearanceFt??1);if(raw.trim()===''){setMessage('Enter a clearance in feet before approving.');return;}report(s.approveCadObstacle(o.id,Number(raw)),'');}}>Approve</button>
      <button className="bg-neutral-700 rounded px-2 py-1" onClick={()=>report(s.rejectCadObstacle(o.id),'')}>Reject</button></div>
    </li>)}</ul>
   </details>

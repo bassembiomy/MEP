@@ -7,9 +7,9 @@ export type { CadApprovedObstacle }
  * All geometry is in one shared coordinate system; `unitsPerFoot` converts to feet for clearance.
  * Obstacles whose status is not 'approved' are ignored: a suggestion can never block a design.
  *
- * Integration point (not wired here): the deployment validation step that checks each equipment
- * footprint and duct run (deploymentValidation / deploymentManager) should call
- * footprintConflicts()/ductConflicts() with the zone's approved obstacles.
+ * Wiring: deployment validation (deploymentValidation) checks each indoor-unit footprint and duct run, and
+ * deploymentManager detours branch ducts, using the zone's approved obstacles via footprintConflicts()/ductConflicts().
+ * Limitations: outdoor units, refrigerant piping, condensate drains and terminal faces are NOT checked against obstacles.
  */
 
 type P = { x: number; y: number }

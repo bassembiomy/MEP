@@ -143,3 +143,13 @@ describe('panel view helpers (W5)', () => {
     expect(listCadLevels([{ type: 'LINE', elevation: 3.2 }, { type: 'LINE' }, { type: 'LINE', elevation: 3.2 }, { type: 'LINE', elevation: -1 }] as never)).toEqual([-1, 0, 3.2])
   })
 })
+
+describe('describeUnitsStatus with no recorded decision (recommended fix)', () => {
+  it('does not claim the user confirmed units when cadUnitsConfirmed was never set', () => {
+    const v = describeUnitsStatus({}, null)
+    expect(v.confirmed).toBe(false)
+    expect(v.label).toMatch(/never confirmed/i)
+    expect(v.label).not.toMatch(/confirmed by you/i)
+    expect(describeUnitsStatus({ cadUnitsConfirmed: true }, null).label).toMatch(/confirmed by you/i)
+  })
+})

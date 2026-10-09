@@ -25,7 +25,8 @@ export function describeUnitsStatus(
   project: { cadUnitsConfirmed?: boolean; cadScaleProvenance?: 'user-calibrated' },
   cadImport: Pick<CadImportMetadata, 'unitsConfidence' | 'diagnostics'> | null
 ): UnitsStatusView {
-  const confirmed = project.cadUnitsConfirmed !== false
+  // No recorded decision: a declared, undoubted import counts as confirmed (as at import time); anything else does not.
+  const confirmed = project.cadUnitsConfirmed ?? (cadImport ? unitsAutoConfirmed(cadImport) : false)
   const reasons: string[] = []
   if (cadImport) {
     if (cadImport.unitsConfidence === 'estimated') reasons.push('The file does not declare its units; they were estimated from the drawing size.')
@@ -34,5 +35,6 @@ export function describeUnitsStatus(
   }
   if (project.cadScaleProvenance === 'user-calibrated') return { confirmed: true, label: 'Scale calibrated from a known length.', reasons: [] }
   if (confirmed) return { confirmed: true, label: cadImport?.unitsConfidence === 'declared' ? 'Units declared in the file and confirmed.' : 'Units confirmed by you.', reasons: [] }
+  if (project.cadUnitsConfirmed === undefined && !cadImport) return { confirmed: false, label: 'Units were never confirmed for this project: confirm the scale before relying on CAD-derived suggestions.', reasons }
   return { confirmed: false, label: 'Units not confirmed: confirm them or calibrate the scale before approving anything.', reasons }
 }

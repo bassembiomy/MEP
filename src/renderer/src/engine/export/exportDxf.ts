@@ -30,7 +30,7 @@ export function exportProjectDxf(state:ExportState):{text:string;report:CadExpor
   for(let i=0;i<points.length;i+=2){xy(points[i],points[i+1]);if(bulges?.[i/2])pair(42,bulges[i/2]);}
  };
  const text=(value:string,x:number,y:number,layer='HVAC-TAGS',height=scale*0.2,z=0)=>{start('TEXT',layer);xyz(x,y,z);pair(40,height);pair(1,value);};
- const limitations=['PRELIMINARY — not for construction.','Egyptian code adoption, detailed thermal inputs, operating-condition manufacturer evidence, barriers, 3D coordination and service clearances require review.','Equipment and terminal symbols are schematic; they are not verified catalog footprints.'];
+ const limitations=['PRELIMINARY — not for construction.','Egyptian code adoption, detailed thermal inputs, operating-condition manufacturer evidence, barriers, 3D coordination and service clearances require review.','Equipment and terminal symbols are schematic; they are not verified catalog footprints.','Approved CAD obstacles are checked against indoor-unit footprints and duct runs only; outdoor units, refrigerant piping, condensate drains and terminal faces are not checked.'];
  for(const entity of state.dxfEntities) {
   const invalid=validateCadEntity(entity);if(invalid)throw new Error(invalid);
   const layer=entity.layer??'0';

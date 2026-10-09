@@ -82,3 +82,10 @@ describe('R6: approved review items and CAD rooms keep their level Z in the expo
     for (const e of flat) expect(e.elevation).toBeUndefined()
   })
 })
+
+describe('export limitations', () => {
+  it('lists the obstacle checks that are not performed', () => {
+    const { report } = exportProjectDxf({ project, zones: [], dxfEntities: [] })
+    expect(report.limitations.join(' ')).toMatch(/outdoor units.*refrigerant piping.*condensate.*terminal faces.*not checked/i)
+  })
+})

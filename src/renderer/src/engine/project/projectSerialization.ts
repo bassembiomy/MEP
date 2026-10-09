@@ -225,6 +225,7 @@ function validateState(value:unknown,version:number=VERSION):PersistedProjectSta
       }
     }
     measureSimplePolygon(coordinates(z.points,'Zone polygon',6));
+    if(z.drawnOnLevel!==undefined)finite(z.drawnOnLevel,'Drawn-on level');
     finite(z.ceilingHeight,'Ceiling height');finite(z.occupants,'Occupants');
     for(const key of ['manualCfmOverride','manualCoolingOverride','lightingOverride','equipmentOverride'] as const)
       if(z[key]!==undefined) finite(z[key],key);

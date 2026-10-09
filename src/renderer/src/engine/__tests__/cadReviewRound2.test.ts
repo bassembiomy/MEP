@@ -226,3 +226,23 @@ describe('R8: clearance bands reaching into a zone from outside', () => {
     expect(s().zones[0].obstacles?.map(o => o.id)).toEqual(['edge'])
   })
 })
+
+describe('recommended: hand-drawn zones remember the level they were drawn on', () => {
+  const col = (id: string, level: number) => ({
+    id, shape: 'polygon' as const, polygon: [100, 100, 120, 100, 120, 120, 100, 120], widthFt: 2, depthFt: 2, layer: 'S-COLS',
+    sourceHandles: ['C' + id], confidence: 0.8, evidence: ['t'], status: 'approved' as const, level, clearanceFt: 1
+  })
+  it('uses only the selected level\'s obstacles once a drawing is loaded, and all levels when none is', () => {
+    const project10 = { name: 'T', location: 'C', scale: 10, units: 'imperial' as const, outdoorDb: 95, indoorDb: 75, cadUnitsConfirmed: true }
+    useProjectStore.setState({ project: project10, zones: [], cadObstacles: [col('L0', 0), col('L3', 3)], dxfEntities: [], cadLevel: 3 })
+    expect(s().addZone([0, 0, 400, 0, 400, 300, 0, 300]).success).toBe(true)
+    expect(s().zones[0].obstacles?.map(o => o.id).sort()).toEqual(['L0', 'L3']) // no drawing: conservative, every level
+    expect(s().zones[0].drawnOnLevel).toBeUndefined()
+    useProjectStore.setState({ zones: [], dxfEntities: [{ type: 'LINE', x: 0, y: 0, points: [1, 1], layer: '0' }] })
+    expect(s().addZone([0, 0, 400, 0, 400, 300, 0, 300]).success).toBe(true)
+    expect(s().zones[0].drawnOnLevel).toBe(3)
+    expect(s().zones[0].obstacles?.map(o => o.id)).toEqual(['L3'])
+    const text = serializeProject(selectPersistedProject({ ...s(), cadImport: null }))
+    expect(JSON.parse(text).zones[0].drawnOnLevel).toBe(3)
+  })
+})

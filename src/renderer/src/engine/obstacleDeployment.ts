@@ -3,6 +3,12 @@ import type { CadApprovedObstacle } from './cad/semanticTypes'
 import { ductConflicts, footprintConflicts, type ObstacleConflict } from './cad/obstacleConflicts'
 import { routePlanPath, type PlanObstacle } from './cad/obstacleRouting'
 
+/**
+ * Approved CAD obstacles (with clearance) constrain indoor-unit footprints and duct runs only.
+ * Listed limitations: outdoor units, refrigerant piping, condensate drains and terminal (diffuser/grille) faces are
+ * not checked against obstacles; the designer must review those by hand.
+ */
+
 /** Thrown by deployment validation so the transaction can report ERR_OBSTACLE_CONFLICT. */
 export class ObstacleConflictError extends Error {
   constructor(message: string) {

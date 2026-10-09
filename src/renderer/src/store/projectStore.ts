@@ -117,6 +117,8 @@ export interface Zone {
     /** The ceiling height the user chose, next to the annotation-derived suggestion that was shown (never applied automatically). */
     ceilingHeight?:{chosen:number;usedSuggestion:boolean;suggestedFt?:number;confidence?:number;evidence?:string[]}};
   id: string;
+  /** Level (drawing units) selected when a hand-drawn room was drawn over a loaded drawing; selects which level's obstacles apply. */
+  drawnOnLevel?: number;
   engineeringStatus?: 'stale' | 'blocked' | 'preliminary';
   engineeringError?: string;
   /** Non-blocking note, e.g. which higher-ranked candidates auto-deploy skipped. */
@@ -578,7 +580,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       diffusers: [],
       ducts: [],
       maxVelocityLimitFpm: 1200,
-      maxSpaceNcLimit: 32
+      maxSpaceNcLimit: 32,
+      ...(state.dxfEntities.length ? { drawnOnLevel: state.cadLevel } : {})
     };
     const drawnObstacles = zoneObstaclesFor(draftZone, state.cadObstacles, unitsPerFootOf(state.project));
     if (drawnObstacles.length) draftZone.obstacles = drawnObstacles;
