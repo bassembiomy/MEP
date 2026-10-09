@@ -2,6 +2,7 @@ import React from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoadSafely } from '../engine/loadCalc';
 import { recommendSystemsForZone } from '../engine/systemDesigner';
+import { zoneExtentFt } from '../engine/pressureBudget';
 import { Award, DollarSign, Zap, Database, Upload, CheckCircle2, Sliders } from 'lucide-react';
 
 export const SystemComparisonTable: React.FC = () => {
@@ -104,7 +105,8 @@ export const SystemComparisonTable: React.FC = () => {
     spaceTypeId,
     isImperial,
     displayCfm,
-    loadedCatalogs
+    loadedCatalogs,
+    selectedZone ? zoneExtentFt(selectedZone.points, project) : undefined
   );
 
   // List of all 6 system types

@@ -100,6 +100,8 @@ export interface DeploymentManifest {
   };
   /** Per-unit service sub-polygons (drawing units) when several ducted units split a zone. */
   unitServicePolygons?: number[][];
+  /** Region each unit's terminals actually cover (drawing units): the service sub-polygon, or its inscribed rectangle after the concave fallback. */
+  unitServedPolygons?: number[][];
   componentsToAdd: MechanicalComponent[];
   componentsToUpdate: MechanicalComponent[];
   componentsToRemove: string[];
@@ -125,6 +127,7 @@ export interface DeploymentDiagnostic {
     | 'ERR_POST_COMMIT_MISMATCH'
     | 'ERR_ZONE_PARTITION_UNSUPPORTED'
     | 'WARN_ZONE_PARTITION_INSCRIBED'
+    | 'WARN_CASSETTE_PLACEHOLDER_ACOUSTICS'
     | 'WARN_THROW_OVERLAP'
     | 'WARN_PREVIEW_PRESSURE_PROVISIONAL'
     | 'WARN_CEILING_DEPTH_UNVERIFIED'

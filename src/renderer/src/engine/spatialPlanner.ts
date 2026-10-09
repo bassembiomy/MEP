@@ -347,7 +347,11 @@ export function getFootprintPortLayout(
   const supplyPos = rayExitPoint(center, w, h, sDir);
   let returnPos = rayExitPoint(center, w, h, rDir);
   if (Math.hypot(returnPos.x - supplyPos.x, returnPos.y - supplyPos.y) < 1e-6 * Math.max(w, h)) {
-    // Same exit point: slide the return port a quarter of the boundary edge sideways.
+    // Same exit point (both ducts leave in the same direction; the planner normally avoids this by routing the
+    // return away from the supply). Fallback only: slide the return port a quarter of the longer footprint side
+    // along the boundary, clamped to the footprint, so the two ports never coincide. This is geometric separation
+    // only: the slid port is no longer on the ray along the return duct's first segment, and no duct is re-routed
+    // to it. It does not model a manufacturer's real supply/return collar positions.
     const tangent = { x: -rDir.y, y: rDir.x };
     const shift = Math.max(w, h) / 4;
     returnPos = {
@@ -702,6 +706,13 @@ export function planCassetteDistribution(
     }
     positions = fallback;
     sources = [];
+    // No optimiser acoustics exist for this layout, so the terminals below carry placeholders.
+    diagnostics.push({
+      code: 'WARN_CASSETTE_PLACEHOLDER_ACOUSTICS',
+      severity: 'warning',
+      message: `Cassette fallback placement carries placeholder terminal values (NC ${spaceNcLimit}, throw 14 ft, 0.04 in.wg) instead of evaluated acoustics; verify noise, throw and pressure drop for the selected cassette.`,
+      remediation: 'Confirm the cassette catalog NC, throw and pressure drop at the design airflow before issuing.'
+    });
   }
 
   positions.forEach((pos, idx) => {

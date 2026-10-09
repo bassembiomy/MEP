@@ -15,6 +15,7 @@ import {
   largestInscribedRect
 } from './spatialPlanner';
 import { partitionPolygonByArea } from './polygonClip';
+import { calculatePolygonArea } from './geometry';
 import { isPointInOrOnPolygon, isSegmentInPolygon } from './validation/spatialValidator';
 import { solveDirectedNetworkStaticPressure } from './staticPressureCalc';
 import { STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES } from './hvacCatalogs';
@@ -24,6 +25,13 @@ import { calculateCanonicalZoneLoad } from './loadCalc';
 import { METERS_PER_FOOT } from './engineeringInputs';
 import { getZoneDeploymentRevision, getProjectDeploymentRevision, validateAppliedDeployment, getEquipmentFootprintWorld } from './deploymentValidation';
 export { getZoneDeploymentRevision, getProjectDeploymentRevision } from './deploymentValidation';
+
+/**
+ * Largest share of a unit's equal-area service sub-polygon that may be left without terminals when the
+ * inscribed-rectangle fallback is used for a concave piece. Above it the split is blocked
+ * (ERR_ZONE_PARTITION_UNSUPPORTED); at or below it a WARN_ZONE_PARTITION_INSCRIBED states the unserved area.
+ */
+export const MAX_UNSERVED_SERVICE_FRACTION = 0.15;
 
 /**
  * Builds the complete deployment manifest for a candidate design without mutating workspace
@@ -78,6 +86,7 @@ export function buildDeploymentManifest(
   let deployedDiffusers: Diffuser[] = [];
   let deployedDucts: DuctSegment[] = [];
   let unitServicePolygons: number[][] | undefined;
+  let unitServedPolygons: number[][] | undefined;
 
   // 2. Plan Indoor Equipment / Terminals
   if (isCassette) {
@@ -145,6 +154,9 @@ export function buildDeploymentManifest(
       }
     }
     unitServicePolygons = regions.length ? regions : undefined;
+    // Region each unit's terminals actually cover; narrowed to the inscribed rectangle by the fallback below.
+    const servedRegions = regions.map(r => r.slice());
+    unitServedPolygons = regions.length ? servedRegions : undefined;
 
     const planUnit = (k: number, region: number[]) => {
       const subSystemId = `${systemId}-${k + 1}`;
@@ -216,12 +228,27 @@ export function buildDeploymentManifest(
         const retryRegion = inscribed ? [inscribed.minX, inscribed.minY, inscribed.maxX, inscribed.minY, inscribed.maxX, inscribed.maxY, inscribed.minX, inscribed.maxY] : undefined;
         const retry = retryRegion ? planUnit(k, retryRegion) : undefined;
         if (retry && retryRegion && unitFitsRegion(retry, retryRegion) && unitFitsRegion(retry, region)) {
+          // Planning units are 10 per foot, so 100 square planning units are one square foot.
+          const shareArea = calculatePolygonArea(region);
+          const unservedArea = Math.max(0, shareArea - calculatePolygonArea(retryRegion));
+          const unservedFraction = shareArea > 0 ? unservedArea / shareArea : 1;
+          const unservedText = `${(unservedArea / 100).toFixed(1)} sq ft (${(unservedFraction * 100).toFixed(1)}% of the unit's ${(shareArea / 100).toFixed(1)} sq ft share)`;
+          if (unservedFraction > MAX_UNSERVED_SERVICE_FRACTION) {
+            diagnostics.push({
+              code: 'ERR_ZONE_PARTITION_UNSUPPORTED',
+              severity: 'error',
+              message: `Unit ${k + 1} could serve only its largest inscribed rectangle, leaving ${unservedText} unserved, above the ${(MAX_UNSERVED_SERVICE_FRACTION * 100).toFixed(0)}% limit.`,
+              remediation: 'Use fewer units, split the room into separate zones, or simplify the room outline.'
+            });
+            continue;
+          }
           plan = retry;
           region = retryRegion;
+          servedRegions[k] = retryRegion;
           diagnostics.push({
             code: 'WARN_ZONE_PARTITION_INSCRIBED',
             severity: 'warning',
-            message: `Unit ${k + 1} serves only the largest rectangle inside its concave service area; the remaining corner is not directly served.`
+            message: `Unit ${k + 1} serves only the largest rectangle inside its concave service area; ${unservedText} is not directly served.`
           });
         } else {
           diagnostics.push({
@@ -392,6 +419,7 @@ export function buildDeploymentManifest(
       condensateDrains
     },
     unitServicePolygons: unitServicePolygons?.map(p => p.map(n => n / planningRatio)),
+    unitServedPolygons: unitServedPolygons?.map(p => p.map(n => n / planningRatio)),
     componentsToAdd,
     componentsToUpdate: [],
     componentsToRemove: [],

@@ -135,14 +135,24 @@ describe('generator and deployment share one pressure budget', () => {
   })
 })
 
-describe('estimate dominates the pressure deployment computes (fan-curve independent calibration)', () => {
-  const rooms: [string, Zone, ProjectMetadata][] = [
-    ...fixtures,
-    ['50x20 ft, 4 people', draft(rect(50, 20), 4), imperial],
-    ['60x40 ft, 12 people', draft(rect(60, 40), 12), imperial]
+describe('estimate dominates the pressure deployment computes on the listed fixtures (fan-curve independent calibration)', () => {
+  // An empirical bound validated on these fixtures only, not a proof for arbitrary geometry. withExtent=false
+  // exercises the generator's 2:1 fallback when no room extent is supplied.
+  const withCfm = (z: Zone, cfm: number): Zone => ({ ...z, manualCfmOverride: cfm })
+  const rooms: [string, Zone, ProjectMetadata, boolean, boolean][] = [
+    ...fixtures.map(([n, z, p]) => [n, z, p, true, n.startsWith('30x25 ft, 2') || n.startsWith('40x30')] as [string, Zone, ProjectMetadata, boolean, boolean]),
+    ['50x20 ft, 4 people', draft(rect(50, 20), 4), imperial, true, false],
+    ['60x40 ft, 12 people', draft(rect(60, 40), 12), imperial, true, true],
+    ['elongated 60x12 ft, 4 people', draft(rect(60, 12), 4), imperial, true, true],
+    ['elongated 60x12 ft, 4 people, 600 CFM', withCfm(draft(rect(60, 12), 4), 600), imperial, true, true],
+    ['single terminal 12x12 ft, 300 CFM', withCfm(draft(rect(12, 12), 1), 300), imperial, true, true],
+    ['single terminal 14x10 ft, 280 CFM', withCfm(draft(rect(14, 10), 1), 280), imperial, true, true],
+    ['4:1 fallback extent 60x15 ft, 650 CFM (no extent passed)', withCfm(draft(rect(60, 15), 4), 650), imperial, false, true],
+    ['4:1 fallback extent 80x20 ft, 1000 CFM (no extent passed)', withCfm(draft(rect(80, 20), 6), 1000), imperial, false, true],
+    ['4:1 fallback extent 60x15 ft, 4 people (no extent passed)', draft(rect(60, 15), 4), imperial, false, false]
   ]
-  it.each(rooms)('%s', (_n, z, p) => {
-    const { L, result } = generate(z, p)
+  it.each(rooms)('%s', (_n, z, p, withExtent, mustCompare) => {
+    const { L, result } = generate(z, p, withExtent)
     let compared = 0
     for (const c of ducted(result.candidates)) {
       const perUnit = L.supplyCfm / c.quantity
@@ -160,9 +170,9 @@ describe('estimate dominates the pressure deployment computes (fan-curve indepen
       if (!tx.success) continue
       const units = m.equipment.cassetteUnits?.length ? m.equipment.cassetteUnits : [m.equipment.indoorUnit!]
       const deployed = validateAppliedDeployment(m, tx.updatedZones[0], units, p)
-      expect(c.ductwork!.criticalPath.espRequiredInWg, `${c.equipment.model} x${c.quantity}`).toBeGreaterThanOrEqual(deployed)
+      expect(c.ductwork!.criticalPath.espRequiredInWg, `${c.equipment.model} x${c.quantity} (${m.terminals.filter((t) => t.type !== 'return').length} supply terminals)`).toBeGreaterThanOrEqual(deployed)
       compared++
     }
-    if (_n.startsWith('30x25 ft, 2') || _n.startsWith('40x30') || _n.startsWith('60x40')) expect(compared).toBeGreaterThan(0)
+    if (mustCompare) expect(compared).toBeGreaterThan(0)
   })
 })

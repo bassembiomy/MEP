@@ -1,6 +1,8 @@
 import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
 import { useProjectStore } from '../../store/projectStore'
 import { STANDARD_EQUIPMENT_CATALOG } from '../hvacCatalogs'
+import { generateSystemCandidates } from '../systemDesigner'
+import { calculateCanonicalZoneLoad } from '../loadCalc'
 
 const project={name:'Office',location:'Cairo',units:'imperial' as const,scale:10,outdoorDb:95,indoorDb:75}
 describe('project edits and deferred design integrity',()=>{
@@ -67,5 +69,36 @@ describe('auto-deploy falls through the ranked candidates',()=>{
     expect(zone.engineeringError).toMatch(/Stub Oversized A/)
     expect(zone.engineeringError).toMatch(/Stub Oversized B/)
     expect(zone.diffusers).toEqual([])
+  })
+
+  const deployWithNotice=()=>{
+    const tooBig=stub({id:'stub-too-big',model:'Stub Oversized FCU',costIndex:1,dimensionsIn:{width:400,depth:400,height:10}})
+    const fits=stub({id:'stub-fits',model:'Stub Compact FCU',costIndex:90})
+    STANDARD_EQUIPMENT_CATALOG.splice(0,STANDARD_EQUIPMENT_CATALOG.length,tooBig,fits)
+    useProjectStore.getState().addZone(room)
+    vi.runAllTimers()
+    expect(useProjectStore.getState().zones[0].engineeringNotice).toMatch(/Stub Oversized FCU/)
+    return useProjectStore.getState().zones[0].id
+  }
+
+  it('clears the fall-through notice when the zone is edited',()=>{
+    const id=deployWithNotice()
+    useProjectStore.getState().updateZone(id,{lightingOverride:2})
+    const zone=useProjectStore.getState().zones[0]
+    expect(zone.engineeringStatus).toBe('stale')
+    expect(zone.engineeringNotice).toBeUndefined()
+  })
+
+  it('clears the fall-through notice when another candidate is applied',()=>{
+    const id=deployWithNotice()
+    const zone=useProjectStore.getState().zones[0]
+    const L=calculateCanonicalZoneLoad(zone,project)
+    const cand=generateSystemCandidates(L.totalLoad,L.sensibleLoad,L.supplyCfm,'office',L.area,true,undefined as never,['concealed']).candidates.find(c=>c.isValid&&c.equipment.model==='Stub Compact FCU')!
+    expect(cand).toBeDefined()
+    const r=useProjectStore.getState().applyCandidateTransaction(cand)
+    expect(r.success).toBe(true)
+    const after=useProjectStore.getState().zones.find(z=>z.id===id)!
+    expect(after.engineeringStatus).toBe('preliminary')
+    expect(after.engineeringNotice).toBeUndefined()
   })
 })

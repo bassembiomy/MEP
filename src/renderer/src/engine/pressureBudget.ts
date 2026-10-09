@@ -115,10 +115,13 @@ export interface RoutedPathEstimate {
 }
 
 /**
- * Conservative routed-path estimate used before a layout exists. It assumes the farthest terminal is a
+ * Routed-path estimate used before a layout exists. It assumes the farthest terminal is a
  * Manhattan run of (width + height) from the corner-mounted unit, at the deployment friction floor, with
  * elbows and branch take-offs at the unit trunk velocity, plus the diffuser drop, the return
- * grille and run, and the filter. It is deliberately not below what deployment later computes.
+ * grille and run, and the filter. It is intended to be conservative, but that is an empirical bound validated
+ * only on the fixtures listed in pressureBudget.test.ts (rectangular rooms up to 4:1, single- and multi-terminal,
+ * with and without room extents); it is not a proof for arbitrary geometry. Pass the real room extent whenever
+ * it is known: without it the caller must assume a plan shape and elongated rooms are under-estimated.
  */
 export function estimateRoutedPathPressure(input: RoutedPathEstimateInput): RoutedPathEstimate {
   // Fittings are charged at the velocity of the unit-level trunk (the highest on any path), for the
@@ -153,7 +156,7 @@ export function estimateRoutedPathPressure(input: RoutedPathEstimateInput): Rout
   };
 }
 
-/** Bounding-box extent of a drawn zone in feet, for the generator's routed-path estimate. */
+/** Bounding-box extent of a drawn zone in feet, for the generator's routed-path estimate (preferred over the shape assumption). */
 export function zoneExtentFt(
   points: number[],
   project: { scale: number; units: 'imperial' | 'metric' }

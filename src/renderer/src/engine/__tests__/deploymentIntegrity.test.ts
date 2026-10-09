@@ -690,6 +690,23 @@ describe('cassette count enforcement and footprint containment', () => {
     expect(Math.abs(res.diffusers.reduce((s: number, d: any) => s + d.cfm, 0) - 442.767)).toBeLessThan(1e-6)
   })
 
+  it('warns when the fallback placement has no optimiser acoustics and uses placeholder NC/throw/pressure values', () => {
+    // Rooms where the optimiser layout is rejected and the deterministic equal-area placement is used.
+    const tight1 = [0, 0, 120, 0, 120, 60, 0, 60], tight2 = [0, 0, 150, 0, 150, 70, 0, 70]
+    const outcomes = [[rect, 3], [rect, 4], [lShape, 3], [lShape, 4], [tight1, 3], [tight2, 4]].map(([pts, qty]) => plan(pts as number[], qty as number, 442.767))
+    const fallbackRuns = outcomes.filter((r: any) => r.diagnostics.some((d: any) => d.code === 'WARN_CASSETTE_PLACEHOLDER_ACOUSTICS'))
+    expect(fallbackRuns.length).toBeGreaterThanOrEqual(2)
+    for (const r of fallbackRuns) {
+      const w = r.diagnostics.find((d: any) => d.code === 'WARN_CASSETTE_PLACEHOLDER_ACOUSTICS')
+      expect(w.severity).toBe('warning')
+      expect(w.message).toMatch(/NC 32/)
+      expect(w.message).toMatch(/14 ft/)
+      expect(w.message).toMatch(/0\.04 in\.wg/)
+    }
+    // A run that kept optimiser values carries no such warning.
+    for (const r of outcomes.filter((x: any) => !fallbackRuns.includes(x))) expect(r.diagnostics.some((d: any) => d.code === 'WARN_CASSETTE_PLACEHOLDER_ACOUSTICS')).toBe(false)
+  })
+
   it('never silently returns fewer cassettes than requested for an L-shaped room', () => {
     const res = plan(lShape, 4)
     const errors = res.diagnostics.filter((d: any) => d.severity === 'error' && /^ERR_/.test(d.code))
@@ -871,5 +888,63 @@ describe('multi-unit partition follows the real room polygon', () => {
     const m = manager.buildDeploymentManifest(candidate({ quantity: 2, equipment: equipment(bigFan) }), z, [z], project)
     const areas = (m as any).unitServicePolygons as number[][]
     expect(areas.map(calculatePolygonArea)).toEqual([60000, 60000])
+  })
+})
+
+describe('inscribed-rectangle fallback reports the region actually served', () => {
+  const bigFan = {
+    totalCapacityBtuPerHour: 90000, sensibleCapacityBtuPerHour: 70000, minCfm: 300, maxCfm: 1000, maxRatedEspInWg: 1.5,
+    fanPerformance: { type: 'tabular' as const, table: [{ cfm: 300, espInWg: 1.5 }, { cfm: 1000, espInWg: 1.5 }], allowExtrapolation: false }
+  }
+  const build = (points: number[]) => {
+    const z = zone({ points, manualCfmOverride: 1200 })
+    return manager.buildDeploymentManifest(candidate({ quantity: 2, equipment: equipment(bigFan) }), z, [z], project)
+  }
+  // Scale 10 units per foot: area in drawing units / 100 = square feet.
+  const sqft = (poly: number[]) => calculatePolygonArea(poly) / 100
+  // Thin L: bisection leaves unit 2 a concave piece of 350 sq ft whose largest rectangle is 100x312.5 units (10.7% unserved).
+  const lThin = [0, 0, 400, 0, 400, 100, 100, 100, 100, 400, 0, 400]
+
+  it('exposes the 15% unserved-fraction threshold as a named constant', () => {
+    expect((manager as any).MAX_UNSERVED_SERVICE_FRACTION).toBe(0.15)
+  })
+
+  it('below the threshold: records the served rectangle and warns with the unserved area and fraction', () => {
+    const m = build(lThin)
+    expect(m.isEligibleToApply).toBe(true)
+    const service = (m as any).unitServicePolygons as number[][]
+    const served = (m as any).unitServedPolygons as number[][] | undefined
+    expect(served?.length).toBe(2)
+    expect(sqft(served![0])).toBeCloseTo(sqft(service[0]), 6)
+    expect(sqft(served![1])).toBeLessThan(sqft(service[1]) - 1)
+    const unserved = sqft(service[1]) - sqft(served![1])
+    const fraction = unserved / sqft(service[1])
+    expect(fraction).toBeGreaterThan(0.05)
+    expect(fraction).toBeLessThanOrEqual(0.15)
+    const warn = m.diagnostics.find((d) => d.code === 'WARN_ZONE_PARTITION_INSCRIBED')
+    expect(warn).toBeDefined()
+    expect(warn!.message).toContain(`${unserved.toFixed(1)} sq ft`)
+    expect(warn!.message).toContain(`${(fraction * 100).toFixed(1)}%`)
+  })
+
+  it.each([
+    ['L-shape with a 150x150 ft notch quadrant', [0, 0, 300, 0, 300, 150, 150, 150, 150, 300, 0, 300]],
+    ['T-shape', [0, 0, 400, 0, 400, 100, 250, 100, 250, 300, 150, 300, 150, 100, 0, 100]]
+  ])('above the threshold (%s): blocks with ERR_ZONE_PARTITION_UNSUPPORTED naming the unserved fraction', (_n, pts) => {
+    const m = build(pts)
+    expect(m.isEligibleToApply).toBe(false)
+    const err = m.diagnostics.find((d) => d.severity === 'error' && d.code === 'ERR_ZONE_PARTITION_UNSUPPORTED')
+    expect(err).toBeDefined()
+    expect(err!.message).toMatch(/unserved/i)
+    expect(err!.message).toMatch(/15(\.0)?%/)
+    expect(err!.message).toMatch(/sq ft/)
+  })
+
+  it('a convex split serves its whole sub-polygon (served equals service)', () => {
+    const m = build([0, 0, 400, 0, 400, 300, 0, 300])
+    const service = (m as any).unitServicePolygons as number[][]
+    const served = (m as any).unitServedPolygons as number[][]
+    expect(served.map(sqft)).toEqual(service.map(sqft))
+    expect(m.diagnostics.some((d) => d.code === 'WARN_ZONE_PARTITION_INSCRIBED')).toBe(false)
   })
 })

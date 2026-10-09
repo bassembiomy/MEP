@@ -306,7 +306,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     return { project, activePreview: null, zones: converted.zones.map(zone => {
       const evaluation = calculateZoneLoadSafely(zone, project);
       return { ...zone, engineeringStatus: evaluation.error ? 'blocked' as const : 'stale' as const,
-        engineeringError: evaluation.error };
+        engineeringError: evaluation.error, engineeringNotice: undefined };
     }) };
   }),
 
@@ -462,11 +462,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           const message = skipped.length
             ? `No ranked candidate could be deployed. ${skipped.join(' | ')}`
             : describeNoFeasibleCandidate(recommendations.candidates);
-          set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked',
+          set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked', engineeringNotice: undefined,
             engineeringError: message } : z) }));
         }
       } catch (err) {
-        set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked',
+        set(s => ({ zones: s.zones.map(z => z.id === id ? { ...z, engineeringStatus: 'blocked', engineeringNotice: undefined,
           engineeringError: err instanceof Error ? err.message : 'Automatic design failed.' } : z) }));
       }
     }, 0);
@@ -479,7 +479,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const updated = { ...z, ...updates };
       const evaluation = calculateZoneLoadSafely(updated, state.project);
       return { ...updated, engineeringStatus: evaluation.error ? 'blocked' as const : 'stale' as const,
-        engineeringError: evaluation.error };
+        engineeringError: evaluation.error, engineeringNotice: undefined };
     })
   })),
   
@@ -534,7 +534,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       project,
       zones:state.zones.map(zone=>{
         const evaluation=calculateZoneLoadSafely(zone,project);
-        return {...zone,engineeringStatus:evaluation.error?'blocked' as const:'stale' as const,engineeringError:evaluation.error};
+        return {...zone,engineeringStatus:evaluation.error?'blocked' as const:'stale' as const,engineeringError:evaluation.error,engineeringNotice:undefined};
       })};
     });
   },
@@ -736,7 +736,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
     set({
       zones: updatedZones.map(z => z.id === targetZone.id ? { ...z,
-        engineeringStatus: 'preliminary' as const, engineeringError: undefined } : z),
+        engineeringStatus: 'preliminary' as const, engineeringError: undefined, engineeringNotice: undefined } : z),
       undoStack: [...state.undoStack, snapshot],
       redoStack: [],
       activePreview: null

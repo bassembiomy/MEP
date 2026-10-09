@@ -321,7 +321,9 @@ export function generateSystemCandidates(
           );
           balancingDampers = calculateBranchBalancingSchedule(criticalPath, diffusers);
         } else {
-          const extent = roomExtentFt ?? { widthFt: 1.06 * Math.sqrt(2 * areaSqFt), heightFt: 1.06 * Math.sqrt(areaSqFt / 2) };
+          // Without a real room extent assume a 4:1 plan (not 2:1, which under-estimates the run of an elongated
+          // room); pass roomExtentFt whenever the zone geometry is known.
+          const extent = roomExtentFt ?? { widthFt: 1.06 * 2 * Math.sqrt(areaSqFt), heightFt: 1.06 * 0.5 * Math.sqrt(areaSqFt) };
           const est = estimateRoutedPathPressure({
             terminalsPerUnit: terminalCount / qty,
             perUnitCfm: cfm / qty,
@@ -341,7 +343,7 @@ export function generateSystemCandidates(
             accessoriesDeltaPInWg: est.filterInWg,
             totalLossInWg: r3(est.totalLossInWg),
             marginInWg: r3(est.requiredEspInWg - est.totalLossInWg),
-            // Never round the requirement down: it must not fall below what deployment computes.
+            // Round up, never down, so rounding cannot add to the empirical shortfall against deployment (see pressureBudget.ts).
             espRequiredInWg: Math.ceil(est.requiredEspInWg * 1000) / 1000
           };
         }
@@ -554,7 +556,8 @@ export function recommendSystemsForZone(
   spaceTypeId: string,
   isImperial: boolean,
   supplyCfm?: number,
-  loadedCatalogs?: any
+  loadedCatalogs?: any,
+  roomExtentFt?: { widthFt: number; heightFt: number }
 ): LegacySystemRecommendation[] {
   const result = generateSystemCandidates(
     totalLoadBtu,
@@ -565,7 +568,10 @@ export function recommendSystemsForZone(
     isImperial,
     {},
     undefined,
-    loadedCatalogs
+    loadedCatalogs,
+    [],
+    [],
+    roomExtentFt
   );
 
   return result.candidates.map(cand => {
@@ -607,7 +613,8 @@ export function getCatalogSizingForZone(
   systemType: string | undefined,
   loadBtu: number,
   supplyCfm: number,
-  loadedCatalogs?: any
+  loadedCatalogs?: any,
+  roomExtentFt?: { widthFt: number; heightFt: number }
 ): { qty: number; model: string; esp?: string } {
   const result = generateSystemCandidates(
     loadBtu,
@@ -618,7 +625,10 @@ export function getCatalogSizingForZone(
     true,
     {},
     systemType ? [systemType] : undefined,
-    loadedCatalogs
+    loadedCatalogs,
+    [],
+    [],
+    roomExtentFt
   );
 
   const best = result.bestOverall || result.candidates[0];
