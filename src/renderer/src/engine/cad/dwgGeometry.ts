@@ -40,6 +40,7 @@ interface RawEntity {
   endAngle?: number
   xScale?: number
   yScale?: number
+  zScale?: number
   rotation?: number
   columnCount?: number
   rowCount?: number
@@ -157,17 +158,19 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
     if (Math.abs(z) > 1e-10) pendingElevation = z
     return true
   }
-  function convert(raw: RawEntity): DxfEntity | null {
+  // Elevation of a child at block-space Z `cz` is zScale * cz + zOffset (affine, composed per nested INSERT).
+  function convert(raw: RawEntity, zScale = 1, zOffset = 0): DxfEntity | null {
     pendingElevation = 0
     const converted = convertPlanar(raw)
-    if (converted && pendingElevation !== 0) {
-      ;(converted as DxfEntity & { elevation?: number }).elevation = pendingElevation
+    if (!converted) return converted
+    const stored = zScale * pendingElevation + zOffset
+    if (stored !== 0) (converted as DxfEntity & { elevation?: number }).elevation = stored
+    if (pendingElevation !== 0)
       diagnose(
         raw,
         'elevated-geometry-projected',
-        `${raw.type} at elevation ${pendingElevation} is projected onto the plan; its elevation is retained.`
+        `${raw.type} at elevation ${stored} is projected onto the plan; its elevation is retained.`
       )
-    }
     return converted
   }
   function convertPlanar(raw: RawEntity): DxfEntity | null {
@@ -377,7 +380,8 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
     ancestors: Set<string>,
     sourceBlock?: string,
     inheritedLayer?: string,
-    inheritedElevation = 0
+    zScale = 1,
+    zOffset = 0
   ): void {
     for (const value of rawEntities) {
       if (expansionStopped) return
@@ -422,13 +426,17 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           continue
         }
         if (!planar(raw, [raw.insertionPoint])) continue
-        if (Math.abs(base.z ?? 0) > 1e-10) {
-          diagnose(raw, 'nonplanar-entity', 'Block base point has a nonzero Z elevation; geometry was skipped.')
+        // Child Z becomes insertZ + sz * (childZ - baseZ), then the parent's affine Z map (same as the DXF parser).
+        const insertZ = pendingElevation
+        const baseZ = base.z ?? 0
+        const sz = raw.zScale === undefined ? 1 : raw.zScale
+        if (!finite(sz) || sz === 0) {
+          diagnose(raw, 'invalid-geometry', 'Block Z scale must be finite and nonzero.', 'error')
           continue
         }
-        const insertElevation = pendingElevation
-        if (insertElevation !== 0)
-          diagnose(raw, 'elevated-geometry-projected', `INSERT ${raw.name} at elevation ${insertElevation}; its geometry is projected onto the plan and keeps its elevation.`)
+        const insertWorldZ = zScale * insertZ + zOffset
+        if (insertWorldZ !== 0 || baseZ !== 0)
+          diagnose(raw, 'elevated-geometry-projected', `INSERT ${raw.name} at elevation ${insertWorldZ}${baseZ !== 0 ? ` (block base Z ${baseZ})` : ''}; its geometry is projected onto the plan and keeps its elevation.`)
         const sx = raw.xScale === undefined ? 1 : raw.xScale
         const sy = raw.yScale === undefined ? 1 : raw.yScale
         const angle = raw.rotation === undefined ? 0 : raw.rotation
@@ -472,7 +480,8 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           new Set([...ancestors, raw.name!]),
           raw.name,
           raw.layer && raw.layer !== '0' ? raw.layer : inheritedLayer,
-          inheritedElevation + insertElevation
+          zScale * sz,
+          zScale * (insertZ - sz * baseZ) + zOffset
         )
         const placement = describeInsertTransform(composed, { x: base.x, y: -base.y })
         const childBounds: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
@@ -499,11 +508,8 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
         })
         continue
       }
-      const converted = convert(raw)
+      const converted = convert(raw, zScale, zOffset)
       if (!converted) continue
-      if (inheritedElevation !== 0)
-        (converted as DxfEntity & { elevation?: number }).elevation =
-          ((converted as DxfEntity & { elevation?: number }).elevation ?? 0) + inheritedElevation
       const invalid = validateCadEntity(converted)
       if (invalid) {
         diagnose(raw, 'invalid-geometry', invalid, 'error')

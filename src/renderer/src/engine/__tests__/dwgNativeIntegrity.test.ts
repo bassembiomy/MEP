@@ -548,7 +548,11 @@ it('uses default +Z when converter emits an absent-extrusion zero vector',()=>{
  const result=parse(database([{type:'LWPOLYLINE',flag:512,elevation:0,extrusionDirection:point(0,0,0),vertices:[point(0,0),point(10,0),point(10,10)]}]));
  expect(result.entities).toHaveLength(1);expect(result.entities[0].closed).toBe(true);expect(result.diagnostics).toEqual([]);
 });
-it('diagnoses a nonzero block base Z instead of silently projecting the block',()=>{
+// Changed expectation (Stage B review P1): a nonzero block base Z used to skip the whole block while the DXF parser
+// ignored group 30 (inconsistent). Both now subtract the base Z: child elevation = insertZ + zScale * (childZ - baseZ).
+it('applies a nonzero block base Z to child elevation and says so, consistently with DXF',()=>{
  const result=parse(database([insert('Elevated')],[{name:'Elevated',basePoint:point(0,0,10),entities:[line()]}]));
- expect(result.entities).toHaveLength(0);expect(result.diagnostics?.some(d=>/plane|base|elevation/i.test(d.message))).toBe(true);
+ expect(result.entities).toHaveLength(1);
+ expect((result.entities[0] as {elevation?:number}).elevation).toBe(-10);
+ expect(result.diagnostics?.some(d=>d.code==='elevated-geometry-projected'&&d.entityType==='INSERT'&&/base Z 10/.test(d.message))).toBe(true);
 });

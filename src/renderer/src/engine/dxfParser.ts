@@ -174,7 +174,7 @@ export function resolveCadUnits(input: {
 
 interface DxfPair { code: number; value: string }
 interface DxfRecord { type: string; pairs: DxfPair[] }
-interface DxfBlock { baseX: number; baseY: number; records: DxfRecord[] }
+interface DxfBlock { baseX: number; baseY: number; baseZ: number; records: DxfRecord[] }
 const first = (r: DxfRecord, code: number) => r.pairs.find(p => p.code === code)?.value;
 const number = (r: DxfRecord, code: number, fallback = NaN) => {
   const value = first(r, code);
@@ -249,7 +249,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
   for (const r of sections.get('BLOCKS') ?? []) {
     if (r.type === 'BLOCK') {
       incompleteBlock();
-      block = { baseX: number(r, 10, 0), baseY: -number(r, 20, 0), records: [] };
+      block = { baseX: number(r, 10, 0), baseY: -number(r, 20, 0), baseZ: number(r, 30, 0), records: [] };
       blockName = first(r, 2)?.trim(); blockRecord = r;
       if (!blockName) diagnose('MALFORMED_BLOCK', 'Block has no name.', r);
     } else if (r.type === 'ENDBLK') {
@@ -265,7 +265,8 @@ export function parseDxfText(dxfText: string): ParsedDxf {
   }
   incompleteBlock();
   let visited = 0, expansionStopped = false;
-  function expand(records: DxfRecord[], matrix: CadAffineMatrix, stack: string[], inheritedLayer = '0', inheritedColor?: string, insertHandle?: string, inheritedElevation = 0) {
+  function expand(records: DxfRecord[], matrix: CadAffineMatrix, stack: string[], inheritedLayer = '0', inheritedColor?: string, insertHandle?: string, zScale = 1, zOffset = 0) {
+    // Elevation of a child at block-space Z `cz` is zScale * cz + zOffset (affine, composed per nested INSERT).
     for (let index = 0; index < records.length; index++) {
       const r = records[index];
       if (++visited > 100_000) {
@@ -281,9 +282,14 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       }
       // Planner decision: planar geometry at one constant non-zero Z is kept (projected onto the plan, `elevation`
       // recorded, ELEVATED_GEOMETRY_PROJECTED warning). Varying Z or tilted/3D data is still dropped.
+      // Group 31 is a point Z (second point / alignment point) for LINE, TEXT and ATTRIB/ATTDEF; for every other
+      // entity it is a direction vector component that must be 0.
       const zValues: number[] = []; let badZ = false;
+      const secondPointZ = r.type === 'LINE' || r.type === 'TEXT' || r.type === 'ATTRIB' || r.type === 'ATTDEF';
+      // Aligned text with a second point but no first Z has an implicit first Z of 0, which may differ.
+      if (secondPointZ && r.type !== 'LINE' && first(r, 31) !== undefined && first(r, 30) === undefined) zValues.push(0);
       for (const p of r.pairs) {
-        if (p.code === 30 || p.code === 38 || (p.code === 31 && r.type === 'LINE')) {
+        if (p.code === 30 || p.code === 38 || (p.code === 31 && secondPointZ)) {
           const z = p.value.trim() === '' ? NaN : Number(p.value);
           if (Number.isFinite(z)) zValues.push(z); else badZ = true;
         } else if (p.code === 31 && (!Number.isFinite(Number(p.value)) || Number(p.value) !== 0)) badZ = true;
@@ -301,16 +307,19 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         if (!child) { diagnose('MISSING_BLOCK', `INSERT references missing block ${name}.`, r, 'error'); continue; }
         if (stack.includes(name)) { diagnose('CYCLIC_BLOCK', `Cyclic block reference ${[...stack, name].join(' -> ')}.`, r, 'error'); continue; }
         if (stack.length >= 32) { diagnose('BLOCK_DEPTH_LIMIT', 'Nested block depth exceeded 32; remaining geometry omitted.', r, 'error'); continue; }
-        const x = number(r, 10, 0), y = -number(r, 20, 0), sx = number(r, 41, 1), sy = number(r, 42, 1), theta = number(r, 50, 0) * Math.PI / 180;
-        if (![x, y, sx, sy, theta, child.baseX, child.baseY].every(Number.isFinite) || sx === 0 || sy === 0) { diagnose('MALFORMED_INSERT', 'INSERT has invalid base, scale, rotation or insertion coordinates.', r, 'error'); continue; }
+        const x = number(r, 10, 0), y = -number(r, 20, 0), sx = number(r, 41, 1), sy = number(r, 42, 1), sz = number(r, 43, 1), theta = number(r, 50, 0) * Math.PI / 180;
+        if (![x, y, sx, sy, sz, theta, child.baseX, child.baseY, child.baseZ, ownZ].every(Number.isFinite) || sx === 0 || sy === 0 || sz === 0) { diagnose('MALFORMED_INSERT', 'INSERT has invalid base, scale, rotation or insertion coordinates.', r, 'error'); continue; }
         const cs = Math.cos(theta), sn = Math.sin(theta);
         const local = { a: cs * sx, b: -sn * sx, c: sn * sy, d: cs * sy, tx: x, ty: y };
         local.tx -= local.a * child.baseX + local.c * child.baseY;
         local.ty -= local.b * child.baseX + local.d * child.baseY;
         const composed = compose(matrix, compose(ocs, local)), childStart = entities.length;
-        const insertZ = reflected ? -ownZ : ownZ;
-        if (ownZ !== 0) diagnose('ELEVATED_GEOMETRY_PROJECTED', `INSERT ${name} at elevation ${insertZ}; its geometry is projected onto the plan and keeps its elevation.`, r);
-        expand(child.records, composed, [...stack, name], layer, ownColor ?? inheritedColor, first(r, 5)?.trim() ?? insertHandle, inheritedElevation + insertZ);
+        // Child Z in the INSERT's OCS is ownZ + sz * (childZ - baseZ); a -Z extrusion maps OCS Z to world -Z.
+        const nzSign = reflected ? -1 : 1;
+        const insertWorldZ = zScale * nzSign * ownZ + zOffset;
+        if (insertWorldZ !== 0 || child.baseZ !== 0) diagnose('ELEVATED_GEOMETRY_PROJECTED', `INSERT ${name} at elevation ${insertWorldZ}${child.baseZ !== 0 ? ` (block base Z ${child.baseZ})` : ''}; its geometry is projected onto the plan and keeps its elevation.`, r);
+        expand(child.records, composed, [...stack, name], layer, ownColor ?? inheritedColor, first(r, 5)?.trim() ?? insertHandle,
+          zScale * nzSign * sz, zScale * nzSign * (ownZ - sz * child.baseZ) + zOffset);
         const placement = describeInsertTransform(composed, { x: child.baseX, y: child.baseY });
         const childBounds: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
         for (let k = childStart; k < entities.length; k++) {
@@ -334,18 +343,24 @@ export function parseDxfText(dxfText: string): ParsedDxf {
           if (!Number.isInteger(flags) || (r.type === 'POLYLINE' && (flags & (2 | 4 | 8 | 16 | 64)))) { diagnose('UNSUPPORTED_POLYLINE', 'Fitted, spline, 3D/polyface or malformed polyline omitted.', r); continue; }
           ent.closed = (flags & 1) !== 0; ent.points = []; ent.bulges = [];
           if (r.type === 'POLYLINE') {
-            let ended = false;
+            let ended = false; const vertexZ: number[] = [];
             while (index + 1 < records.length) {
               const vertex = records[index + 1];
               if (vertex.type === 'SEQEND') { index++; ended = true; break; }
               if (vertex.type !== 'VERTEX') break;
               index++;
               ent.points.push(number(vertex, 10), -number(vertex, 20)); ent.bulges.push(number(vertex, 42, 0));
-              const vz = number(vertex, 30, 0);
-              if (!Number.isFinite(vz) || (number(vertex, 70, 0) & (1 | 8 | 16 | 32 | 64 | 128))) ent.points.push(NaN, NaN);
-              else if (vz !== 0) { if (ownZ === 0 || sameZ(ownZ, vz)) ownZ = vz; else ent.points.push(NaN, NaN); }
+              if (first(vertex, 30) !== undefined) {
+                const vz = number(vertex, 30, 0);
+                if (!Number.isFinite(vz) || (number(vertex, 70, 0) & (1 | 8 | 16 | 32 | 64 | 128))) ent.points.push(NaN, NaN);
+                else vertexZ.push(vz);
+              } else if (number(vertex, 70, 0) & (1 | 8 | 16 | 32 | 64 | 128)) ent.points.push(NaN, NaN);
             }
             if (!ended) { diagnose('INCOMPLETE_POLYLINE', 'Legacy POLYLINE is missing SEQEND; entity omitted.', r, 'error'); continue; }
+            // Vertex Z values (including 0) and the header elevation must all agree; a mix of 0 and 5 is varying Z.
+            const polyZ = first(r, 30) !== undefined ? [ownZ, ...vertexZ] : vertexZ;
+            if (!polyZ.every(z => sameZ(z, polyZ[0]))) { diagnose('UNSUPPORTED_ELEVATION', 'Nonplanar geometry (varying Z) cannot be represented in the 2D drawing; entity omitted.', r); continue; }
+            if (polyZ.length) ownZ = polyZ[0];
           } else {
             let vx: number | undefined, vy: number | undefined, bulge = 0;
             const flush = () => { if (vx !== undefined) { ent.points!.push(vx, -(vy ?? NaN)); ent.bulges!.push(bulge); } };
@@ -397,7 +412,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       const invalid = validateCadEntity(ent);
       if (invalid) { diagnose('MALFORMED_ENTITY', invalid, r, 'error'); continue; }
       ent = transformCadEntity(ent, compose(matrix, ocs));
-      const entityZ = (reflected ? -ownZ : ownZ) + inheritedElevation;
+      const entityZ = zScale * (reflected ? -ownZ : ownZ) + zOffset;
       if (ownZ !== 0) diagnose('ELEVATED_GEOMETRY_PROJECTED', `${r.type} at elevation ${entityZ} is projected onto the plan; its elevation is retained.`, r);
       if (entityZ !== 0) (ent as DxfEntity & { elevation?: number }).elevation = entityZ;
       const transformedInvalid = validateCadEntity(ent);
