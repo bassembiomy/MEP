@@ -123,6 +123,15 @@ const boundsKey = (polygon: number[]): string => {
   return `${minX.toFixed(4)},${minY.toFixed(4)},${maxX.toFixed(4)},${maxY.toFixed(4)}`
 }
 
+/** Same opening: same level and centre within half a foot (the id embeds the kind, which can change with the drawing scale). */
+export const sameOpeningObject = (unitsPerFoot: number) => (a: StoredCadOpening, b: StoredCadOpening): boolean =>
+  a.level === b.level && Math.hypot(a.center.x - b.center.x, a.center.y - b.center.y) <= 0.5 * unitsPerFoot
+
+const STALE_NOTE = '(at the previous scale)'
+/** Evidence text quotes sizes in feet at the scale the item was computed at; after a rescale those figures are stale, so say so. */
+const markStaleEvidence = (evidence: string[]): string[] =>
+  evidence.map((e) => (/\bft\b/.test(e) && !e.endsWith(STALE_NOTE) ? `${e} ${STALE_NOTE}` : e))
+
 /**
  * Same obstacle object: shared real source entity handle, or the same layer and outline bounds. The synthetic `entity-<index>`
  * handles recognition invents for handle-less entities (R12) are positional and shift when a hidden layer is shown, so they never match.
@@ -195,10 +204,14 @@ export function recognizeCadSemantics(input: SemanticRecognitionInput): Semantic
         : 1
     const rescale = <T extends { status: CadReviewStatus }>(items: T[], fix: (i: T) => T): T[] =>
       ratio === 1 ? items : items.map((i) => (isDecided(i.status) ? fix(i) : i))
-    openings = mergeCandidates(openings, rescale(input.prior.openings, (o) => ({ ...o, widthFt: o.widthFt * ratio })))
+    openings = mergeCandidates(
+      openings,
+      rescale(input.prior.openings, (o) => ({ ...o, widthFt: o.widthFt * ratio, evidence: markStaleEvidence(o.evidence) })),
+      ratio !== 1 ? sameOpeningObject(input.unitsPerFoot) : undefined
+    )
     obstacles = mergeCandidates(
       obstacles,
-      rescale(input.prior.obstacles, (o) => ({ ...o, widthFt: o.widthFt * ratio, depthFt: o.depthFt * ratio })),
+      rescale(input.prior.obstacles, (o) => ({ ...o, widthFt: o.widthFt * ratio, depthFt: o.depthFt * ratio, evidence: markStaleEvidence(o.evidence) })),
       // Ids are stable at the same scale, so only a rescale (ids embed feet) needs object matching.
       ratio !== 1 ? sameObstacleObject : undefined
     )
