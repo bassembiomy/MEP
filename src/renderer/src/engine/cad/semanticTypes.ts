@@ -118,3 +118,28 @@ export interface CadApprovedOpening {
   a: { x: number; y: number }
   b: { x: number; y: number }
 }
+
+export interface CadObstacleCandidate {
+  id: string
+  shape: 'polygon' | 'circle'
+  /** Outline in canvas coordinates (circles are also sampled to a 16-gon for convenience). */
+  polygon: number[]
+  circle?: { x: number; y: number; radius: number }
+  widthFt: number
+  depthFt: number
+  layer: string
+  roomId?: string
+  sourceHandles: string[]
+  confidence: number
+  evidence: string[]
+  status: 'review-required'
+}
+
+/** An obstacle the user approved, with the clearance (ft) to keep around it. Drawing-unit geometry. */
+export interface CadApprovedObstacle {
+  id: string
+  status: 'approved'
+  clearanceFt: number
+  polygon?: number[]
+  circle?: { x: number; y: number; radius: number }
+}
