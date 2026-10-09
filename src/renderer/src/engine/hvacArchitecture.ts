@@ -546,9 +546,9 @@ export function generateSystemArchitecture(
   }
 
   const standardsMap: Record<string, string[]> = {
-    concealed: ['ASHRAE Standard 90.1-2019 (Efficiency)', 'ASHRAE Standard 62.1-2019 (Ventilation)', 'SMACNA HVAC Duct Construction Standards (Metal & Flexible)', 'AHRI 210/240 Certified'],
-    cassette: ['ASHRAE Standard 90.1-2019', 'ASHRAE Standard 62.1-2019', 'AHRI 210/240 Performance Certified', 'ISO 5151 Non-Ducted AC Standards'],
-    'high-wall': ['ASHRAE Standard 90.1-2019', 'AHRI 210/240 Certified', 'ISO 5151 Air Conditioners Standard'],
+    concealed: ['ASHRAE Standard 90.1-2019 (Efficiency)', 'ASHRAE Standard 62.1-2019 (Ventilation)', 'SMACNA HVAC Duct Construction Standards (Metal & Flexible)', 'AHRI 210/240 (rating standard; certification not verified)'],
+    cassette: ['ASHRAE Standard 90.1-2019', 'ASHRAE Standard 62.1-2019', 'AHRI 210/240 (rating standard; certification not verified)', 'ISO 5151 Non-Ducted AC Standards'],
+    'high-wall': ['ASHRAE Standard 90.1-2019', 'AHRI 210/240 (rating standard; certification not verified)','ISO 5151 Air Conditioners Standard'],
     vrf: ['ASHRAE Standard 15-2022 (Refrigerant Safety)', 'ASHRAE Standard 90.1-2019', 'AHRI 1230 Multi-Split / VRF Standard', 'ASHRAE Standard 62.1-2019'],
     packaged: ['ASHRAE Standard 90.1-2019 (Path A/B RTU Efficiency)', 'ASHRAE 62.1 Demand Controlled Ventilation', 'AHRI 340/360 Commercial Unitary Equipment', 'SMACNA Industrial & Commercial Duct Standards'],
     ahu: ['ASHRAE Guideline 36-2021 (High-Performance Sequences of Operation)', 'ASHRAE Standard 90.1-2019', 'ASHRAE Standard 62.1-2019', 'AHRI 430 Central Station AHU', 'AMCA 210 Fan Performance']

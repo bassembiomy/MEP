@@ -1,8 +1,21 @@
 # Engineering integrity implementation status
 
-Date: 2026-10-08. Scope: the first implementation stage approved after the CAD/HVAC audit. Changes are local on `fix/engineering-integrity-audit`; existing user changes are preserved and no commit, push or merge was performed.
+## Status (read first)
 
-## Implemented
+- (a) All output is **preliminary**. Reports and DXF exports carry `issueReady: false`; nothing produced by this application is ready to issue for construction.
+- (b) **No live Electron GUI verification** has been performed. Canvas interactions (drawing, snapping, measuring, component drags, verify) are covered by pure-function and store tests and a TypeScript build only.
+- (c) **CAD import is tested only on synthetic fixtures**: DXF built in code (`__tests__/fixtures/dxfBuilder.ts`) and hand-built LibreDWG database objects for DWG. No real project drawing has been imported in a test, so recognition quality on real drawings is unmeasured.
+- (d) The **bundled equipment, diffuser and duct catalogs have no verified manufacturer provenance**; their capacities, fan curves and dimensions are not traceable to published data.
+- (e) The **pressure model is simplified**: equal-friction/Huebscher duct friction with a 0.10 in.wg/100 ft floor, only elbow and branch-tee fittings, a fixed filter allowance and a ×1.15 factor. It does not model actual fittings, accessories, system effect or fan curves at site conditions.
+- (f) Still outstanding from the original audit: detailed envelope/solar loads, schedules and psychrometrics; ventilation/exhaust design; controlled Egyptian code and ASHRAE/SMACNA/NFPA normative text (standards references are not compliance checks); 3D clashes and maintenance clearances; rated barriers, fire/smoke dampers and safety review; refrigerant line length/height limits; commissioning verification.
+
+Date: 2026-10-08, updated 2026-10-09. Scope: the engineering-integrity stages after the CAD/HVAC audit, including CAD recognition, review and editing (Stages B and C). Changes are committed on branch `claude/pensive-darwin-l1p98e`; nothing has been merged or released.
+
+## CAD review and component editing (Stages B–C)
+
+Room, opening, obstacle, level and layer-role recognition produces suggestions only; nothing constrains a design until the user approves it. Dragging terminals, trunks and indoor or outdoor units is validated geometrically (stays in the room, network stays connected) and marks the room **stale**. Each accepted drag is one undo step. "Verify" re-runs the deployment acceptance checks against the evidence from the last automatic design. It refuses when room or project inputs have changed since then, and that evidence is kept for the session only, so after reopening a project the room must be re-designed before it can be verified. Verify does not check outdoor-unit placement beyond its presence (no refrigerant line length or height limits). Snapping uses visible layers at the selected level, while the canvas draws all levels.
+
+## Implemented (historical: first stage and follow-ups)
 
 - Geometry rejects nonfinite, degenerate, overlapping and self-intersecting polygons. Drawing scale and metric/imperial units normalize into physical feet once at the calculation boundary.
 - Application and orchestration use one preliminary load service. Internal selection and deployment retain unrounded Btu/h/CFM; display rounding and W/L/s conversion happen separately. Explicit zero inputs survive. Invalid or insufficient airflow overrides block calculation.
@@ -13,11 +26,11 @@ Date: 2026-10-08. Scope: the first implementation stage approved after the CAD/H
 - Deferred generation does not overwrite edited/deleted zones. Invalid calculations appear as editable zone errors. Zone property edits mark designs stale; generated CAD placement uses the validated transaction. Schedule row clicks are read-only, and the schedule cannot directly deploy an unchecked design. Supply labels exclude return air and convert CFM to L/s correctly.
 - Generic pressure previews and unknown ceiling depth are explicitly provisional. Without a declared depth, deployment uses a preliminary 14-inch sizing envelope and warns that actual ceiling fit needs verification.
 
-## Verification
+## Verification (historical)
 
-Verification at the end of the first stage (superseded by the follow-up results below):
+Verification at the end of the first stage (historical; superseded by the follow-up results below):
 
-- `npm test`: 24 Vitest files, **273 tests passed**. Legacy Node/assertion tests: **42 passed, 9 failed**. Full command exit 1; release gate remains failing.
+- `npm test`: test counts at each stage are recorded in the corresponding commit message; `npm test` must be re-run to establish the current state. (The first-stage run was not green; the release gate was failing at that point.)
 - `npm run build`: exit 0; node and web TypeScript checks plus production main/preload/renderer bundles succeeded.
 - Independent scoped specification and code-quality review: PASS after fixes. Final architecture review used the available reviewer after the requested frontier reviewer was unavailable due a usage limit.
 - Existing build warning: LibreDWG imports `node:module`, externalized for browser compatibility. Existing npm configuration warnings remain.
@@ -26,15 +39,15 @@ Verification at the end of the first stage (superseded by the follow-up results 
 
 Local implementation evidence, red/green logs, snapshots and review reports are retained under the ignored `.superpowers/sdd/2026-10-08-engineering-integrity/` directory. Required commands are `npm test`, `npm run typecheck` and `npm run build`. UI compilation was checked; no live Electron interaction or installation package was verified in this stage.
 
-## Resolution of remaining failures
+## Resolution of remaining failures (historical)
 
-Subsequent stage: `npm test` is green after these changes (verified by running the suite).
+Subsequent stage: at the time, `npm test` was reported green after these changes. Test counts at each stage are recorded in the corresponding commit message; `npm test` must be re-run to establish the current state.
 
 - `detailedZoneLoad`: the sensible-airflow denominator is validated (finite, positive) before dividing, so overflowing air properties are rejected rather than reported as zero demand.
 - `aiHvacGenerator`: the generator now normalizes the polygon to feet once, places diffusers at scale 1 (it previously passed scale 10 for feet-based geometry, collapsing the room to 3 ft x 3 ft and under-covering it), and maps results back to drawing units. Return grilles keep their type. Coverage targets were not lowered.
 - `deploymentAcceptance`: fixture updated to derive candidates from the canonical zone load, use a 20 ft x 15 ft room with a validated 350 CFM design override, pass the project to every deployment transaction, and check port connectivity instead of a duct type name. No thresholds were weakened.
 
-Results at the end of that stage: 34 Vitest files (442 tests) and 113 legacy tests passed; after the gap fixes below, 35 files (see the verification run recorded with the commit), and `npm run typecheck` reports no errors. The earlier baseline files (addLShapedZoneStability, closedLoopDesignOptimizer, master9PointValidation, standardsLayer, terminalsAndReturns, endToEndAirDistribution, lecture06EquipmentVerification) pass on this tree; whether they were fixed by the first stage or this one was not isolated. The AI assistant modal now passes `project.units` and `project.scale` to the generator, and return ducts keep their `return` type.
+Results at the end of that stage (historical): test counts are recorded in the corresponding commit message; after the gap fixes below, see that commit's verification run, and `npm run typecheck` reports no errors. The earlier baseline files (addLShapedZoneStability, closedLoopDesignOptimizer, master9PointValidation, standardsLayer, terminalsAndReturns, endToEndAirDistribution, lecture06EquipmentVerification) pass on this tree; whether they were fixed by the first stage or this one was not isolated. The AI assistant modal now passes `project.units` and `project.scale` to the generator, and return ducts keep their `return` type.
 
 The stepped-return regression fixture supplies a real grille and asserts that absent grilles produce no fabricated connected return route.
 
@@ -54,14 +67,14 @@ Gaps recorded at that stage, **now fixed** in the third stage (each with tests w
 
 **A1 outcome (stated plainly).** With the shared budget the 30x25 ft, 2-person office has **no valid ducted candidate in the bundled catalog**: 53QDMT-18N x1 is now rejected by the generator with `ERR_FAN_ESP_DEFICIT` (about 0.30 in.wg available at 443 CFM against 0.37 required by deployment, 0.39 estimated), so auto-deploy for that room is reported **blocked** with the rejection reason, rather than appearing valid and failing at apply. The 40x30 ft, 6-person room likewise has no valid ducted candidate. Evidence that these rejections are real and not over-conservative: in `systemDesignerIntegrity.test.ts` every ducted candidate whose only error is `ERR_FAN_ESP_DEFICIT` is forced valid for both rooms (30x25 ft/2 people and 40x30 ft/6 people), built and run through `executeDeploymentTransaction` with the real fan curve, and each is rejected by deployment for fan pressure. No such candidate deploys, so the estimate was not calibrated down. Note the bundled catalog also has no valid ducted candidate at the computed airflow of the other rooms tried (15x15, 20x15 at 238 CFM, 20x20 to 28x20); the 20x15 ft case with a valid 53QDMT-18N candidate uses the validated 350 CFM design override, and that row asserts the per-unit fan range for real. The existing 20x15 ft / 350 CFM acceptance case (53QDMT-18N, 0.356 required vs 0.38 available) still deploys. Nothing in deployment was loosened. Existing expectation changed: `systemDesignerIntegrity.test.ts` "valid ducted candidates stay inside the fan range" expected at least one valid ducted candidate for 30x25 and 40x30 ft; those candidates were valid only because the old estimate under-reported pressure.
 
-Verification after this stage: `npm test` green (Vitest 38 files, **517 tests** passed, up from 457; legacy Node tests **113 passed**), `npm run typecheck` clean, `npm run build` exit 0 (LibreDWG `node:module` warning only).
+Verification after this stage (historical): `npm test` was reported green at the time; the test count is recorded in the corresponding commit message. `npm run typecheck` clean, `npm run build` exit 0 (LibreDWG `node:module` warning only).
 
-Follow-up review fixes:
+Follow-up review fixes (historical):
 
 - **Calibration rows and fallback extent.** Calibration now also covers an elongated 60x12 ft room (with and without a 600 CFM override), two single-terminal rooms (12x12 ft/300 CFM, 14x10 ft/280 CFM) and fallback-extent rooms where no extent is passed (60x15 ft, 80x20 ft, 4:1). The 80x20 ft fallback row was below deployment (0.548 against 0.5515 in.wg required) because the generator assumed a 2:1 plan; the fallback now assumes 4:1. Elongated rooms with explicit extents and the single-terminal rows were not below deployment. `recommendSystemsForZone` and `getCatalogSizingForZone` accept `roomExtentFt` and `SystemComparisonTable` passes the selected zone extent. The estimate remains an empirical bound on the listed fixtures: rooms more elongated than 4:1 without an extent can still be under-estimated.
 - **Inscribed-rectangle fallback.** For a concave multi-unit sub-polygon the manifest records the region actually covered (`unitServedPolygons`, next to `unitServicePolygons`). `WARN_ZONE_PARTITION_INSCRIBED` states the unserved area (sq ft) and its percentage of the unit's share. When that fraction exceeds `MAX_UNSERVED_SERVICE_FRACTION` = 15 % (`deploymentManager.ts`) the split is blocked with `ERR_ZONE_PARTITION_UNSUPPORTED`. Consequence: the 300x300 ft L-shape split into 2 units leaves 16.7 % of unit 2's share unserved and is now blocked (the earlier statement that 2-unit L-shapes deploy no longer holds for it; a thinner L at 10.7 % still deploys with the warning). The T-shape (25 %) is blocked.
 - **Cassette fallback placement** now raises `WARN_CASSETTE_PLACEHOLDER_ACOUSTICS` because its terminals carry placeholder NC (zone limit), 14 ft throw and 0.04 in.wg values rather than evaluated ones.
-- Verification after these fixes: `npm test` green (Vitest 41 files, **582 tests**; legacy Node tests 113 passed) and `npm run typecheck` clean.
+- Verification after these fixes (historical): `npm test` was reported green at the time; the test count is recorded in the corresponding commit message. `npm run typecheck` clean.
 - **Store notice.** `engineeringNotice` (skipped-candidate reasons) is cleared whenever a zone becomes stale, blocked or preliminary through any other path (edits, project/CAD changes, applying a candidate).
 
 Remaining known limitations of these fixes: the routed-path estimate is deliberately conservative (about 0.01 to 0.1 in.wg above deployment), so a design that would marginally pass deployment can be rejected by the generator; a concave sub-polygon is served only by its largest inscribed rectangle; outlines whose slabs split into pieces on both axes are blocked, not partitioned.
@@ -70,9 +83,9 @@ Remaining known limitations of these fixes: the routed-path estimate is delibera
 
 This stage improves software integrity; it does not establish a construction-ready professional release. The full test suite is a release gate; it passes as of the follow-up stage, but passing tests do not establish engineering issue readiness. Further work from the original audit remains necessary:
 
-- CAD semantic understanding: room boundaries, openings, obstacles, elevations, layers, uncertainty and explicit user correction.
+- CAD recognition on real project drawings: recognition is implemented as user-approved suggestions but has been measured only on synthetic fixtures; accuracy on real DXF/DWG files, large-drawing performance and DXF export round-trip into CAD software are unverified.
 - Detailed envelope, glazing, solar, schedules, psychrometrics and ventilation/exhaust design; the current load model is preliminary.
-- Verified manufacturer catalogs and capacities/fan curves at actual operating conditions; uploaded catalog integration is not complete.
+- Verified manufacturer catalogs and capacities/fan curves at actual operating conditions; the bundled catalogs have no verified provenance; uploaded catalog integration is not complete.
 - Complete outdoor-air source/relief arrangements, actual fittings and accessories, 3D clashes, maintenance clearances, rated barriers and safety review.
 - Unified schedule/design artifacts, editable engineering CAD export, traceable engineering issue/review workflow and commissioning verification.
 

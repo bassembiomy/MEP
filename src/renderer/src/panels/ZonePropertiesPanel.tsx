@@ -487,7 +487,7 @@ export const ZonePropertiesPanel: React.FC = () => {
             <div className="flex justify-between text-[9px] text-neutral-500 font-mono">
               <span>85% Basic</span>
               <span>95% target</span>
-              <span className="text-teal-400 font-bold">100% Full Blanket</span>
+              <span className="text-teal-400 font-bold">estimated throw coverage ≥ 99%</span>
             </div>
           </div>
 
@@ -535,7 +535,7 @@ export const ZonePropertiesPanel: React.FC = () => {
             <div className="flex items-center justify-between border-t border-neutral-800 pt-1.5 text-[11px]">
               <span className="text-neutral-400">Circular Distribution Coverage:</span>
               <span className={`font-mono font-bold ${zoneCoverage.coveragePercent >= 99 ? 'text-emerald-400' : zoneCoverage.isCovered95 ? 'text-teal-400' : 'text-amber-400'}`}>
-                {zoneCoverage.coveragePercent}% {zoneCoverage.coveragePercent >= 99 ? '(100% Full Blanket)' : zoneCoverage.isCovered95 ? '(≥95% Pass)' : '(Partial)'}
+                {zoneCoverage.coveragePercent}% {zoneCoverage.coveragePercent >= 99 ? '(estimated throw coverage ≥ 99%)' : zoneCoverage.isCovered95 ? '(≥95% Pass)' : '(Partial)'}
               </span>
             </div>
           )}

@@ -1446,7 +1446,7 @@ export const FloorPlanCanvas: React.FC = () => {
                         <Text
                           x={centroid.x - 80 / stageScale}
                           y={centroid.y + 12 / stageScale}
-                          text={`Coverage: ${coverage.coveragePercent}% ${coverage.coveragePercent >= 99 ? '★ (100% Full Space Covered)' : coverage.isCovered95 ? '✓ (≥95%)' : '⚠'}`}
+                          text={`Coverage: ${coverage.coveragePercent}% ${coverage.coveragePercent >= 99 ? '★ (estimated throw coverage ≥ 99%)' : coverage.isCovered95 ? '✓ (≥95%)' : '⚠'}`}
                           fontSize={Math.max(9.5, 9.5 / stageScale)}
                           fontStyle="bold"
                           fill={coverage.coveragePercent >= 99 ? '#34d399' : coverage.isCovered95 ? '#2dd4bf' : '#f59e0b'}

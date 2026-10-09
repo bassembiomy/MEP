@@ -35,7 +35,7 @@ export function validateSupplyAirflowBalance(
     status,
     metric: `${terminalSum} CFM (Diffusers) vs ${equipmentSum} CFM (Equipment) [Error: ${errorPercent.toFixed(1)}%]`,
     criteria: `|Σ Diffuser CFM - Equipment CFM| / Equipment CFM <= ${tolerance}%`,
-    message: passed ? 'Supply airflow perfectly balances equipment fan delivery' : `Airflow balance error ${errorPercent.toFixed(1)}% exceeds ${tolerance}% tolerance`
+    message: passed ? 'Supply airflow balances within tolerance' : `Airflow balance error ${errorPercent.toFixed(1)}% exceeds ${tolerance}% tolerance`
   };
 }
 
