@@ -55,6 +55,11 @@ describe('MTEXT \\M+ multibyte escapes', () => {
   it('leaves a well-formed but undecodable double-byte sequence as written (no U+FFFD)', () => {
     expect(one('\\M+1FFFF')).toBe('\\M+1FFFF')
   })
+  it('does not decode an escape that follows an escaped backslash', () => {
+    expect(one('\\\\U+0041')).toBe('\\\\U+0041')
+    expect(one('\\\\M+18A4F')).toBe('\\\\M+18A4F')
+    expect(one('\\\\\\U+0041')).toBe('\\\\A')
+  })
 })
 
 describe('AC1021+ text encoding', () => {

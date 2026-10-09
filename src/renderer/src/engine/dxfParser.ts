@@ -230,10 +230,12 @@ export function decodeDxfBytes(bytes: Uint8Array): string {
 
 /** Decodes the `\U+XXXX` unicode escapes used by DXF R2004 and earlier for characters outside the code page. */
 const decodeUnicodeEscapes = (text: string): string =>
-  text.replace(/\\U\+([0-9A-Fa-f]{4})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/\\M\+([1-4])([0-9A-Fa-f]{4})/g, (whole, page: string, hex: string) => {
-      try { return new TextDecoder(MULTIBYTE_PAGES[page], { fatal: true }).decode(Uint8Array.from([parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2), 16)])); } catch { return whole; }
-    });
+  // One pass; a double backslash is consumed as an escaped backslash so an escape right after it (e.g. `\\U+0041` in the DXF text) stays literal.
+  text.replace(/\\\\|\\U\+([0-9A-Fa-f]{4})|\\M\+([1-4])([0-9A-Fa-f]{4})/g, (whole, u: string | undefined, page: string | undefined, hex: string | undefined) => {
+    if (u) return String.fromCharCode(parseInt(u, 16));
+    if (!page || !hex) return whole;
+    try { return new TextDecoder(MULTIBYTE_PAGES[page], { fatal: true }).decode(Uint8Array.from([parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2), 16)])); } catch { return whole; }
+  });
 
 /**
  * MTEXT `\M+nXXXX` (n = 1..4) is a double-byte character of a legacy code page: 1 Shift-JIS, 2 Big5, 3 EUC-KR (cp949), 4 GBK.
