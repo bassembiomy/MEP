@@ -700,4 +700,29 @@ describe('layout records, layers, paper space, attributes and splines (shapes re
     // only the ATTRIB whose owner is no INSERT is still reported
     expect((result.diagnostics ?? []).filter((d) => d.entityType === 'ATTRIB').map((d) => d.handle)).toEqual(['777'])
   })
+
+  // Same rule as the DXF path: a -Z extrusion mirrors the OCS X axis (x -> -x) for OCS entities and flips the sign of Z;
+  // LINE / ELLIPSE / SPLINE are stored in WCS and ignore it. The mirrored door's attribute (ezdxf add_auto_attribs) uses it.
+  it('accepts a -Z extrusion like the DXF path: OCS entities are mirrored in X, WCS entities are not, other normals are still skipped', async () => {
+    const down = { x: 0, y: 0, z: -1 }
+    const text = { type: 'TEXT', handle: 'T1', startPoint: point(-384, 186), text: 'D03', textHeight: 4, rotation: 0, extrusionDirection: down }
+    const result = await parse(database([
+      text,
+      { type: 'CIRCLE', center: point(-10, 5), radius: 2, extrusionDirection: down },
+      { ...line(point(1, 2), point(3, 4)), extrusionDirection: down },
+      { type: 'LWPOLYLINE', flag: 1 | 512, extrusionDirection: down, elevation: 7, vertices: [point(-5, 0), point(-1, 0), point(-1, 3)] }
+    ]))
+    expect(result.diagnostics?.filter((d) => d.code === 'nonplanar-entity')).toEqual([])
+    const [t, c, l, p] = result.entities as (typeof result.entities[number] & { elevation?: number })[]
+    expect([t.x, t.y]).toEqual([384, -186])
+    expect([c.x, c.y]).toEqual([10, -5])
+    expect([l.x, l.y, ...l.points!]).toEqual([1, -2, 3, -4])
+    expect(p.points).toEqual([5, 0, 1, 0, 1, -3])
+    expect(p.elevation).toBe(-7)
+    // a mirrored INSERT mirrors its content and its Z map; a sideways normal is still rejected
+    const mirrored = await parse(database([insert('Blk', point(-100, 0), { extrusionDirection: down })], [{ name: 'Blk', basePoint: point(0, 0), entities: [line(point(0, 0), point(10, 0))] }]))
+    expect([mirrored.entities[0].x, ...mirrored.entities[0].points!.map((v) => v + 0)]).toEqual([100, 90, 0])
+    const sideways = await parse(database([{ ...text, extrusionDirection: { x: 0, y: 1, z: 0 } }]))
+    expect(sideways.entities).toHaveLength(0)
+  })
 })

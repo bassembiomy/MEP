@@ -156,6 +156,10 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
     diagnostics.push({ code, severity, message, entityType: raw.type, handle: raw.handle })
   }
   let pendingElevation = 0
+  // A -Z extrusion mirrors the OCS X axis (and the sign of Z) for entities stored in OCS; LINE / ELLIPSE / SPLINE are WCS
+  // entities and ignore it. Same rule as the DXF path (dxfParser `reflected`).
+  let pendingReflected = false
+  const ocsMirror: Matrix = { a: -1, b: 0, c: 0, d: 1, tx: 0, ty: 0 }
   function planar(raw: RawEntity, points: (Point | undefined)[]): boolean {
     if (!points.every(finitePoint)) {
       diagnose(raw, 'invalid-geometry', 'Entity coordinates must be present and finite.', 'error')
@@ -173,11 +177,12 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
       normal &&
       (Math.abs(normal.x) > 1e-10 ||
         Math.abs(normal.y) > 1e-10 ||
-        Math.abs((normal.z ?? 0) - 1) > 1e-10)
+        Math.abs(Math.abs(normal.z ?? 0) - 1) > 1e-10)
     ) {
       diagnose(raw, 'nonplanar-entity', 'Entity is outside the supported drawing XY plane; geometry was skipped.')
       return false
     }
+    pendingReflected = !!normal && (normal.z ?? 0) < 0 && !['LINE', 'ELLIPSE', 'SPLINE'].includes(raw.type ?? '')
     if (raw.elevation !== undefined && !finite(raw.elevation)) {
       diagnose(raw, 'nonplanar-entity', 'Entity elevation is not finite; geometry was skipped.')
       return false
@@ -197,12 +202,15 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
     if (Math.abs(z) > 1e-10) pendingElevation = z
     return true
   }
+  let reflectedEntity = false
   // Elevation of a child at block-space Z `cz` is zScale * cz + zOffset (affine, composed per nested INSERT).
   function convert(raw: RawEntity, zScale = 1, zOffset = 0): DxfEntity | null {
     pendingElevation = 0
+    pendingReflected = false
     const converted = convertPlanar(raw)
     if (!converted) return converted
-    const stored = zScale * pendingElevation + zOffset
+    reflectedEntity = pendingReflected
+    const stored = zScale * (pendingReflected ? -pendingElevation : pendingElevation) + zOffset
     if (stored !== 0) (converted as DxfEntity & { elevation?: number }).elevation = stored
     if (pendingElevation !== 0)
       diagnose(
@@ -469,7 +477,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
       diagnose(raw, 'invalid-geometry', invalid, 'error')
       return
     }
-    const transformed = transformCadEntity(converted, transform)
+    const transformed = transformCadEntity(converted, reflectedEntity ? compose(transform, ocsMirror) : transform)
     const transformedInvalid = validateCadEntity(transformed)
     if (transformedInvalid) {
       diagnose(raw, 'invalid-geometry', transformedInvalid, 'error')
@@ -555,6 +563,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
         }
         const base = block.basePoint === undefined ? { x: 0, y: 0 } : block.basePoint
         pendingElevation = 0
+        pendingReflected = false
         if (!finitePoint(base)) {
           diagnose(raw, 'invalid-geometry', 'Block base point must be finite.', 'error')
           continue
@@ -562,13 +571,14 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
         if (!planar(raw, [raw.insertionPoint])) continue
         // Child Z becomes insertZ + sz * (childZ - baseZ), then the parent's affine Z map (same as the DXF parser).
         const insertZ = pendingElevation
+        const nzSign = pendingReflected ? -1 : 1
         const baseZ = base.z ?? 0
         const sz = raw.zScale === undefined ? 1 : raw.zScale
         if (!finite(sz) || sz === 0) {
           diagnose(raw, 'invalid-geometry', 'Block Z scale must be finite and nonzero.', 'error')
           continue
         }
-        const insertWorldZ = zScale * insertZ + zOffset
+        const insertWorldZ = zScale * nzSign * insertZ + zOffset
         if (insertWorldZ !== 0 || baseZ !== 0)
           diagnose(raw, 'elevated-geometry-projected', `INSERT ${raw.name} at elevation ${insertWorldZ}${baseZ !== 0 ? ` (block base Z ${baseZ})` : ''}; its geometry is projected onto the plan and keeps its elevation.`)
         const sx = raw.xScale === undefined ? 1 : raw.xScale
@@ -602,7 +612,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           tx: raw.insertionPoint!.x - cos * sx * base.x + sin * sy * base.y,
           ty: -raw.insertionPoint!.y + sin * sx * base.x + cos * sy * base.y
         }
-        const composed = compose(transform, local)
+        const composed = compose(transform, nzSign < 0 ? compose(ocsMirror, local) : local)
         if (!Object.values(composed).every(finite)) {
           diagnose(raw, 'invalid-geometry', 'Composed block transform is nonfinite.', 'error')
           continue
@@ -619,8 +629,8 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           new Set([...ancestors, raw.name!]),
           raw.name,
           insertLayer,
-          zScale * sz,
-          zScale * (insertZ - sz * baseZ) + zOffset,
+          zScale * nzSign * sz,
+          zScale * nzSign * (insertZ - sz * baseZ) + zOffset,
           frozenLayers.has(insertLayer) ? insertLayer : frozenBy
         )
         const placement = describeInsertTransform(composed, { x: base.x, y: -base.y })
