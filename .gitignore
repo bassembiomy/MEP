@@ -8,3 +8,8 @@ out
 # Local engineering implementation/review evidence
 .superpowers/
 .vitest/
+
+# GUI smoke suite output
+out-e2e/
+test-results/
+playwright-report/
