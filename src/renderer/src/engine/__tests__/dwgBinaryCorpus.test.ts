@@ -275,10 +275,15 @@ describe('DWG binary corpus (LibreDWG-written R2000 files, libredwg-web reader)'
       expect(Object.keys(mapOf(dwg.entities.filter((e) => e.type !== 'TEXT'))).some((k) => k.endsWith('@3500'))).toBe(true)
       expect((dwg.diagnostics ?? []).filter((d) => d.code === 'nonplanar-entity')).toHaveLength(truth.nonPlanarLines!)
     })
-    gap('elevated-levels: TEXT keeps its elevation (libredwg-web convert drops the TEXT elevation field)', async () => {
+    it('elevated-levels: TEXT keeps its elevation (read from the DWG object by handle; convert() drops the field)', async () => {
       const dwg = await loadDwg(ELEVATED)
       const zs = dwg.entities.filter((e) => e.type === 'TEXT').map((e) => (e as DxfEntity & { elevation?: number }).elevation ?? 0)
       expect(zs.filter((z) => z === 3500)).toHaveLength(4)
+      expect(zs.filter((z) => z === 0)).toHaveLength(4)
+      // the same map as the DXF twin: elevation per TEXT string
+      const byText = (p: ParsedDxf): Record<string, number> =>
+        Object.fromEntries(p.entities.filter((e) => e.type === 'TEXT').map((e) => [e.text!, (e as DxfEntity & { elevation?: number }).elevation ?? 0]))
+      expect(byText(dwg)).toEqual(byText(loadTwin(ELEVATED)))
     })
   })
 
