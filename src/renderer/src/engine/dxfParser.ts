@@ -397,9 +397,16 @@ function explodeMline(
   const flags = styleMatches ? style!.flags : 0;
   if (style && !styleMatches && (style.flags & (MLINE_MITER | MLINE_START_SQUARE | MLINE_END_SQUARE | MLINE_START_ARCS | MLINE_END_ARCS)))
     diagnose('MLINE_STYLE_MISMATCH', `MLINE style has ${style.offsets.length} elements but the entity has ${elementCount}; its caps and joint lines are not drawn, the element lines are imported.`, r);
-  // Longest miter displacement, a sign of an extremely acute joint (the file stores the final geometry, so it is flagged, not clipped).
-  const maxOffset = Math.max(...vertices.flatMap(v => v.offsets.map(Math.abs)));
-  if (vertices.some(v => Math.hypot(v.mx, v.my) * Math.max(...v.offsets.map(Math.abs)) > 10 * maxOffset))
+  // An extremely acute joint. Producers (AutoCAD, ezdxf) store a UNIT miter vector and put the stretch 1/sin(theta/2) into the group-41
+  // offsets, so a vertex's reach is |miter| x its widest offset, measured against an UNSTRETCHED reference: the style's offsets (scaled by
+  // group 40) when they match, else the smallest per-vertex reach (for an open MLINE that is a perpendicular end vertex).
+  // The file stores the final geometry, so the joint is flagged, not clipped.
+  const reach = (v: (typeof vertices)[number]) => Math.hypot(v.mx, v.my) * Math.max(...v.offsets.map(Math.abs));
+  const scale = Math.abs(number(r, 40, 1));
+  const reference = styleMatches && Number.isFinite(scale) && scale > 0
+    ? Math.max(...style!.offsets.map(Math.abs)) * scale
+    : Math.min(...vertices.map(reach));
+  if (reference > 0 && vertices.some(v => reach(v) > 10 * reference))
     diagnose('MLINE_LONG_MITER', 'MLINE has a joint whose miter extends more than 10 times the widest element offset (extremely acute angle); the lines are imported as stored.', r);
   if (flags) {
     const bottom = style!.offsets.indexOf(Math.min(...style!.offsets)), top = style!.offsets.indexOf(Math.max(...style!.offsets));

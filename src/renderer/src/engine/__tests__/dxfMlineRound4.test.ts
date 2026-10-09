@@ -1,8 +1,9 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { parseDxfText } from '../dxfParser'
 import { dxf, header, layer, rawRecord } from './fixtures/dxfBuilder'
 
-type V = { x: number; y: number; z?: number; dir?: [number, number, number?]; miter?: [number, number, number?] }
+type V = { x: number; y: number; z?: number; dir?: [number, number, number?]; miter?: [number, number, number?]; offsets?: number[] }
 interface MlineOpts {
   verts: V[]; offsets?: number[]; style?: string; scale?: number; flags?: number; startZ?: number; closed?: boolean
 }
@@ -15,7 +16,7 @@ function mline(o: MlineOpts): string {
   for (const v of o.verts) {
     const d = v.dir ?? [1, 0, 0], m = v.miter ?? [0, 1, 0]
     pairs.push([11, v.x], [21, v.y], [31, v.z ?? 0], [12, d[0]], [22, d[1]], [32, d[2] ?? 0], [13, m[0]], [23, m[1]], [33, m[2] ?? 0])
-    for (const off of offsets) pairs.push([74, 1], [41, off], [75, 0])
+    for (const off of v.offsets ?? offsets) pairs.push([74, 1], [41, off], [75, 0])
   }
   return rawRecord(...pairs)
 }
@@ -81,13 +82,28 @@ describe('MLINE caps, miters and odd records', () => {
     expect(count(4 | 8)).toBe(2)
   })
 
-  it('an extremely acute joint raises MLINE_LONG_MITER once; a moderate corner does not', () => {
-    const corner = (mx: number, my: number) => parseDxfText(file([mline({
-      verts: [{ x: 0, y: 0 }, { x: 5000, y: 0, miter: [mx, my] }, { x: 0, y: 100, dir: [-1, 0], miter: [0, 1] }], offsets: [-100, 100] })]))
-    expect(codes(corner(0, 1.5))).toEqual([])
-    const p = corner(0, 60) // |miter| 60 x offset 100 = 6000 > 10 x the largest offset (1000)
-    expect(codes(p).filter(c => c === 'MLINE_LONG_MITER')).toHaveLength(1)
-    expect(p.entities.length).toBeGreaterThan(0) // still imported: the geometry is the file's, only flagged
+  // AutoCAD / ezdxf store a UNIT miter vector and put the stretch 1/sin(theta/2) into the group-41 offsets.
+  const stretched = (deg: number, withStyle: boolean) => {
+    const k = 1 / Math.sin(((deg / 2) * Math.PI) / 180), o = [-100 * k, 100 * k]
+    return parseDxfText(file([mline({
+      verts: [{ x: 0, y: 0 }, { x: 5000, y: 0, offsets: o }, { x: 0, y: 100, dir: [-1, 0], miter: [0, 1], offsets: [-100, 100] }],
+      offsets: [-100, 100], style: withStyle ? 'W' : 'STANDARD' })], withStyle ? [style('W', 0, [-100, 100])] : []))
+  }
+  it('an extremely acute joint (unit miter, stretched group-41 offsets) raises MLINE_LONG_MITER once, with or without the style', () => {
+    for (const withStyle of [true, false]) {
+      const p = stretched(5, withStyle) // 100 / sin(2.5 deg) = 2292 > 10 x 100
+      expect(codes(p).filter(c => c === 'MLINE_LONG_MITER')).toHaveLength(1)
+      expect(p.entities.length).toBeGreaterThan(0) // still imported: the geometry is the file's, only flagged
+    }
+  })
+  it('a moderate stretched joint (90 degrees) raises nothing', () => {
+    for (const withStyle of [true, false]) expect(codes(stretched(90, withStyle))).toEqual([])
+  })
+  it('the real corpus mline-walls.dxf (normal 90 degree corners) raises no MLINE_LONG_MITER', () => {
+    const text = readFileSync(new URL('./fixtures/corpus/adversarial/mline-walls.dxf', import.meta.url), 'utf8')
+    const p = parseDxfText(text)
+    expect(p.entities.length).toBeGreaterThan(0)
+    expect(codes(p)).not.toContain('MLINE_LONG_MITER')
   })
   it('acute angles import their element lines (a 20 degree turn, miter 1/sin(10 deg))', () => {
     const a = (20 * Math.PI) / 180, m = 1 / Math.sin(a / 2)
