@@ -65,6 +65,7 @@ const finite = (...v: number[]) => v.every(Number.isFinite)
 export function moveTerminal(zone: Zone, terminalId: string, x: number, y: number, ctx: EditContext): ComponentEdit {
   const old = zone.diffusers.find(t => t.id === terminalId)
   if (!old) return fail('Terminal not found.')
+  if (old.type === 'cassette') return fail('Move the cassette unit instead')
   if (!finite(x, y)) return fail('Terminal position must be finite.')
   if (!isPointInOrOnPolygon(x, y, zone.points)) return fail('Terminal cannot be moved outside its room.')
   const from = { x: old.x, y: old.y }, to = { x, y }
@@ -162,11 +163,12 @@ export function moveIndoorUnit(zone: Zone, unitIndex: number, x: number, y: numb
   const warnings: string[] = []
   let diffusers = zone.diffusers
   const rowVertices = row.flatMap(d => d.points.length >= 4 ? Array.from({ length: d.points.length / 2 }, (_, i) => ({ x: d.points[2 * i], y: d.points[2 * i + 1] })) : [])
-  const carried = zone.diffusers.filter(t => rowVertices.some(v => near(v, { x: t.x, y: t.y })))
+  // Cassette terminals sit exactly at their unit and always travel with it.
+  const carried = zone.diffusers.filter(t => (t.type === 'cassette' && near(from, { x: t.x, y: t.y })) || (t.type !== 'cassette' && rowVertices.some(v => near(v, { x: t.x, y: t.y }))))
   if (carried.length) {
     diffusers = zone.diffusers.map(t => carried.includes(t) ? { ...t, x: t.x + dx, y: t.y + dy } : t)
-    for (const t of diffusers) if (carried.some(c => c.id === t.id) && !isPointInOrOnPolygon(t.x, t.y, zone.points)) return fail('A terminal at the end of the trunk would leave the room.')
-    warnings.push(`${carried.length} terminal(s) at trunk ends moved with the trunk.`)
+    for (const t of diffusers) if (carried.some(c => c.id === t.id) && !isPointInOrOnPolygon(t.x, t.y, zone.points)) return fail('A terminal carried with the unit would leave the room.')
+    warnings.push(`${carried.length} terminal(s) moved with the unit or trunk.`)
   }
   for (let k = 0; k < zone.ducts.length; k++) {
     const orig = zone.ducts[k], d = ducts[k]

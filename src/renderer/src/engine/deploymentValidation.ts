@@ -382,6 +382,16 @@ export function validateAppliedDeployment(
         Math.abs(zone.diffusers.reduce((s, t) => s + t.cfm, 0) - evidence.requiredSupplyCfm) > 1)
     )
       throw new Error('Cassette airflow does not match demand')
+    if (
+      manifest.systemType === 'cassette' &&
+      !units.every(
+        (u) =>
+          zone.diffusers.filter(
+            (t) => t.type === 'cassette' && Math.hypot(t.x - u.x, t.y - u.y) < 1e-5
+          ).length === 1
+      )
+    )
+      throw new Error('Each cassette terminal must sit at its cassette unit')
     return 0
   }
   const supply = zone.diffusers.filter((t) => !t.type || t.type === 'supply'),

@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {moveOutdoorUnit,moveTerminal,moveIndoorUnit,translateDuct,verifyEditedZone,type EditContext} from '../cad/componentEdits';
+import {moveOutdoorUnit,moveTerminal,moveIndoorUnit,translateDuct,verifyEditedZone,zoneInputsFingerprint,type EditContext} from '../cad/componentEdits';
 import {solveDirectedNetworkStaticPressure} from '../staticPressureCalc';
 import {STANDARD_DIFFUSER_CATALOG,STANDARD_DUCT_TYPES} from '../hvacCatalogs';
 import {validateNetwork} from '../deploymentValidation';
@@ -239,5 +239,39 @@ describe('store.verifyZoneEdits against the inputs the deployment was designed f
   expect(s().restoreProjectDocument(saved)).toEqual({success:true});
   expect(s().deploymentEvidence).toEqual({});expect(s().deploymentInputs).toEqual({});
   expect(s().verifyZoneEdits('zone-1').success).toBe(false); // restored rooms have no deployment evidence
+ });
+});
+describe('cassette rooms keep each terminal at its unit',()=>{
+ const project:ProjectMetadata={name:'T',location:'Cairo',scale:10,units:'imperial',outdoorDb:95,indoorDb:75};
+ const base:Zone={id:'zone-c',name:'Hall',points:[0,0,400,0,400,300,0,300],spaceTypeId:'office',ceilingHeight:10,occupants:2,diffusers:[],ducts:[],maxSpaceNcLimit:30};
+ const load=calculateCanonicalZoneLoad(base,project);
+ const cand=generateSystemCandidates(load.totalLoad,load.sensibleLoad,load.supplyCfm,base.spaceTypeId,load.area,true,DEFAULT_OPTIMIZATION_WEIGHTS,['cassette']).candidates.find(c=>c.systemType==='cassette'&&c.isValid)!;
+ const manifest=buildDeploymentManifest(cand,base,[base],project);
+ const tx=executeDeploymentTransaction(manifest,[base],project);
+ const deployed=tx.updatedZones[0];
+ const fp=()=>zoneInputsFingerprint(deployed);
+ it('fixture is a deployed cassette room with terminals at the unit positions',()=>{
+  expect(tx.success).toBe(true);expect(deployed.diffusers.length).toBeGreaterThan(0);
+  expect(deployed.diffusers.every(t=>t.type==='cassette')).toBe(true);
+  deployed.unitPositions!.forEach((u,i)=>expect(deployed.diffusers[i]).toMatchObject({x:u.x,y:u.y}));
+  expect(verifyEditedZone(deployed,manifest,project,fp())).toMatchObject({ok:true});
+ });
+ it('moving a cassette unit carries its terminal, and the explicit step still verifies',()=>{
+  const u=deployed.unitPositions![0],r=moveIndoorUnit(deployed,0,u.x+5,u.y+5,{drawingUnitsPerFoot:10});
+  expect(r.ok).toBe(true);if(!r.ok)return;
+  const next={...deployed,...r.patch} as Zone;
+  expect(next.diffusers[0]).toMatchObject({x:u.x+5,y:u.y+5});
+  next.unitPositions!.forEach((p,i)=>expect(next.diffusers[i]).toMatchObject({x:p.x,y:p.y}));
+  expect(verifyEditedZone(next,manifest,project,fp())).toMatchObject({ok:true});
+ });
+ it('refuses to move a cassette terminal on its own',()=>{
+  const t=deployed.diffusers[0];
+  expect(moveTerminal(deployed,t.id,t.x+5,t.y,{drawingUnitsPerFoot:10})).toEqual({ok:false,error:'Move the cassette unit instead'});
+ });
+ it('verification refuses a hand-separated cassette terminal',()=>{
+  const t=deployed.diffusers[0];
+  const split={...deployed,diffusers:deployed.diffusers.map(d=>d.id===t.id?{...d,x:t.x+3}:d)};
+  const v=verifyEditedZone(split,manifest,project,fp());expect(v.ok).toBe(false);
+  if(!v.ok)expect(v.error).toMatch(/cassette terminal/i);
  });
 });
