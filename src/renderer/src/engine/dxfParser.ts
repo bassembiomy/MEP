@@ -202,6 +202,9 @@ function compose(p: CadAffineMatrix, q: CadAffineMatrix): CadAffineMatrix {
     tx: p.a * q.tx + p.c * q.ty + p.tx, ty: p.b * q.tx + p.d * q.ty + p.ty };
 }
 
+const BINARY_DXF_SENTINEL = 'AutoCAD Binary DXF';
+/** DXF line terminator as written by any platform: CRLF, LF, or a bare CR (classic Mac). */
+const EOL = '(?:\\r\\n|\\r|\\n)';
 const CODEPAGE_LABELS: Record<string, string> = {
   ANSI_874: 'windows-874', ANSI_932: 'shift_jis', ANSI_936: 'gbk', ANSI_949: 'euc-kr', ANSI_950: 'big5',
   ANSI_1250: 'windows-1250', ANSI_1251: 'windows-1251', ANSI_1252: 'windows-1252', ANSI_1253: 'windows-1253',
@@ -212,14 +215,17 @@ const CODEPAGE_LABELS: Record<string, string> = {
 /**
  * Decodes the bytes of a DXF file. DXF R2007+ (AC1021 and later) is UTF-8 unless the bytes are not valid UTF-8 (then the code page applies); older files use the ANSI code page
  * named by $DWGCODEPAGE (windows-1252 when absent or unknown). A file without $ACADVER is read as UTF-8 and, only if
- * those bytes are not valid UTF-8, as windows-1252. A UTF-8 BOM always means UTF-8. Never throws on bad bytes.
+ * those bytes are not valid UTF-8, as windows-1252. A UTF-8 BOM always means UTF-8. Never throws on bad text bytes; throws only for a Binary DXF (sentinel "AutoCAD Binary DXF"), which has no reader.
  */
 export function decodeDxfBytes(bytes: Uint8Array): string {
+  // Binary DXF starts with the 22-byte sentinel "AutoCAD Binary DXF\r\n\x1a\0"; read as text it would be garbage with no diagnostic.
+  if (bytes.length >= 18 && String.fromCharCode(...bytes.subarray(0, 18)) === BINARY_DXF_SENTINEL)
+    throw new Error('Binary DXF is not supported. Save the drawing as an ASCII DXF (or as DWG) and import it again.');
   if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return new TextDecoder('utf-8').decode(bytes);
   // The header is ASCII in every encoding handled here, so a byte-preserving latin1 view of its start is safe to scan.
   const head = new TextDecoder('windows-1252').decode(bytes.subarray(0, Math.min(bytes.length, 65536)));
   const headerValue = (variable: string, code: number): string | undefined =>
-    new RegExp(`\\r?\\n\\s*9\\r?\\n${variable.replace('$', '\\$')}\\r?\\n\\s*${code}\\r?\\n([^\\r\\n]*)`, 'i').exec(head)?.[1].trim();
+    new RegExp(`${EOL}\\s*9${EOL}${variable.replace('$', '\\$')}${EOL}\\s*${code}${EOL}([^\\r\\n]*)`, 'i').exec(head)?.[1].trim();
   const version = /^AC(\d{4})$/i.exec(headerValue('$ACADVER', 1) ?? '')?.[1];
   if (version === undefined) {
     try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return new TextDecoder('windows-1252').decode(bytes); }
@@ -349,7 +355,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
     if (diagnostics.length < 1000) diagnostics.push({ code, message, severity, entityType: r?.type, handle: r && first(r, 5) });
     else if (diagnostics.length === 1000) diagnostics.push({ code: 'DIAGNOSTIC_LIMIT', severity: 'error', message: 'Additional import diagnostics suppressed; drawing is incomplete.' });
   };
-  const lines = dxfText.replace(/^\uFEFF/, '').replace(/^(?:[^\S\r\n]*\r?\n)+/, '').split(/\r?\n/);
+  const lines = dxfText.replace(/^\uFEFF/, '').replace(/^(?:[^\S\r\n]*(?:\r\n|\r|\n))+/, '').split(/\r\n|\r|\n/);
   // Some producers prefix the file with whitespace outside the DXF pair stream.
   if (lines.length % 2 === 1 && lines.at(-1)?.trim()) diagnose('INCOMPLETE_PAIR', 'Final DXF group code has no value.', undefined, 'error');
   const sections = new Map<string, DxfRecord[]>();

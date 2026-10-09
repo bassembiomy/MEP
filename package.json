@@ -28,6 +28,7 @@
     "test:electron": "node scripts/run-electron-tests.mjs",
     "check:no-test-hook": "node scripts/check-no-test-hook.mjs",
     "corpus:generate": "python3 scripts/cad-corpus/generate_corpus.py",
+    "corpus:generate-adversarial": "python3 scripts/cad-corpus/generate_adversarial.py",
     "corpus:generate-dwg": "python3 scripts/cad-corpus/generate_corpus.py --r2000-twins && python3 scripts/cad-corpus/generate_dwg_corpus.py",
     "corpus:fetch-dwg": "node scripts/cad-corpus/fetch_external_dwg.mjs"
   },

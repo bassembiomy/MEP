@@ -182,3 +182,12 @@ bbox, MTEXT wrapping / column width, mirrored (generation-flag / det < 0) glyphs
 
 Deferred far-origin gaps: v1/v2 projects saved with far-from-origin raw coordinates are **not** localised at load (entity / candidate IDs embed coordinates, so migrating would orphan saved decisions); re-importing the
 drawing rebases it. Z is not localised. The engine's absolute tolerances are unchanged (fine in the local frame, but one drawing spanning more than about 1e7 drawing units cannot be centred within T and could still lose precision).
+
+## Adversarial corpus (`adversarial/`, Phase C)
+
+Hostile-input files for the importer, written by `scripts/cad-corpus/generate_adversarial.py` (ezdxf 1.4.4, byte-stable; `npm run corpus:generate-adversarial`).
+Ground truth is `adversarial-manifest.json`, computed from the construction geometry or from ezdxf itself (never from our parsers or adjusted to match them). Tests: `cadAdversarialCorpus.test.ts`.
+
+| Item | Files | Result |
+|---|---|---|
+| C7 line endings and binary | `line-endings-*.dxf`: one ezdxf base file as LF, CRLF, bare CR, trailing spaces/tabs on codes and numeric values, BOM+CRLF; `line-endings-binary.dxf` = `saveas(fmt='bin')` | Defect fixed: bare-CR files parsed as one line (`/\r?\n/` split) and returned nothing; now `/\r\n\|\r\|\n/` in `parseDxfText` and `decodeDxfBytes`. Binary DXF (sentinel `AutoCAD Binary DXF`) used to be parsed as garbage with no message; `decodeDxfBytes` now throws "Binary DXF is not supported" (no reader). |

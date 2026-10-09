@@ -1,0 +1,42 @@
+{
+ "about": "Ground truth for the adversarial corpus, computed from the generator's construction geometry (scripts/cad-corpus/generate_adversarial.py) and from ezdxf, never from our parser. Coordinates are DXF drawing units, Y up; areas are net ft2.",
+ "files": {
+  "line-endings-base-lf.dxf": {
+   "binarySentinel": "AutoCAD Binary DXF",
+   "binaryVariant": "line-endings-binary.dxf",
+   "drawingUnit": "mm",
+   "expected": {
+    "cadUnit": "mm",
+    "unitsConfidence": "declared"
+   },
+   "expectedEntityCount": 8,
+   "insunits": 4,
+   "item": "C7",
+   "measurement": 1,
+   "room": {
+    "areaSqFt": 215.27820833419443,
+    "polygon": [
+     0,
+     0,
+     5000,
+     0,
+     5000,
+     4000,
+     0,
+     4000
+    ]
+   },
+   "textVariants": [
+    "line-endings-bom-crlf.dxf",
+    "line-endings-cr-only.dxf",
+    "line-endings-crlf.dxf",
+    "line-endings-trailing-ws-crlf.dxf",
+    "line-endings-trailing-ws.dxf"
+   ],
+   "unitsPerFoot": 304.8
+  }
+ },
+ "generator": {
+  "ezdxf": "1.4.4"
+ }
+}
