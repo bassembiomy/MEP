@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import * as manager from '../deploymentManager'
 import { planCassetteDistribution, isRectContainedInPolygon, getFootprintPortLayout } from '../spatialPlanner'
+import { calculatePolygonArea } from '../geometry'
+import { isSegmentInPolygon, isPointInOrOnPolygon } from '../validation/spatialValidator'
 import { STANDARD_EQUIPMENT_CATALOG } from '../hvacCatalogs'
 import * as validation from '../deploymentValidation'
 import { STANDARD_DIFFUSER_CATALOG } from '../hvacCatalogs'
@@ -812,5 +814,62 @@ describe('ports follow the footprint and the actual duct attachment', () => {
   it('getFootprintPortLayout separates ports that share a direction', () => {
     const layout = getFootprintPortLayout({ x: 0, y: 0 }, 40, 20, 0, { x: 1, y: 0 }, { x: 1, y: 0 })
     expect(Math.hypot(layout.supply.position.x - layout.return.position.x, layout.supply.position.y - layout.return.position.y)).toBeGreaterThan(1)
+  })
+})
+
+describe('multi-unit partition follows the real room polygon', () => {
+  const lRoom = [0, 0, 300, 0, 300, 150, 150, 150, 150, 300, 0, 300]
+  const bigFan = {
+    totalCapacityBtuPerHour: 90000, sensibleCapacityBtuPerHour: 70000, minCfm: 300, maxCfm: 1000, maxRatedEspInWg: 1.5,
+    fanPerformance: { type: 'tabular' as const, table: [{ cfm: 300, espInWg: 1.5 }, { cfm: 1000, espInWg: 1.5 }], allowExtrapolation: false }
+  }
+  const inPoly = (a: { x: number; y: number }, b: { x: number; y: number }, poly: number[]) => isSegmentInPolygon(a, b, poly)
+
+  it.each([2, 3])('L-shaped room with %i units: everything lies in the room and its own sub-polygon, or it is blocked as unsupported', (qty) => {
+    const z = zone({ points: lRoom, manualCfmOverride: 600 * qty })
+    const m = manager.buildDeploymentManifest(candidate({ quantity: qty, equipment: equipment(bigFan) }), z, [z], project)
+    const messages = m.diagnostics.map((d) => d.message).join('|')
+    expect(messages).not.toMatch(/footprint is outside zone|duct segment leaves zone/i)
+    const areas = (m as any).unitServicePolygons as number[][] | undefined
+    expect(areas?.length).toBe(qty)
+    for (const a of areas!) expect(Math.abs(calculatePolygonArea(a) - calculatePolygonArea(lRoom) / qty) / (calculatePolygonArea(lRoom) / qty)).toBeLessThan(0.01)
+    if (!m.isEligibleToApply) {
+      expect(m.diagnostics.some((d) => d.severity === 'error' && d.code === ('ERR_ZONE_PARTITION_UNSUPPORTED' as any))).toBe(true)
+      return
+    }
+    expect(execute(m, [z], project).success).toBe(true)
+    const units = m.equipment.cassetteUnits!
+    expect(units.length).toBe(qty)
+    units.forEach((u, k) => {
+      const owner = new RegExp(`-z-${k + 1}(-|$)`)
+      const sub = areas![k]
+      const f = u.footprint
+      const corners = [{ x: f.minX, y: f.minY }, { x: f.maxX, y: f.minY }, { x: f.maxX, y: f.maxY }, { x: f.minX, y: f.maxY }]
+      for (const poly of [lRoom, sub]) {
+        expect(isPointInOrOnPolygon(u.position.x, u.position.y, poly)).toBe(true)
+        corners.forEach((c, i) => expect(inPoly(c, corners[(i + 1) % 4], poly)).toBe(true))
+        for (const t of m.terminals.filter((t) => owner.test(t.id))) expect(isPointInOrOnPolygon(t.x, t.y, poly), t.id).toBe(true)
+        for (const d of m.ducts.filter((d) => owner.test(d.id)))
+          for (let i = 0; i < d.points.length - 2; i += 2)
+            expect(inPoly({ x: d.points[i], y: d.points[i + 1] }, { x: d.points[i + 2], y: d.points[i + 3] }, poly), d.id).toBe(true)
+      }
+      expect(m.terminals.some((t) => owner.test(t.id))).toBe(true)
+    })
+  })
+
+  it('blocks with ERR_ZONE_PARTITION_UNSUPPORTED when a unit cannot fit its own service area', () => {
+    const z = zone({ points: [0, 0, 100, 0, 100, 60, 0, 60], manualCfmOverride: 1200 })
+    const m = manager.buildDeploymentManifest(
+      candidate({ quantity: 2, equipment: equipment({ ...bigFan, dimensionsIn: { width: 74, depth: 38, height: 10 } }) }), z, [z], project)
+    expect(m.isEligibleToApply).toBe(false)
+    expect(m.diagnostics.some((d) => d.severity === 'error' && d.code === ('ERR_ZONE_PARTITION_UNSUPPORTED' as any))).toBe(true)
+    expect(m.diagnostics.map((d) => d.message).join('|')).not.toMatch(/footprint is outside zone|duct segment leaves zone/i)
+  })
+
+  it('splits a rectangular room into equal-area slabs', () => {
+    const z = zone({ points: [0, 0, 400, 0, 400, 300, 0, 300], manualCfmOverride: 1400 })
+    const m = manager.buildDeploymentManifest(candidate({ quantity: 2, equipment: equipment(bigFan) }), z, [z], project)
+    const areas = (m as any).unitServicePolygons as number[][]
+    expect(areas.map(calculatePolygonArea)).toEqual([60000, 60000])
   })
 })

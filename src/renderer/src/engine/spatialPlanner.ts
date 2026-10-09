@@ -234,6 +234,32 @@ export function isRectContainedInPolygon(cx: number, cy: number, w: number, h: n
     corners.every((a, k) => isSegmentInPolygon(a, corners[(k + 1) % 4], points));
 }
 
+/**
+ * Largest axis-aligned rectangle inside a polygon, searched over the polygon's vertex coordinates (exact for
+ * rectilinear outlines such as L, T and U shapes). Returns null for outlines with too many distinct coordinates.
+ */
+export function largestInscribedRect(points: number[]): { minX: number; maxX: number; minY: number; maxY: number } | null {
+  const uniq = (vals: number[]) => Array.from(new Set(vals.map((v) => Math.round(v * 1e6) / 1e6))).sort((a, b) => a - b);
+  const xs = uniq(points.filter((_, i) => i % 2 === 0));
+  const ys = uniq(points.filter((_, i) => i % 2 === 1));
+  if (xs.length > 20 || ys.length > 20) return null;
+  let best: { minX: number; maxX: number; minY: number; maxY: number } | null = null;
+  let bestArea = 0;
+  for (let a = 0; a < xs.length; a++)
+    for (let b = a + 1; b < xs.length; b++)
+      for (let c = 0; c < ys.length; c++)
+        for (let d = c + 1; d < ys.length; d++) {
+          const area = (xs[b] - xs[a]) * (ys[d] - ys[c]);
+          if (area <= bestArea) continue;
+          const w = xs[b] - xs[a], h = ys[d] - ys[c];
+          if (isRectContainedInPolygon(xs[a] + w / 2, ys[c] + h / 2, w, h, points)) {
+            bestArea = area;
+            best = { minX: xs[a], maxX: xs[b], minY: ys[c], maxY: ys[d] };
+          }
+        }
+  return best;
+}
+
 function placePhysicalFootprint(
   points: number[],
   target: { x: number; y: number },

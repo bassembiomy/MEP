@@ -10,8 +10,12 @@ import {
   planIndoorUnitPlacement,
   planCassetteDistribution,
   planDuctedAirDistribution,
-  getFootprintPortLayout
+  getFootprintPortLayout,
+  isRectContainedInPolygon,
+  largestInscribedRect
 } from './spatialPlanner';
+import { partitionPolygonByArea } from './polygonClip';
+import { isPointInOrOnPolygon, isSegmentInPolygon } from './validation/spatialValidator';
 import { solveDirectedNetworkStaticPressure } from './staticPressureCalc';
 import { STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES } from './hvacCatalogs';
 import { Zone, ProjectMetadata, Diffuser, DuctSegment } from '../store/projectStore';
@@ -73,6 +77,7 @@ export function buildDeploymentManifest(
   let cassetteComps: MechanicalComponent[] = [];
   let deployedDiffusers: Diffuser[] = [];
   let deployedDucts: DuctSegment[] = [];
+  let unitServicePolygons: number[][] | undefined;
 
   // 2. Plan Indoor Equipment / Terminals
   if (isCassette) {
@@ -122,28 +127,29 @@ export function buildDeploymentManifest(
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
     }
-    const roomW = maxX - minX;
-    const roomH = maxY - minY;
-    const isHorizontal = roomW >= roomH;
+    const isHorizontal = maxX - minX >= maxY - minY;
 
-    for (let k = 0; k < qty; k++) {
-      const subSystemId = `${systemId}-${k + 1}`;
-      let subPoints = planningPoints;
-      let subMinX = minX, subMaxX = maxX, subMinY = minY, subMaxY = maxY;
-
-      if (qty > 1) {
-        if (isHorizontal) {
-          subMinY = Math.round(minY + (k * roomH) / qty);
-          subMaxY = Math.round(minY + ((k + 1) * roomH) / qty);
-        } else {
-          subMinX = Math.round(minX + (k * roomW) / qty);
-          subMaxX = Math.round(minX + ((k + 1) * roomW) / qty);
-        }
-        subPoints = [subMinX, subMinY, subMaxX, subMinY, subMaxX, subMaxY, subMinX, subMaxY];
+    // Each unit serves a real sub-polygon of the zone (equal-area cuts), not a bounding-box slice.
+    let regions: number[][] = [planningPoints];
+    if (qty > 1) {
+      const partition = partitionPolygonByArea(planningPoints, qty, isHorizontal ? 'y' : 'x');
+      if (partition.ok) regions = partition.parts;
+      else {
+        regions = [];
+        diagnostics.push({
+          code: 'ERR_ZONE_PARTITION_UNSUPPORTED',
+          severity: 'error',
+          message: `The zone outline cannot be divided into ${qty} connected equal-area service areas: ${partition.reason}`,
+          remediation: 'Use fewer units, split the room into separate zones, or simplify the room outline.'
+        });
       }
+    }
+    unitServicePolygons = regions.length ? regions : undefined;
 
+    const planUnit = (k: number, region: number[]) => {
+      const subSystemId = `${systemId}-${k + 1}`;
       const iuPlan = planIndoorUnitPlacement(
-        subPoints,
+        region,
         oduPlan.component.position,
         subSystemId,
         `${zone.id}-${k + 1}`,
@@ -152,45 +158,98 @@ export function buildDeploymentManifest(
         cfmPerUnit,
         physicalFootprint
       );
+      if (!iuPlan.component) return { iuPlan, ductPlan: undefined };
 
-      if (iuPlan.component) {
+      const diffusersPerUnit = candidate.diffusers
+        ? Math.max(1, Math.round(candidate.diffusers.quantity / qty))
+        : Math.max(1, Math.ceil(cfmPerUnit / 335));
+
+      const ductPlan = planDuctedAirDistribution(
+        region,
+        iuPlan.component,
+        cfmPerUnit,
+        subSystemId,
+        `${zone.id}-${k + 1}`,
+        candidate.systemType,
+        zone.maxSpaceNcLimit || 32,
+        'imperial',
+        10,
+        {
+          quantity: diffusersPerUnit,
+          flowPerDiffuser: cfmPerUnit / diffusersPerUnit,
+          diffuserRecord: candidate.diffusers?.diffuserRecord,
+          actualNc: candidate.diffusers?.actualNc || 25,
+          throwT50Ft: candidate.diffusers?.throwT50Ft || 12,
+          deltaPInWg: candidate.diffusers?.deltaPInWg || 0.04
+        }
+      );
+      // The spatial planner's historical 90% return assumption is replaced by
+      // the load calculation's actual mass-balance return demand.
+      const returnPerUnit = zoneLoad.returnCfm / qty;
+      ductPlan.diffusers = ductPlan.diffusers.map(t => t.type === 'return' ? { ...t, cfm: returnPerUnit } : t);
+      ductPlan.ducts = ductPlan.ducts.map(d => d.type === 'return' ? { ...d, cfm: returnPerUnit, velocityFpm: returnPerUnit / (d.widthIn * d.heightIn / 144) } : d);
+      return { iuPlan, ductPlan };
+    };
+    /** Everything the unit owns must lie inside its own service area. */
+    const unitFitsRegion = (plan: ReturnType<typeof planUnit>, region: number[]): boolean => {
+      const comp = plan.iuPlan.component;
+      if (!comp || !plan.ductPlan) return false;
+      const f = comp.footprint;
+      return plan.iuPlan.diagnostics.every(d => d.severity !== 'error') &&
+        plan.ductPlan.diagnostics.every(d => d.severity !== 'error') &&
+        isRectContainedInPolygon(comp.position.x, comp.position.y, f.widthWorld, f.heightWorld, region) &&
+        plan.ductPlan.diffusers.every(t => isPointInOrOnPolygon(t.x, t.y, region)) &&
+        plan.ductPlan.ducts.every(d => {
+          for (let i = 0; i < d.points.length - 2; i += 2)
+            if (!isSegmentInPolygon({ x: d.points[i], y: d.points[i + 1] }, { x: d.points[i + 2], y: d.points[i + 3] }, region)) return false;
+          return true;
+        });
+    };
+
+    for (let k = 0; k < regions.length; k++) {
+      let region = regions[k];
+      let plan = planUnit(k, region);
+      if (qty > 1 && !unitFitsRegion(plan, region)) {
+        // The diffuser grid assumes a rectangular area. For a concave sub-polygon retry inside its largest
+        // inscribed rectangle, which is contained by construction.
+        const inscribed = largestInscribedRect(region);
+        const retryRegion = inscribed ? [inscribed.minX, inscribed.minY, inscribed.maxX, inscribed.minY, inscribed.maxX, inscribed.maxY, inscribed.minX, inscribed.maxY] : undefined;
+        const retry = retryRegion ? planUnit(k, retryRegion) : undefined;
+        if (retry && retryRegion && unitFitsRegion(retry, retryRegion) && unitFitsRegion(retry, region)) {
+          plan = retry;
+          region = retryRegion;
+          diagnostics.push({
+            code: 'WARN_ZONE_PARTITION_INSCRIBED',
+            severity: 'warning',
+            message: `Unit ${k + 1} serves only the largest rectangle inside its concave service area; the remaining corner is not directly served.`
+          });
+        } else {
+          diagnostics.push({
+            code: 'ERR_ZONE_PARTITION_UNSUPPORTED',
+            severity: 'error',
+            message: `Unit ${k + 1} equipment, terminals and ducts cannot all be contained in its service area of the ${qty}-unit split.`,
+            remediation: 'Use fewer units, split the room into separate zones, or simplify the room outline.'
+          });
+          continue;
+        }
+      }
+      const { iuPlan, ductPlan } = plan;
+      if (iuPlan.component && ductPlan) {
         if (!indoorUnitComp) indoorUnitComp = iuPlan.component;
         cassetteComps.push(iuPlan.component);
-
-        const diffusersPerUnit = candidate.diffusers
-          ? Math.max(1, Math.round(candidate.diffusers.quantity / qty))
-          : Math.max(1, Math.ceil(cfmPerUnit / 335));
-
-        const ductPlan = planDuctedAirDistribution(
-          subPoints,
-          iuPlan.component,
-          cfmPerUnit,
-          subSystemId,
-          `${zone.id}-${k + 1}`,
-          candidate.systemType,
-          zone.maxSpaceNcLimit || 32,
-          'imperial',
-          10,
-          {
-            quantity: diffusersPerUnit,
-            flowPerDiffuser: cfmPerUnit / diffusersPerUnit,
-            diffuserRecord: candidate.diffusers?.diffuserRecord,
-            actualNc: candidate.diffusers?.actualNc || 25,
-            throwT50Ft: candidate.diffusers?.throwT50Ft || 12,
-            deltaPInWg: candidate.diffusers?.deltaPInWg || 0.04
-          }
-        );
-        // The spatial planner's historical 90% return assumption is replaced by
-        // the load calculation's actual mass-balance return demand.
-        const returnPerUnit = zoneLoad.returnCfm / qty;
-        ductPlan.diffusers = ductPlan.diffusers.map(t => t.type === 'return' ? { ...t, cfm: returnPerUnit } : t);
-        ductPlan.ducts = ductPlan.ducts.map(d => d.type === 'return' ? { ...d, cfm: returnPerUnit, velocityFpm: returnPerUnit / (d.widthIn * d.heightIn / 144) } : d);
-
         deployedDiffusers.push(...ductPlan.diffusers);
         deployedDucts.push(...ductPlan.ducts);
         diagnostics.push(...ductPlan.diagnostics);
       }
       diagnostics.push(...iuPlan.diagnostics);
+    }
+    if (qty > 1 && regions.length > 0 && diagnostics.some(d => d.severity === 'error') && !diagnostics.some(d => d.code === 'ERR_ZONE_PARTITION_UNSUPPORTED')) {
+      diagnostics.push({
+        code: 'ERR_ZONE_PARTITION_UNSUPPORTED',
+        severity: 'error',
+        message: `A unit could not be placed inside its service area of the ${qty}-unit split.`,
+        remediation: 'Use fewer units, split the room into separate zones, or simplify the room outline.'
+      });
     }
   }
 
@@ -332,6 +391,7 @@ export function buildDeploymentManifest(
       refrigerantLines,
       condensateDrains
     },
+    unitServicePolygons: unitServicePolygons?.map(p => p.map(n => n / planningRatio)),
     componentsToAdd,
     componentsToUpdate: [],
     componentsToRemove: [],

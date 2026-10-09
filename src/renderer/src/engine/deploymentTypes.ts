@@ -98,6 +98,8 @@ export interface DeploymentManifest {
     refrigerantLines: { id: string; points: number[]; sizeLabel: string }[];
     condensateDrains: { id: string; points: number[]; slopePercent: number }[];
   };
+  /** Per-unit service sub-polygons (drawing units) when several ducted units split a zone. */
+  unitServicePolygons?: number[][];
   componentsToAdd: MechanicalComponent[];
   componentsToUpdate: MechanicalComponent[];
   componentsToRemove: string[];
@@ -121,6 +123,8 @@ export interface DeploymentDiagnostic {
     | 'ERR_DEPLOYMENT_REVISION_STALE'
     | 'ERR_APPLY_TRANSACTION_FAILED'
     | 'ERR_POST_COMMIT_MISMATCH'
+    | 'ERR_ZONE_PARTITION_UNSUPPORTED'
+    | 'WARN_ZONE_PARTITION_INSCRIBED'
     | 'WARN_THROW_OVERLAP'
     | 'WARN_PREVIEW_PRESSURE_PROVISIONAL'
     | 'WARN_CEILING_DEPTH_UNVERIFIED'
