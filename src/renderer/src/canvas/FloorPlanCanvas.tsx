@@ -3,6 +3,7 @@ import { Stage, Layer, Line, Circle, Text, Group, Shape, Rect } from 'react-konv
 import { useProjectStore } from '../store/projectStore';
 import { snapToGrid, getPolygonCentroid } from '../engine/geometry';
 import { snapPoint, physicalGridSpacing } from '../engine/cad/drawingSnap';
+import { polylineReducer, initialPolylineState, type PolylineEvent } from '../engine/cad/polylineTool';
 import { calculateZoneDiffuserCoverage } from '../engine/diffuserPlacer';
 import { calculateCanonicalZoneLoad, calculateZoneLoadSafely } from '../engine/loadCalc';
 import { getCadEntityPath } from '../engine/cad/nativeGeometry';
@@ -22,9 +23,8 @@ export const FloorPlanCanvas: React.FC = () => {
     selectedZoneId,
     drawMode,
     tempPoints,
-    addTempPoint,
     addZone,
-    clearTempPoints,
+    setTempPoints,
     selectZone,
     updateZone,
     project,
@@ -302,6 +302,43 @@ export const FloorPlanCanvas: React.FC = () => {
     ortho: shift, lastPoint: tempPoints.length >= 2 ? { x: tempPoints[tempPoints.length - 2], y: tempPoints[tempPoints.length - 1] } : undefined
   }).point;
 
+  // Room-outline tool: all decisions live in the pure polylineReducer; this only feeds it events.
+  const [drawMessage, setDrawMessage] = useState<string | null>(null);
+  const [typedLength, setTypedLength] = useState<string>('');
+  const applyPolyline = (event: PolylineEvent) => {
+    const state = { ...initialPolylineState({ units: project.units, scale: project.scale }, 8 / stageScale), points: tempPoints, cursor: mousePos };
+    const next = polylineReducer(state, event);
+    if (next.committed) {
+      const result = addZone(next.committed);
+      setDrawMessage(result.success ? null : `Room not created: ${result.error}`);
+      return;
+    }
+    if (next.points !== tempPoints) setTempPoints(next.points);
+    setDrawMessage(next.message);
+  };
+  const applyPolylineRef = useRef(applyPolyline);
+  applyPolylineRef.current = applyPolyline;
+  const typedLengthRef = useRef(typedLength);
+  typedLengthRef.current = typedLength;
+  const drawModeRef = useRef(drawMode);
+  drawModeRef.current = drawMode;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (drawModeRef.current !== 'polyline' || ['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) return;
+      const buffer = typedLengthRef.current;
+      if (/^[0-9.]$/.test(e.key)) { setTypedLength(buffer + e.key); return; }
+      if (e.key === 'Backspace') { e.preventDefault(); if (buffer) setTypedLength(buffer.slice(0, -1)); else applyPolylineRef.current({ type: 'backspace' }); }
+      else if (e.key === 'Escape') { setTypedLength(''); applyPolylineRef.current({ type: 'escape' }); }
+      else if (e.key === 'Enter') {
+        setTypedLength('');
+        if (buffer) applyPolylineRef.current({ type: 'typedLength', length: Number(buffer) });
+        else applyPolylineRef.current({ type: 'enter' });
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = stageRef.current;
     if (!stage) return;
@@ -354,16 +391,13 @@ export const FloorPlanCanvas: React.FC = () => {
       if (pos) {
         const localPos = transform.point(pos);
         const { x: sx, y: sy } = snapLocal(localPos, e.evt.shiftKey);
-        addTempPoint(sx, sy);
+        applyPolyline({ type: 'click', x: sx, y: sy });
       }
     }
   };
 
   const handleDoubleClick = () => {
-    if (drawMode === 'polyline' && tempPoints.length >= 6) {
-      addZone(tempPoints);
-      clearTempPoints();
-    }
+    if (drawMode === 'polyline' && tempPoints.length >= 6) applyPolyline({ type: 'enter' });
   };
 
   // Continuous smooth exponential cursor-anchored zooming
@@ -1854,6 +1888,13 @@ export const FloorPlanCanvas: React.FC = () => {
       </div>
 
       {/* Floating CAD Layer & Annotation Manager Popover Modal */}
+      {drawMode === 'polyline' && (drawMessage || typedLength || tempPoints.length > 0) && (
+        <div className="absolute left-3 bottom-3 z-10 max-w-md rounded-lg border border-neutral-700 bg-neutral-900/95 px-3 py-2 text-xs text-neutral-200">
+          {typedLength && <div className="font-mono text-teal-300">Length: {typedLength} {project.units === 'metric' ? 'm' : 'ft'} (Enter to place)</div>}
+          {drawMessage && <div className="text-amber-300">{drawMessage}</div>}
+          {!drawMessage && <div className="text-neutral-400">Click to add vertices, click the first point or double-click to close, Backspace undoes, Esc cancels, type a length then Enter.</div>}
+        </div>
+      )}
       <CadLayerManagerModal
         isOpen={isLayerManagerOpen}
         onClose={() => setIsLayerManagerOpen(false)}

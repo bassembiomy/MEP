@@ -20,6 +20,7 @@ import {
   type StoredCadObstacle,
   type StoredCadOpening
 } from '../engine/cad/cadSemanticState';
+import { validateZonePolygon } from '../engine/cad/zonePolygon';
 import { measureSimplePolygon, requirePositive, requireNonnegative, METERS_PER_FOOT } from '../engine/engineeringInputs';
 import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
 import type { StandardsSelection } from '../engine/standards/profileRegistry';
@@ -262,7 +263,9 @@ interface ProjectState {
   setProject: (meta: Partial<ProjectMetadata>) => void;
   restoreProjectDocument: (source: string) => {success: boolean; error?: string};
   setDrawMode: (mode: 'select' | 'polyline' | 'pan') => void;
-  addZone: (points: number[]) => void;
+  /** Validates the outline (simple polygon, >=3 distinct vertices); a refused outline leaves zones and tempPoints unchanged. */
+  addZone: (points: number[]) => {success:boolean;error?:string};
+  setTempPoints: (points: number[]) => void;
   /** Recognise room candidates from the CAD review state (approved openings, user-confirmed wall layers, selected level). */
   recognizeCadRoomCandidates: () => CadRoomRecognitionRun;
   /** `ceilingHeight` is the value the caller chose (a suggestion is available via selectCeilingHeightSuggestion). */
@@ -503,22 +506,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   setHighlightedEntityTag: (tag) => set({ highlightedEntityTag: tag }),
   
   addZone: (points) => {
-    // Remove consecutive duplicate vertices created during click/double-click
-    const cleanPoints: number[] = [];
-    for (let i = 0; i < points.length; i += 2) {
-      const x = points[i];
-      const y = points[i + 1];
-      const lastX = cleanPoints[cleanPoints.length - 2];
-      const lastY = cleanPoints[cleanPoints.length - 1];
-      if (lastX === undefined || Math.hypot(x - lastX, y - lastY) > 1e-3) {
-        cleanPoints.push(x, y);
-      }
-    }
-
-    if (cleanPoints.length < 6) {
-      set({ drawMode: 'select', tempPoints: [] });
-      return;
-    }
+    const check = validateZonePolygon(points);
+    if (!check.ok) return { success: false, error: check.error };
+    const cleanPoints = check.points;
 
     const id = `zone-${Date.now()}`;
     const state = get();
@@ -618,6 +608,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           engineeringError: err instanceof Error ? err.message : 'Automatic design failed.' } : z) }));
       }
     }, 0);
+    return { success: true };
   },
   
   updateZone: (id, updates) => set((state) => ({
@@ -653,6 +644,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     return { tempPoints: [...state.tempPoints, x, y] };
   }),
   
+  setTempPoints: (points) => set({ tempPoints: [...points] }),
   clearTempPoints: () => set({ tempPoints: [] }),
   
   setDxfData: (entities, bbox, suggestedScale, cadUnit, metadata, blockReferences) => {

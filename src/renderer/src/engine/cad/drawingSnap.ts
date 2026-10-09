@@ -20,17 +20,12 @@ export interface SnapOptions {
   level?: number
 }
 
-const METERS_PER_FOOT = 0.3048
 /** project.scale is drawing units per foot (imperial) or per metre (metric). Grid is 0.5 ft or 100 mm, in drawing units. */
 export function physicalGridSpacing(project: Pick<ProjectMetadata, 'units' | 'scale'>): number {
   const scale = project.scale
   if (!Number.isFinite(scale) || scale <= 0) throw new Error('Project scale must be positive to derive a grid spacing.')
   return project.units === 'metric' ? 0.1 * scale : 0.5 * scale
 }
-/** Same value expressed per foot, for callers that need it. */
-export const drawingUnitsPerFoot = (project: Pick<ProjectMetadata, 'units' | 'scale'>): number =>
-  project.units === 'metric' ? project.scale * METERS_PER_FOOT : project.scale
-
 interface Seg { ax: number; ay: number; bx: number; by: number; bulge: number; handle?: string }
 interface Source { segs: Seg[]; vertices: SnapPoint[]; handle?: string; minX: number; minY: number; maxX: number; maxY: number }
 
