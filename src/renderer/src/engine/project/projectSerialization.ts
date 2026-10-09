@@ -15,6 +15,8 @@ export interface PersistedProjectState {
   dxfEntities: DxfEntity[];
   dxfBoundingBox: BoundingBox | null;
   dxfLayers: Record<string, DxfLayerInfo>;
+  /** Origin of the local coordinates (raw = local + drawingOrigin, internal Y-down frame). Absent means {0,0}; stored only when non-zero (version 3). */
+  drawingOrigin?: {x:number;y:number};
   cadImport?:CadImportMetadata|null;
   /** User layer-role decisions (machine suggestions are recomputed from the entities). */
   cadLayerOverrides?:CadLayerOverrides;
@@ -34,8 +36,13 @@ export interface PersistedProjectState {
 const FORMAT='mep-hvac-project';
 // Version 2 adds CAD review decisions (layer roles, openings, obstacles, level). Version 1 documents
 // load unchanged with those fields absent; the store then re-derives suggestions from the entities.
+// Version 3 adds the top-level drawingOrigin (far-from-origin drawings, see engine/cad/drawingOrigin.ts). It is written only
+// when non-zero: a document with origin {0,0} stays version 2, so every file saved for a near drawing is unchanged.
+// Versions 1 and 2 are read as origin {0,0} and may not carry drawingOrigin. A v1/v2 project that was saved with
+// far-from-origin raw coordinates is NOT localised at load (entity ids embed coordinates); re-importing the drawing rebases it.
 const VERSION=2;
-const SUPPORTED_VERSIONS=[1,2];
+const ORIGIN_VERSION=3;
+const SUPPORTED_VERSIONS=[1,2,3];
 const MAX_DOCUMENT_LENGTH=50_000_000;
 
 function assertDataTree(value: unknown, path='document', depth=0, seen=new Set<object>(), budget={nodes:0}): void {
@@ -184,6 +191,13 @@ function validateLoadedCatalogs(value:unknown):PersistedProjectState['loadedCata
   return catalogs as unknown as PersistedProjectState['loadedCatalogs'];
 }
 
+function validateDrawingOrigin(value:unknown,version:number):{x:number;y:number}|undefined {
+  if(value===undefined) return undefined;
+  if(version<ORIGIN_VERSION) throw new TypeError('drawingOrigin requires project version 3');
+  const o=object(value,'Drawing origin');
+  return {x:finite(o.x,'Drawing origin X'),y:finite(o.y,'Drawing origin Y')};
+}
+
 function validateState(value:unknown,version:number=VERSION):PersistedProjectState {
   // Version 1 predates CAD review decisions: nothing in such a file (unit confirmation of an unconfirmable import,
   // approved openings/obstacles, level, zone obstacles) can have been a recorded user decision, so none is trusted.
@@ -280,7 +294,9 @@ function validateState(value:unknown,version:number=VERSION):PersistedProjectSta
     for(const [key,value] of Object.entries(b))finite(value,`CAD bounds ${key}`);
     bbox=bbox?{minX:Math.min(bbox.minX,b.minX),maxX:Math.max(bbox.maxX,b.maxX),minY:Math.min(bbox.minY,b.minY),maxY:Math.max(bbox.maxY,b.maxY)}:b;
   }
+  const drawingOrigin=validateDrawingOrigin(data.drawingOrigin,version);
   return {project,zones,dxfEntities,dxfBoundingBox:bbox,dxfLayers,
+    ...(drawingOrigin!==undefined&&(drawingOrigin.x!==0||drawingOrigin.y!==0)?{drawingOrigin}:{}),
     ...(cadImport!==undefined?{cadImport}:{}),
     ...(data.cadLayerOverrides!==undefined?{cadLayerOverrides:validateLayerOverrides(data.cadLayerOverrides)}:{}),
     ...(!legacy&&data.cadOpenings!==undefined?{cadOpenings:validateCadOpenings(data.cadOpenings)}:{}),
@@ -294,7 +310,9 @@ function validateState(value:unknown,version:number=VERSION):PersistedProjectSta
 
 export function serializeProject(state:PersistedProjectState):string {
   // Pick declarative fields before inspecting; live Zustand actions are not document data.
+  const farOrigin=!!state.drawingOrigin&&(state.drawingOrigin.x!==0||state.drawingOrigin.y!==0);
   const data={project:state.project,zones:state.zones,dxfEntities:state.dxfEntities,dxfBoundingBox:state.dxfBoundingBox,dxfLayers:state.dxfLayers,
+    ...(farOrigin?{drawingOrigin:state.drawingOrigin}:{}),
     ...(state.cadImport!==undefined?{cadImport:state.cadImport}:{}),
     ...(state.cadLayerOverrides!==undefined?{cadLayerOverrides:state.cadLayerOverrides}:{}),
     ...(state.cadOpenings!==undefined?{cadOpenings:state.cadOpenings}:{}),
@@ -305,8 +323,9 @@ export function serializeProject(state:PersistedProjectState):string {
     ...(state.optimizationWeights!==undefined?{optimizationWeights:state.optimizationWeights}:{}),
     ...(state.loadedCatalogs!==undefined?{loadedCatalogs:state.loadedCatalogs}: {})};
   assertDataTree(data);
-  const valid=validateState(data);
-  const result=JSON.stringify({format:FORMAT,version:VERSION,...valid},null,2);
+  const version=farOrigin?ORIGIN_VERSION:VERSION;
+  const valid=validateState(data,version);
+  const result=JSON.stringify({format:FORMAT,version,...valid},null,2);
   if(result.length>MAX_DOCUMENT_LENGTH) throw new RangeError('Project document exceeds size limit');
   return result;
 }
