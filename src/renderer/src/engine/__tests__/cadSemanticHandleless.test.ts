@@ -71,5 +71,10 @@ describe('rescaling decided items', async () => {
     // rescaling again does not stack the note
     const third = recognizeCadSemantics({ ...base, entities: shown, suggestions, unitsPerFoot: 50, priorUnitsPerFoot: 100, prior: { openings: [], obstacles: [kept] } })
     expect(third.obstacles.find((o) => o.status === 'approved')!.evidence).toEqual(kept.evidence)
+    // returning to the scale the figures were derived at drops the note again (A -> B -> A)
+    const back = recognizeCadSemantics({ ...base, entities: shown, suggestions, unitsPerFoot: 304.8, priorUnitsPerFoot: 50, prior: { openings: [], obstacles: [third.obstacles.find((o) => o.status === 'approved')!] } })
+    const restored = back.obstacles.find((o) => o.status === 'approved')!
+    expect(restored.evidence).toEqual(decided.evidence)
+    expect(restored.widthFt).toBeCloseTo(decided.widthFt, 6)
   })
 })

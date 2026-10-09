@@ -25,6 +25,8 @@ export type StoredCadOpening = Omit<CadOpeningCandidate, 'status'> & {
   /** Elevation (drawing units) of the level the candidate was recognised on. */
   level: number
   approvedAt?: string
+  /** Units per foot the sizes quoted in `evidence` were derived at; set once a rescale marks them stale. */
+  evidenceUnitsPerFoot?: number
 }
 
 export type StoredCadObstacle = Omit<CadObstacleCandidate, 'status'> & {
@@ -33,6 +35,8 @@ export type StoredCadObstacle = Omit<CadObstacleCandidate, 'status'> & {
   /** Required once approved; feet of clear space kept around the obstacle. */
   clearanceFt?: number
   approvedAt?: string
+  /** Units per foot the sizes quoted in `evidence` were derived at; set once a rescale marks them stale. */
+  evidenceUnitsPerFoot?: number
 }
 
 export interface CadLayerRoleState {
@@ -128,9 +132,18 @@ export const sameOpeningObject = (unitsPerFoot: number) => (a: StoredCadOpening,
   a.level === b.level && Math.hypot(a.center.x - b.center.x, a.center.y - b.center.y) <= 0.5 * unitsPerFoot
 
 const STALE_NOTE = '(at the previous scale)'
-/** Evidence text quotes sizes in feet at the scale the item was computed at; after a rescale those figures are stale, so say so. */
-const markStaleEvidence = (evidence: string[]): string[] =>
-  evidence.map((e) => (/\bft\b/.test(e) && !e.endsWith(STALE_NOTE) ? `${e} ${STALE_NOTE}` : e))
+const sameScale = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-12 * Math.max(a, b)
+/**
+ * Evidence text quotes sizes in feet at the scale the item was computed at; after a rescale those figures are stale, so say so.
+ * The scale the figures were derived at is remembered, so rescaling back to it drops the note again (A -> B -> A).
+ */
+function rescaleEvidence<T extends { evidence: string[]; evidenceUnitsPerFoot?: number }>(item: T, priorUnitsPerFoot: number, unitsPerFoot: number): Pick<T, 'evidence' | 'evidenceUnitsPerFoot'> {
+  const origin = item.evidenceUnitsPerFoot ?? priorUnitsPerFoot
+  const evidence = sameScale(origin, unitsPerFoot)
+    ? item.evidence.map((e) => (e.endsWith(STALE_NOTE) ? e.slice(0, -STALE_NOTE.length).trimEnd() : e))
+    : item.evidence.map((e) => (/\bft\b/.test(e) && !e.endsWith(STALE_NOTE) ? `${e} ${STALE_NOTE}` : e))
+  return { evidence, evidenceUnitsPerFoot: origin }
+}
 
 /**
  * Same obstacle object: shared real source entity handle, or the same layer and outline bounds. The synthetic `entity-<index>`
@@ -206,12 +219,12 @@ export function recognizeCadSemantics(input: SemanticRecognitionInput): Semantic
       ratio === 1 ? items : items.map((i) => (isDecided(i.status) ? fix(i) : i))
     openings = mergeCandidates(
       openings,
-      rescale(input.prior.openings, (o) => ({ ...o, widthFt: o.widthFt * ratio, evidence: markStaleEvidence(o.evidence) })),
+      rescale(input.prior.openings, (o) => ({ ...o, widthFt: o.widthFt * ratio, ...rescaleEvidence(o, input.priorUnitsPerFoot!, input.unitsPerFoot) })),
       ratio !== 1 ? sameOpeningObject(input.unitsPerFoot) : undefined
     )
     obstacles = mergeCandidates(
       obstacles,
-      rescale(input.prior.obstacles, (o) => ({ ...o, widthFt: o.widthFt * ratio, depthFt: o.depthFt * ratio, evidence: markStaleEvidence(o.evidence) })),
+      rescale(input.prior.obstacles, (o) => ({ ...o, widthFt: o.widthFt * ratio, depthFt: o.depthFt * ratio, ...rescaleEvidence(o, input.priorUnitsPerFoot!, input.unitsPerFoot) })),
       // Ids are stable at the same scale, so only a rescale (ids embed feet) needs object matching.
       ratio !== 1 ? sameObstacleObject : undefined
     )
