@@ -393,7 +393,14 @@ function explodeMline(
     parts.push({ ...base, type: 'LINE', x: a.x, y: a.y, points: [b.x, b.y], ...(base.handle ? { handle: `${base.handle}:${k}` } : {}) });
   };
   for (let i = 1; i < miterPoints.length; i++) for (let e = 0; e < elementCount; e++) line(miterPoints[i - 1][e], miterPoints[i][e]);
-  const flags = style && style.offsets.length === elementCount ? style.flags : 0;
+  const styleMatches = !!style && style.offsets.length === elementCount;
+  const flags = styleMatches ? style!.flags : 0;
+  if (style && !styleMatches && (style.flags & (MLINE_MITER | MLINE_START_SQUARE | MLINE_END_SQUARE | MLINE_START_ARCS | MLINE_END_ARCS)))
+    diagnose('MLINE_STYLE_MISMATCH', `MLINE style has ${style.offsets.length} elements but the entity has ${elementCount}; its caps and joint lines are not drawn, the element lines are imported.`, r);
+  // Longest miter displacement, a sign of an extremely acute joint (the file stores the final geometry, so it is flagged, not clipped).
+  const maxOffset = Math.max(...vertices.flatMap(v => v.offsets.map(Math.abs)));
+  if (vertices.some(v => Math.hypot(v.mx, v.my) * Math.max(...v.offsets.map(Math.abs)) > 10 * maxOffset))
+    diagnose('MLINE_LONG_MITER', 'MLINE has a joint whose miter extends more than 10 times the widest element offset (extremely acute angle); the lines are imported as stored.', r);
   if (flags) {
     const bottom = style!.offsets.indexOf(Math.min(...style!.offsets)), top = style!.offsets.indexOf(Math.max(...style!.offsets));
     // A cap / joint line runs from the outermost element to the middle of the two outermost elements and on to the other one.
@@ -401,9 +408,12 @@ function explodeMline(
       const mid = { x: (m[top].x + m[bottom].x) / 2, y: (m[top].y + m[bottom].y) / 2 };
       line(m[top], mid); line(m[bottom], mid);
     };
-    if (!closed && (flags & MLINE_START_SQUARE)) across(miterPoints[0]);
+    // Entity group 71 bit 4 / 8 suppress the start / end cap (AutoCAD). ezdxf's virtual_entities() ignores them and always draws the
+    // style's caps; this importer follows AutoCAD, so an MLINE with those bits and square caps differs from the ezdxf explosion.
+    const entityFlags = number(r, 71, 0);
+    if (!closed && (flags & MLINE_START_SQUARE) && !(entityFlags & 4)) across(miterPoints[0]);
     if (flags & MLINE_MITER) for (let i = closed ? 0 : 1; i < miterPoints.length - 1; i++) across(miterPoints[i]);
-    if (!closed && (flags & MLINE_END_SQUARE)) across(miterPoints[miterPoints.length - 1]);
+    if (!closed && (flags & MLINE_END_SQUARE) && !(entityFlags & 8)) across(miterPoints[miterPoints.length - 1]);
     if (!closed && (flags & (MLINE_START_ARCS | MLINE_END_ARCS)))
       diagnose('MLINE_CAP_OMITTED', 'MLINE round / inner-arc end caps are not drawn; the element lines are imported.', r);
   }
