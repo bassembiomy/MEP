@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { gunzipSync } from 'node:zlib'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { parseDxfText, type ParsedDxf } from '../dxfParser'
+import { decodeDxfBytes, parseDxfText, type ParsedDxf } from '../dxfParser'
 import { useProjectStore, selectCeilingHeightSuggestion } from '../../store/projectStore'
 import { recognizeCadRooms } from '../cad/roomRecognition'
 import { listCadLevels } from '../cad/cadSemanticState'
@@ -49,10 +49,10 @@ const ELEVATED = 'elevated-levels.dxf'
 const LARGE = 'large-office-20k.dxf.gz'
 const LEGACY = 'legacy-r2000-cp1252.dxf'
 
-/** The importer UI reads files with File.text() (UTF-8), so the corpus is decoded exactly that way. */
+/** Same decoding as Toolbar.handleFileChange: raw bytes through decodeDxfBytes ($ACADVER / $DWGCODEPAGE aware). */
 function readText(name: string): string {
   const bytes = readFileSync(new URL(name, corpus))
-  return (name.endsWith('.gz') ? gunzipSync(bytes) : bytes).toString('utf8')
+  return decodeDxfBytes(new Uint8Array(name.endsWith('.gz') ? gunzipSync(bytes) : bytes))
 }
 const cache = new Map<string, { parsed: ParsedDxf; parseMs: number }>()
 function load(name: string) {
@@ -565,14 +565,14 @@ describe('corpus: legacy-r2000-cp1252 (cp1252 bytes, \\U+ escapes)', () => {
   it('rooms path A: both rooms with the right areas', () => {
     expectRoomsMatch(pathA(name).candidates, t.rooms, upf(name))
   })
-  gap('KNOWN GAP: cp1252 bytes (0xFC in "Büro", 0xE9 in "Café") are decoded as UTF-8 and become U+FFFD', () => {
+  it('cp1252 bytes (0xFC in "Büro", 0xE9 in "Café") are decoded through decodeDxfBytes', () => {
     expect(texts()).toContain('Büro')
     expect(texts()).toContain('Café')
   })
-  gap('KNOWN GAP: \\U+XXXX escapes are not decoded, so Arabic text stays as literal \\U+0627… and the CH annotation is unreadable', () => {
+  it('\\U+XXXX escapes are decoded', () => {
     expect(texts()).toContain('ارتفاع السقف 2.80')
   })
-  gap('KNOWN GAP: the Arabic ceiling-height annotation (2.80 m) is not recognised because its text was never decoded', () => {
+  it('the Arabic ceiling-height annotation (2.80 m) is suggested', () => {
     loadStore(name)
     const room = t.rooms.find(r => r.name === 'Büro')!
     const out = selectCeilingHeightSuggestion(s(), matchRoom(pathA(name).candidates, room)!)

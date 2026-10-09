@@ -24,7 +24,7 @@ Tests: `src/renderer/src/engine/__tests__/cadRealisticCorpus.test.ts`.
 | `noise-dim-hatch-spline-paper.dxf` | R2018, mm | Linear DIMENSIONs (`*D` blocks), solid + ANSI31 HATCH, SPLINE feature wall, ELLIPSE, XDATA, `Defpoints` POINTs, frozen + off layers, Layout1 title block (`TITLE BLOCK`, group 67) and a Layout2 with a VIEWPORT |
 | `elevated-levels.dxf` | R2013, mm | Ground floor z=0 and second floor at z=3500 (LWPOLYLINE elevation 38, LINE z, INSERT z), one non-planar 3D LINE that must be dropped |
 | `large-office-20k.dxf.gz` | R2018, mm | 48 office bays, 19,872 entities after block expansion (2.8 MB raw, 0.18 MB gzipped), desk/chair blocks, 240 `A-WALL` and 192 `A-AREA` segments (both far below the 5,000 limit on purpose) |
-| `legacy-r2000-cp1252.dxf` | R2000, `$DWGCODEPAGE ANSI_1252` | `Büro`, `Café` as cp1252 bytes and Arabic `ارتفاع السقف 2.80` written by ezdxf as `\U+XXXX` escapes |
+| `legacy-r2000-cp1252.dxf` | R2000, `$DWGCODEPAGE ANSI_1252` (read via `decodeDxfBytes`) | `Büro`, `Café` as cp1252 bytes and Arabic `ارتفاع السقف 2.80` written by ezdxf as `\U+XXXX` escapes |
 
 Manifest conventions: coordinates are DXF drawing units with **Y up** (`parseDxfText` flips Y, the tests negate);
 room areas are net ft2 of the *clear* room (centreline rectangle for the single-line imperial plan); door centre =
@@ -43,9 +43,6 @@ runs the gaps as normal tests and prints the real assertion failures.
 |---|---|---|---|---|
 | 6 | SPLINE is unsupported, so a curved feature wall is dropped | 1 `UNSUPPORTED_ENTITY:SPLINE`, 0 entities on `A-WALL-CURVE` | `SPLINE feature wall is dropped ...` | `dxfParser.ts` (sample to polyline) |
 | 8 | Frozen / off layers are imported as visible geometry | 2 entities from `A-FRZ` (frozen) and `A-OFF` (off) are present | `geometry on frozen / off layers ...` | `dxfParser.ts` layer table (group 70 bit 1, negative colour); design question: hide or import-but-hidden |
-| 10 | cp1252 bytes are decoded as UTF-8 (the UI reads files with `File.text()`) | `Büro` arrives as `B�ro`, `Café` as `Caf�` | `cp1252 bytes ...` | `Toolbar.tsx` / a byte-level DXF entry point honouring `$DWGCODEPAGE` |
-| 11 | `\U+XXXX` escapes (R2000 and earlier) are not decoded | Arabic text stays as the literal `\U+0627\U+0631...` | `\U+XXXX escapes are not decoded ...` | `dxfParser.ts` text decoding |
-| 12 | Consequence of 11: the Arabic ceiling-height annotation `ارتفاع السقف 2.80` gives no suggestion | `suggestion === undefined`, expected 9.186 ft | `the Arabic ceiling-height annotation ...` | follows from 11 |
 
 Not defects (documented behaviour, asserted as such): DIMENSION (4), HATCH (2) and POINT (3) are reported once each as
 `UNSUPPORTED_ENTITY`; XDATA, the second layout and its viewport are ignored without diagnostics.

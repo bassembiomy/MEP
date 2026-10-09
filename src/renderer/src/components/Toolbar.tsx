@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { useProjectStore, selectPersistedProject } from '../store/projectStore';
 import { serializeProject } from '../engine/project/projectSerialization';
 import {exportProjectDxf} from '../engine/export/exportDxf';
-import { parseDxfText } from '../engine/dxfParser';
+import { decodeDxfBytes, parseDxfText } from '../engine/dxfParser';
 import { parseDwgBuffer } from '../engine/dwgParser';
 import { MousePointer, PenTool, Hand, RefreshCw, Trash2, ShieldAlert, Upload, X, CheckCircle, Sparkles } from 'lucide-react';
 import { AiHvacAssistantModal } from './AiHvacAssistantModal';
@@ -40,7 +40,7 @@ export const Toolbar: React.FC = () => {
     try {
       const parsed=file.name.toLowerCase().endsWith('.dwg')
         ? await parseDwgBuffer(new Uint8Array(await file.arrayBuffer()))
-        : parseDxfText(await file.text());
+        : parseDxfText(decodeDxfBytes(new Uint8Array(await file.arrayBuffer())));
       if(request!==importRequestRef.current) return;
       const units=useProjectStore.getState().project.units;
       setDxfData(parsed.entities,parsed.bbox,units==='imperial'?parsed.suggestedScaleImperial:parsed.suggestedScaleMetric,parsed.cadUnit,

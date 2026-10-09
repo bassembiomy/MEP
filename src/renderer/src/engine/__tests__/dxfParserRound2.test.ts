@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { parseDxfText } from '../dxfParser'
-import { block, dxf, header, insert, layer, line, rawRecord } from './fixtures/dxfBuilder'
+import { decodeDxfBytes, parseDxfText } from '../dxfParser'
+import { block, dxf, header, insert, layer, line, rawRecord, text } from './fixtures/dxfBuilder'
 
 describe('HEADER variables with group code 2 are not section names', () => {
   const build = (extra: Parameters<typeof header>[0]) =>
@@ -79,5 +79,44 @@ describe('ATTRIB / ATTDEF / SEQEND', () => {
     expect(p.entities.some(e => e.text === 'D00')).toBe(false)
     expect(p.entities.filter(e => e.text === 'FIXED')).toHaveLength(1)
     expect(p.diagnostics!.filter(d => d.code === 'UNSUPPORTED_ENTITY')).toEqual([])
+  })
+})
+
+describe('text encoding', () => {
+  const file = (acadver: string, codepage: string | undefined, value: string) =>
+    dxf({ header: header({ acadver, codepage, insunits: 4 }), layers: [layer('0')], blocks: [], entities: [text('0', 0, 0, 100, value)] })
+  const cp1252 = (s: string) => Uint8Array.from(Array.from(s, c => c.charCodeAt(0) & 0xff)) // latin1 range == cp1252 for these chars
+
+  it('decodes pre-AC1021 files as windows-1252 (0xFC -> u-umlaut, 0xE9 -> e-acute)', () => {
+    const out = parseDxfText(decodeDxfBytes(cp1252(file('AC1015', 'ANSI_1252', 'Büro Café'))))
+    expect(out.entities[0].text).toBe('Büro Café')
+  })
+  it('honours another known $DWGCODEPAGE (ANSI_1251 Cyrillic)', () => {
+    const src = file('AC1015', 'ANSI_1251', 'XX')
+    const bytes = new TextEncoder().encode(src)
+    const at = src.indexOf('XX')
+    bytes[at] = 0xcf; bytes[at + 1] = 0xf0 // "Пр" in windows-1251
+    expect(parseDxfText(decodeDxfBytes(bytes)).entities[0].text).toBe('Пр')
+  })
+  it('decodes AC1021+ as UTF-8', () => {
+    const bytes = new TextEncoder().encode(file('AC1027', undefined, 'Büro ارتفاع'))
+    expect(parseDxfText(decodeDxfBytes(bytes)).entities[0].text).toBe('Büro ارتفاع')
+  })
+  it('without $ACADVER reads valid UTF-8 as UTF-8 and falls back to windows-1252 otherwise', () => {
+    const plain = dxf({ layers: [layer('0')], blocks: [], entities: [text('0', 0, 0, 100, 'Büro')] })
+    expect(decodeDxfBytes(new TextEncoder().encode(plain))).toContain('Büro')
+    expect(decodeDxfBytes(cp1252(plain))).toContain('Büro')
+  })
+  it('strips a UTF-8 BOM and never throws on garbage bytes', () => {
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode('0\nEOF\n')])
+    expect(() => decodeDxfBytes(bom)).not.toThrow()
+    expect(() => decodeDxfBytes(new Uint8Array([0xff, 0xfe, 0x00, 0x80]))).not.toThrow()
+  })
+  it('decodes \\U+XXXX escapes in TEXT and MTEXT values', () => {
+    const parsed = parseDxfText(dxf({
+      header: header({ insunits: 4 }), layers: [layer('0')], blocks: [],
+      entities: [text('0', 0, 0, 100, '\\U+0627\\U+0631 2.80'), rawRecord([0, 'MTEXT'], [8, '0'], [10, 0], [20, 0], [40, 100], [1, 'caf\\U+00e9'])]
+    }))
+    expect(parsed.entities.map(e => e.text)).toEqual(['\u0627\u0631 2.80', 'café'])
   })
 })

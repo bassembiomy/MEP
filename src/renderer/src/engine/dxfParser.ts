@@ -198,6 +198,37 @@ function compose(p: CadAffineMatrix, q: CadAffineMatrix): CadAffineMatrix {
     tx: p.a * q.tx + p.c * q.ty + p.tx, ty: p.b * q.tx + p.d * q.ty + p.ty };
 }
 
+const CODEPAGE_LABELS: Record<string, string> = {
+  ANSI_874: 'windows-874', ANSI_932: 'shift_jis', ANSI_936: 'gbk', ANSI_949: 'euc-kr', ANSI_950: 'big5',
+  ANSI_1250: 'windows-1250', ANSI_1251: 'windows-1251', ANSI_1252: 'windows-1252', ANSI_1253: 'windows-1253',
+  ANSI_1254: 'windows-1254', ANSI_1255: 'windows-1255', ANSI_1256: 'windows-1256', ANSI_1257: 'windows-1257',
+  ANSI_1258: 'windows-1258'
+};
+
+/**
+ * Decodes the bytes of a DXF file. DXF R2007+ (AC1021 and later) is UTF-8; older files use the ANSI code page
+ * named by $DWGCODEPAGE (windows-1252 when absent or unknown). A file without $ACADVER is read as UTF-8 and, only if
+ * those bytes are not valid UTF-8, as windows-1252. A UTF-8 BOM always means UTF-8. Never throws on bad bytes.
+ */
+export function decodeDxfBytes(bytes: Uint8Array): string {
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return new TextDecoder('utf-8').decode(bytes);
+  // The header is ASCII in every encoding handled here, so a byte-preserving latin1 view of its start is safe to scan.
+  const head = new TextDecoder('windows-1252').decode(bytes.subarray(0, Math.min(bytes.length, 65536)));
+  const headerValue = (variable: string, code: number): string | undefined =>
+    new RegExp(`\\r?\\n\\s*9\\r?\\n${variable.replace('$', '\\$')}\\r?\\n\\s*${code}\\r?\\n([^\\r\\n]*)`, 'i').exec(head)?.[1].trim();
+  const version = /^AC(\d{4})$/i.exec(headerValue('$ACADVER', 1) ?? '')?.[1];
+  if (version === undefined) {
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return new TextDecoder('windows-1252').decode(bytes); }
+  }
+  if (Number(version) >= 1021) return new TextDecoder('utf-8').decode(bytes);
+  const label = CODEPAGE_LABELS[(headerValue('$DWGCODEPAGE', 3) ?? '').toUpperCase()] ?? 'windows-1252';
+  try { return new TextDecoder(label).decode(bytes); } catch { return new TextDecoder('windows-1252').decode(bytes); }
+}
+
+/** Decodes the `\U+XXXX` unicode escapes used by DXF R2004 and earlier for characters outside the code page. */
+const decodeUnicodeEscapes = (text: string): string =>
+  text.replace(/\\U\+([0-9A-Fa-f]{4})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+
 /** Parses DXF records before resolving INSERTs. Empty values never shift code/value pairs. */
 export function parseDxfText(dxfText: string): ParsedDxf {
   const diagnostics: CadImportDiagnostic[] = [], entities: DxfEntity[] = [], blockReferences: CadBlockReference[] = [];
@@ -421,7 +452,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         case 'TEXT':
         case 'MTEXT':
           ent.x = number(r, 10); ent.y = -number(r, 20);
-          ent.text = r.pairs.filter(p => p.code === 3 || p.code === 1).map(p => p.value).join('');
+          ent.text = decodeUnicodeEscapes(r.pairs.filter(p => p.code === 3 || p.code === 1).map(p => p.value).join(''));
           if (first(r, 40) !== undefined) ent.textHeight = number(r, 40);
           ent.rotationDeg = number(r, 50, 0);
           if(r.type==='MTEXT') {
