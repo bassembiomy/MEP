@@ -9,6 +9,7 @@ const sweep = (start: number, end: number) => Math.abs(end - start) >= TAU - 1e-
 interface Conic { x: number; y: number; u: { x: number; y: number }; v: { x: number; y: number }; start: number; sweep: number }
 
 export function validateCadEntity(ent: DxfEntity): string | null {
+  if (ent.originalLayer !== undefined && typeof ent.originalLayer !== 'string') return 'Invalid originalLayer';
   if (ent.points && (ent.points.length % 2 !== 0 || !ent.points.every(finite))) return 'Invalid vertex coordinates';
   if (ent.bulges && !ent.bulges.every(finite)) return 'Invalid polyline bulge';
   for (const key of ['textHeight', 'rotationDeg', 'startParam', 'endParam', 'startAngleDeg', 'endAngleDeg'] as const) {

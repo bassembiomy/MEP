@@ -388,8 +388,9 @@ export function parseDxfText(dxfText: string): ParsedDxf {
   incompleteBlock();
   let visited = 0, expansionStopped = false, paperSpaceSkipped = 0;
   function expand(records: DxfRecord[], matrix: CadAffineMatrix, stack: string[], inheritedLayer = '0', inheritedColor?: string, insertHandle?: string, zScale = 1, zOffset = 0, frozenBy?: string) {
-    // `frozenBy`: layer of the nearest FROZEN ancestor INSERT. Freezing hides the whole reference, children on other layers
-    // included, so those children are moved onto that layer (originalLayer keeps their own). OFF only hides layer-0 children
+    // `frozenBy`: layer of the INNERMOST FROZEN ancestor INSERT. Freezing hides the whole reference, so children on a visible
+    // layer are moved onto that layer (originalLayer keeps their own); children already on a hidden (frozen/off) layer keep it,
+    // so showing the INSERT's layer never reveals content its own hidden layer should keep hidden. OFF only hides layer-0 children
     // (they inherit the INSERT's layer), which `inheritedLayer` already covers.
     // Elevation of a child at block-space Z `cz` is zScale * cz + zOffset (affine, composed per nested INSERT).
     for (let index = 0; index < records.length; index++) {
@@ -407,7 +408,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         if (r.type === 'POLYLINE') while (index + 1 < records.length && (records[index + 1].type === 'VERTEX' || records[index + 1].type === 'SEQEND')) { const t = records[++index].type; if (t === 'SEQEND') break; }
         continue;
       }
-      const rawLayer = first(r, 8)?.trim() || '0', ownLayer = rawLayer === '0' ? inheritedLayer : rawLayer, layer = frozenBy ?? ownLayer;
+      const rawLayer = first(r, 8)?.trim() || '0', ownLayer = rawLayer === '0' ? inheritedLayer : rawLayer, layer = frozenBy && !hiddenLayers.has(ownLayer) ? frozenBy : ownLayer;
       const aci = number(r, 62), ownColor = color(r) ?? (aci === 0 ? inheritedColor : layers.get(ownLayer));
       if (number(r, 39, 0) !== 0) { diagnose('UNSUPPORTED_THICKNESS', 'Volumetric entity thickness cannot be represented in the 2D drawing; entity omitted.', r); continue; }
       const nx = number(r, 210, 0), ny = number(r, 220, 0), nz = number(r, 230, 1);
@@ -454,7 +455,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
         const insertWorldZ = zScale * nzSign * ownZ + zOffset;
         if (insertWorldZ !== 0 || child.baseZ !== 0) diagnose('ELEVATED_GEOMETRY_PROJECTED', `INSERT ${name} at elevation ${insertWorldZ}${child.baseZ !== 0 ? ` (block base Z ${child.baseZ})` : ''}; its geometry is projected onto the plan and keeps its elevation.`, r);
         expand(child.records, composed, [...stack, name], layer, ownColor ?? inheritedColor, first(r, 5)?.trim() ?? insertHandle,
-          zScale * nzSign * sz, zScale * nzSign * (ownZ - sz * child.baseZ) + zOffset, frozenBy ?? (frozenLayers.has(layer) ? layer : undefined));
+          zScale * nzSign * sz, zScale * nzSign * (ownZ - sz * child.baseZ) + zOffset, frozenLayers.has(layer) ? layer : frozenBy);
         const placement = describeInsertTransform(composed, { x: child.baseX, y: child.baseY });
         const childBounds: BoundingBox = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
         for (let k = childStart; k < entities.length; k++) {

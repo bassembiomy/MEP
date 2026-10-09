@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { decodeDxfBytes, parseDxfText } from '../dxfParser'
+import { validateCadEntity } from '../cad/nativeGeometry'
 import { block, dxf, header, insert, layer, line, rawRecord, text } from './fixtures/dxfBuilder'
 
 describe('HEADER variables with group code 2 are not section names', () => {
@@ -186,5 +187,38 @@ describe('frozen INSERT layer hides the whole reference', () => {
     const outerLine = p.entities.find(e => e.originalLayer === undefined && e.layer === 'A-WALL' && e.sourceBlock === 'OUTER')
     expect(outerLine).toBeTruthy()
     expect(p.entities.filter(e => e.layer === 'FURN')).toHaveLength(2)
+  })
+})
+
+describe('frozen INSERT re-layering respects hidden child layers', () => {
+  const run = (entities: string[], blocks: string[], extra: string[] = []) => parseDxfText(dxf({
+    header: header({ insunits: 4 }),
+    layers: [layer('0'), layer('A-WALL'), layer('XREF', { frozen: true }), layer('A-FURN', { frozen: true }), layer('OFFL', { off: true }), layer('F1', { frozen: true }), layer('F2', { frozen: true }), ...extra],
+    blocks, entities
+  }))
+  it('children on a frozen or off layer keep their own hidden layer; others move to the INSERT layer', () => {
+    const p = run([insert('XREF', 'B', 0, 0)], [block('B', [line('A-FURN', 0, 0, 10, 0), line('OFFL', 0, 5, 10, 5), line('A-WALL', 0, 9, 10, 9)].join('\n'))])
+    expect(p.entities.map(e => e.layer).sort()).toEqual(['A-FURN', 'OFFL', 'XREF'])
+    expect(p.entities.filter(e => e.originalLayer).map(e => [e.layer, e.originalLayer])).toEqual([['XREF', 'A-WALL']])
+  })
+  it('nested frozen INSERTs: inner children follow the innermost frozen layer', () => {
+    const p = run([insert('F1', 'OUTER', 0, 0)], [
+      block('INNER', line('A-WALL', 0, 0, 10, 0)),
+      block('OUTER', line('A-WALL', 0, 50, 10, 50) + '\n' + insert('F2', 'INNER', 0, 100))
+    ])
+    const inner = p.entities.find(e => e.sourceBlock === 'INNER')!
+    const outer = p.entities.find(e => e.sourceBlock === 'OUTER')!
+    expect(inner.layer).toBe('F2')
+    expect(inner.originalLayer).toBe('A-WALL')
+    expect(outer.layer).toBe('F1')
+    expect(p.entities.filter(e => e.layer === 'F1')).toHaveLength(1) // showing F1 does not reveal inner-frozen content
+  })
+})
+
+describe('originalLayer validation', () => {
+  it('rejects a non-string originalLayer and accepts a string', () => {
+    const base = { type: 'LINE' as const, x: 0, y: 0, points: [1, 1] }
+    expect(validateCadEntity({ ...base, originalLayer: 'A-WALL' })).toBeNull()
+    expect(validateCadEntity({ ...base, originalLayer: 5 as unknown as string })).toMatch(/originalLayer/)
   })
 })
