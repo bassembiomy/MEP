@@ -7,6 +7,7 @@ import {
   type ParsedDxf
 } from '../dxfParser'
 import { getCadEntityBounds, transformCadEntity, validateCadEntity } from './nativeGeometry'
+import { dxfTextJustification, mtextAttachment, storedJustification, type TextHAlign, type TextVAlign } from './textJustification'
 import { describeInsertTransform, insertTransformHasShear } from './blockReferences'
 import type { CadBlockReference } from './semanticTypes'
 
@@ -43,6 +44,9 @@ interface RawEntity {
   yScale?: number
   zScale?: number
   rotation?: number
+  halign?: number
+  valign?: number
+  attachmentPoint?: number
   columnCount?: number
   rowCount?: number
   text?: string
@@ -422,7 +426,31 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
       case 'TEXT':
       case 'MTEXT': {
         const p = raw.type === 'TEXT' ? raw.startPoint : raw.insertionPoint
-        if (!planar(raw, [p])) return null
+        // Justification (see textJustification.ts). `endPoint` is the alignment point, but libredwg reports {0,0} when
+        // the DWG stores none, so it is only read when halign / valign say the text is justified.
+        let hAlign: TextHAlign = 'left', vAlign: TextVAlign = raw.type === 'MTEXT' ? 'top' : 'baseline'
+        let anchor: Point | undefined = p
+        if (raw.type === 'MTEXT') {
+          if (raw.attachmentPoint !== undefined) {
+            const a = mtextAttachment(raw.attachmentPoint)
+            if (a) ({ hAlign, vAlign } = a)
+            else diagnose(raw, 'text-justification-unsupported', `MTEXT attachment point ${String(raw.attachmentPoint)} is not 1..9; top-left used.`)
+          }
+        } else {
+          const j = dxfTextJustification(raw.halign ?? 0, raw.valign ?? 0)
+          if (j.invalid) diagnose(raw, 'text-justification-unsupported', `TEXT justification (halign ${String(raw.halign)}, valign ${String(raw.valign)}) is not supported; left/baseline at the insertion point used.`)
+          else if (j.anchor !== 'p10') {
+            // libredwg reports exactly {0,0} for an alignment point the DWG does not hold (the LibreDWG-written corpus DWG
+            // has halign 1 with endPoint {0,0}); that is indistinguishable from a real origin point and anchoring there
+            // would throw the label to the origin, so it counts as missing.
+            const stored = finitePoint(raw.endPoint) && !(raw.endPoint.x === 0 && raw.endPoint.y === 0)
+            if (stored && finitePoint(p)) {
+              ;({ hAlign, vAlign } = j)
+              anchor = j.anchor === 'p11' ? raw.endPoint! : { x: (p.x + raw.endPoint!.x) / 2, y: (p.y + raw.endPoint!.y) / 2, z: p.z }
+            } else diagnose(raw, 'text-alignment-point-missing', 'TEXT is justified but has no usable alignment point; left/baseline at the insertion point used.')
+          }
+        }
+        if (!planar(raw, [p, ...(anchor !== p && finitePoint(anchor) ? [anchor] : [])])) return null
         let rotation = raw.rotation ?? 0
         // 0.7.7 convertMText explicitly writes rotation: 0; direction carries
         // the real baseline in WCS, so use it when supplied.
@@ -445,11 +473,12 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
         return {
           ...common,
           type: raw.type,
-          x: p!.x,
-          y: -p!.y,
+          x: anchor!.x,
+          y: -anchor!.y,
           text: raw.text,
           textHeight: raw.textHeight,
-          rotationDeg: (rotation * 180) / Math.PI
+          rotationDeg: (rotation * 180) / Math.PI,
+          ...storedJustification(raw.type, hAlign, vAlign)
         }
       }
       default:
@@ -662,7 +691,7 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
           const attrib = item as RawEntity & {
             isVisible?: boolean
             flags?: number
-            text?: { text?: unknown; startPoint?: Point; textHeight?: number; rotation?: number; extrusionDirection?: Point }
+            text?: { text?: unknown; startPoint?: Point; endPoint?: Point; halign?: number; valign?: number; textHeight?: number; rotation?: number; extrusionDirection?: Point }
           }
           const base = attrib.text
           if (!base || typeof base.text !== 'string' || !base.text.trim()) continue
@@ -676,6 +705,9 @@ export function parseDwgDatabase(input: unknown): ParsedDxf {
               color: attrib.color,
               colorIndex: attrib.colorIndex,
               startPoint: base.startPoint,
+              endPoint: base.endPoint,
+              halign: base.halign,
+              valign: base.valign,
               text: base.text,
               textHeight: base.textHeight,
               rotation: base.rotation,
