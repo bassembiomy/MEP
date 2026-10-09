@@ -11,11 +11,16 @@ Output is byte-stable (fixed ezdxf metadata, PYTHONHASHSEED pinned).
 import json
 import math
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 
 if os.environ.get("PYTHONHASHSEED") != "0":
     os.environ["PYTHONHASHSEED"] = "0"
     os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+
+import logging
 
 import ezdxf
 from ezdxf import units as ez_units
@@ -23,6 +28,7 @@ from ezdxf import units as ez_units
 if ezdxf.__version__ != "1.4.4":
     sys.exit(f"ezdxf 1.4.4 required (found {ezdxf.__version__}): pip install ezdxf==1.4.4")
 ezdxf.options.write_fixed_meta_data_for_testing = True
+logging.getLogger("ezdxf").setLevel(logging.ERROR)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.normpath(os.path.join(HERE, "..", "..", "src", "renderer", "src", "engine", "__tests__",
@@ -384,6 +390,70 @@ def gen_mline_walls(manifest):
     }
 
 
+# ------------------------------------------------------------------------------------------------- C6
+def find_libredwg_bin():
+    cands = [os.environ.get("LIBREDWG_BIN", ""),
+             os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "mep-libredwg", "install", "bin")]
+    for c in cands:
+        if c and os.path.exists(os.path.join(c, "dxf2dwg")) and os.path.exists(os.path.join(c, "dwg2dxf")):
+            return c
+    return None
+
+
+def legacy_plan(doc, polyline):
+    """The same 5 x 4 m office in every legacy version: closed A-AREA outline, four A-WALL lines, a column circle, an arc, a label."""
+    for i, n in enumerate(("A-WALL", "A-AREA", "A-ANNO-TEXT")):
+        doc.layers.add(n, color=i + 1)
+    msp = doc.modelspace()
+    room = rect(0, 0, 5000, 4000)
+    polyline(msp, room)
+    for (a, b) in zip(room, room[1:] + room[:1]):
+        msp.add_line(a, b, dxfattribs={"layer": "A-WALL"})
+    msp.add_circle((2500, 2000), 300, dxfattribs={"layer": "A-WALL"})
+    msp.add_arc((1000, 1000), 500, 30, 120, dxfattribs={"layer": "A-WALL"})
+    msp.add_text("OFFICE 1", height=250, dxfattribs={"layer": "A-ANNO-TEXT", "insert": (1500, 3000)})
+    return room
+
+
+def gen_legacy(manifest):
+    """legacy-r12.dxf: written by ezdxf as DXF R12 (POLYLINE + VERTEX + SEQEND, no handles, no $INSUNITS).
+    legacy-r14.dxf: SEMI-SYNTHETIC. The same plan drawn by ezdxf as R2000, converted by native LibreDWG 0.13.3 to a DWG (dxf2dwg --as r14)
+    and back to DXF (dwg2dxf --as r14), so the bytes are LibreDWG's R14 DXF writer, not ezdxf's. Needs the native build
+    (scripts/cad-corpus/build_libredwg.sh); without it the committed file is kept."""
+    doc12 = ezdxf.new("R12", setup=False)
+    room = legacy_plan(doc12, lambda msp, r: msp.add_polyline2d(r, close=True, dxfattribs={"layer": "A-AREA"}))
+    doc12.saveas(path("legacy-r12.dxf"))
+    common = {
+        "item": "C6", "measurement": None, "insunits": None, "drawingUnit": "mm (guess)", "unitsPerFoot": MM_PER_FT,
+        "expected": {"cadUnit": "mm", "unitsConfidence": "estimated", "note": "no $INSUNITS in R12/R14: units are only a guess from the extents and must be confirmed"},
+        "expectedEntityCount": 1 + 4 + 1 + 1 + 1,
+        "room": {"name": "OFFICE 1", "polygon": [c for p in room for c in p], "areaSqFt": poly_area(room) / MM_PER_FT ** 2},
+        "circle": {"centre": [2500, 2000], "radius": 300}, "arc": {"centre": [1000, 1000], "radius": 500, "startDeg": 30, "endDeg": 120},
+    }
+    manifest["legacy-r12.dxf"] = dict(common, dxfVersion=doc12.dxfversion, provenance="ezdxf 1.4.4 R12 writer")
+    binpath = find_libredwg_bin()
+    if binpath is None:
+        print("legacy-r14.dxf: LibreDWG not built, committed file kept (run scripts/cad-corpus/build_libredwg.sh)")
+        if not os.path.exists(path("legacy-r14.dxf")):
+            sys.exit("legacy-r14.dxf missing and LibreDWG unavailable")
+    else:
+        doc2000 = ezdxf.new("R2000", setup=True)
+        legacy_plan(doc2000, lambda msp, r: msp.add_lwpolyline(r, close=True, dxfattribs={"layer": "A-AREA"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dwg, dst = (os.path.join(tmp, n) for n in ("twin.dxf", "twin.dwg", "legacy-r14.dxf"))
+            doc2000.saveas(src)
+            for cmd in ([os.path.join(binpath, "dxf2dwg"), "--as", "r14", "-y", "-o", dwg, src],
+                        [os.path.join(binpath, "dwg2dxf"), "--as", "r14", "-y", "-o", dst, dwg]):
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                if not os.path.exists(cmd[-1]) :
+                    sys.exit(f"{' '.join(cmd)} failed:\n{res.stdout}")
+            shutil.copyfile(dst, path("legacy-r14.dxf"))
+    head = open(path("legacy-r14.dxf"), encoding="latin-1").read(400)
+    assert "AC1014" in head, "legacy-r14.dxf must be AC1014"
+    manifest["legacy-r14.dxf"] = dict(common, dxfVersion="AC1014",
+                                      provenance="SEMI-SYNTHETIC: ezdxf R2000 twin -> LibreDWG 0.13.3 dxf2dwg --as r14 -> dwg2dxf --as r14 (the bytes are LibreDWG's R14 DXF writer)")
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     manifest = {}
@@ -391,6 +461,7 @@ def main():
     gen_noise2(manifest)
     gen_dynamic_blocks(manifest)
     gen_mline_walls(manifest)
+    gen_legacy(manifest)
     doc = {
         "about": "Ground truth for the adversarial corpus, computed from the generator's construction geometry "
                  "(scripts/cad-corpus/generate_adversarial.py) and from ezdxf, never from our parser. "

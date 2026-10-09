@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { aciToHexColor, decodeDxfBytes, parseDxfText, type ParsedDxf } from '../dxfParser'
 import { recognizeCadRooms } from '../cad/roomRecognition'
 import { recognizeOpenings } from '../cad/openingRecognition'
+import { unitsAutoConfirmed } from '../cad/unitsDecision'
 import { parseDwgDatabase } from '../cad/dwgGeometry'
 
 /**
@@ -201,5 +202,46 @@ describe('C3 MLINE walls: STANDARD and custom styles, zero/top/bottom justificat
       expect(c, room.name).toBeDefined()
       expect(Math.abs(c!.areaSqFt - room.areaSqFt), `${room.name}: ${c!.areaSqFt} vs ${room.areaSqFt} ft2`).toBeLessThanOrEqual(0.005 * room.areaSqFt)
     }
+  })
+})
+
+// ------------------------------------------------------------------------------------------------- C6
+describe.each([
+  ['legacy-r12.dxf', 'AC1009', 'POLYLINE'],
+  ['legacy-r14.dxf', 'AC1014', 'LWPOLYLINE']
+])('C6 legacy %s (%s; the R14 file is SEMI-SYNTHETIC: LibreDWG 0.13.3 dxf2dwg/dwg2dxf --as r14 output, not an AutoCAD file)', (name, version, outline) => {
+  const t = manifest[name]
+  const p = parseFile(name)
+  it(`is a ${version} file`, () => {
+    expect(t.dxfVersion).toBe(version)
+    expect(new TextDecoder('latin1').decode(bytesOf(name))).toMatch(new RegExp(`\\$ACADVER\\s+1\\s+${version}`))
+  })
+  it('parses all geometry (outline as ' + outline + ', 4 walls, column circle, arc, label) with no import errors', () => {
+    expect(p.entities).toHaveLength(t.expectedEntityCount)
+    expect(p.entities.map(e => e.type).sort()).toEqual(['ARC', 'CIRCLE', 'LINE', 'LINE', 'LINE', 'LINE', outline, 'TEXT'].sort())
+    expect((p.diagnostics ?? []).filter(d => d.severity === 'error')).toEqual([])
+    const poly = p.entities.find(e => e.type === outline)!
+    expect(poly.closed).toBe(true)
+    expect(poly.points).toEqual(t.room.polygon.map((v: number, i: number) => (i % 2 ? -v : v) || 0))
+    const c = p.entities.find(e => e.type === 'CIRCLE')!
+    expect([c.x, c.y, c.radius]).toEqual([t.circle.centre[0], -t.circle.centre[1], t.circle.radius])
+    const a = p.entities.find(e => e.type === 'ARC')!
+    expect(a.x).toBeCloseTo(t.arc.centre[0], 9); expect(a.y).toBeCloseTo(-t.arc.centre[1], 9); expect(a.radius).toBeCloseTo(t.arc.radius, 9)
+    expect(a.startAngleDeg).toBeCloseTo(t.arc.startDeg, 6); expect(a.endAngleDeg).toBeCloseTo(t.arc.endDeg, 6)
+    expect(p.entities.find(e => e.type === 'TEXT')!.text).toBe(t.room.name)
+  })
+  it('has no unit declaration: not "declared", never auto-confirmed, and says so (units-unspecified)', () => {
+    expect(p.insUnits).toBeUndefined()
+    expect(p.unitsConfidence).toBe(t.expected.unitsConfidence) // 'estimated' = variable absent (documented in cadUnitsConfidence.test.ts); INSUNITS 0 would be 'unknown'
+    expect(p.unitsConfidence).not.toBe('declared')
+    expect(p.cadUnit).toBe(t.expected.cadUnit) // a guess from the 5000-unit span
+    expect(codes(p)).toEqual(['units-unspecified'])
+    expect(unitsAutoConfirmed({ unitsConfidence: p.unitsConfidence!, diagnostics: p.diagnostics ?? [] })).toBe(false)
+  })
+  it('recognises the room from the area layer with the construction area once the units are confirmed as mm', () => {
+    const rooms = recognizeCadRooms(p.entities, { drawingUnitsPerFoot: t.unitsPerFoot, layers: ['A-AREA'] }).candidates
+    expect(rooms).toHaveLength(1)
+    expect(rooms[0].name).toBe(t.room.name)
+    expect(Math.abs(rooms[0].areaSqFt - t.room.areaSqFt)).toBeLessThanOrEqual(0.005 * t.room.areaSqFt)
   })
 })

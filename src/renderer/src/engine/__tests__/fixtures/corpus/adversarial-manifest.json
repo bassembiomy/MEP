@@ -91,6 +91,96 @@
    },
    "unitsPerFoot": 304.8
   },
+  "legacy-r12.dxf": {
+   "arc": {
+    "centre": [
+     1000,
+     1000
+    ],
+    "endDeg": 120,
+    "radius": 500,
+    "startDeg": 30
+   },
+   "circle": {
+    "centre": [
+     2500,
+     2000
+    ],
+    "radius": 300
+   },
+   "drawingUnit": "mm (guess)",
+   "dxfVersion": "AC1009",
+   "expected": {
+    "cadUnit": "mm",
+    "note": "no $INSUNITS in R12/R14: units are only a guess from the extents and must be confirmed",
+    "unitsConfidence": "estimated"
+   },
+   "expectedEntityCount": 8,
+   "insunits": null,
+   "item": "C6",
+   "measurement": null,
+   "provenance": "ezdxf 1.4.4 R12 writer",
+   "room": {
+    "areaSqFt": 215.27820833419443,
+    "name": "OFFICE 1",
+    "polygon": [
+     0,
+     0,
+     5000,
+     0,
+     5000,
+     4000,
+     0,
+     4000
+    ]
+   },
+   "unitsPerFoot": 304.8
+  },
+  "legacy-r14.dxf": {
+   "arc": {
+    "centre": [
+     1000,
+     1000
+    ],
+    "endDeg": 120,
+    "radius": 500,
+    "startDeg": 30
+   },
+   "circle": {
+    "centre": [
+     2500,
+     2000
+    ],
+    "radius": 300
+   },
+   "drawingUnit": "mm (guess)",
+   "dxfVersion": "AC1014",
+   "expected": {
+    "cadUnit": "mm",
+    "note": "no $INSUNITS in R12/R14: units are only a guess from the extents and must be confirmed",
+    "unitsConfidence": "estimated"
+   },
+   "expectedEntityCount": 8,
+   "insunits": null,
+   "item": "C6",
+   "measurement": null,
+   "provenance": "SEMI-SYNTHETIC: ezdxf R2000 twin -> LibreDWG 0.13.3 dxf2dwg --as r14 -> dwg2dxf --as r14 (the bytes are LibreDWG's R14 DXF writer)",
+   "room": {
+    "areaSqFt": 215.27820833419443,
+    "name": "OFFICE 1",
+    "polygon": [
+     0,
+     0,
+     5000,
+     0,
+     5000,
+     4000,
+     0,
+     4000
+    ]
+   },
+   "unitsPerFoot": 304.8
+  },
   "line-endings-base-lf.dxf": {
    "binarySentinel": "AutoCAD Binary DXF",
    "binaryVariant": "line-endings-binary.dxf",
