@@ -47,17 +47,17 @@ const s2 = executeAirDistributionDesign({
   roomName: 'Conference Hall',
   roomPolygon: [0, 0, 50, 0, 50, 30, 0, 30],
   roomAreaSqFt: 1500,
-  sensibleLoadBtu: 120000,
+  sensibleLoadBtu: 108000,
   totalLoadBtu: 141000,
-  requiredCfm: 4000,
+  requiredCfm: 4200,
   occupancyCount: 50,
   systemType: 'concealed',
   mountingWallSide: 'east',
-  maxAvailableCeilingDepthIn: 14
+  maxAvailableCeilingDepthIn: 16
 });
 assert(s2.serviceZones.length === 3, `Conference hall should partition into 3 units, got ${s2.serviceZones.length}`);
 assert(s2.supplyTerminals.length === 12, `Should place 12 supply diffusers (4 per unit), got ${s2.supplyTerminals.length}`);
-assert(Math.abs(s2.supplyDucts[0].airflowCfm - 1345) <= 5, `Main trunk should start at ~1345 CFM, got ${s2.supplyDucts[0].airflowCfm}`);
+assert(Math.abs(s2.supplyDucts[0].airflowCfm - 1400) <= 5, `Main trunk should start at ~1400 CFM, got ${s2.supplyDucts[0].airflowCfm}`);
 assert(s2.outdoorAirSystem.designOutdoorAirCfm >= 340, 'Outdoor air should be sized for 50 occupants');
 // T50/L now uses the true half-spacing (point 6 is an advisory warning); every other point must pass.
 assert(s2.validationReport.points.filter((p) => p.pointIndex !== 6).every((p) => p.status === 'PASS'), `Scenario 2 non-throw validation points should PASS`);
@@ -72,11 +72,12 @@ const s3 = executeAirDistributionDesign({
   roomName: 'Executive Boardroom',
   roomPolygon: [0, 0, 50, 0, 50, 30, 0, 30],
   roomAreaSqFt: 1500,
-  sensibleLoadBtu: 120000,
+  sensibleLoadBtu: 108000,
   totalLoadBtu: 141000,
-  requiredCfm: 4000,
+  requiredCfm: 4200,
   occupancyCount: 50,
   systemType: 'concealed',
+  maxAvailableCeilingDepthIn: 16,
   exteriorWalls: [{ side: 'south', glassRatio: 0.7 }]
 });
 assert(s3.serviceZones.length === 3, 'Should create 3 zones');
@@ -91,8 +92,8 @@ const s4 = executeAirDistributionDesign({
   roomName: 'L-Shaped Open Office',
   roomPolygon: [0, 0, 60, 0, 60, 20, 30, 20, 30, 40, 0, 40],
   roomAreaSqFt: 1800,
-  sensibleLoadBtu: 90000,
-  totalLoadBtu: 110000,
+  sensibleLoadBtu: 80000,
+  totalLoadBtu: 105000,
   requiredCfm: 3200,
   occupancyCount: 30,
   systemType: 'concealed'
@@ -121,20 +122,20 @@ for (const d of s5.supplyDucts) {
 console.log('✔ Scenario 5 Passed');
 
 // -----------------------------------------------------------------------------
-// Scenario 6: User override scenario (3 units to 2 units)
+// Scenario 6: User override scenario (4 units to 3 units)
 // -----------------------------------------------------------------------------
 console.log('\n--- Scenario 6: User Override & Scoped Recalculation ---');
 const s6_initial = executeAirDistributionDesign({
   roomName: 'Conference Hall',
   roomPolygon: [0, 0, 50, 0, 50, 30, 0, 30],
   roomAreaSqFt: 1500,
-  sensibleLoadBtu: 120000,
+  sensibleLoadBtu: 108000,
   totalLoadBtu: 141000,
-  requiredCfm: 4000,
+  requiredCfm: 4200,
   systemType: 'concealed',
-  userOverrideUnitCount: 2
+  userOverrideUnitCount: 3
 });
-assert(s6_initial.serviceZones.length === 2, 'Should respect user override of 2 units');
+assert(s6_initial.serviceZones.length === 3, 'Should respect user override of 3 units (the 2-unit option violates sizing rules and is no longer offered)');
 
 // Move Unit 1 position
 s6_initial.serviceZones[0].equipmentPosition.x = 45;

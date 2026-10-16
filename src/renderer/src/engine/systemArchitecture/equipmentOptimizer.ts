@@ -1,5 +1,12 @@
 import { StandardsProfile, ASHRAE_PROFILE } from '../standards/designStandards';
-import { selectEquipmentForLoad, SelectedEquipmentResult } from './equipmentSelector';
+import {
+  selectEquipmentForLoad,
+  SelectedEquipmentResult,
+  evaluateSizing,
+  SizingCheck,
+  AIRFLOW_RATIO_MIN,
+  AIRFLOW_RATIO_MAX
+} from './equipmentSelector';
 
 export interface MultiUnitCandidate {
   optionId: string;
@@ -25,6 +32,14 @@ export interface MultiUnitCandidate {
   };
   selectionRationale: string;
   equipmentDetails: SelectedEquipmentResult;
+  /** True only when the option passes every professional sizing rule (capacity, sensible, airflow, oversize). */
+  isValid?: boolean;
+  /** Human-readable reasons the option is invalid (empty when valid). */
+  violations?: string[];
+  /** delivered capacity / total load */
+  capacityRatio?: number;
+  /** Ceiling void needed: unit height + minimum clearance + duct connection protrusion. */
+  requiredCeilingVoidIn?: number;
 }
 
 export interface OptimizationInput {
@@ -42,14 +57,36 @@ export interface OptimizationResult {
   roomName: string;
   requiredCfm: number;
   totalLoadBtu: number;
+  /** Valid options, best first. If no option is valid, the closest flagged (isValid=false) options. */
   candidates: MultiUnitCandidate[];
   recommendedOption: MultiUnitCandidate;
+  /** False when every option violated a sizing rule (recommendedOption is then flagged invalid). */
+  hasValidOption?: boolean;
+  /** Options that were dropped for violating a sizing rule (empty when none were rejected). */
+  rejectedOptions?: MultiUnitCandidate[];
+}
+
+/** Minimum clearance (in) between unit casing and the ceiling slab / tile. */
+export const MIN_CEILING_CLEARANCE_IN = 2;
+
+function parseDuctHeightIn(size: string | undefined): number {
+  if (!size) return 0;
+  const m = size.match(/(\d+(?:\.\d+)?)\s*"?\s*x\s*(\d+(?:\.\d+)?)/i);
+  return m ? parseFloat(m[2]) : 0;
+}
+
+/** Ceiling void required to install a unit: height + clearance + duct collar protruding above the casing. */
+export function requiredCeilingVoidIn(eq: SelectedEquipmentResult): number {
+  const unitH = eq.dimensionsIn.height || 10;
+  const ducted = eq.catalogItem.capabilities?.supportsDuctNetwork;
+  const ductH = ducted ? parseDuctHeightIn(eq.catalogItem.connectionSizes.supplyDuct) : 0;
+  return unitH + MIN_CEILING_CLEARANCE_IN + Math.max(0, ductH - unitH);
 }
 
 export function optimizeMultiUnitCandidates(input: OptimizationInput): OptimizationResult {
   const {
     roomName,
-    sensibleLoadBtu: _sensibleLoadBtu,
+    sensibleLoadBtu,
     totalLoadBtu,
     requiredCfm,
     roomAreaSqFt,
@@ -58,23 +95,52 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
     profile: _profile = ASHRAE_PROFILE
   } = input;
 
-  const candidates: MultiUnitCandidate[] = [];
-  const testUnitCounts = [1, 2, 3, 4];
+  const validCandidates: MultiUnitCandidate[] = [];
+  const invalidCandidates: MultiUnitCandidate[] = [];
+  const testUnitCounts = [1, 2, 3, 4, 5, 6];
 
   for (const n of testUnitCounts) {
     const targetCfmPerUnit = requiredCfm / n;
     const targetBtuPerUnit = totalLoadBtu / n;
+    const targetSensPerUnit = sensibleLoadBtu / n;
 
-    const selection = selectEquipmentForLoad(targetCfmPerUnit, targetBtuPerUnit, systemType);
+    const selection = selectEquipmentForLoad(
+      targetCfmPerUnit,
+      targetBtuPerUnit,
+      systemType,
+      undefined,
+      targetSensPerUnit
+    );
     if (!selection) continue;
 
     const deliveredCfm = selection.supplyCfm * n;
     const deliveredBtu = selection.totalCapacityBtu * n;
 
+    // Hard professional rules: capacity 1.00-1.20x (1.15x fixed speed), sensible, airflow 0.95-1.25x.
+    const sizing: SizingCheck = evaluateSizing(selection.catalogItem, n, totalLoadBtu, sensibleLoadBtu, requiredCfm);
+    const violations: string[] = [];
+    if (selection.undersized) violations.push(...(selection.shortfalls || ['no catalog unit satisfies the per-unit requirement']));
+    if (sizing.failures.includes('DEFICIT')) {
+      violations.push(`delivered ${Math.round(deliveredBtu)} Btu/h < load ${Math.round(totalLoadBtu)} Btu/h`);
+    }
+    if (sizing.failures.includes('OVERSIZE')) {
+      violations.push(`capacity ratio ${sizing.capacityRatio.toFixed(2)} > ${sizing.maxCapacityRatio.toFixed(2)}`);
+    }
+    if (sizing.failures.includes('SENSIBLE')) {
+      violations.push(`sensible capacity below ${Math.round(sensibleLoadBtu)} Btu/h`);
+    }
+    if (sizing.failures.includes('AIRFLOW_LOW')) {
+      violations.push(`delivered ${deliveredCfm} CFM < ${AIRFLOW_RATIO_MIN} x ${Math.round(requiredCfm)} CFM`);
+    }
+    if (sizing.failures.includes('AIRFLOW_HIGH')) {
+      violations.push(`delivered ${deliveredCfm} CFM > ${AIRFLOW_RATIO_MAX} x ${Math.round(requiredCfm)} CFM`);
+    }
+    const isValid = violations.length === 0;
+
     // 1. Capacity match score (0-20 pts)
-    const capRatio = deliveredBtu / totalLoadBtu;
+    const capRatio = totalLoadBtu > 0 ? deliveredBtu / totalLoadBtu : 1;
     let capScore = 20 - Math.abs(capRatio - 1.05) * 40;
-    capScore = Math.max(5, Math.min(20, capScore));
+    capScore = Math.max(0, Math.min(20, capScore));
 
     // 2. Air distribution quality (0-20 pts) - larger areas benefit from multiple injection points
     let distScore = 10;
@@ -101,9 +167,10 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
     else if (n === 2) ductScore = 13;
     else ductScore = 9;
 
-    // 6. Ceiling depth compatibility (0-10 pts)
+    // 6. Ceiling depth compatibility (0-10 pts): void must hold unit + clearance + duct connection
     const eqHeight = selection.dimensionsIn.height || 10;
-    const ceilingScore = eqHeight <= maxAvailableCeilingDepthIn ? 10 : 2;
+    const voidNeeded = requiredCeilingVoidIn(selection);
+    const ceilingScore = voidNeeded <= maxAvailableCeilingDepthIn ? 10 : 2;
 
     // 7. Redundancy (0-10 pts)
     const redundancyScore = n >= 3 ? 10 : (n === 2 ? 8 : 2);
@@ -115,9 +182,9 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
       (capScore + distScore + acousticScore + espScore + ductScore + ceilingScore + redundancyScore - unitPenalty).toFixed(1)
     );
 
-    const rationale = `${n} × ${selection.model} (${selection.nominalTons} TR, ${selection.supplyCfm} CFM each) -> Total ${deliveredCfm} CFM, Score: ${totalScore}`;
+    const rationale = `${n} × ${selection.model} (${selection.nominalTons} TR, ${selection.supplyCfm} CFM each) -> Total ${deliveredCfm} CFM, Score: ${totalScore}${isValid ? '' : ' [INVALID: ' + violations.join('; ') + ']'}`;
 
-    candidates.push({
+    const option: MultiUnitCandidate = {
       optionId: `option-${n}-unit`,
       unitCount: n,
       unitModel: selection.model,
@@ -140,19 +207,28 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
         unitPenalty: parseFloat(unitPenalty.toFixed(1))
       },
       selectionRationale: rationale,
-      equipmentDetails: selection
-    });
+      equipmentDetails: selection,
+      isValid,
+      violations,
+      capacityRatio: parseFloat(capRatio.toFixed(3)),
+      requiredCeilingVoidIn: parseFloat(voidNeeded.toFixed(1))
+    };
+    (isValid ? validCandidates : invalidCandidates).push(option);
   }
 
-  // Sort candidates by total score descending
-  candidates.sort((a, b) => b.totalScore - a.totalScore);
-  const recommended = candidates[0];
+  // Valid options only; if none exist, surface the closest flagged options so callers can
+  // still proceed (they must treat recommendedOption.isValid === false as a warning).
+  const hasValidOption = validCandidates.length > 0;
+  const pool = hasValidOption ? validCandidates : invalidCandidates;
+  pool.sort((a, b) => b.totalScore - a.totalScore);
 
   return {
     roomName,
     requiredCfm,
     totalLoadBtu,
-    candidates,
-    recommendedOption: recommended
+    candidates: pool,
+    recommendedOption: pool[0],
+    hasValidOption,
+    rejectedOptions: hasValidOption ? invalidCandidates : []
   };
 }

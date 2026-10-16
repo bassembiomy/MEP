@@ -13,13 +13,13 @@ const design = executeAirDistributionDesign({
   roomName: 'Conference Hall',
   roomPolygon: [0, 0, 50, 0, 50, 30, 0, 30],
   roomAreaSqFt: 1500,
-  sensibleLoadBtu: 120000,
+  sensibleLoadBtu: 108000,
   totalLoadBtu: 141000,
-  requiredCfm: 4000,
+  requiredCfm: 4200,
   occupancyCount: 50,
   systemType: 'concealed',
   mountingWallSide: 'east',
-  maxAvailableCeilingDepthIn: 14
+  maxAvailableCeilingDepthIn: 16
 });
 
 assert(design.serviceZones.length === 3, 'Should partition into 3 units');

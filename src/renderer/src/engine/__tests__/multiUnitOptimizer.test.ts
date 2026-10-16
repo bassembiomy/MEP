@@ -29,9 +29,9 @@ assert(singleUnitSelection!.supplyCfm >= 1200, 'Selected equipment supply CFM sh
 const profile = getStandardsProfile('ashrae');
 const optimization = optimizeMultiUnitCandidates({
   roomName: 'Conference Hall',
-  sensibleLoadBtu: 120000,
+  sensibleLoadBtu: 108000,
   totalLoadBtu: 141000,
-  requiredCfm: 4000,
+  requiredCfm: 4200,
   roomAreaSqFt: 1500,
   maxAvailableCeilingDepthIn: 14,
   systemType: 'concealed',
@@ -40,12 +40,16 @@ const optimization = optimizeMultiUnitCandidates({
 
 assert(optimization.candidates.length >= 3, 'Should generate at least 3 candidates (e.g. 1-unit, 2-unit, 3-unit, 4-unit)');
 assert(optimization.recommendedOption !== undefined, 'Must have a recommended option');
-assert(optimization.recommendedOption.unitCount >= 2, 'For 4000 CFM with 14" ceiling limit, multi-unit (2 or 3) should score higher than 1 large unit');
+assert(optimization.hasValidOption === true && optimization.recommendedOption.isValid === true, 'Recommended option must pass the sizing rules');
+for (const c of optimization.candidates) {
+  assert(c.totalDeliveredCapacityBtu >= 141000 && c.totalDeliveredCfm >= 4200 * 0.95, `${c.optionId} must cover load and 95% airflow`);
+}
+assert(optimization.recommendedOption.unitCount >= 2, 'For 4200 CFM with 14" ceiling limit, multi-unit (2 or 3) should score higher than 1 large unit');
 
 // 4. Decision logger test
 const log = generateDesignDecisionLog({
   roomName: 'Conference Hall',
-  requiredCfm: 4000,
+  requiredCfm: 4200,
   totalLoadBtu: 141000,
   selectedOption: optimization.recommendedOption,
   allCandidates: optimization.candidates
