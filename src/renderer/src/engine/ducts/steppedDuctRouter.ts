@@ -1,7 +1,7 @@
 import { EquipmentServiceZone, DesignControlMode } from '../zoning/zonePartitioner';
 import { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
 import { ASHRAE_PROFILE, StandardsProfile } from '../standards/designStandards';
-import { buildOrthogonalTree, pickAxis, TopoSegment, TopoTerminal } from './orthogonalTopology';
+import { buildOrthogonalTree, pickAxis, returnStubCandidates, Seg2, TopoSegment, TopoTerminal } from './orthogonalTopology';
 import { sizeDuctNetwork } from './aerodynamicDuctSizer';
 
 export interface SteppedDuctSection {
@@ -59,6 +59,47 @@ function bboxOf(points: number[]): { minX: number; maxX: number; minY: number; m
 }
 
 const r2 = (n: number) => parseFloat(n.toFixed(2));
+
+/** The unit's own service bay is the preferred routing area; the full room outline is the fallback. */
+export function zoneRoutingPolygons(zone: EquipmentServiceZone): { bayPoly?: number[]; roomPoly?: number[] } {
+  const bay = zone.serviceAreaPolygon && zone.serviceAreaPolygon.length >= 6 ? zone.serviceAreaPolygon : undefined;
+  const room = zone.roomPolygon && zone.roomPolygon.length >= 6 ? zone.roomPolygon : bay;
+  return { bayPoly: bay, roomPoly: room };
+}
+
+/**
+ * Layouts most recently routed per zone. Zones of one room share the same `roomPolygon` array, so routing a zone can
+ * keep clear of the supply / return segments of its neighbours, and the return router can keep clear of the supply
+ * network routed just before it (the engine routes supply then return per zone object).
+ */
+interface ZoneLayout { supply: Seg2[]; ret: Seg2[] }
+const roomLayouts = new WeakMap<object, Map<string, ZoneLayout>>();
+function layoutOf(zone: EquipmentServiceZone): ZoneLayout | undefined {
+  const key = zone.roomPolygon;
+  if (!key) return undefined;
+  let m = roomLayouts.get(key);
+  if (!m) roomLayouts.set(key, (m = new Map()));
+  let l = m.get(zone.id);
+  if (!l) m.set(zone.id, (l = { supply: [], ret: [] }));
+  return l;
+}
+export function rememberZoneLayout(zone: EquipmentServiceZone, kind: 'supply' | 'ret', segs: Seg2[]): void {
+  const l = layoutOf(zone);
+  if (l) l[kind] = segs.map((g) => ({ start: { ...g.start }, end: { ...g.end } }));
+}
+/** Segments already routed for this zone's supply network and for the neighbouring zones of the same room. */
+export function avoidLayoutsFor(zone: EquipmentServiceZone, includeOwnSupply: boolean): Seg2[] {
+  const key = zone.roomPolygon;
+  const m = key ? roomLayouts.get(key) : undefined;
+  if (!m) return [];
+  const out: Seg2[] = [];
+  for (const [id, l] of m) {
+    if (id === zone.id) {
+      if (includeOwnSupply) out.push(...l.supply);
+    } else out.push(...l.supply, ...l.ret);
+  }
+  return out;
+}
 
 export interface RouteTreeOptions {
   systemType: 'supply' | 'return';
@@ -135,15 +176,21 @@ export function routeSteppedSupplyDucts(
     ? zone.serviceAreaPolygon
     : supplyTerminals.flatMap((t) => [t.position.x, t.position.y]).concat([eqPos.x, eqPos.y]);
   const axis = pickAxis(bboxOf(poly));
+  const { bayPoly, roomPoly } = zoneRoutingPolygons(zone);
 
   const terminals: TopoTerminal[] = supplyTerminals.map((t) => ({ id: t.id, x: t.position.x, y: t.position.y, cfm: t.cfm }));
   const segs = buildOrthogonalTree({ x: eqPos.x, y: eqPos.y }, terminals, {
     axis,
     snapTol: STATION_SNAP_FT,
     onLineTol: ON_LINE_TOL_FT,
-    minLen: MIN_PIECE_FT
+    minLen: MIN_PIECE_FT,
+    polygon: bayPoly ?? roomPoly,
+    fallbackPolygon: roomPoly,
+    // never run along the unit's return collar stub (either side)
+    avoid: [...returnStubCandidates({ x: eqPos.x, y: eqPos.y }, axis, RETURN_COLLAR_OFFSET_FT), ...avoidLayoutsFor(zone, false)]
   });
 
+  rememberZoneLayout(zone, 'supply', segs);
   const sections = topologyToSections(zone, segs, {
     systemType: 'supply',
     idPrefix: 'DS',
