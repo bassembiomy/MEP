@@ -92,7 +92,10 @@ const EPS = 1e-9;
   assert(vrv.every((c) => !c.isValid), '13,000 Btu/h must NOT accept the 10 TR VRV (9.2x)');
   for (const c of r.candidates.filter((x) => x.isValid)) {
     assert(c.capacityRatio! >= 1 - EPS, `valid ratio >= 1.00, got ${c.capacityRatio} for ${c.id}`);
-    assert(c.capacityRatio! <= RATIO_MAX + EPS, `valid ratio <= 1.20, got ${c.capacityRatio} for ${c.id}`);
+    // Manual S ruling: NEXT_NOMINAL_SIZE (<= 1.35) / MIN_AVAILABLE_SIZE (no upper bound) waive the 1.20 ceiling.
+    const w = c.diagnostics.map((d) => d.code);
+    const cap = w.includes('MIN_AVAILABLE_SIZE') ? Infinity : w.includes('NEXT_NOMINAL_SIZE') ? 1.35 : RATIO_MAX;
+    assert(c.capacityRatio! <= cap + EPS, `valid ratio <= 1.20, got ${c.capacityRatio} for ${c.id}`);
   }
   console.log(`✔ 4a 13,000 Btu/h / 600 CFM: VRV 10TR invalid; ${r.candidates.filter((c) => c.isValid).length} valid candidates (all within 1.00-1.20)`);
 
@@ -108,7 +111,8 @@ const EPS = 1e-9;
     const res = generateSystemCandidates(load, load * 0.74, cfm, 'office', load / 30, true);
     for (const c of res.candidates.filter((x) => x.isValid)) {
       const fixed = ['packaged', 'ahu', 'fcu'].includes(c.systemType);
-      const max = fixed ? RATIO_MAX_FIXED : RATIO_MAX;
+      const wc = c.diagnostics.map((d) => d.code);
+      const max = wc.includes('MIN_AVAILABLE_SIZE') ? Infinity : wc.includes('NEXT_NOMINAL_SIZE') ? 1.35 : fixed ? RATIO_MAX_FIXED : RATIO_MAX;
       assert(c.capacityRatio! >= 1 - EPS && c.capacityRatio! <= max + EPS, `load ${load}: ${c.id} ratio ${c.capacityRatio} not in [1, ${max}]`);
       const sensCap = c.indoorUnit
         ? c.installedCapacityBtu! * (c.equipment.sensibleCapacityBtuPerHour / c.equipment.totalCapacityBtuPerHour)
@@ -116,7 +120,7 @@ const EPS = 1e-9;
       assert(sensCap >= load * 0.74 - 1e-6, `load ${load}: ${c.id} sensible ${sensCap} < ${load * 0.74}`);
       if (!c.indoorUnit) {
         const af = (c.deliveredCfm ?? c.quantity * c.equipment.nominalCfm) / cfm; // fan set to design CFM within its range
-        assert(af >= 0.95 - EPS && af <= 1.25 + EPS, `load ${load}: ${c.id} airflow ratio ${af}`);
+        assert(af >= 0.95 - EPS && (wc.includes('MIN_AVAILABLE_SIZE') || af <= 1.25 + EPS), `load ${load}: ${c.id} airflow ratio ${af}`);
       }
     }
   }
@@ -124,7 +128,13 @@ const EPS = 1e-9;
 
   // Sensible deficit rejects an otherwise perfect-capacity selection
   const heavySens = generateSystemCandidates(35000, 33000, 1250, 'office', 400, true, {}, ['concealed']);
-  assert(heavySens.candidates.every((c) => !c.isValid), 'SHR 0.94 load cannot be met by catalog coils (sensible check)');
+  // Manual S ruling: the next nominal size up (48k, sensible 36.5k) may legitimately cover the sensible load
+  // (flagged NEXT_NOMINAL_SIZE); every valid candidate must actually meet 33,000 Btu/h sensible.
+  assert(
+    heavySens.candidates.filter((c) => c.isValid).every((c) => c.quantity * c.equipment.sensibleCapacityBtuPerHour >= 33000),
+    'SHR 0.94 load: valid candidates must meet the sensible load (sensible check)'
+  );
+  assert(!heavySens.candidates.some((c) => c.isValid && c.equipment.id === 'eq-ducted-36k'), '36k coil (27.2k sensible) rejected');
   const chk = evaluateSizing(STANDARD_EQUIPMENT_CATALOG.find((e) => e.id === 'eq-ducted-36k')!, 1, 35000, 33000, 1250);
   assert(chk.failures.includes('SENSIBLE'), 'evaluateSizing flags sensible deficit');
   console.log('✔ 4d Sensible capacity is enforced');
@@ -336,7 +346,7 @@ const EPS = 1e-9;
   const pick: DesignCandidate | undefined = r.candidates.find((c) => c.isValid) ?? r.candidates[0];
   assert(pick !== undefined && pick.isValid, 'valid candidate is picked first');
   assert(r.candidates[0].isValid === true, 'valid candidates sort before invalid ones');
-  const none = generateSystemCandidates(35000, 34500, 1250, 'office', 400, true, {}, ['concealed']);
+  const none = generateSystemCandidates(35000, 36800, 1250, 'office', 400, true, {}, ['concealed']);
   assert(none.bestOverall === null && none.candidates.length > 0 && none.candidates.every((c) => !c.isValid), 'no valid candidate: all flagged');
   console.log('✔ 11 First-valid pick rule');
 }

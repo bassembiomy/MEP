@@ -417,13 +417,17 @@ for (let ri = 0; ri < rooms.length; ri++) {
       for (const c of summary.candidates.filter((x) => x.isValid)) {
         const installed = c.installedCapacityBtu ?? c.quantity * c.equipment.totalCapacityBtuPerHour;
         const ratio = installed / coilBtuh;
-        if (ratio < 1 - 1e-9 || ratio > 1.2 + 1e-9) capBad ??= `${c.id}: installed ${installed} / coil ${coilBtuh.toFixed(0)} = ${ratio.toFixed(3)}`;
+        // Manual S ruling: up to 1.35 only with a NEXT_NOMINAL_SIZE warning diagnostic; MIN_AVAILABLE_SIZE (load below
+        // the smallest unit in the family) waives the upper bound since no smaller unit exists.
+        const relaxed = c.diagnostics.some((d) => d.code === 'NEXT_NOMINAL_SIZE' || d.code === 'MIN_AVAILABLE_SIZE');
+        const minAvail = c.diagnostics.some((d) => d.code === 'MIN_AVAILABLE_SIZE');
+        if (ratio < 1 - 1e-9 || (!minAvail && ratio > (relaxed ? 1.35 : 1.2) + 1e-9)) capBad ??= `${c.id}: installed ${installed} / coil ${coilBtuh.toFixed(0)} = ${ratio.toFixed(3)}`;
         const airUnit = c.indoorUnit ?? c.equipment;
         const sens = airUnit.sensibleCapacityBtuPerHour * c.quantity;
         if (sens < roomSensBtuh - 1e-6) sensBad ??= `${c.id}: sensible ${sens} < room ${roomSensBtuh.toFixed(0)}`;
         const del = c.deliveredCfm ?? airUnit.nominalCfm * c.quantity;
         const ar = del / supplyCfm;
-        if (ar < 0.95 - 1e-9 || ar > 1.25 + 1e-9) cfmBad ??= `${c.id}: delivered ${del} / required ${supplyCfm.toFixed(0)} = ${ar.toFixed(3)}`;
+        if (ar < 0.95 - 1e-9 || (!minAvail && ar > 1.25 + 1e-9)) cfmBad ??= `${c.id}: delivered ${del} / required ${supplyCfm.toFixed(0)} = ${ar.toFixed(3)}`;
       }
       check('selection.capacityRatio[1.0,1.2]', !capBad, () => capBad!);
       check('selection.sensibleGeRoom', !sensBad, () => sensBad!);
@@ -473,11 +477,18 @@ for (let ri = 0; ri < rooms.length; ri++) {
     check('selection.engineValid', so.isValid !== false, () => `${so.optionId} ${so.unitModel} invalid: ${(so.violations || []).join('; ')}`);
     {
       const r = so.totalDeliveredCapacityBtu / coilBtuh;
-      check('selection.engineCapacityRatio[1.0,1.2]', r >= 1 - 1e-9 && r <= 1.2 + 1e-9, () => `${so.unitCount}x${so.unitModel}: ${so.totalDeliveredCapacityBtu}/${coilBtuh.toFixed(0)} = ${r.toFixed(3)}`);
+      // ACCA Manual S "next nominal size" ruling: the 1.20 ceiling relaxes to 1.35 ONLY when the engine flagged
+      // NEXT_NOMINAL_SIZE (no model x qty fits the window); MIN_AVAILABLE_SIZE (load below the smallest unit) has no upper bound.
+      const relaxed = (so.warnings || []).some((w) => w === 'NEXT_NOMINAL_SIZE' || w === 'MIN_AVAILABLE_SIZE');
+      const minAvailCap = (so.warnings || []).includes('MIN_AVAILABLE_SIZE');
+      const capMax = relaxed ? 1.35 : 1.2;
+      check('selection.engineCapacityRatio[1.0,1.2]', r >= 1 - 1e-9 && (minAvailCap || r <= capMax + 1e-9), () => `${so.unitCount}x${so.unitModel}: ${so.totalDeliveredCapacityBtu}/${coilBtuh.toFixed(0)} = ${r.toFixed(3)}`);
       const sens = so.equipmentDetails.sensibleCapacityBtu * so.unitCount;
       check('selection.engineSensibleGeRoom', sens >= roomSensBtuh - 1e-6, () => `${so.unitCount}x${so.unitModel}: sensible ${sens} < room ${roomSensBtuh.toFixed(0)}`);
       const a = so.totalDeliveredCfm / supplyCfm;
-      check('selection.engineAirflowRatio[0.95,1.25]', a >= 0.95 - 1e-9 && a <= 1.25 + 1e-9, () => `${so.unitCount}x${so.unitModel}: ${so.totalDeliveredCfm}/${supplyCfm.toFixed(0)} = ${a.toFixed(3)}`);
+      // MIN_AVAILABLE_SIZE: the smallest unit's fan cannot turn down below minCfm, so the upper bound is waived.
+      const minAvail = (so.warnings || []).includes('MIN_AVAILABLE_SIZE');
+      check('selection.engineAirflowRatio[0.95,1.25]', a >= 0.95 - 1e-9 && (minAvail || a <= 1.25 + 1e-9), () => `${so.unitCount}x${so.unitModel}: ${so.totalDeliveredCfm}/${supplyCfm.toFixed(0)} = ${a.toFixed(3)}`);
     }
 
     // ── Layout ──

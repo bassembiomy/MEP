@@ -39,6 +39,8 @@ export interface MultiUnitCandidate {
   isValid?: boolean;
   /** Human-readable reasons the option is invalid (empty when valid). */
   violations?: string[];
+  /** Non-blocking Manual S notes (NEXT_NOMINAL_SIZE / MIN_AVAILABLE_SIZE) on a valid option. */
+  warnings?: string[];
   /** delivered capacity / total load */
   capacityRatio?: number;
   /** Ceiling void needed: unit height + minimum clearance + duct connection protrusion. */
@@ -224,6 +226,7 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
       equipmentDetails: selection,
       isValid,
       violations,
+      warnings: [...sizing.warnings],
       capacityRatio: parseFloat(capRatio.toFixed(3)),
       requiredCeilingVoidIn: parseFloat(voidNeeded.toFixed(1))
     };

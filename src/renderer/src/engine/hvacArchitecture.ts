@@ -19,6 +19,7 @@ import {
   VRF_MAX_EQUIVALENT_PIPE_LENGTH_M,
   VRF_MAX_HEIGHT_DIFFERENCE_M,
   ambientDerateFactor,
+  deliveredCfmFor,
   isInverterDriven,
   maxCapacityRatioFor
 } from './systemArchitecture/equipmentSelector';
@@ -704,7 +705,7 @@ export function generateSelectionAlgorithmTrace(
   });
 
   // Delivered-airflow window (indoor units for VRF are selected separately, outdoor CFM is not airflow)
-  const deliveredCfm = isVrf ? cfm : equip.nominalCfm * quantity;
+  const deliveredCfm = isVrf ? cfm : deliveredCfmFor(equip, quantity, cfm);
   const airflowRatio = cfm > 0 ? deliveredCfm / cfm : 1;
   const airflowOk = airflowRatio >= AIRFLOW_RATIO_MIN - 1e-9 && airflowRatio <= AIRFLOW_RATIO_MAX + 1e-9;
 

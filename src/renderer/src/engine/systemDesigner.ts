@@ -164,6 +164,18 @@ function sizingDiagnostics(equip: EquipmentCatalogItem, s: SizingCheck, loadBtu:
       remediation: 'Select a unit whose nominal airflow matches the room supply airflow.'
     });
   }
+  for (const w of s.warnings) {
+    out.push({
+      code: w,
+      severity: 'warning',
+      componentId: equip.id,
+      message:
+        w === 'NEXT_NOMINAL_SIZE'
+          ? `${prefix}No catalog size fits the ${pct(s.maxCapacityRatio)} oversize window; the next nominal size up is accepted at ${pct(s.capacityRatio)} of design load (ACCA Manual S).`
+          : `${prefix}Design load is below the smallest available unit; the smallest size is accepted at ${pct(s.capacityRatio)} of design load.`,
+      remediation: 'Verify part-load operation (inverter turndown / staging) and humidity control.'
+    });
+  }
   return out;
 }
 
@@ -524,9 +536,7 @@ export function generateSystemCandidates(
         if (best) indoorOptions.push(best);
       }
       // No indoor class can satisfy the sizing rules: keep the closest concealed set so the failure is visible.
-      let indoorSetsAreValid = true;
       if (indoorOptions.length === 0) {
-        indoorSetsAreValid = false;
         const fallback = catalog
           .filter(e => e.systemType === 'concealed')
           .map((unit) => ({ unit, sizing: sizeUnitQuantity(unit, loadBtu, sensBtu, cfm, designAmbientF) }))
@@ -540,7 +550,7 @@ export function generateSystemCandidates(
         for (const io of indoorOptions) {
           const indoorTotal = io.sizing.installedCapacityBtu;
           const combo = indoorTotal / outdoor.totalCapacityBtuPerHour;
-          const diags: DiagnosticItem[] = indoorSetsAreValid ? [] : sizingDiagnostics(io.unit, io.sizing, loadBtu, cfm, 'Indoor units');
+          const diags: DiagnosticItem[] = sizingDiagnostics(io.unit, io.sizing, loadBtu, cfm, 'Indoor units');
           if (combo < VRF_COMBINATION_MIN - 1e-9 || combo > VRF_COMBINATION_MAX + 1e-9) {
             diags.push({
               code: 'ERR_VRF_COMBINATION_RATIO',
@@ -601,6 +611,10 @@ export function generateSystemCandidates(
 
   candidates.sort((a, b) => {
     if (a.isValid !== b.isValid) return a.isValid ? -1 : 1;
+    // A strictly in-window selection always outranks a Manual S relaxation (NEXT_NOMINAL_SIZE / MIN_AVAILABLE_SIZE).
+    const relax = (c: SystemDesignCandidate) =>
+      c.diagnostics.some((d) => d.code === 'NEXT_NOMINAL_SIZE' || d.code === 'MIN_AVAILABLE_SIZE') ? 1 : 0;
+    if (relax(a) !== relax(b)) return relax(a) - relax(b);
     if (b.subscores.totalScore !== a.subscores.totalScore) return b.subscores.totalScore - a.subscores.totalScore;
     // Equal score: fewest units, then lowest oversize ratio.
     if (a.quantity !== b.quantity) return a.quantity - b.quantity;

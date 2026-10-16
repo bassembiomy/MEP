@@ -89,9 +89,78 @@ export interface SizingCheck {
   valid: boolean;
   /** Short machine-readable failure codes. */
   failures: Array<'DEFICIT' | 'OVERSIZE' | 'SENSIBLE' | 'AIRFLOW_LOW' | 'AIRFLOW_HIGH'>;
+  /** Non-blocking Manual S notes on a valid result (see NEXT_NOMINAL_SIZE / MIN_AVAILABLE_SIZE). */
+  warnings: SizingWarning[];
+}
+
+export type SizingWarning = 'NEXT_NOMINAL_SIZE' | 'MIN_AVAILABLE_SIZE';
+
+/**
+ * ACCA Manual S "next nominal size" relaxation (planner ruling 2). Hard ceiling on capacity ratio when
+ * no model x quantity in the family fits the 1.15 (fixed) / 1.20 (inverter) window.
+ */
+export const CAPACITY_RATIO_MAX_NEXT_NOMINAL = 1.35;
+
+/** Plain rule check for a model x quantity (no family-level relaxation). */
+function baseSizingCheck(
+  equip: EquipmentCatalogItem,
+  qty: number,
+  loadBtu: number,
+  sensibleBtu: number,
+  requiredCfm: number,
+  designAmbientF: number
+): SizingCheck {
+  return evaluateSizingStrict(equip, qty, loadBtu, sensibleBtu, requiredCfm, designAmbientF);
 }
 
 export function evaluateSizing(
+  equip: EquipmentCatalogItem,
+  qty: number,
+  loadBtu: number,
+  sensibleBtu: number,
+  requiredCfm: number,
+  designAmbientF: number = RATING_AMBIENT_F
+): SizingCheck {
+  const strict = baseSizingCheck(equip, qty, loadBtu, sensibleBtu, requiredCfm, designAmbientF);
+  if (strict.valid || !(loadBtu > 0)) return strict;
+  const f: string[] = strict.failures;
+  // Only an oversize (optionally with fan-turndown AIRFLOW_HIGH) is eligible for the Manual S relaxations.
+  const onlyOversize = f.length > 0 && f.every((x) => x === 'OVERSIZE' || x === 'AIRFLOW_HIGH') && f.includes('OVERSIZE');
+  if (!onlyOversize) return strict;
+
+  const family = catalogCandidatesForType(equip.systemType);
+  const derate = strict.derate;
+
+  // (a) MIN_AVAILABLE_SIZE: load below the smallest unit of the family -> the smallest unit is accepted
+  // (its fan cannot turn down further, so AIRFLOW_HIGH is tolerated as well).
+  const smallest = family.reduce((m, e) => (e.totalCapacityBtuPerHour < m.totalCapacityBtuPerHour ? e : m), family[0]);
+  if (
+    qty === 1 &&
+    equip.totalCapacityBtuPerHour <= smallest.totalCapacityBtuPerHour + EPS &&
+    loadBtu <= smallest.totalCapacityBtuPerHour * derate
+  ) {
+    return { ...strict, valid: true, failures: [], warnings: ['MIN_AVAILABLE_SIZE'] };
+  }
+
+  // (b) NEXT_NOMINAL_SIZE: no model x qty in the family satisfies the strict window -> the smallest adequate
+  // option (ratio >= 1, sensible ok, airflow ok) is accepted when its ratio is <= 1.35.
+  if (f.includes('AIRFLOW_HIGH') || strict.capacityRatio > CAPACITY_RATIO_MAX_NEXT_NOMINAL + EPS) return strict;
+  let smallestAdequate = Infinity;
+  for (const m of family) {
+    for (let q = 1; q <= MAX_UNIT_COUNT; q++) {
+      const c = baseSizingCheck(m, q, loadBtu, sensibleBtu, requiredCfm, designAmbientF);
+      if (c.valid) return strict; // a strictly valid option exists in this family
+      const adequate = c.failures.every((x) => x === 'OVERSIZE');
+      if (adequate && c.capacityRatio < smallestAdequate) smallestAdequate = c.capacityRatio;
+    }
+  }
+  if (strict.capacityRatio <= smallestAdequate + 1e-6) {
+    return { ...strict, valid: true, failures: [], warnings: ['NEXT_NOMINAL_SIZE'] };
+  }
+  return strict;
+}
+
+function evaluateSizingStrict(
   equip: EquipmentCatalogItem,
   qty: number,
   loadBtu: number,
@@ -131,7 +200,8 @@ export function evaluateSizing(
     derate,
     maxCapacityRatio,
     valid: failures.length === 0,
-    failures
+    failures,
+    warnings: []
   };
 }
 

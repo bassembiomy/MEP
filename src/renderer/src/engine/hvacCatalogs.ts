@@ -1585,6 +1585,103 @@ const _vrf10 = _catalogById('eq-vrf-10t');
 });
 
 /**
+ * Standard nominal size fill (F3 planner ruling 1).
+ * ACCA Manual S selection needs a catalog whose steps are <= ~25% so a unit within the
+ * 100-115% (fixed) / 100-120% (inverter) window exists for ordinary loads. Fills the
+ * standard nominal sizes per family: wall split / cassette / ducted concealed 9k-60k Btu/h,
+ * packaged RTU 3-25 TR (3, 4, 5, 7.5, 10, 12.5, 15, 20, 25), FCU 0.75-5 TR.
+ * Entries are generic representative ratings (model suffix "-G"), derived from a neighbouring
+ * entry so capability flags / provenance stay consistent. Each entry: capacity = nominal x 0.99
+ * (within +/-5%), sensible = 0.76 x total, nominalCfm = 400/TR, minCfm = 0.8 x nominal,
+ * maxCfm = 1.2 x nominal.
+ */
+type _FillKind = 'ducted' | 'wall' | 'cassette' | 'rtu' | 'fcu';
+const _fillBase: Record<_FillKind, string> = {
+  ducted: 'eq-ducted-12k',
+  wall: 'eq-hw-12k',
+  cassette: 'eq-cass-36k',
+  rtu: 'eq-rtu-3t',
+  fcu: 'eq-fcu-1t'
+};
+const _fillSpec: Array<{ kind: _FillKind; id: string; model: string; tons: number }> = [
+  { kind: 'ducted', id: 'eq-ducted-9k', model: '42QSS009-D-G', tons: 0.75 },
+  { kind: 'ducted', id: 'eq-ducted-60k', model: '42QDS060-D-G', tons: 5 },
+  { kind: 'wall', id: 'eq-hw-9k', model: 'Optimax 9K-G', tons: 0.75 },
+  { kind: 'wall', id: 'eq-hw-36k', model: 'Optimax 36K-G', tons: 3 },
+  { kind: 'cassette', id: 'eq-cass-9k', model: '40KMC009-G', tons: 0.75 },
+  { kind: 'cassette', id: 'eq-cass-12k', model: '40KMC012-G', tons: 1 },
+  { kind: 'cassette', id: 'eq-cass-18k', model: '40KMC018-G', tons: 1.5 },
+  { kind: 'cassette', id: 'eq-cass-24k', model: '40KMC024-G', tons: 2 },
+  { kind: 'cassette', id: 'eq-cass-30k', model: '40KMC030-G', tons: 2.5 },
+  { kind: 'cassette', id: 'eq-cass-60k', model: '40KMC060-G', tons: 5 },
+  { kind: 'rtu', id: 'eq-rtu-4t', model: 'WeatherMaster 48HC-05-G (4 Ton)', tons: 4 },
+  { kind: 'rtu', id: 'eq-rtu-12.5t', model: 'WeatherMaster 48HC-14-G (12.5 Ton)', tons: 12.5 },
+  { kind: 'rtu', id: 'eq-rtu-20t', model: 'WeatherMaster 48HC-24-G (20 Ton)', tons: 20 },
+  { kind: 'fcu', id: 'eq-fcu-0.75t', model: '42CE-03-G (0.75 Ton FCU)', tons: 0.75 },
+  { kind: 'fcu', id: 'eq-fcu-1.5t', model: '42CE-06-G (1.5 Ton FCU)', tons: 1.5 },
+  { kind: 'fcu', id: 'eq-fcu-2.5t', model: '42CE-10-G (2.5 Ton FCU)', tons: 2.5 },
+  { kind: 'fcu', id: 'eq-fcu-5t', model: '42CE-20-G (5 Ton FCU)', tons: 5 }
+];
+_fillSpec.forEach(({ kind, id, model, tons }) => {
+  if (STANDARD_EQUIPMENT_CATALOG.some((e) => e.id === id)) return;
+  const base = _catalogById(_fillBase[kind]);
+  const r2 = (v: number): number => Math.round(v * 100) / 100;
+  const total = Math.round(tons * 12000 * 0.99);
+  const nom = Math.round(tons * 400);
+  const minCfm = Math.round(nom * 0.8);
+  const maxCfm = Math.round(nom * 1.2);
+  const ducted = kind === 'ducted' || kind === 'rtu' || kind === 'fcu';
+  const espMax =
+    kind === 'rtu' ? Math.min(1.5, 0.8 + 0.1 * tons) : kind === 'fcu' ? Math.min(0.5, 0.25 + 0.05 * tons) : Math.min(0.8, 0.3 + 0.1 * tons);
+  const kwFan = r2(0.12 * tons);
+  const sound = (kind === 'rtu' ? 60 : 36) + Math.round(tons * 1.5);
+  const fan: EquipmentCatalogItem['fanPerformance'] = ducted
+    ? {
+        type: 'tabular',
+        allowExtrapolation: false,
+        table: [
+          { cfm: minCfm, espInWg: r2(espMax * 0.95), powerKw: r2(kwFan * 0.75), soundDba: sound - 3 },
+          { cfm: nom, espInWg: r2(espMax * 0.75), powerKw: kwFan, soundDba: sound },
+          { cfm: maxCfm, espInWg: r2(espMax * 0.4), powerKw: r2(kwFan * 1.3), soundDba: sound + 4 }
+        ]
+      }
+    : {
+        type: 'multi-speed',
+        allowExtrapolation: false,
+        speeds: {
+          Low: [{ cfm: minCfm, espInWg: 0, soundDba: sound - 8 }],
+          Medium: [{ cfm: Math.round((minCfm + nom) / 2), espInWg: 0, soundDba: sound - 3 }],
+          High: [{ cfm: nom, espInWg: 0, soundDba: sound }]
+        }
+      };
+  const dimScale = Math.cbrt(Math.max(tons, 0.75) / (base.nominalTons || 1));
+  const d = base.dimensionsIn;
+  STANDARD_EQUIPMENT_CATALOG.push({
+    ...base,
+    id,
+    model,
+    nominalTons: tons,
+    totalCapacityBtuPerHour: total,
+    sensibleCapacityBtuPerHour: Math.round(total * 0.76),
+    heatingCapacityBtuPerHour: Math.round(tons * 13000),
+    nominalCfm: nom,
+    minCfm,
+    maxCfm,
+    maxRatedEspInWg: ducted ? r2(espMax) : 0,
+    fanPerformance: fan,
+    electricalKw: r2(tons * (kind === 'rtu' ? 0.96 : 0.9)),
+    soundDba: sound,
+    dimensionsIn: {
+      width: Math.round(d.width * dimScale * 10) / 10,
+      depth: Math.round(d.depth * dimScale * 10) / 10,
+      height: Math.round(d.height * (kind === 'rtu' ? dimScale : 1) * 10) / 10
+    },
+    costIndex: Math.min(100, Math.round((base.costIndex || 40) * (0.6 + (0.4 * tons) / (base.nominalTons || 1)))),
+    provenance: { ...base.provenance, source: `${base.provenance?.source ?? 'Catalog'} (generic nominal size fill)` }
+  });
+});
+
+/**
  * Standard Diffuser & Terminal Catalog with Performance Tables
  */
 export const STANDARD_DIFFUSER_CATALOG: DiffuserCatalogItem[] = [
