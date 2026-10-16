@@ -6,8 +6,6 @@ import {
   RETURN_COLLAR_OFFSET_FT,
   STEPPED_ROUTER_TOLERANCES,
   serviceAreaBounds,
-  avoidLayoutsFor,
-  rememberZoneLayout,
   zoneRoutingPolygons,
   topologyToSections
 } from './steppedDuctRouter';
@@ -16,6 +14,7 @@ import {
   chooseReturnCollar,
   pickAxis,
   segmentInsidePolygon,
+  Seg2,
   splitRootTerminals,
   TopoTerminal
 } from './orthogonalTopology';
@@ -33,7 +32,9 @@ const PLENUM_INTAKE_LENGTH_FT = 6;
 export function routeReturnDucts(
   zone: EquipmentServiceZone,
   returnTerminals: CoordinatedAirTerminal[] = [],
-  profile: StandardsProfile = ASHRAE_PROFILE
+  profile: StandardsProfile = ASHRAE_PROFILE,
+  /** Segments already routed (this zone's supply + all other zones' supply / earlier returns) to keep clear of. */
+  avoidSegments: Seg2[] = []
 ): SteppedDuctSection[] {
   const eqPos = zone.equipmentPosition;
   const poly = zone.serviceAreaPolygon && zone.serviceAreaPolygon.length >= 6
@@ -109,7 +110,7 @@ export function routeReturnDucts(
       polygon: bayPoly ?? roomPoly,
       fallbackPolygon: roomPoly,
       // the unit connection (supply root -> collar) and the supply network must not be re-used by the return tree
-      avoid: [{ start: { x: eqPos.x, y: eqPos.y }, end: collar }, ...avoidLayoutsFor(zone, true)]
+      avoid: [{ start: { x: eqPos.x, y: eqPos.y }, end: collar }, ...avoidSegments]
     });
     const tree = topologyToSections(zone, segs, {
       systemType: 'return',
@@ -154,6 +155,5 @@ export function routeReturnDucts(
     sections = [stub, run];
   }
 
-  rememberZoneLayout(zone, 'ret', sections.map((d) => ({ start: d.startPoint, end: d.endPoint })));
   return sizeDuctNetwork(sections, profile, zone.maxAvailableCeilingDepthIn ?? 14);
 }
