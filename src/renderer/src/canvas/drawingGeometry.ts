@@ -1,6 +1,6 @@
 // Pure geometry helpers for the CAD canvas (no React / Konva). All sizes are canvas px.
 // k = pixels per foot = pxPerFt(project.scale, project.units).
-import { MM_PER_IN } from '../engine/units';
+import { MM_PER_IN, FT_PER_M, M_PER_FT, LPS_PER_CFM } from '../engine/units';
 
 export const DEFAULT_ZOOM_MIN = 0.001;
 export const DEFAULT_ZOOM_MAX = 200;
@@ -369,13 +369,15 @@ export interface GroupableEntity { layer?: string; color?: string; type: string 
 export function groupByLayerColor<T extends GroupableEntity>(
   entities: T[],
   layerColor: (layer: string) => string | undefined,
-  fallback = '#94a3b8'
+  fallback = '#94a3b8',
+  /** User layer-colour override: wins over the entity's own colour. */
+  overrideColor?: (layer: string) => string | undefined
 ): Map<string, Map<string, T[]>> {
   const out = new Map<string, Map<string, T[]>>();
   for (const e of entities) {
     if (e.type === 'TEXT' || e.type === 'MTEXT') continue;
     const layer = e.layer || '0';
-    const color = e.color || layerColor(layer) || fallback;
+    const color = overrideColor?.(layer) || e.color || layerColor(layer) || fallback;
     let byColor = out.get(layer);
     if (!byColor) { byColor = new Map(); out.set(layer, byColor); }
     let arr = byColor.get(color);
@@ -697,4 +699,188 @@ function buildNetwork(input: DuctSegIn[], k: number, tol: number, network: 'supp
     result.push({ id: sg[0].id, network, type: sg[0].type, segIds: sg.map((s) => s.id), outline, walls, ticks, center });
   }
   return result;
+}
+
+
+// ───────────────────────── CAD calibration ─────────────────────────
+
+export type DrawingUnit = 'mm' | 'cm' | 'm' | 'in' | 'ft';
+export const DRAWING_UNITS: DrawingUnit[] = ['mm', 'cm', 'm', 'in', 'ft'];
+
+/** Feet per drawing unit for an explicit drawing-unit choice. */
+export function feetPerDrawingUnit(u: DrawingUnit): number {
+  switch (u) {
+    case 'mm': return 1 / 304.8;
+    case 'cm': return 1 / 30.48;
+    case 'm': return FT_PER_M;
+    case 'in': return 1 / 12;
+    default: return 1;
+  }
+}
+
+/**
+ * Two-point calibration. `pxDist` = distance between the two picked points in canvas px,
+ * `pxPerUnit` = current canvas px per drawing unit (NormalizedCad.pxPerUnit), `realDistance` is in the project
+ * length unit (ft imperial / m metric). Returns feet per drawing unit, or null for degenerate input.
+ */
+export function feetPerUnitFromCalibration(
+  pxDist: number,
+  pxPerUnit: number,
+  realDistance: number,
+  units: string | undefined
+): number | null {
+  if (!(pxDist > 0) || !(pxPerUnit > 0) || !(realDistance > 0)) return null;
+  const drawingDist = pxDist / pxPerUnit;
+  const realFt = units === 'metric' ? realDistance * FT_PER_M : realDistance;
+  const k = realFt / drawingDist;
+  return Number.isFinite(k) && k > 0 ? k : null;
+}
+
+// ───────────────────────── Rescale design geometry ─────────────────────────
+
+interface Pt { x: number; y: number }
+export interface RescalableZone {
+  points: number[];
+  diffusers: Array<{ x: number; y: number }>;
+  ducts: Array<{ points: number[] }>;
+  unitPos?: Pt;
+  unitPositions?: Pt[];
+  outdoorUnitPos?: Pt;
+  outdoorUnitPositions?: Pt[];
+}
+
+/**
+ * Scale every px coordinate of the design (zone polygons, terminals, duct centrelines, indoor/outdoor units)
+ * about the canvas origin by `factor` = newPxPerFt / oldPxPerFt. Physical sizes (inches) are untouched. Pure.
+ */
+export function rescaleProjectGeometry<Z extends RescalableZone>(zones: Z[], factor: number): Z[] {
+  if (!Number.isFinite(factor) || factor <= 0 || factor === 1) return zones;
+  const sp = (p: Pt): Pt => ({ ...p, x: p.x * factor, y: p.y * factor });
+  const sa = (a: number[]): number[] => a.map((v) => v * factor);
+  return zones.map((z) => {
+    const out: Z = {
+      ...z,
+      points: sa(z.points),
+      diffusers: z.diffusers.map((d) => sp(d) as Z['diffusers'][number]),
+      ducts: z.ducts.map((d) => ({ ...d, points: sa(d.points) })) as Z['ducts']
+    };
+    if (z.unitPos) out.unitPos = sp(z.unitPos);
+    if (z.unitPositions) out.unitPositions = z.unitPositions.map(sp);
+    if (z.outdoorUnitPos) out.outdoorUnitPos = sp(z.outdoorUnitPos);
+    if (z.outdoorUnitPositions) out.outdoorUnitPositions = z.outdoorUnitPositions.map(sp);
+    return out;
+  });
+}
+
+// ───────────────────────── Dimension annotations ─────────────────────────
+
+/** Feet -> architectural text, nearest inch: 12.5 -> 12'-6". */
+export function formatFeetInches(ft: number): string {
+  if (!Number.isFinite(ft)) return '';
+  const neg = ft < 0;
+  const totalIn = Math.round(Math.abs(ft) * 12);
+  const f = Math.floor(totalIn / 12);
+  const i = totalIn - f * 12;
+  return `${neg && totalIn > 0 ? '-' : ''}${f}'-${i}"`;
+}
+
+/** Feet -> metric text "3.80 m". */
+export function formatMetres(ft: number): string {
+  return `${(ft * M_PER_FT).toFixed(2)} m`;
+}
+
+export function formatLength(ft: number, units: string | undefined): string {
+  return units === 'metric' ? formatMetres(ft) : formatFeetInches(ft);
+}
+
+/** Normalise a text angle (deg) into (-90, 90] so text is never upside-down. */
+export function uprightAngle(deg: number): number {
+  let a = ((deg % 360) + 360) % 360; // [0,360)
+  if (a > 180) a -= 360; // (-180,180]
+  if (a > 90) a -= 180;
+  else if (a <= -90) a += 180;
+  return a;
+}
+
+export interface DuctTagLike {
+  points: number[];
+  widthIn: number;
+  heightIn: number;
+  shape?: string;
+  diameterIn?: number;
+}
+
+/** Duct size tag text: 14"x10" (imperial) or 350x250 (metric, mm rounded to 50). Round: Ø12" / Ø300. */
+export function ductSizeText(d: DuctTagLike, units: string | undefined): string {
+  const mm = (inch: number): number => Math.max(50, Math.round((inch * MM_PER_IN) / 50) * 50);
+  const r = (v: number): string => (Math.abs(v - Math.round(v)) < 0.05 ? String(Math.round(v)) : v.toFixed(1));
+  if (d.shape === 'round') {
+    const dia = d.diameterIn || d.widthIn;
+    return units === 'metric' ? `Ø${mm(dia)}` : `Ø${r(dia)}"`;
+  }
+  return units === 'metric' ? `${mm(d.widthIn)}x${mm(d.heightIn)}` : `${r(d.widthIn)}"x${r(d.heightIn)}"`;
+}
+
+export interface TagPlacement { x: number; y: number; angleDeg: number }
+
+/**
+ * Tag position/rotation for a segment: midpoint offset `offsetPx` to the upper side of the (upright) text,
+ * rotated along the segment but never upside-down.
+ */
+export function segmentTagPlacement(x1: number, y1: number, x2: number, y2: number, offsetPx: number): TagPlacement {
+  const ang = uprightAngle((Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI);
+  const a = (ang * Math.PI) / 180;
+  // "up" of the text in canvas coordinates (Y down): (sin a, -cos a)
+  return { x: (x1 + x2) / 2 + Math.sin(a) * offsetPx, y: (y1 + y2) / 2 - Math.cos(a) * offsetPx, angleDeg: ang };
+}
+
+const DIFFUSER_TYPE_CODE: Record<string, string> = {
+  supply: 'SD', return: 'RG', exhaust: 'EG', cassette: 'CS', 'high-wall': 'HW'
+};
+
+/** Diffuser tag "type-size-flow", e.g. SD-24"X24"-250 CFM (metric: SD-600X600-118 L/s). */
+export function diffuserTagText(d: TerminalLike & { cfm: number }, units: string | undefined): string {
+  const code = DIFFUSER_TYPE_CODE[d.type || 'supply'] || 'SD';
+  const flow = units === 'metric' ? `${Math.round(d.cfm * LPS_PER_CFM)} L/s` : `${Math.round(d.cfm)} CFM`;
+  return `${code}-${terminalSizeLabel(d, units)}-${flow}`;
+}
+
+export interface DimLine {
+  /** Dimension line end points (offset from the bbox). */
+  x1: number; y1: number; x2: number; y2: number;
+  /** Extension lines from the object edge to just past the dimension line: [x,y,x,y]. */
+  ext: [number[], number[]];
+  lengthPx: number;
+  /** Text anchor (centre, just above the line) and rotation. */
+  textX: number; textY: number; angleDeg: number;
+  orientation: 'h' | 'v';
+}
+
+/**
+ * Overall width (below) and height (right) dimension lines for a bounding box. `offsetPx` = distance of the
+ * dimension line from the box, `textGapPx` = distance of the text centre from the line, `extOvershootPx`.
+ * Geometry in world px; the caller chooses the offsets (typically screen-constant / stageScale).
+ */
+export function roomDimensionLines(b: Bounds, offsetPx: number, textGapPx: number, extOvershootPx = 0): DimLine[] {
+  const w = b.maxX - b.minX, h = b.maxY - b.minY;
+  if (!(w > 0) || !(h > 0)) return [];
+  const yl = b.maxY + offsetPx;
+  const xl = b.maxX + offsetPx;
+  const horiz: DimLine = {
+    x1: b.minX, y1: yl, x2: b.maxX, y2: yl,
+    ext: [[b.minX, b.maxY, b.minX, yl + extOvershootPx], [b.maxX, b.maxY, b.maxX, yl + extOvershootPx]],
+    lengthPx: w, textX: (b.minX + b.maxX) / 2, textY: yl - textGapPx, angleDeg: 0, orientation: 'h'
+  };
+  const vert: DimLine = {
+    x1: xl, y1: b.minY, x2: xl, y2: b.maxY,
+    ext: [[b.maxX, b.minY, xl + extOvershootPx, b.minY], [b.maxX, b.maxY, xl + extOvershootPx, b.maxY]],
+    lengthPx: h, textX: xl + textGapPx, textY: (b.minY + b.maxY) / 2, angleDeg: -90, orientation: 'v'
+  };
+  return [horiz, vert];
+}
+
+/** 45-degree architectural tick across the dimension line end (x,y): [x1,y1,x2,y2]. */
+export function dimTick(x: number, y: number, size: number): number[] {
+  const s = size / Math.SQRT2;
+  return [x - s, y + s, x + s, y - s];
 }

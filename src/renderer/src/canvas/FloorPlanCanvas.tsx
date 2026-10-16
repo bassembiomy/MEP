@@ -9,7 +9,7 @@ import { pxPerFt } from '../engine/units';
 import { STANDARD_EQUIPMENT_CATALOG } from '../engine/hvacCatalogs';
 import { CadLayerManagerModal } from '../components/CadLayerManagerModal';
 import Konva from 'konva';
-import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Target, Layers, Magnet } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Target, Layers, Magnet, Ruler, X as XIcon } from 'lucide-react';
 import {
   buildDuctOutline,
   DuctRunOutline,
@@ -31,7 +31,17 @@ import {
   pointsBounds,
   fitBounds,
   clampZoom,
-  Bounds
+  Bounds,
+  DRAWING_UNITS,
+  DrawingUnit,
+  feetPerDrawingUnit,
+  feetPerUnitFromCalibration,
+  segmentTagPlacement,
+  ductSizeText,
+  diffuserTagText,
+  roomDimensionLines,
+  dimTick,
+  formatLength
 } from './drawingGeometry';
 
 // Duct outline geometry cache (keyed by the zone's duct array identity, then k).
@@ -44,10 +54,23 @@ function getDuctRuns(ducts: DuctSegment[], k: number): DuctRunOutline[] {
   return runs;
 }
 
-const catalogDimsFor = (model?: string): { width: number; depth: number; height: number; } | null => {
-  if (!model) return null;
-  const item = STANDARD_EQUIPMENT_CATALOG.find((e) => e.model === model);
-  return item?.dimensionsIn ?? null;
+type CatDims = { width: number; depth: number; height: number } | null;
+const catalogItemFor = (model?: string): (typeof STANDARD_EQUIPMENT_CATALOG)[number] | undefined =>
+  model ? STANDARD_EQUIPMENT_CATALOG.find((e) => e.model === model) : undefined;
+/** VRF catalog entries are OUTDOOR modules (see hvacCatalogs). */
+const isOutdoorModule = (e: { id: string } | undefined): boolean => !!e && e.id.startsWith('eq-vrf');
+
+/** Indoor-unit footprint: never an outdoor module's dimensions. */
+const catalogDimsFor = (model?: string): CatDims => {
+  const item = catalogItemFor(model);
+  return item && !isOutdoorModule(item) ? item.dimensionsIn : null;
+};
+/** ODU footprint: explicit outdoor model, else the zone's catalog model when that is an outdoor (VRF) module. */
+const outdoorDimsFor = (zone: Zone | undefined, explicitModel?: string): CatDims => {
+  const explicit = catalogItemFor(explicitModel ?? (zone as (Zone & { outdoorModel?: string }) | undefined)?.outdoorModel);
+  if (explicit) return explicit.dimensionsIn;
+  const byZone = catalogItemFor(zone?.catalogModel);
+  return isOutdoorModule(byZone) ? byZone!.dimensionsIn : null;
 };
 
 const ZERO_PTS = [0, 0, 0, 0];
@@ -80,6 +103,8 @@ export const FloorPlanCanvas: React.FC = () => {
     dxfEntities,
     dxfBoundingBox,
     dxfLayers,
+    cadCalibration,
+    calibrateCad,
     annotationVisibility,
     activePreview
   } = useProjectStore();
@@ -95,6 +120,13 @@ export const FloorPlanCanvas: React.FC = () => {
   const [isLayerManagerOpen, setIsLayerManagerOpen] = useState<boolean>(false);
   const [snapEnabled, setSnapEnabled] = useState<boolean>(true);
   const [drawMessage, setDrawMessage] = useState<string | null>(null);
+  // Two-point calibration tool: 'p1' -> 'p2' -> 'enter' (distance prompt)
+  const [calib, setCalib] = useState<{ stage: 'p1' | 'p2' | 'enter'; p1?: { x: number; y: number }; p2?: { x: number; y: number } } | null>(null);
+  const [calibDist, setCalibDist] = useState<string>('');
+  const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
+  const calibRef = useRef(calib);
+  calibRef.current = calib;
+  const zoneLineRefs = useRef<Map<string, Konva.Line>>(new Map());
 
   const lastPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const panningRef = useRef<boolean>(false);
@@ -160,7 +192,7 @@ export const FloorPlanCanvas: React.FC = () => {
 
   // ───────── DXF derived data (computed once per DXF) ─────────
   const dxfGroups = useMemo(
-    () => groupByLayerColor(dxfEntities, (l) => dxfLayers[l]?.color),
+    () => groupByLayerColor(dxfEntities, (l) => dxfLayers[l]?.color, undefined, (l) => dxfLayers[l]?.colorOverride),
     [dxfEntities, dxfLayers]
   );
   const dxfTexts = useMemo(
@@ -260,6 +292,7 @@ export const FloorPlanCanvas: React.FC = () => {
         e.preventDefault();
         setSnapEnabled((v) => !v);
       } else if (e.key === 'Escape') {
+        if (calibRef.current) setCalib(null);
         if (tempPointsRef.current.length > 0) clearTempPoints();
       }
     };
@@ -310,13 +343,14 @@ export const FloorPlanCanvas: React.FC = () => {
       } else marker.visible(false);
     }
     if (dot) {
-      if (snap && drawModeRef.current === 'polyline') {
+      if (snap && (drawModeRef.current === 'polyline' || (calibRef.current && calibRef.current.stage !== 'enter'))) {
         dot.setAttrs({ visible: true, x: snap.x, y: snap.y, radius: 3 / sc });
       } else dot.visible(false);
     }
     if (rb) {
-      const tp = tempPointsRef.current;
-      if (snap && tp.length > 0) rb.setAttrs({ visible: true, points: [tp[tp.length - 2], tp[tp.length - 1], snap.x, snap.y], strokeWidth: 1.5 / sc, dash: [4 / sc, 4 / sc] });
+      const cs = calibRef.current;
+      const tp = cs?.stage === 'p2' && cs.p1 ? [cs.p1.x, cs.p1.y] : tempPointsRef.current;
+      if (snap && tp.length > 0 && cs?.stage !== 'enter') rb.setAttrs({ visible: true, points: [tp[tp.length - 2], tp[tp.length - 1], snap.x, snap.y], strokeWidth: 1.5 / sc, dash: [4 / sc, 4 / sc] });
       else rb.visible(false);
     }
     cursorLayerRef.current?.batchDraw();
@@ -366,6 +400,21 @@ export const FloorPlanCanvas: React.FC = () => {
 
   const handleContentClick = (e: Konva.KonvaEventObject<MouseEvent>): void => {
     if (e.evt.button !== 0 || isSpacePressed || drawMode === 'pan') return;
+    const cs = calibRef.current;
+    if (cs && cs.stage !== 'enter') {
+      const st = stageRef.current;
+      const w = st ? pointerWorld(st) : null;
+      if (!w) return;
+      const sp = snapAt(w.x, w.y);
+      const pt = { x: sp.x, y: sp.y };
+      if (cs.stage === 'p1') setCalib({ stage: 'p2', p1: pt });
+      else if (cs.p1) {
+        if (Math.hypot(pt.x - cs.p1.x, pt.y - cs.p1.y) < 1e-6) return;
+        setCalib({ stage: 'enter', p1: cs.p1, p2: pt });
+        setCalibDist('');
+      }
+      return;
+    }
     if (drawMode !== 'polyline') return;
     const stage = stageRef.current;
     if (!stage) return;
@@ -381,6 +430,25 @@ export const FloorPlanCanvas: React.FC = () => {
     const s = snapAt(raw.x, raw.y);
     if (tp.length >= 2 && Math.hypot(tp[tp.length - 2] - s.x, tp[tp.length - 1] - s.y) < 1e-6) return; // duplicate vertex
     addTempPoint(s.x, s.y);
+  };
+
+  const startCalibration = (): void => {
+    setCalib({ stage: 'p1' });
+    setBannerDismissed(true);
+    clearTempPoints();
+  };
+
+  const applyCalibration = (): void => {
+    const c = calibRef.current;
+    const dist = parseFloat(calibDist);
+    if (!c?.p1 || !c.p2 || !cadCalibration) return;
+    const f = feetPerUnitFromCalibration(Math.hypot(c.p2.x - c.p1.x, c.p2.y - c.p1.y), cadCalibration.pxPerUnit, dist, project.units);
+    if (f === null) {
+      showMessage('Enter a real distance greater than zero.');
+      return;
+    }
+    calibrateCad(f);
+    setCalib(null);
   };
 
   const handleDoubleClick = (): void => {
@@ -652,7 +720,7 @@ export const FloorPlanCanvas: React.FC = () => {
             if (ent.layer && dxfLayers[ent.layer]?.visible === false) continue;
             const h = ent.height && ent.height > 0 ? ent.height : Math.max(7, 9 / sc);
             if (h * sc < 2.5) continue; // too small to read
-            ctx.fillStyle = ent.color || dxfLayers[ent.layer || '0']?.color || '#94a3b8';
+            ctx.fillStyle = dxfLayers[ent.layer || '0']?.colorOverride || ent.color || dxfLayers[ent.layer || '0']?.color || '#94a3b8';
             ctx.font = `${h}px sans-serif`;
             ctx.textAlign = ent.align || 'left';
             ctx.save();
@@ -689,17 +757,36 @@ export const FloorPlanCanvas: React.FC = () => {
     );
 
     if (kind === 'cassette') {
-      const slotL = w * 0.6, slotT = Math.max(w * 0.05, 1);
+      // 4-way ceiling cassette (plan): outer square = decorative panel, inner square = intake grille,
+      // 4 discharge slots (one per side, in the band between panel edge and grille), centre hub circle.
+      const hw = w / 2, hd = d / 2;
+      const gw = w * 0.62, gd = d * 0.62; // grille
+      const band = (w - gw) / 2; // panel margin
+      const slotL = gw * 0.92, slotT = Math.max(band * 0.34, 1);
+      const sMid = band / 2; // slot centre distance from the panel edge
+      const corner = Math.max(band * 0.45, 1.5);
+      const hatch = hatchSegments(gw, gd, Math.max(gw / 7, 2 / stageScale));
       return (
         <Group>
-          <Rect x={-w / 2} y={-d / 2} width={w} height={d} fill="rgba(239, 68, 68, 0.2)" stroke="#ef4444" strokeWidth={sw(1.6)} />
-          <Rect x={-w * 0.36} y={-d * 0.36} width={w * 0.72} height={d * 0.72} stroke="#fca5a5" strokeWidth={sw(1)} />
+          <Rect x={-hw} y={-hd} width={w} height={d} fill="rgba(239, 68, 68, 0.16)" stroke="#ef4444" strokeWidth={sw(1.6)} />
+          <Rect x={-hw + band * 0.18} y={-hd + band * 0.18} width={w - band * 0.36} height={d - band * 0.36} stroke="#f87171" strokeWidth={sw(0.6)} />
+          <Rect x={-gw / 2} y={-gd / 2} width={gw} height={gd} fill="rgba(127, 29, 29, 0.35)" stroke="#fca5a5" strokeWidth={sw(1)} />
+          <Group clipX={-gw / 2} clipY={-gd / 2} clipWidth={gw} clipHeight={gd} listening={false}>
+            {hatch.map((sg, i) => (
+              <Line key={i} points={sg} stroke="#fca5a5" strokeWidth={sw(0.4)} opacity={0.55} />
+            ))}
+          </Group>
           {/* four discharge slots */}
-          <Rect x={-slotL / 2} y={-d * 0.5 + slotT} width={slotL} height={slotT} fill="#facc15" />
-          <Rect x={-slotL / 2} y={d * 0.5 - 2 * slotT} width={slotL} height={slotT} fill="#facc15" />
-          <Rect x={-w * 0.5 + slotT} y={-slotL / 2} width={slotT} height={slotL} fill="#facc15" />
-          <Rect x={w * 0.5 - 2 * slotT} y={-slotL / 2} width={slotT} height={slotL} fill="#facc15" />
-          <Circle x={0} y={0} radius={Math.min(w, d) * 0.14} stroke="#fecaca" strokeWidth={sw(1)} />
+          <Rect x={-slotL / 2} y={-hd + sMid - slotT / 2} width={slotL} height={slotT} fill="#facc15" stroke="#a16207" strokeWidth={sw(0.4)} />
+          <Rect x={-slotL / 2} y={hd - sMid - slotT / 2} width={slotL} height={slotT} fill="#facc15" stroke="#a16207" strokeWidth={sw(0.4)} />
+          <Rect x={-hw + sMid - slotT / 2} y={-slotL / 2} width={slotT} height={slotL} fill="#facc15" stroke="#a16207" strokeWidth={sw(0.4)} />
+          <Rect x={hw - sMid - slotT / 2} y={-slotL / 2} width={slotT} height={slotL} fill="#facc15" stroke="#a16207" strokeWidth={sw(0.4)} />
+          {/* panel corner fixings */}
+          {[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([cx, cy]) => (
+            <Rect key={`${cx}${cy}`} x={cx * (hw - band * 0.5) - corner / 2} y={cy * (hd - band * 0.5) - corner / 2} width={corner} height={corner} stroke="#fca5a5" strokeWidth={sw(0.5)} />
+          ))}
+          <Circle x={0} y={0} radius={Math.min(gw, gd) * 0.2} fill="rgba(254, 202, 202, 0.15)" stroke="#fecaca" strokeWidth={sw(1)} />
+          <Circle x={0} y={0} radius={Math.min(gw, gd) * 0.07} fill="#fecaca" />
           {label(`CU-0${uIdx + 1}`, '#fecaca')}
         </Group>
       );
@@ -730,14 +817,16 @@ export const FloorPlanCanvas: React.FC = () => {
     );
   };
 
-  const renderOutdoorUnitSymbol = (ts: number): React.JSX.Element => {
-    const fp = unitFootprintPx('odu', k);
-    const w = fp.w, d = fp.d, r = d * 0.38;
+  const renderOutdoorUnitSymbol = (ts: number, catDims?: CatDims): React.JSX.Element => {
+    const fp = unitFootprintPx('odu', k, catDims);
+    const w = fp.w, d = fp.d;
+    const twoFans = w / d > 1.4;
+    const r = twoFans ? Math.min(d * 0.38, w * 0.22) : Math.min(d, w) * 0.38;
     const sw = (v: number): number => getStrokeWidth(v, v);
     return (
       <Group>
         <Rect x={-w / 2} y={-d / 2} width={w} height={d} fill="rgba(6, 182, 212, 0.3)" stroke="#06b6d4" strokeWidth={sw(1.6)} />
-        {[-1, 1].map((sgn) => (
+        {(twoFans ? [-1, 1] : [0]).map((sgn) => (
           <Group key={sgn} x={sgn * w * 0.25} y={0}>
             <Circle radius={r} stroke="#22d3ee" strokeWidth={sw(1)} />
             <Line points={[-r, 0, r, 0]} stroke="#22d3ee" strokeWidth={sw(1)} />
@@ -750,6 +839,77 @@ export const FloorPlanCanvas: React.FC = () => {
         </Group>
       </Group>
     );
+  };
+
+  /** Upright tag centred on (x,y), rotated by angleDeg. Font size is constant in screen px (1/stageScale). */
+  const renderTag = (key: string, x: number, y: number, angleDeg: number, text: string, color: string, screenPx = 10): React.JSX.Element => {
+    const fs = screenPx / stageScale;
+    const tw = text.length * fs * 0.62 + 2 * fs * 0.3;
+    return (
+      <Text
+        key={key}
+        x={x}
+        y={y}
+        width={tw}
+        height={fs * 1.2}
+        offsetX={tw / 2}
+        offsetY={fs * 0.6}
+        rotation={angleDeg}
+        align="center"
+        verticalAlign="middle"
+        text={text}
+        fontSize={fs}
+        fontStyle="bold"
+        fill={color}
+        listening={false}
+      />
+    );
+  };
+
+  /** Shop-drawing dimension layer for one zone (geometry in world px, text/ticks constant in screen px). */
+  const renderDimensions = (zone: Zone): React.JSX.Element | null => {
+    if (!annotationVisibility.dimensions) return null;
+    const out: React.ReactNode[] = [];
+    const px = 1 / stageScale;
+    // Duct size tags along the longest segment of each duct, rotated with it, always upright
+    for (const d of zone.ducts) {
+      if (d.points.length < 4) continue;
+      let bi = 0, bl = -1;
+      for (let i = 0; i + 3 < d.points.length; i += 2) {
+        const l = Math.hypot(d.points[i + 2] - d.points[i], d.points[i + 3] - d.points[i + 1]);
+        if (l > bl) { bl = l; bi = i; }
+      }
+      const txt = ductSizeText(d, project.units);
+      if (bl * stageScale < txt.length * 6.2 + 10) continue; // no room on screen
+      const pl = segmentTagPlacement(d.points[bi], d.points[bi + 1], d.points[bi + 2], d.points[bi + 3], ductHalfWidthPx(d.widthIn, k) + 7 * px);
+      out.push(renderTag(`dt-${d.id}`, pl.x, pl.y, pl.angleDeg, txt, d.type === 'return' ? '#cbd5e1' : '#67e8f9'));
+    }
+    // Diffuser tags: type-size-CFM
+    for (const dif of zone.diffusers) {
+      const face = terminalFacePx(dif, k, project.units);
+      const txt = diffuserTagText(dif, project.units);
+      out.push(renderTag(`ft-${dif.id}`, dif.x, dif.y + face.h / 2 + 8 * px, 0, txt, '#fde047', 9));
+    }
+    // Room overall dimension lines
+    const b = pointsBounds(zone.points);
+    if (b) {
+      const lines = roomDimensionLines(b, 22 * px, 7 * px, 4 * px);
+      lines.forEach((dl, i) => {
+        const col = '#a3e635';
+        const sw = 1 * px;
+        out.push(
+          <Group key={`dim-${zone.id}-${i}`} listening={false}>
+            <Line points={[dl.x1, dl.y1, dl.x2, dl.y2]} stroke={col} strokeWidth={sw} />
+            <Line points={dl.ext[0]} stroke={col} strokeWidth={sw} />
+            <Line points={dl.ext[1]} stroke={col} strokeWidth={sw} />
+            <Line points={dimTick(dl.x1, dl.y1, 5 * px)} stroke={col} strokeWidth={1.6 * px} />
+            <Line points={dimTick(dl.x2, dl.y2, 5 * px)} stroke={col} strokeWidth={1.6 * px} />
+            {renderTag(`dimt-${zone.id}-${i}`, dl.textX, dl.textY, dl.angleDeg, formatLength(dl.lengthPx / k, project.units), col, 11)}
+          </Group>
+        );
+      });
+    }
+    return <Group listening={false}>{out}</Group>;
   };
 
   const renderZone = (zone: Zone): React.JSX.Element => {
@@ -778,6 +938,10 @@ export const FloorPlanCanvas: React.FC = () => {
           fill={isSelected ? 'rgba(59, 130, 246, 0.18)' : 'rgba(255, 255, 255, 0.03)'}
           stroke={isSelected ? '#3b82f6' : '#525252'}
           strokeWidth={getStrokeWidth(isSelected ? 2.5 : 1.2, isSelected ? 2.5 : 1.5)}
+          ref={(n) => {
+            if (n) zoneLineRefs.current.set(zone.id, n);
+            else zoneLineRefs.current.delete(zone.id);
+          }}
           onClick={() => selectZone(zone.id)}
           onTap={() => selectZone(zone.id)}
         />
@@ -1079,7 +1243,7 @@ export const FloorPlanCanvas: React.FC = () => {
             onDragMove={(e) => snapNodeDuringDrag(e.target)}
             onDragEnd={(e) => commitOutdoorUnit(zone.id, oIdx, e.target.x(), e.target.y())}
           >
-            {renderOutdoorUnitSymbol(ts)}
+            {renderOutdoorUnitSymbol(ts, outdoorDimsFor(zone))}
           </Group>
         ))}
 
@@ -1111,6 +1275,8 @@ export const FloorPlanCanvas: React.FC = () => {
           </>
         )}
 
+        {renderDimensions(zone)}
+
         {/* Editable vertices (selected zone) */}
         {isSelected &&
           Array.from({ length: zone.points.length / 2 }).map((_, idx) => (
@@ -1124,9 +1290,18 @@ export const FloorPlanCanvas: React.FC = () => {
               strokeWidth={getStrokeWidth(1.0, 1.2)}
               draggable
               onDragMove={(e) => {
+                // Local preview only (no store write per move); the commit + relayout happens at dragEnd.
                 snapNodeDuringDrag(e.target);
-                commitVertex(zone.id, idx, e.target.x(), e.target.y());
+                const line = zoneLineRefs.current.get(zone.id);
+                if (line) {
+                  const pts = zone.points.slice();
+                  pts[idx * 2] = e.target.x();
+                  pts[idx * 2 + 1] = e.target.y();
+                  line.points(pts);
+                  line.getLayer()?.batchDraw();
+                }
               }}
+              onDragEnd={(e) => commitVertex(zone.id, idx, e.target.x(), e.target.y())}
             />
           ))}
       </Group>
@@ -1210,7 +1385,7 @@ export const FloorPlanCanvas: React.FC = () => {
         })()}
 
         {eq.outdoorUnit && (() => {
-          const fp = unitFootprintPx('odu', k);
+          const fp = unitFootprintPx('odu', k, outdoorDimsFor(undefined, eq.outdoorUnit.model));
           return (
             <Group x={eq.outdoorUnit.position.x} y={eq.outdoorUnit.position.y}>
               <Rect
@@ -1231,7 +1406,7 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   const isPanActive = drawMode === 'pan' || isSpacePressed;
-  const cursor = isPanActive ? (isPanning ? 'grabbing' : 'grab') : drawMode === 'polyline' ? 'crosshair' : 'default';
+  const cursor = isPanActive ? (isPanning ? 'grabbing' : 'grab') : (drawMode === 'polyline' || (calib && calib.stage !== 'enter')) ? 'crosshair' : 'default';
 
   return (
     <div className="relative w-full h-[65vh] bg-[#0c0c0c] border border-neutral-800 rounded-3xl overflow-hidden shadow-inner flex flex-col">
@@ -1279,6 +1454,17 @@ export const FloorPlanCanvas: React.FC = () => {
                     fill={idx === 0 ? '#22c55e' : '#3b82f6'}
                   />
                 ))}
+              </Group>
+            )}
+            {calib?.p1 && (
+              <Group>
+                <Circle x={calib.p1.x} y={calib.p1.y} radius={4 / stageScale} fill="#f43f5e" />
+                {calib.p2 && (
+                  <>
+                    <Circle x={calib.p2.x} y={calib.p2.y} radius={4 / stageScale} fill="#f43f5e" />
+                    <Line points={[calib.p1.x, calib.p1.y, calib.p2.x, calib.p2.y]} stroke="#f43f5e" strokeWidth={getStrokeWidth(1.5, 1.5)} dash={[6 / stageScale, 4 / stageScale]} />
+                  </>
+                )}
               </Group>
             )}
             <Line ref={rubberRef} points={ZERO_PTS} stroke="#60a5fa" strokeWidth={1.5} visible={false} />
@@ -1347,6 +1533,60 @@ export const FloorPlanCanvas: React.FC = () => {
           )}
         </button>
       </div>
+
+      {cadCalibration?.needsCalibration && !bannerDismissed && !calib && (
+        <div className="absolute top-16 left-4 flex items-center gap-2 bg-amber-950/90 border border-amber-600/60 text-amber-200 text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow backdrop-blur">
+          <Ruler size={13} className="text-amber-400" />
+          <span>Drawing units unknown</span>
+          <span className="text-amber-500">&mdash;</span>
+          <button onClick={startCalibration} className="underline underline-offset-2 hover:text-white cursor-pointer">Calibrate</button>
+          <select
+            defaultValue=""
+            onChange={(e) => {
+              const v = e.target.value as DrawingUnit;
+              if (DRAWING_UNITS.includes(v)) calibrateCad(feetPerDrawingUnit(v));
+            }}
+            className="bg-amber-900/60 text-amber-100 rounded px-1 py-0.5 text-[10px] border border-amber-700/60"
+            title="Or pick the drawing units directly"
+          >
+            <option value="" disabled>units...</option>
+            {DRAWING_UNITS.map((u) => (
+              <option key={u} value={u}>{u}</option>
+            ))}
+          </select>
+          <button onClick={() => setBannerDismissed(true)} className="text-amber-400 hover:text-white cursor-pointer" title="Dismiss">
+            <XIcon size={12} />
+          </button>
+        </div>
+      )}
+
+      {calib && (
+        <div className="absolute top-16 left-4 flex items-center gap-2 bg-neutral-900/95 border border-rose-500/60 text-neutral-100 text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow backdrop-blur">
+          <Ruler size={13} className="text-rose-400" />
+          {calib.stage === 'p1' && <span>Calibrate: click the first point on the drawing</span>}
+          {calib.stage === 'p2' && <span>Calibrate: click the second point</span>}
+          {calib.stage === 'enter' && (
+            <>
+              <span>Real distance</span>
+              <input
+                autoFocus
+                type="number"
+                min="0"
+                step="any"
+                value={calibDist}
+                onChange={(e) => setCalibDist(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') applyCalibration(); }}
+                className="w-24 bg-neutral-800 border border-neutral-600 rounded px-1.5 py-0.5 text-[11px] text-white"
+              />
+              <span className="text-neutral-400">{project.units === 'metric' ? 'm' : 'ft'}</span>
+              <button onClick={applyCalibration} className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white cursor-pointer">Apply</button>
+            </>
+          )}
+          <button onClick={() => setCalib(null)} className="text-neutral-400 hover:text-white cursor-pointer" title="Cancel (Esc)">
+            <XIcon size={12} />
+          </button>
+        </div>
+      )}
 
       {drawMessage && (
         <div className="absolute bottom-4 left-4 bg-red-900/90 border border-red-700 text-red-100 text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow">

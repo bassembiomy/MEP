@@ -25,6 +25,9 @@ interface CadLayerManagerProps {
 export const CadLayerManagerModal: React.FC<CadLayerManagerProps> = ({ isOpen, onClose }) => {
   const {
     dxfLayers,
+    cadRaw,
+    cadCalibration,
+    setDxfLayerColor,
     setDxfLayerVisibility,
     toggleAllDxfLayers,
     annotationVisibility,
@@ -37,6 +40,7 @@ export const CadLayerManagerModal: React.FC<CadLayerManagerProps> = ({ isOpen, o
   if (!isOpen) return null;
 
   const layerList = Object.values(dxfLayers);
+  const cadNotes = [...(cadCalibration?.warning ? [cadCalibration.warning] : []), ...(cadRaw?.warnings ?? [])];
   const totalEntities = layerList.reduce((sum, l) => sum + l.count, 0);
   const visibleLayersCount = layerList.filter((l) => l.visible).length;
 
@@ -55,6 +59,7 @@ export const CadLayerManagerModal: React.FC<CadLayerManagerProps> = ({ isOpen, o
     { key: 'leaderCallout', label: 'Master Engineering Leader Tag', description: 'Top-right complete system breakdown callout box', icon: <Type size={13} className="text-yellow-400" /> },
     { key: 'zoneLabels', label: 'Zone Room Names & Total CFM', description: 'Room centroid title labels and design cooling loads', icon: <Type size={13} className="text-emerald-400" /> },
     { key: 'grid', label: 'CAD Background Grid Lines', description: '1 ft (imperial) / 0.25 m (metric) background grid and snap step', icon: <Grid size={13} className="text-neutral-400" /> },
+    { key: 'dimensions', label: 'Dimensions (Shop Drawing)', description: 'Duct size tags along runs, diffuser type-size-CFM tags, room overall dimension lines', icon: <Sliders size={13} className="text-lime-400" /> },
     { key: 'dxfText', label: 'DXF Native Text Entities', description: 'Text imported directly from the underlying CAD file', icon: <Type size={13} className="text-purple-400" /> },
   ];
 
@@ -131,6 +136,15 @@ export const CadLayerManagerModal: React.FC<CadLayerManagerProps> = ({ isOpen, o
               </div>
             )}
 
+            {cadNotes.length > 0 && (
+              <div className="rounded-xl border border-amber-700/40 bg-amber-950/20 p-2 text-[10px] text-amber-300 flex flex-col gap-1">
+                <span className="font-semibold uppercase tracking-wide text-[9px] text-amber-400">CAD import notes</span>
+                {cadNotes.map((n, i) => (
+                  <span key={i}>- {n}</span>
+                ))}
+              </div>
+            )}
+
             {layerList.length === 0 ? (
               <div className="py-6 text-center text-neutral-500 text-[11px] flex flex-col items-center gap-2">
                 <Layers size={24} className="text-neutral-700" />
@@ -157,10 +171,28 @@ export const CadLayerManagerModal: React.FC<CadLayerManagerProps> = ({ isOpen, o
                       >
                         {layer.visible ? <Eye size={13} /> : <EyeOff size={13} />}
                       </button>
-                      <div
-                        className="w-2.5 h-2.5 rounded-full shadow-sm"
-                        style={{ backgroundColor: layer.color || '#94a3b8' }}
-                      />
+                      <label
+                        className="relative w-3.5 h-3.5 rounded-full shadow-sm border border-neutral-600 cursor-pointer overflow-hidden"
+                        style={{ backgroundColor: layer.colorOverride || layer.tableColor || layer.color || '#94a3b8' }}
+                        title={`${layer.colorOverride ? 'Overridden' : layer.tableColor ? 'LAYER table colour' : 'Auto colour'} - click to change`}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="color"
+                          className="absolute inset-0 opacity-0 cursor-pointer"
+                          value={/^#[0-9a-fA-F]{6}$/.test(layer.color || '') ? (layer.color as string) : '#94a3b8'}
+                          onChange={(e) => setDxfLayerColor(layer.name, e.target.value)}
+                        />
+                      </label>
+                      {layer.colorOverride && (
+                        <button
+                          className="text-[9px] text-neutral-500 hover:text-blue-400 cursor-pointer"
+                          title="Reset to the LAYER table colour"
+                          onClick={(e) => { e.stopPropagation(); setDxfLayerColor(layer.name, undefined); }}
+                        >
+                          reset
+                        </button>
+                      )}
                       <span className="font-medium text-[11px]">{layer.name}</span>
                     </div>
                     <span className="text-[10px] font-mono text-neutral-500 bg-neutral-900 px-1.5 py-0.5 rounded border border-neutral-800">

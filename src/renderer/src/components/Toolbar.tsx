@@ -1,7 +1,8 @@
 import React, { useRef, useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
-import { parseDxfText, normalizeCadToCanvas, ParsedDxf } from '../engine/dxfParser';
+import { parseDxfText, ParsedDxf } from '../engine/dxfParser';
 import { FT_PER_M } from '../engine/units';
+import { DRAWING_UNITS, DrawingUnit, feetPerDrawingUnit } from '../canvas/drawingGeometry';
 import { parseDwgBuffer } from '../engine/dwgParser';
 import { MousePointer, PenTool, Hand, RefreshCw, Trash2, ShieldAlert, Upload, X, CheckCircle, LayoutGrid } from 'lucide-react';
 
@@ -16,7 +17,9 @@ export const Toolbar: React.FC = () => {
     selectedZoneId,
     deleteZone,
     dxfEntities,
-    setDxfData,
+    setCadData,
+    calibrateCad,
+    cadCalibration,
     clearDxfData,
     loadDemoSystems
   } = useProjectStore();
@@ -25,16 +28,16 @@ export const Toolbar: React.FC = () => {
   const [fileName, setFileName] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  // Single import path for DXF + DWG: normalise drawing units -> canvas px (scale + Y flip), then store.
+  // Single import path for DXF + DWG: the store keeps the RAW parse and normalises it to canvas px (scale + Y flip).
+  // Unit/scale notes are shown non-blocking (calibration banner on the canvas, warnings in the layer manager).
   const applyParsedCad = (parsed: ParsedDxf): void => {
-    const norm = normalizeCadToCanvas(parsed.entities, {
+    setCadData({
+      entities: parsed.entities,
+      bbox: parsed.bbox,
       insunits: parsed.insunits,
-      projectScale: project.scale,
-      projectUnits: project.units,
+      layerColors: parsed.layerColors,
+      warnings: parsed.warnings,
     });
-    setDxfData(norm.entities, norm.bbox);
-    const notes = [...(norm.warning ? [norm.warning] : []), ...parsed.warnings];
-    if (notes.length > 0) alert(`CAD import notes:\n- ${notes.join('\n- ')}`);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
@@ -78,6 +81,13 @@ export const Toolbar: React.FC = () => {
       reader.readAsText(file);
     }
   };
+
+  const currentDrawingUnit = ((): DrawingUnit | 'custom' | 'unknown' => {
+    if (!cadCalibration) return 'unknown';
+    if (cadCalibration.needsCalibration) return 'unknown';
+    const hit = DRAWING_UNITS.find((u) => Math.abs(feetPerDrawingUnit(u) / cadCalibration.feetPerUnit - 1) < 1e-3);
+    return hit ?? 'custom';
+  })();
 
   const handleClearDxf = (): void => {
     clearDxfData();
@@ -212,6 +222,26 @@ export const Toolbar: React.FC = () => {
             <p className="text-[9px] text-neutral-500 text-right -mt-1 mr-1">
               CAD Elements: <strong className="text-neutral-400 font-mono font-medium">{dxfEntities.length}</strong>
             </p>
+            {cadCalibration && (
+              <label className="flex items-center justify-between gap-2 text-[10px] text-neutral-400">
+                Drawing units
+                <select
+                  value={currentDrawingUnit}
+                  onChange={(e) => {
+                    const v = e.target.value as DrawingUnit;
+                    if (DRAWING_UNITS.includes(v)) calibrateCad(feetPerDrawingUnit(v));
+                  }}
+                  className="bg-neutral-800 text-neutral-200 rounded px-1.5 py-1 text-[10px] border border-neutral-700"
+                  title="Set what one CAD unit means (re-scales the drawing under the design)"
+                >
+                  {currentDrawingUnit === 'unknown' && <option value="unknown" disabled>unknown (assumed)</option>}
+                  {currentDrawingUnit === 'custom' && <option value="custom" disabled>calibrated</option>}
+                  {DRAWING_UNITS.map((u) => (
+                    <option key={u} value={u}>{u}</option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
         )}
       </div>

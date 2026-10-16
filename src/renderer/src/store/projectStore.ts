@@ -13,6 +13,9 @@ import {
   DeploymentPreview,
   WorkspaceSnapshot
 } from '../engine/deploymentTypes';
+import { normalizeCadToCanvas } from '../engine/dxfParser';
+import { pxPerFt } from '../engine/units';
+import { rescaleProjectGeometry } from '../canvas/drawingGeometry';
 import {
   buildDeploymentManifest,
   executeDeploymentTransaction
@@ -110,9 +113,33 @@ export interface Zone {
 
 export interface DxfLayerInfo {
   name: string;
+  /** Effective display colour: colorOverride ?? tableColor ?? first entity colour ?? auto palette. */
   color?: string;
+  /** Colour from the DXF LAYER table (if any). */
+  tableColor?: string;
+  /** User override (wins over everything, incl. per-entity colours). */
+  colorOverride?: string;
   visible: boolean;
   count: number;
+}
+
+/** Raw parsed CAD (drawing units, pre-normalisation) kept so it can be re-normalised on scale/unit changes. */
+export interface RawCad {
+  entities: DxfEntity[];
+  bbox: BoundingBox;
+  insunits?: number;
+  layerColors: Record<string, string>;
+  warnings: string[];
+}
+
+export interface CadCalibrationState {
+  /** True when INSUNITS was unknown AND the user has not calibrated yet. */
+  needsCalibration: boolean;
+  feetPerUnit: number;
+  pxPerUnit: number;
+  /** User calibration (feet per drawing unit); wins over INSUNITS. */
+  overrideFeetPerUnit?: number;
+  warning?: string;
 }
 
 export interface AnnotationVisibility {
@@ -131,6 +158,8 @@ export interface AnnotationVisibility {
   leaderCallout: boolean;
   zoneLabels: boolean;
   dxfText: boolean;
+  /** Shop-drawing dimension layer: duct size tags, diffuser tags, room dimension lines. */
+  dimensions: boolean;
 }
 
 export const DEFAULT_ANNOTATION_VISIBILITY: AnnotationVisibility = {
@@ -149,6 +178,7 @@ export const DEFAULT_ANNOTATION_VISIBILITY: AnnotationVisibility = {
   leaderCallout: true,
   zoneLabels: true,
   dxfText: true,
+  dimensions: false,
 };
 
 export interface ProjectMetadata {
@@ -170,6 +200,8 @@ interface ProjectState {
   dxfEntities: DxfEntity[];
   dxfBoundingBox: BoundingBox | null;
   dxfLayers: Record<string, DxfLayerInfo>;
+  cadRaw: RawCad | null;
+  cadCalibration: CadCalibrationState | null;
   annotationVisibility: AnnotationVisibility;
   loadedCatalogs: {
     decorative: { highWall: any[]; cassette: any[] } | null;
@@ -194,6 +226,11 @@ interface ProjectState {
   clearTempPoints: () => void;
   setDxfData: (entities: DxfEntity[], bbox: BoundingBox) => void;
   clearDxfData: () => void;
+  /** Import parsed CAD: stores the raw data and the normalised canvas entities. */
+  setCadData: (raw: RawCad) => void;
+  /** Calibrate: feet per drawing unit (undefined = back to INSUNITS/heuristic). Design geometry follows the drawing. */
+  calibrateCad: (feetPerUnit: number | undefined) => void;
+  setDxfLayerColor: (layerName: string, color: string | undefined) => void;
   setDxfLayerVisibility: (layerName: string, visible: boolean) => void;
   toggleAllDxfLayers: (visible: boolean) => void;
   setAnnotationVisibility: (key: keyof AnnotationVisibility, visible: boolean) => void;
@@ -207,6 +244,65 @@ interface ProjectState {
   applyCandidateTransaction: (candidate: SystemDesignCandidate) => { success: boolean; error?: string };
   undo: () => void;
   redo: () => void;
+}
+
+const AUTO_LAYER_COLORS = ['#94a3b8', '#38bdf8', '#34d399', '#fbbf24', '#f87171', '#c084fc', '#f472b6', '#a78bfa', '#4ade80'];
+
+/** Normalise raw CAD at the project's scale/units; preserves layer visibility + colour overrides. */
+function normalizeRaw(
+  raw: RawCad,
+  project: ProjectMetadata,
+  overrideFeetPerUnit: number | undefined,
+  prevLayers: Record<string, DxfLayerInfo>
+): Pick<ProjectState, 'dxfEntities' | 'dxfBoundingBox' | 'dxfLayers' | 'cadRaw' | 'cadCalibration'> {
+  const norm = normalizeCadToCanvas(raw.entities, {
+    insunits: raw.insunits,
+    projectScale: project.scale,
+    projectUnits: project.units,
+    overrideFeetPerUnit
+  });
+  const layers: Record<string, DxfLayerInfo> = {};
+  let colorIdx = 0;
+  for (const ent of norm.entities) {
+    const name = ent.layer || '0';
+    let l = layers[name];
+    if (!l) {
+      const prev = prevLayers[name];
+      const tableColor = raw.layerColors[name];
+      l = layers[name] = {
+        name,
+        tableColor,
+        colorOverride: prev?.colorOverride,
+        color: prev?.colorOverride ?? tableColor ?? ent.color ?? AUTO_LAYER_COLORS[colorIdx % AUTO_LAYER_COLORS.length],
+        visible: prev ? prev.visible : true,
+        count: 0
+      };
+      colorIdx++;
+    }
+    l.count++;
+  }
+  return {
+    dxfEntities: norm.entities,
+    dxfBoundingBox: norm.bbox,
+    dxfLayers: layers,
+    cadRaw: raw,
+    cadCalibration: {
+      needsCalibration: norm.needsCalibration,
+      feetPerUnit: norm.feetPerUnit,
+      pxPerUnit: norm.pxPerUnit,
+      overrideFeetPerUnit,
+      warning: norm.warning
+    }
+  };
+}
+
+/** After undo/redo restores a project with a different scale, re-normalise the CAD so it stays registered. */
+function restoredCad(state: ProjectState, project: ProjectMetadata): Partial<ProjectState> {
+  if (!state.cadRaw) return {};
+  const a = pxPerFt(state.project.scale, state.project.units);
+  const b = pxPerFt(project.scale, project.units);
+  if (Math.abs(a / b - 1) < 1e-6) return {};
+  return normalizeRaw(state.cadRaw, project, state.cadCalibration?.overrideFeetPerUnit, state.dxfLayers);
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
@@ -226,6 +322,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   dxfEntities: [],
   dxfBoundingBox: null,
   dxfLayers: {},
+  cadRaw: null,
+  cadCalibration: null,
   annotationVisibility: DEFAULT_ANNOTATION_VISIBILITY,
   loadedCatalogs: null,
   selectedSystemTypes: ['concealed', 'cassette', 'high-wall', 'vrf', 'packaged', 'ahu'],
@@ -235,7 +333,23 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   undoStack: [],
   redoStack: [],
 
-  setProject: (meta) => set((state) => ({ project: { ...state.project, ...meta } })),
+  setProject: (meta) => set((state) => {
+    const project = { ...state.project, ...meta };
+    if (meta.scale === undefined && meta.units === undefined) return { project };
+    const oldK = pxPerFt(state.project.scale, state.project.units);
+    const newK = pxPerFt(project.scale, project.units);
+    const factor = newK / oldK;
+    if (!Number.isFinite(factor) || Math.abs(factor - 1) < 1e-6) return { project };
+    // Keep drawing and design registered: scale the design px and re-normalise the CAD from raw.
+    const patch: Partial<ProjectState> = {
+      project,
+      zones: rescaleProjectGeometry(state.zones, factor),
+      tempPoints: state.tempPoints.map((v) => v * factor),
+      activePreview: null
+    };
+    if (state.cadRaw) Object.assign(patch, normalizeRaw(state.cadRaw, project, state.cadCalibration?.overrideFeetPerUnit, state.dxfLayers));
+    return patch;
+  }),
   
   setDrawMode: (mode) => set({ drawMode: mode, tempPoints: [] }),
   
@@ -335,10 +449,38 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       layers[layerName].count++;
     }
 
-    set({ dxfEntities: entities, dxfBoundingBox: bbox, dxfLayers: layers });
+    set({ dxfEntities: entities, dxfBoundingBox: bbox, dxfLayers: layers, cadRaw: null, cadCalibration: null });
   },
 
-  clearDxfData: () => set({ dxfEntities: [], dxfBoundingBox: null, dxfLayers: {} }),
+  clearDxfData: () => set({ dxfEntities: [], dxfBoundingBox: null, dxfLayers: {}, cadRaw: null, cadCalibration: null }),
+
+  setCadData: (raw) => set((state) => normalizeRaw(raw, state.project, undefined, {})),
+
+  calibrateCad: (feetPerUnit) => set((state) => {
+    if (!state.cadRaw) return {};
+    const override = feetPerUnit && feetPerUnit > 0 && Number.isFinite(feetPerUnit) ? feetPerUnit : undefined;
+    const patch = normalizeRaw(state.cadRaw, state.project, override, state.dxfLayers);
+    const oldPx = state.cadCalibration?.pxPerUnit;
+    const newPx = patch.cadCalibration?.pxPerUnit;
+    const out: Partial<ProjectState> = { ...patch, activePreview: null };
+    if (oldPx && newPx && Math.abs(newPx / oldPx - 1) > 1e-9) {
+      const factor = newPx / oldPx;
+      out.zones = rescaleProjectGeometry(state.zones, factor);
+      out.tempPoints = state.tempPoints.map((v) => v * factor);
+    }
+    return out;
+  }),
+
+  setDxfLayerColor: (layerName, color) => set((state) => {
+    const l = state.dxfLayers[layerName];
+    if (!l) return {};
+    return {
+      dxfLayers: {
+        ...state.dxfLayers,
+        [layerName]: { ...l, colorOverride: color, color: color ?? l.tableColor ?? l.color }
+      }
+    };
+  }),
 
   setDxfLayerVisibility: (layerName, visible) => set((state) => ({
     dxfLayers: {
@@ -559,6 +701,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     };
 
     set({
+      ...restoredCad(state, previousSnapshot.project),
       zones: previousSnapshot.zones,
       selectedZoneId: previousSnapshot.selectedZoneId,
       project: previousSnapshot.project,
@@ -585,6 +728,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     };
 
     set({
+      ...restoredCad(state, nextSnapshot.project),
       zones: nextSnapshot.zones,
       selectedZoneId: nextSnapshot.selectedZoneId,
       project: nextSnapshot.project,
