@@ -8,7 +8,7 @@ import { selectBestDiffuserFromCatalog } from '../terminals/diffuserSelector';
 import { validateTerminalAirDistribution } from '../terminals/airDistributionValidator';
 import { evaluateDiffuserThrow, getDiffuserThrowCriteria } from '../standards/diffuserRules';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
 

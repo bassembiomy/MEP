@@ -44,20 +44,20 @@ function getDuctRuns(ducts: DuctSegment[], k: number): DuctRunOutline[] {
   return runs;
 }
 
-const catalogDimsFor = (model?: string) => {
+const catalogDimsFor = (model?: string): { width: number; depth: number; height: number; } | null => {
   if (!model) return null;
   const item = STANDARD_EQUIPMENT_CATALOG.find((e) => e.model === model);
   return item?.dimensionsIn ?? null;
 };
 
 const ZERO_PTS = [0, 0, 0, 0];
-const rad = (d: number) => (d * Math.PI) / 180;
+const rad = (d: number): number => (d * Math.PI) / 180;
 const rawCtx = (context: Konva.Context): CanvasRenderingContext2D =>
   (context as unknown as { _context: CanvasRenderingContext2D })._context;
 
-const unitPositionsOf = (zone: Zone) =>
+const unitPositionsOf = (zone: Zone): { x: number; y: number; }[] =>
   zone.unitPositions && zone.unitPositions.length > 0 ? zone.unitPositions : zone.unitPos ? [zone.unitPos] : [];
-const outdoorPositionsOf = (zone: Zone) =>
+const outdoorPositionsOf = (zone: Zone): { x: number; y: number; }[] =>
   zone.outdoorUnitPositions && zone.outdoorUnitPositions.length > 0
     ? zone.outdoorUnitPositions
     : zone.outdoorUnitPos
@@ -124,7 +124,7 @@ export const FloorPlanCanvas: React.FC = () => {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const apply = (w: number, h: number) => {
+    const apply = (w: number, h: number): void => {
       if (w > 0 && h > 0) {
         setSize((prev) => (prev.w === Math.round(w) && prev.h === Math.round(h) ? prev : { w: Math.round(w), h: Math.round(h) }));
         setSizeReady(true);
@@ -249,9 +249,9 @@ export const FloorPlanCanvas: React.FC = () => {
 
   // ───────── Keyboard: Space pan, F9 / S snap toggle, Esc cancel ─────────
   useEffect(() => {
-    const isTyping = (t: EventTarget | null) =>
+    const isTyping = (t: EventTarget | null): boolean =>
       ['INPUT', 'TEXTAREA', 'SELECT'].includes((t as HTMLElement | null)?.tagName || '');
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = (e: KeyboardEvent): void => {
       if (isTyping(e.target)) return;
       if (e.code === 'Space') {
         e.preventDefault();
@@ -263,7 +263,7 @@ export const FloorPlanCanvas: React.FC = () => {
         if (tempPointsRef.current.length > 0) clearTempPoints();
       }
     };
-    const handleKeyUp = (e: KeyboardEvent) => {
+    const handleKeyUp = (e: KeyboardEvent): void => {
       if (e.code === 'Space') setIsSpacePressed(false);
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -276,7 +276,7 @@ export const FloorPlanCanvas: React.FC = () => {
 
   // Global mouseup ends manual panning and commits the final position to React state.
   useEffect(() => {
-    const handleGlobalMouseUp = (e: MouseEvent) => {
+    const handleGlobalMouseUp = (e: MouseEvent): void => {
       if ((e.button === 1 || e.button === 0) && panningRef.current) {
         panningRef.current = false;
         setIsPanning(false);
@@ -295,7 +295,7 @@ export const FloorPlanCanvas: React.FC = () => {
     return stage.getAbsoluteTransform().copy().invert().point(pos);
   };
 
-  const updateCursorNodes = (snap: SnapResult | null) => {
+  const updateCursorNodes = (snap: SnapResult | null): void => {
     const sc = stageScaleRef.current;
     const marker = snapMarkerRef.current;
     const dot = cursorDotRef.current;
@@ -322,7 +322,7 @@ export const FloorPlanCanvas: React.FC = () => {
     cursorLayerRef.current?.batchDraw();
   };
 
-  const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
+  const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>): void => {
     const stage = stageRef.current;
     if (!stage) return;
 
@@ -342,9 +342,9 @@ export const FloorPlanCanvas: React.FC = () => {
     updateCursorNodes(snap);
   };
 
-  const handleMouseLeave = () => updateCursorNodes(null);
+  const handleMouseLeave = (): void => updateCursorNodes(null);
 
-  const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
+  const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>): void => {
     // Middle click pan OR left click while Space held OR left click in 'pan' mode
     if (e.evt.button === 1 || (e.evt.button === 0 && (isSpacePressed || drawMode === 'pan'))) {
       e.evt.preventDefault();
@@ -364,7 +364,7 @@ export const FloorPlanCanvas: React.FC = () => {
     clearTempPoints();
   }, [addZone, clearTempPoints, showMessage]);
 
-  const handleContentClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
+  const handleContentClick = (e: Konva.KonvaEventObject<MouseEvent>): void => {
     if (e.evt.button !== 0 || isSpacePressed || drawMode === 'pan') return;
     if (drawMode !== 'polyline') return;
     const stage = stageRef.current;
@@ -383,12 +383,12 @@ export const FloorPlanCanvas: React.FC = () => {
     addTempPoint(s.x, s.y);
   };
 
-  const handleDoubleClick = () => {
+  const handleDoubleClick = (): void => {
     if (drawMode === 'polyline' && tempPointsRef.current.length >= 6) closePolygon();
   };
 
   // Cursor-anchored exponential zoom
-  const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
+  const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>): void => {
     e.evt.preventDefault();
     const stage = stageRef.current;
     if (!stage) return;
@@ -406,25 +406,25 @@ export const FloorPlanCanvas: React.FC = () => {
     setStagePos(newPos);
   };
 
-  const handleZoomBtn = (factor: number) => {
+  const handleZoomBtn = (factor: number): void => {
     const centerPoint = { x: (size.w / 2 - stagePos.x) / stageScale, y: (size.h / 2 - stagePos.y) / stageScale };
     const newScale = clampZoom(stageScale * factor);
     setStageScale(newScale);
     setStagePos({ x: size.w / 2 - centerPoint.x * newScale, y: size.h / 2 - centerPoint.y * newScale });
   };
 
-  const handleResetZoom = () => {
+  const handleResetZoom = (): void => {
     setStageScale(1.0);
     setStagePos({ x: 50, y: 50 });
   };
 
   // ───────── Drag commit handlers (heavy routing only at dragEnd) ─────────
-  const snapNodeDuringDrag = (node: Konva.Node) => {
+  const snapNodeDuringDrag = (node: Konva.Node): void => {
     const s = snapAt(node.x(), node.y());
     if (s.kind !== 'none') node.position({ x: s.x, y: s.y });
   };
 
-  const isDuctedSystem = (zone: Zone) =>
+  const isDuctedSystem = (zone: Zone): boolean =>
     zone.systemType === 'concealed' ||
     zone.systemType === 'packaged' ||
     zone.systemType === 'ahu' ||
@@ -470,7 +470,7 @@ export const FloorPlanCanvas: React.FC = () => {
     return { ducts, unitPos: positions[0], unitPositions: positions };
   };
 
-  const commitVertex = (zoneId: string, pointIdx: number, x: number, y: number) => {
+  const commitVertex = (zoneId: string, pointIdx: number, x: number, y: number): void => {
     const zone = zones.find((z) => z.id === zoneId);
     if (!zone) return;
     const pts = [...zone.points];
@@ -482,7 +482,7 @@ export const FloorPlanCanvas: React.FC = () => {
     }
     // Terminals / units that the edit pushed outside the room (or against a wall) are pulled back inside
     const margin = Math.min(k, 1.5 * k);
-    const fits = (p: { x: number; y: number }) => isPointInsideWithClearance(p.x, p.y, pts, 0.5 * k);
+    const fits = (p: { x: number; y: number }): boolean => isPointInsideWithClearance(p.x, p.y, pts, 0.5 * k);
     const pull = <T extends { x: number; y: number }>(p: T): T => {
       if (fits(p)) return p;
       const c = clampPointInsidePolygon(p.x, p.y, pts, margin);
@@ -503,7 +503,7 @@ export const FloorPlanCanvas: React.FC = () => {
     updateZone(zoneId, patch);
   };
 
-  const commitDiffuser = (zoneId: string, diffuserId: string, x: number, y: number) => {
+  const commitDiffuser = (zoneId: string, diffuserId: string, x: number, y: number): void => {
     const zone = zones.find((z) => z.id === zoneId);
     if (!zone) return;
     const updated = zone.diffusers.map((d) => (d.id === diffuserId ? { ...d, x, y } : d));
@@ -515,7 +515,7 @@ export const FloorPlanCanvas: React.FC = () => {
     }
   };
 
-  const commitIndoorUnit = (zoneId: string, idx: number, x: number, y: number) => {
+  const commitIndoorUnit = (zoneId: string, idx: number, x: number, y: number): void => {
     const zone = zones.find((z) => z.id === zoneId);
     if (!zone) return;
     const positions = unitPositionsOf(zone).slice();
@@ -532,7 +532,7 @@ export const FloorPlanCanvas: React.FC = () => {
     updateZone(zoneId, patch);
   };
 
-  const commitOutdoorUnit = (zoneId: string, idx: number, x: number, y: number) => {
+  const commitOutdoorUnit = (zoneId: string, idx: number, x: number, y: number): void => {
     const zone = zones.find((z) => z.id === zoneId);
     if (!zone) return;
     if (idx === 0) updateZone(zoneId, { outdoorUnitPos: { x, y } });
@@ -544,7 +544,7 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   // ───────── DXF drawing ─────────
-  const drawDxfEntities = (ctx: CanvasRenderingContext2D, ents: DxfEntity[]) => {
+  const drawDxfEntities = (ctx: CanvasRenderingContext2D, ents: DxfEntity[]): void => {
     for (const ent of ents) {
       if (ent.type === 'LINE') {
         ctx.moveTo(ent.x || 0, ent.y || 0);
@@ -596,7 +596,7 @@ export const FloorPlanCanvas: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dxfGroups, dxfLayers]);
 
-  const renderGrid = () => {
+  const renderGrid = (): React.JSX.Element | null => {
     if (!annotationVisibility.grid) return null;
     return (
       <Shape
@@ -611,7 +611,7 @@ export const FloorPlanCanvas: React.FC = () => {
           let step = gridStep;
           for (let g = 0; step * sc < 8 && g < 24; g++) step *= 5; // adaptive decluttering
           const major = step * 5;
-          const draw = (isMajor: boolean) => {
+          const draw = (isMajor: boolean): void => {
             ctx.beginPath();
             const i0x = Math.floor(x0 / step), i1x = Math.ceil(x1 / step);
             const i0y = Math.floor(y0 / step), i1y = Math.ceil(y1 / step);
@@ -637,7 +637,7 @@ export const FloorPlanCanvas: React.FC = () => {
     );
   };
 
-  const renderDxfText = () => {
+  const renderDxfText = (): React.JSX.Element | null => {
     if (!annotationVisibility.dxfText || dxfTexts.length === 0 || lodTier < 2) return null;
     return (
       <Shape
@@ -669,12 +669,12 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   // ───────── Symbols (true physical size) ─────────
-  const renderIndoorUnitSymbol = (zone: Zone, uIdx: number, ts: number) => {
+  const renderIndoorUnitSymbol = (zone: Zone, uIdx: number, ts: number): React.JSX.Element => {
     const kind = unitKindForSystem(zone.systemType);
     const fp = unitFootprintPx(kind, k, catalogDimsFor(zone.catalogModel));
     const w = fp.w, d = fp.d;
-    const sw = (v: number) => getStrokeWidth(v, v);
-    const label = (txt: string, color: string) => (
+    const sw = (v: number): number => getStrokeWidth(v, v);
+    const label = (txt: string, color: string): React.JSX.Element => (
       <Text
         x={-w / 2 - 20 * ts}
         y={d / 2 + 2 * ts}
@@ -730,10 +730,10 @@ export const FloorPlanCanvas: React.FC = () => {
     );
   };
 
-  const renderOutdoorUnitSymbol = (ts: number) => {
+  const renderOutdoorUnitSymbol = (ts: number): React.JSX.Element => {
     const fp = unitFootprintPx('odu', k);
     const w = fp.w, d = fp.d, r = d * 0.38;
-    const sw = (v: number) => getStrokeWidth(v, v);
+    const sw = (v: number): number => getStrokeWidth(v, v);
     return (
       <Group>
         <Rect x={-w / 2} y={-d / 2} width={w} height={d} fill="rgba(6, 182, 212, 0.3)" stroke="#06b6d4" strokeWidth={sw(1.6)} />
@@ -752,7 +752,7 @@ export const FloorPlanCanvas: React.FC = () => {
     );
   };
 
-  const renderZone = (zone: Zone) => {
+  const renderZone = (zone: Zone): React.JSX.Element => {
     const isSelected = zone.id === selectedZoneId;
     const centroid = getPolygonCentroid(zone.points);
     const load = calculateZoneLoad(zone, project);
@@ -1133,7 +1133,7 @@ export const FloorPlanCanvas: React.FC = () => {
     );
   };
 
-  const renderPreview = () => {
+  const renderPreview = (): React.JSX.Element | null => {
     if (!activePreview) return null;
     const ts = textScale;
     const eq = activePreview.manifest.equipment;

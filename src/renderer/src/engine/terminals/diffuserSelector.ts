@@ -36,7 +36,7 @@ export function neckAreaSqFt(item: DiffuserCatalogItem): number {
   return (n.width * n.height) / 144;
 }
 
-function interpolate(item: DiffuserCatalogItem, cfm: number) {
+function interpolate(item: DiffuserCatalogItem, cfm: number): { nc: number; t50: number; dp: number; } {
   const t = [...item.performanceTable].sort((a, b) => a.cfm - b.cfm);
   if (t.length === 0) return { nc: 25, t50: 10, dp: 0.035 };
   if (t.length === 1 || cfm <= t[0].cfm) return { nc: t[0].ncRating, t50: t[0].throwFt.t50, dp: t[0].deltaPInWg };
@@ -74,7 +74,7 @@ export function maxCfmPerItem(item: DiffuserCatalogItem, spaceNcLimit: number = 
 }
 
 /** Supply candidate items sorted smallest-to-largest by neck area. */
-function supplyCandidates(catalog: DiffuserCatalogItem[], terminalType: string) {
+function supplyCandidates(catalog: DiffuserCatalogItem[], terminalType: string): DiffuserCatalogItem[] {
   const c = catalog.filter(
     (d) => d.terminalType === terminalType || d.terminalType === 'square-ceiling' || d.terminalType === 'round-ceiling'
   );
@@ -110,7 +110,7 @@ export function selectBestDiffuserFromCatalog(
   let chosen: DiffuserCatalogItem | undefined;
   let withinLimits = false;
 
-  const fits = (item: DiffuserCatalogItem, ncTol: number) => {
+  const fits = (item: DiffuserCatalogItem, ncTol: number): boolean => {
     const area = neckAreaSqFt(item);
     const vel = area > 0 ? cfmPerTerminal / area : 0;
     if (vel > vLimit) return false;

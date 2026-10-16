@@ -54,14 +54,14 @@ export const AirDistributionSchedulePanel: React.FC = () => {
 
   const schedules = generateMasterSchedules(design);
 
-  const handleApplyToCad = () => {
+  const handleApplyToCad = (): void => {
     const payload = convertDesignResultToZonePayload(design);
     updateZone(currentZone.id, payload);
     setAppliedToCad(true);
     setTimeout(() => setAppliedToCad(false), 3000);
   };
 
-  const handleExportTextReport = () => {
+  const handleExportTextReport = (): void => {
     const reportText = exportFullEngineeringDesignReport(design);
     const blob = new Blob([reportText], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);

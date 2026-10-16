@@ -40,7 +40,7 @@ export function validateFootprintInPolygon(
 /**
  * Calculates the bounding box of a polygon
  */
-export function getPolygonBoundingBox(points: number[]) {
+export function getPolygonBoundingBox(points: number[]): { minX: number; maxX: number; minY: number; maxY: number; width: number; height: number; } {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   const numPts = points.length / 2;
   for (let i = 0; i < numPts; i++) {

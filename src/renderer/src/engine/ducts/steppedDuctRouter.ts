@@ -58,7 +58,7 @@ function bboxOf(points: number[]): { minX: number; maxX: number; minY: number; m
   return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
 }
 
-const r2 = (n: number) => parseFloat(n.toFixed(2));
+const r2 = (n: number): number => parseFloat(n.toFixed(2));
 
 /** The unit's own service bay is the preferred routing area; the full room outline is the fallback. */
 export function zoneRoutingPolygons(zone: EquipmentServiceZone): { bayPoly?: number[]; roomPoly?: number[] } {
@@ -122,7 +122,7 @@ export function topologyToSections(
   opts: RouteTreeOptions
 ): SteppedDuctSection[] {
   const base = opts.startIndex ?? 1;
-  const idOf = (i: number) => `${opts.idPrefix}-${zone.unitTag}-${base + i}`;
+  const idOf = (i: number): string => `${opts.idPrefix}-${zone.unitTag}-${base + i}`;
   const sections: SteppedDuctSection[] = segs.map((g, i) => ({
     id: idOf(i),
     unitId: zone.id,

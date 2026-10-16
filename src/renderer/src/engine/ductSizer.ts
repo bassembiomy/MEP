@@ -173,7 +173,7 @@ export function selectRoundDuct(
   return result;
 }
 
-function gaugeFor(maxDim: number) {
+function gaugeFor(maxDim: number): { maxDimension: number; thicknessMm: number; gauge: number; } {
   return SMACNA_GAUGE_TABLE.find((g) => maxDim <= g.maxDimension) || SMACNA_GAUGE_TABLE[SMACNA_GAUGE_TABLE.length - 1];
 }
 
@@ -340,7 +340,7 @@ export function sizeDuctMetric(
     maxSideIn: 2400 / MM_PER_IN
   });
 
-  const toMm = (inches: number) => Math.round(inches * MM_PER_IN / METRIC_STEP_MM) * METRIC_STEP_MM;
+  const toMm = (inches: number): number => Math.round(inches * MM_PER_IN / METRIC_STEP_MM) * METRIC_STEP_MM;
   const gaugeInfo = gaugeFor(Math.max(sel.widthIn, sel.heightIn));
 
   return {

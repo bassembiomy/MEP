@@ -30,14 +30,14 @@ function mulberry32(seed: number) {
   };
 }
 const rnd = mulberry32(0x5eed2026);
-const between = (lo: number, hi: number) => lo + (hi - lo) * rnd();
-const half = (v: number) => Math.round(v * 2) / 2; // 0.5 ft drafting resolution
+const between = (lo: number, hi: number): number => lo + (hi - lo) * rnd();
+const half = (v: number): number => Math.round(v * 2) / 2; // 0.5 ft drafting resolution
 
 // ───────────────────────── Failure ledger ─────────────────────────
 interface Failure { caseId: string; area: number; detail: string; repro: string }
 const ledger = new Map<string, { checked: Set<string>; failed: Map<string, Failure> }>();
 const INVARIANT_ORDER: string[] = [];
-function inv(name: string) {
+function inv(name: string): { checked: Set<string>; failed: Map<string, Failure>; } {
   if (!ledger.has(name)) {
     ledger.set(name, { checked: new Set(), failed: new Map() });
     INVARIANT_ORDER.push(name);
@@ -46,7 +46,7 @@ function inv(name: string) {
 }
 let current: { id: string; area: number; repro: string } = { id: '', area: 0, repro: '' };
 /** Records a check of `name` for the current case; `ok=false` stores the first detail per case. */
-function check(name: string, ok: boolean, detail: () => string) {
+function check(name: string, ok: boolean, detail: () => string): void {
   const e = inv(name);
   e.checked.add(current.id);
   if (!ok && !e.failed.has(current.id)) {
@@ -56,7 +56,7 @@ function check(name: string, ok: boolean, detail: () => string) {
 
 // ───────────────────────── Geometry helpers ─────────────────────────
 type P = { x: number; y: number };
-const edgesOf = (poly: number[]) => {
+const edgesOf = (poly: number[]): [P, P][] => {
   const out: Array<[P, P]> = [];
   const n = poly.length / 2;
   for (let i = 0; i < n; i++) {
@@ -71,10 +71,10 @@ function distToSeg(p: P, a: P, b: P): number {
   const t = L2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2)) : 0;
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
-const wallDist = (p: P, poly: number[]) => Math.min(...edgesOf(poly).map(([a, b]) => distToSeg(p, a, b)));
+const wallDist = (p: P, poly: number[]): number => Math.min(...edgesOf(poly).map(([a, b]) => distToSeg(p, a, b)));
 /** inside or within `tol` of the boundary */
-const insideOrOn = (p: P, poly: number[], tol: number) => isPointInPolygon(p.x, p.y, poly) || wallDist(p, poly) <= tol;
-const polyArea = (poly: number[]) => {
+const insideOrOn = (p: P, poly: number[], tol: number): boolean => isPointInPolygon(p.x, p.y, poly) || wallDist(p, poly) <= tol;
+const polyArea = (poly: number[]): number => {
   let s = 0;
   for (let i = 0; i < poly.length; i += 2) {
     const j = (i + 2) % poly.length;
@@ -82,11 +82,11 @@ const polyArea = (poly: number[]) => {
   }
   return Math.abs(s) / 2;
 };
-const bboxOf = (poly: number[]) => {
+const bboxOf = (poly: number[]): { w: number; h: number; } => {
   const xs = poly.filter((_, i) => i % 2 === 0), ys = poly.filter((_, i) => i % 2 === 1);
   return { w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
 };
-const rel = (a: number, b: number) => Math.abs(a - b) / Math.max(Math.abs(b), 1e-9);
+const rel = (a: number, b: number): number => Math.abs(a - b) / Math.max(Math.abs(b), 1e-9);
 
 /** Deep scan for NaN / ±Infinity. Returns the first offending path or null. */
 function findNonFinite(v: unknown, path = '$', seen = new Set<unknown>()): string | null {
@@ -205,8 +205,8 @@ function checkDuctNetworks(
   roomPoly: number[],
   ftPerCoord: number, // coordinate units -> ft
   metricSizes: boolean
-) {
-  const tol = (ft: number) => ft / ftPerCoord;
+): void {
+  const tol = (ft: number): number => ft / ftPerCoord;
   const byId = new Map(segs.map((s) => [s.id, s]));
   const children = new Map<string, NetSeg[]>();
   for (const s of segs) if (s.parent) (children.get(s.parent) || children.set(s.parent, []).get(s.parent)!).push(s);
@@ -218,10 +218,10 @@ function checkDuctNetworks(
     check(`${tag}.noZeroLength`, Math.hypot(dx, dy) > 1e-6, () => `${s.id} has zero length`);
   }
   // collinear overlap (same network, whole room) and supply/return overlap
-  const overlaps = (s: NetSeg, t: NetSeg) => {
+  const overlaps = (s: NetSeg, t: NetSeg): boolean => {
     const sh = Math.abs(s.a.y - s.b.y) < 1e-6, th = Math.abs(t.a.y - t.b.y) < 1e-6;
     const sv = Math.abs(s.a.x - s.b.x) < 1e-6, tv = Math.abs(t.a.x - t.b.x) < 1e-6;
-    const ovl = (a1: number, a2: number, b1: number, b2: number) =>
+    const ovl = (a1: number, a2: number, b1: number, b2: number): number =>
       Math.min(Math.max(a1, a2), Math.max(b1, b2)) - Math.max(Math.min(a1, a2), Math.min(b1, b2));
     if (sh && th && !(sv && tv) && Math.abs(s.a.y - t.a.y) < 1e-6) return ovl(s.a.x, s.b.x, t.a.x, t.b.x) > 1e-6;
     if (sv && tv && !(sh && th) && Math.abs(s.a.x - t.a.x) < 1e-6) return ovl(s.a.y, s.b.y, t.a.y, t.b.y) > 1e-6;
@@ -319,7 +319,7 @@ function checkDuctNetworks(
         if (f > FRICTION_LIMIT + 1e-3 && !s.flagged) fric ??= `${s.id} ${s.cfm} CFM in ${s.w.toFixed(2)}"x${s.h.toFixed(2)}" friction ${f.toFixed(3)} in/100ft not flagged`;
         if (s.velocity > s.vLimit + 1 && !s.flagged) vel ??= `${s.id} ${s.velocity} fpm > limit ${s.vLimit} not flagged`;
       }
-      const okInc = (v: number) => metricSizes
+      const okInc = (v: number): boolean => metricSizes
         ? Math.abs((v * MM_PER_IN) / 50 - Math.round((v * MM_PER_IN) / 50)) < 0.01
         : Math.abs(v / 2 - Math.round(v / 2)) < 1e-6;
       if (!okInc(s.w) || !okInc(s.h)) inc ??= `${s.id} ${metricSizes ? `${(s.w * MM_PER_IN).toFixed(1)}x${(s.h * MM_PER_IN).toFixed(1)} mm` : `${s.w}"x${s.h}"`} not on ${metricSizes ? '50 mm' : '2"'} grid`;
@@ -643,7 +643,7 @@ for (let ri = 0; ri < rooms.length; ri++) {
 }
 
 // ───────────────────────── Summary ─────────────────────────
-const pad = (s: string, n: number) => (s.length >= n ? s : s + ' '.repeat(n - s.length));
+const pad = (s: string, n: number): string => (s.length >= n ? s : s + ' '.repeat(n - s.length));
 console.log(`\nProfessional invariants matrix: ${rooms.length} rooms x 2 unit systems = ${caseCount} cases (${Date.now() - t0} ms)\n`);
 console.log(`${pad('Invariant', 46)} ${pad('checked', 8)} ${pad('pass', 6)} fail`);
 console.log('-'.repeat(70));

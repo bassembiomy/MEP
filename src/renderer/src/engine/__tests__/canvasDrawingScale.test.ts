@@ -6,8 +6,8 @@ import {
   fitBounds, unionBounds, terminalSizeLabel
 } from '../../canvas/drawingGeometry';
 
-function assert(c: boolean, m: string) { if (!c) throw new Error(`Assertion failed: ${m}`); }
-const near = (a: number, b: number, e = 1e-6) => Math.abs(a - b) <= e;
+function assert(c: boolean, m: string): void { if (!c) throw new Error(`Assertion failed: ${m}`); }
+const near = (a: number, b: number, e = 1e-6): boolean => Math.abs(a - b) <= e;
 
 console.log('=== Canvas drawing scale tests ===');
 
@@ -49,7 +49,7 @@ const L = buildDuctOutline([
 assert(L.length === 1, 'L is a single run');
 const o = L[0].outline;
 assert(o.length === 12, `L outline has 6 vertices (no notch), got ${o.length / 2}`);
-const hasPt = (arr: number[], x: number, y: number) => {
+const hasPt = (arr: number[], x: number, y: number): boolean => {
   for (let i = 0; i < arr.length; i += 2) if (near(arr[i], x, 1e-6) && near(arr[i + 1], y, 1e-6)) return true;
   return false;
 };

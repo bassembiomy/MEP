@@ -5,7 +5,7 @@ import { optimizeMultiUnitCandidates, requiredCeilingVoidIn } from '../systemArc
 import { generateSystemArchitecture, tagRange, trunkWidthIn } from '../hvacArchitecture';
 import { BTUH_PER_TON, BTUH_PER_W, W_PER_BTUH, LPS_PER_CFM, CFM_PER_LPS, SQFT_PER_SQM } from '../units';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
 
@@ -58,7 +58,7 @@ const EPS = 1e-9;
       {},
       types as any
     );
-    const ids = (r: typeof a) => r.candidates.map((c) => `${c.equipment.id}x${c.quantity}:${c.isValid}`).join(',');
+    const ids = (r: typeof a): string => r.candidates.map((c) => `${c.equipment.id}x${c.quantity}:${c.isValid}`).join(',');
     assert(ids(a) === ids(b), `parity ${types?.join('/') || 'all'}: imperial [${ids(a)}] vs metric [${ids(b)}]`);
     assert((a.bestOverall?.id ?? '') === (b.bestOverall?.id ?? ''), `parity best ${types?.join('/') || 'all'}`);
   }

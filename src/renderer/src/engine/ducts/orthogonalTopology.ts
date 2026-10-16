@@ -88,7 +88,7 @@ export function pointInsideClear(p: Pt2, poly: number[], clr: number): boolean {
 }
 
 function properCross(a: Pt2, b: Pt2, c: Pt2, d: Pt2): boolean {
-  const o = (p: Pt2, q: Pt2, r: Pt2) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  const o = (p: Pt2, q: Pt2, r: Pt2): number => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
   const d1 = o(a, b, c), d2 = o(a, b, d), d3 = o(c, d, a), d4 = o(c, d, b);
   return ((d1 > EPS && d2 < -EPS) || (d1 < -EPS && d2 > EPS)) && ((d3 > EPS && d4 < -EPS) || (d3 < -EPS && d4 > EPS));
 }
@@ -118,7 +118,7 @@ export function collinearOverlap(s: Seg2, t: Seg2, gap: number): number {
   const sh = Math.abs(s.start.y - s.end.y) < EPS, sv = Math.abs(s.start.x - s.end.x) < EPS;
   const th = Math.abs(t.start.y - t.end.y) < EPS, tv = Math.abs(t.start.x - t.end.x) < EPS;
   if (sh === sv || th === tv) return 0;
-  const ovl = (a1: number, a2: number, b1: number, b2: number) =>
+  const ovl = (a1: number, a2: number, b1: number, b2: number): number =>
     Math.min(Math.max(a1, a2), Math.max(b1, b2)) - Math.max(Math.min(a1, a2), Math.min(b1, b2));
   if (sh && th && Math.abs(s.start.y - t.start.y) < gap) return Math.max(0, ovl(s.start.x, s.end.x, t.start.x, t.end.x));
   if (sv && tv && Math.abs(s.start.x - t.start.x) < gap) return Math.max(0, ovl(s.start.y, s.end.y, t.start.y, t.end.y));
@@ -142,10 +142,10 @@ export function chooseReturnCollar(
 ): Pt2 {
   const h = axis === 'h';
   const at = (s: number, off: number): Pt2 => (h ? { x: root.x, y: root.y + s * off } : { x: root.x + s * off, y: root.y });
-  const side = (p: Pt2) => (h ? p.y - root.y : p.x - root.x);
-  const count = (s: number) => grilles.filter((g) => Math.sign(side(g)) === s).length;
+  const side = (p: Pt2): number => (h ? p.y - root.y : p.x - root.x);
+  const count = (s: number): number => grilles.filter((g) => Math.sign(side(g)) === s).length;
   const centreSide = centre ? Math.sign(side(centre)) : 0;
-  const clearanceIn = (poly: number[] | undefined, p: Pt2) =>
+  const clearanceIn = (poly: number[] | undefined, p: Pt2): number =>
     !poly || poly.length < 6
       ? Infinity
       : isPointInPolygon(p.x, p.y, poly) ? distanceToPolygonEdge(p.x, p.y, poly) : -distanceToPolygonEdge(p.x, p.y, poly);
@@ -227,8 +227,8 @@ function buildStandardTree(
 ): TopoSegment[] {
   const horizontal = opts.axis === 'h';
   // Work in (u, v): u along trunk axis, v perpendicular
-  const toUV = (p: { x: number; y: number }) => (horizontal ? { u: p.x, v: p.y } : { u: p.y, v: p.x });
-  const toXY = (u: number, v: number) => (horizontal ? { x: u, y: v } : { x: v, y: u });
+  const toUV = (p: { x: number; y: number }): { u: number; v: number; } => (horizontal ? { u: p.x, v: p.y } : { u: p.y, v: p.x });
+  const toXY = (u: number, v: number): { x: number; y: number; } => (horizontal ? { x: u, y: v } : { x: v, y: u });
   const r = toUV(root);
 
   const live = terminals.filter((t) => t.cfm > 0).map((t) => ({ t, p: toUV(t) }));
@@ -282,7 +282,7 @@ function buildStandardTree(
     stations.filter((s) => s.u < 0).sort((a, b) => b.u - a.u)
   ];
 
-  const stationFlow = (s: Station) => s.terminals.reduce((acc, x) => acc + x.t.cfm, 0);
+  const stationFlow = (s: Station): number => s.terminals.reduce((acc, x) => acc + x.t.cfm, 0);
 
   for (const side of sides) {
     if (side.length === 0) continue;
@@ -389,15 +389,15 @@ function treeValid(segs: TopoSegment[], root: Pt2, terminals: TopoTerminal[], op
 class MinHeap {
   private k: number[] = [];
   private v: number[] = [];
-  get size() { return this.k.length; }
-  private less(a: number, b: number) {
+  get size(): number { return this.k.length; }
+  private less(a: number, b: number): boolean {
     return this.k[a] < this.k[b] || (this.k[a] === this.k[b] && this.v[a] < this.v[b]);
   }
-  private swap(a: number, b: number) {
+  private swap(a: number, b: number): void {
     [this.k[a], this.k[b]] = [this.k[b], this.k[a]];
     [this.v[a], this.v[b]] = [this.v[b], this.v[a]];
   }
-  push(key: number, val: number) {
+  push(key: number, val: number): void {
     let i = this.k.length;
     this.k.push(key);
     this.v.push(val);
@@ -435,7 +435,7 @@ function clusterLines(vals: number[], tol: number, rootVal: number): number[] {
   const sorted = [...vals].sort((a, b) => a - b);
   const reps: number[] = [];
   let cluster: number[] = [];
-  const flush = () => {
+  const flush = (): void => {
     if (!cluster.length) return;
     reps.push(cluster.some((c) => Math.abs(c - rootVal) < 1e-9) ? rootVal : cluster[0]);
     cluster = [];
@@ -468,7 +468,7 @@ function gridRoute(
   }
   const reqX = clusterLines([root.x, ...live.map((t) => t.x)], opts.snapTol, root.x);
   const reqY = clusterLines([root.y, ...live.map((t) => t.y)], opts.snapTol, root.y);
-  const build = (req: number[], lo: number, hi: number, step: number) => {
+  const build = (req: number[], lo: number, hi: number, step: number): number[] => {
     const lines = [...req];
     for (let v = lo; v <= hi + 1e-9; v += step) {
       if (req.every((q) => Math.abs(q - v) >= 0.4 * step)) lines.push(v);
@@ -485,8 +485,8 @@ function gridRoute(
   }
   const nx = xs.length, ny = ys.length;
   const N = nx * ny;
-  const idx = (ix: number, iy: number) => ix * ny + iy;
-  const nearest = (arr: number[], v: number) => {
+  const idx = (ix: number, iy: number): number => ix * ny + iy;
+  const nearest = (arr: number[], v: number): number => {
     let best = 0, bd = Infinity;
     for (let i = 0; i < arr.length; i++) {
       const d = Math.abs(arr[i] - v);
@@ -498,12 +498,12 @@ function gridRoute(
   const termNodes = live.map((t) => idx(nearest(xs, t.x), nearest(ys, t.y)));
   if (termNodes.some((n) => n === rootNode)) return null;
   const special = new Set<number>([rootNode, ...termNodes]);
-  const px = (n: number) => xs[Math.floor(n / ny)];
-  const py = (n: number) => ys[n % ny];
+  const px = (n: number): number => xs[Math.floor(n / ny)];
+  const py = (n: number): number => ys[n % ny];
   const P = (n: number): Pt2 => ({ x: px(n), y: py(n) });
 
   const nodeState = new Int8Array(N); // 0 unknown, 1 ok, 2 bad
-  const nodeOk = (n: number) => {
+  const nodeOk = (n: number): boolean => {
     if (nodeState[n] === 0) {
       const p = P(n);
       nodeState[n] = (special.has(n) ? insideOrOn(p, poly) : pointInsideClear(p, poly, clr)) ? 1 : 2;
@@ -512,7 +512,7 @@ function gridRoute(
   };
   const m = poly.length / 2;
   const edgeCache = new Map<number, boolean>();
-  const edgeOk = (a: number, b: number) => {
+  const edgeOk = (a: number, b: number): boolean => {
     const key = a < b ? a * N + b : b * N + a;
     const hit = edgeCache.get(key);
     if (hit !== undefined) return hit;
@@ -591,8 +591,8 @@ function gridRoute(
   const termAt = new Map<number, TopoTerminal[]>();
   live.forEach((t, i) => (termAt.get(termNodes[i]) || termAt.set(termNodes[i], []).get(termNodes[i])!).push(t));
 
-  const dirOf = (a: number, b: number) => (Math.abs(px(a) - px(b)) > Math.abs(py(a) - py(b)) ? 0 : 1);
-  const significant = (n: number) => {
+  const dirOf = (a: number, b: number): 0 | 1 => (Math.abs(px(a) - px(b)) > Math.abs(py(a) - py(b)) ? 0 : 1);
+  const significant = (n: number): boolean => {
     if (n === rootNode || termAt.has(n)) return true;
     const ch = children.get(n) || [];
     if (ch.length !== 1) return true;

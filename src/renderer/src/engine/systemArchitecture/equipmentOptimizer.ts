@@ -237,7 +237,7 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
   // still proceed (they must treat recommendedOption.isValid === false as a warning).
   const hasValidOption = validCandidates.length > 0;
   const pool = hasValidOption ? validCandidates : invalidCandidates;
-  const sev = (o: MultiUnitCandidate) => {
+  const sev = (o: MultiUnitCandidate): number => {
     const chk = evaluateSizing(o.equipmentDetails.catalogItem, o.unitCount, totalLoadBtu, sensibleLoadBtu, requiredCfm);
     return failureSeverity(chk);
   };

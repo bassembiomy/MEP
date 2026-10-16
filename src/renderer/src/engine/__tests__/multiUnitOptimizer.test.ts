@@ -4,7 +4,7 @@ import { optimizeMultiUnitCandidates } from '../systemArchitecture/equipmentOpti
 import { generateDesignDecisionLog } from '../systemArchitecture/designDecisionLogger';
 import { getStandardsProfile } from '../standards/designStandards';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
 

@@ -352,7 +352,7 @@ export function transformEntityByInsert(ent: CadEntity, t: InsertXf): CadEntity 
 /** Exact extents of a list of entities (arcs use true extents incl. quadrant points). */
 export function entitiesBbox(entities: CadEntity[]): BoundingBox {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  const add = (x: number, y: number) => {
+  const add = (x: number, y: number): void => {
     if (!isFinite(x) || !isFinite(y)) return;
     if (x < minX) minX = x;
     if (x > maxX) maxX = x;
@@ -450,8 +450,8 @@ export function normalizeCadToCanvas(entities: CadEntity[], opts: NormalizeOptio
     }
   }
   const s = k * pxPerFt(opts.projectScale, opts.projectUnits);
-  const X = (x: number) => (x - src.minX) * s;
-  const Y = (y: number) => (src.maxY - y) * s;
+  const X = (x: number): number => (x - src.minX) * s;
+  const Y = (y: number): number => (src.maxY - y) * s;
 
   const pts = (p: number[]): number[] => {
     const out: number[] = [];
@@ -825,7 +825,7 @@ export function parseDxfText(dxfText: string): ParsedDxf {
       } else if (name === 'BLOCKS') {
         let cur: BlockDef | null = null;
         let acc: Rec[] = [];
-        const flush = () => {
+        const flush = (): void => {
           if (cur) { cur.items = parseEntityRecords(acc); blocks.set(cur.name, cur); }
           cur = null;
           acc = [];

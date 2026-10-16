@@ -1,3 +1,4 @@
+import type { DuctSegment } from '../../store/projectStore';
 import { sizeDuct, sizeDuctMetric, sizeRoundDuct, sizeDuctConstantVelocity } from '../ductSizer';
 import { sizeDuctAcoustically } from '../acousticDuctEngine';
 import {
@@ -28,10 +29,10 @@ import { generateSystemCandidates, DEFAULT_OPTIMIZATION_WEIGHTS } from '../syste
 import { Zone, ProjectMetadata } from '../../store/projectStore';
 import { DiffuserPos } from '../diffuserPlacer';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
-const near = (a: number, b: number, tol: number) => Math.abs(a - b) <= tol;
+const near = (a: number, b: number, tol: number): boolean => Math.abs(a - b) <= tol;
 
 console.log('=== Running Duct Network (routing / sizing / static pressure) Tests ===');
 
@@ -135,7 +136,7 @@ function term(id: string, x: number, y: number, cfm: number, type: 'supply' | 'r
 
 interface Seg { id: string; a: { x: number; y: number }; b: { x: number; y: number } }
 
-function assertOrthogonalNoZeroNoOverlap(segs: Seg[], label: string) {
+function assertOrthogonalNoZeroNoOverlap(segs: Seg[], label: string): void {
   for (const s of segs) {
     const horiz = near(s.a.y, s.b.y, 1e-6);
     const vert = near(s.a.x, s.b.x, 1e-6);
@@ -158,7 +159,7 @@ function assertOrthogonalNoZeroNoOverlap(segs: Seg[], label: string) {
   }
 }
 
-function assertStepped(net: SteppedDuctSection[], terminals: CoordinatedAirTerminal[], label: string) {
+function assertStepped(net: SteppedDuctSection[], terminals: CoordinatedAirTerminal[], label: string): void {
   assertOrthogonalNoZeroNoOverlap(net.map((s) => ({ id: s.id, a: s.startPoint, b: s.endPoint })), label);
   const cfmOf = new Map(terminals.map((t) => [t.id, t.cfm]));
   const byId = new Map(net.map((s) => [s.id, s]));
@@ -305,7 +306,7 @@ function checkPx(
   units: 'imperial' | 'metric',
   ppf: number,
   shape: 'rectangular' | 'round' = 'rectangular'
-) {
+): { ducts: (DuctSegment & { parentDuctId?: string; lengthFt?: number; })[]; label: string; } {
   const res = routeDucts(roomPx, difs, units, 'z1', { x: 300, y: 180 }, 'concealed', undefined, { ductShape: shape }, ppf);
   const ducts = res.ducts as (typeof res.ducts[number] & { parentDuctId?: string; lengthFt?: number })[];
   const label = `px-${units}-${ppf}-${shape}`;

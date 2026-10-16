@@ -183,7 +183,7 @@ function buildPathNodes(ducts: NetDuct[], scale: number, fallbackRate: number): 
     });
   }
 
-  const group = (d: DuctSegment) => (d.type === 'return' ? 'return' : 'supply');
+  const group = (d: DuctSegment): "supply" | "return" => (d.type === 'return' ? 'return' : 'supply');
 
   for (const node of nodes.values()) {
     const d = node.duct;
@@ -297,7 +297,7 @@ function buildPathSegments(
 
   for (const n of chain) {
     const d = n.duct;
-    const round3 = (v: number) => Math.round(v * 1000) / 1000;
+    const round3 = (v: number): number => Math.round(v * 1000) / 1000;
     if (n.junctionKey) {
       cum += n.junctionLoss;
       if (n.junctionKey === 'branch-tee') tees++;

@@ -1,7 +1,7 @@
 import { SteppedDuctSection } from './steppedDuctRouter';
 import { StandardsProfile, ASHRAE_PROFILE } from '../standards/designStandards';
 import { getAcousticVelocityLimit } from '../standards/acousticRules';
-import { selectRectangularDuct, selectRoundDuct } from '../ductSizer';
+import { selectRectangularDuct, selectRoundDuct, RectSelectionResult } from '../ductSizer';
 import { frictionRateExact, rectangularEquivalentDiameter, sectionLengthFt } from './ductPressureCalculator';
 import { applyJunctionFittings } from './fittingLossCalculator';
 import { HARD_MAX_ASPECT_RATIO, METRIC_STEP_MM, METRIC_MIN_DIM_MM, MM_PER_IN } from './ductUnits';
@@ -16,7 +16,7 @@ function parentFirst(sections: SteppedDuctSection[]): SteppedDuctSection[] {
   const byId = new Map(sections.map((s) => [s.id, s]));
   const done = new Set<string>();
   const out: SteppedDuctSection[] = [];
-  const visit = (s: SteppedDuctSection, depth = 0) => {
+  const visit = (s: SteppedDuctSection, depth = 0): void => {
     if (done.has(s.id) || depth > sections.length) return;
     const p = s.parentDuctId ? byId.get(s.parentDuctId) : undefined;
     if (p) visit(p, depth + 1);
@@ -97,7 +97,7 @@ export function sizeDuctNetwork(
         : Math.min(s.role === 'main-trunk' ? TRUNK_START_DEPTH_IN : BRANCH_START_DEPTH_IN, maxAvailableCeilingDepthIn);
       const maxDepth = isTrunkRun ? parent!.heightIn : maxAvailableCeilingDepthIn;
 
-      const attempt = (aspect: number) =>
+      const attempt = (aspect: number): RectSelectionResult =>
         selectRectangularDuct({
           cfm,
           maxFrictionInWgPer100Ft: frictionTarget,
@@ -112,7 +112,7 @@ export function sizeDuctNetwork(
       let sel = attempt(profileAspect);
       if (!(sel.meetsFriction && sel.meetsVelocity && sel.meetsAspect)) {
         const relaxed = attempt(HARD_MAX_ASPECT_RATIO);
-        const score = (r: typeof sel) => Number(r.meetsFriction) + Number(r.meetsVelocity) + Number(r.meetsAspect);
+        const score = (r: typeof sel): number => Number(r.meetsFriction) + Number(r.meetsVelocity) + Number(r.meetsAspect);
         if (score(relaxed) >= score(sel)) sel = relaxed;
       }
 

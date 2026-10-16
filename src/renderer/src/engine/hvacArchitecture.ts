@@ -37,7 +37,7 @@ const MAIN_TRUNK_DEPTH_IN = 10;
 
 /** Zero-padded tag range: 'ACU-01' for one, 'ACU-01…ACU-10' for ten. */
 export function tagRange(prefix: string, count: number): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
+  const pad = (n: number): string => String(n).padStart(2, '0');
   return count > 1 ? `${prefix}-01…${prefix}-${pad(count)}` : `${prefix}-01`;
 }
 
@@ -680,7 +680,7 @@ export function generateSelectionAlgorithmTrace(
   const cfm = supplyCfm > 0 ? supplyCfm : (sensBtu / (1.08 * 20));
 
   // Display helpers (engine values stay in Btu/h, ft²)
-  const dispLoad = (btu: number) => Math.round(isImperial ? btu : btu * W_PER_BTUH).toLocaleString();
+  const dispLoad = (btu: number): string => Math.round(isImperial ? btu : btu * W_PER_BTUH).toLocaleString();
   const loadUnit = isImperial ? 'Btu/h' : 'W';
   const dispArea = isImperial ? areaSqFt : Math.round((areaSqFt / SQFT_PER_SQM) * 10) / 10;
 

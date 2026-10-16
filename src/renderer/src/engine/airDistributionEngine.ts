@@ -353,13 +353,13 @@ export function recalculateScopedOverride(
  */
 export function convertDesignResultToZonePayload(design: AirDistributionDesignResult) {
   const k = design.pxPerFt && design.pxPerFt > 0 ? design.pxPerFt : 1;
-  const px = (v: number) => v * k; // exact: px === ft x k (no geometry rounding)
-  const ductLabel = (w: number, h: number) => {
+  const px = (v: number): number => v * k; // exact: px === ft x k (no geometry rounding)
+  const ductLabel = (w: number, h: number): string => {
     if (design.units !== 'metric') return `${w}"x${h}"`;
-    const mm = (v: number) => Math.round((v * MM_PER_IN) / 50) * 50;
+    const mm = (v: number): number => Math.round((v * MM_PER_IN) / 50) * 50;
     return `${mm(w)}x${mm(h)}`;
   };
-  const pt = (p: { x: number; y: number }) => ({ x: px(p.x), y: px(p.y) });
+  const pt = (p: { x: number; y: number }): { x: number; y: number; } => ({ x: px(p.x), y: px(p.y) });
 
   const diffusers = [
     ...design.supplyTerminals.map((t) => ({
@@ -384,7 +384,7 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
     }))
   ];
 
-  const ductPts = (d: { startPoint: { x: number; y: number }; endPoint: { x: number; y: number } }) =>
+  const ductPts = (d: { startPoint: { x: number; y: number }; endPoint: { x: number; y: number } }): number[] =>
     [px(d.startPoint.x), px(d.startPoint.y), px(d.endPoint.x), px(d.endPoint.y)];
   const ducts = [
     ...design.supplyDucts.map((d) => ({

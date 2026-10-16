@@ -75,7 +75,7 @@ export function terminalFacePx(d: TerminalLike, k: number, units?: string): { w:
 export function terminalSizeLabel(d: TerminalLike, units?: string): string {
   const f = terminalFaceIn(d, units);
   if (units === 'metric') return `${Math.round(f.w * MM_PER_IN)}X${Math.round(f.h * MM_PER_IN)}`;
-  const r = (v: number) => (Math.abs(v - Math.round(v)) < 0.05 ? String(Math.round(v)) : v.toFixed(1));
+  const r = (v: number): string => (Math.abs(v - Math.round(v)) < 0.05 ? String(Math.round(v)) : v.toFixed(1));
   return `${r(f.w)}"X${r(f.h)}"`;
 }
 
@@ -148,9 +148,9 @@ export interface SnapEntity {
   layer?: string;
 }
 
-const cellKey = (cx: number, cy: number) => `${cx},${cy}`;
+const cellKey = (cx: number, cy: number): string => `${cx},${cy}`;
 
-function addSnap(index: SnapIndex, p: SnapPoint) {
+function addSnap(index: SnapIndex, p: SnapPoint): void {
   if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
   const key = cellKey(Math.floor(p.x / index.cell), Math.floor(p.y / index.cell));
   let b = index.buckets.get(key);
@@ -266,11 +266,11 @@ export function dropTrailingDuplicate(pts: number[], eps = 1e-6): number[] {
   return out;
 }
 
-const orient = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number) => {
+const orient = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number): 0 | 1 | -1 => {
   const v = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
   return Math.abs(v) < 1e-9 ? 0 : v > 0 ? 1 : -1;
 };
-const onSeg = (ax: number, ay: number, bx: number, by: number, px: number, py: number) =>
+const onSeg = (ax: number, ay: number, bx: number, by: number, px: number, py: number): boolean =>
   Math.min(ax, bx) - 1e-9 <= px && px <= Math.max(ax, bx) + 1e-9 &&
   Math.min(ay, by) - 1e-9 <= py && py <= Math.max(ay, by) + 1e-9;
 
@@ -494,7 +494,7 @@ function buildNetwork(input: DuctSegIn[], k: number, tol: number, network: 'supp
     const L = Math.hypot(B.x - A.x, B.y - A.y) || 1;
     return { x: (B.x - A.x) / L, y: (B.y - A.y) / L };
   };
-  const segLen = (s: Seg) => Math.hypot(nodes[s.b].x - nodes[s.a].x, nodes[s.b].y - nodes[s.a].y);
+  const segLen = (s: Seg): number => Math.hypot(nodes[s.b].x - nodes[s.a].x, nodes[s.b].y - nodes[s.a].y);
 
   const incident: End[][] = nodes.map(() => []);
   segs.forEach((s, si) => {
@@ -502,7 +502,7 @@ function buildNetwork(input: DuctSegIn[], k: number, tol: number, network: 'supp
     incident[s.a].push({ si, atA: true, dir: d });
     incident[s.b].push({ si, atA: false, dir: { x: -d.x, y: -d.y } });
   });
-  const ekey = (si: number, atA: boolean) => `${si}:${atA ? 'a' : 'b'}`;
+  const ekey = (si: number, atA: boolean): string => `${si}:${atA ? 'a' : 'b'}`;
   const partner = new Map<string, End>();
   const through = new Map<number, { dir: P2; hw: number }>();
   incident.forEach((list, ni) => {
@@ -532,7 +532,7 @@ function buildNetwork(input: DuctSegIn[], k: number, tol: number, network: 'supp
   interface Item { si: number; fwd: boolean }
   const visited = new Set<number>();
   const runs: Item[][] = [];
-  const walk = (si: number, fwd: boolean) => {
+  const walk = (si: number, fwd: boolean): void => {
     const items: Item[] = [];
     let cur = si, f = fwd;
     for (;;) {

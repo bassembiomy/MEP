@@ -200,7 +200,7 @@ export interface PlaceDiffusersOptions {
   unitPos?: { x: number; y: number };
 }
 
-const pad2 = (n: number) => String(n).padStart(2, '0');
+const pad2 = (n: number): string => String(n).padStart(2, '0');
 
 /**
  * Places diffusers and terminals inside a zone polygon.
@@ -255,14 +255,14 @@ export function placeDiffusers(
     }
   }
 
-  const ceilFt = (v: number) => (u >= 5 ? Math.round(v) : parseFloat(v.toFixed(2)));
+  const ceilFt = (v: number): number => (u >= 5 ? Math.round(v) : parseFloat(v.toFixed(2)));
   // Round for the canvas, but never leave the polygon because of rounding
-  const settle = (x: number, y: number) => {
+  const settle = (x: number, y: number): { x: number; y: number; } => {
     const rx = ceilFt(x), ry = ceilFt(y);
     return isPointInPolygon(rx, ry, points) ? { x: rx, y: ry } : { x: parseFloat(x.toFixed(3)), y: parseFloat(y.toFixed(3)) };
   };
 
-  const sizeLabelFor = () => {
+  const sizeLabelFor = (): string => {
     if (systemType === 'cassette') return catalogModel || '36K';
     if (systemType === 'high-wall') return catalogModel || '24K';
     const f = selection.diffuser.faceSizeIn;

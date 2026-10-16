@@ -26,7 +26,7 @@ export const Toolbar: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
   // Single import path for DXF + DWG: normalise drawing units -> canvas px (scale + Y flip), then store.
-  const applyParsedCad = (parsed: ParsedDxf) => {
+  const applyParsedCad = (parsed: ParsedDxf): void => {
     const norm = normalizeCadToCanvas(parsed.entities, {
       insunits: parsed.insunits,
       projectScale: project.scale,
@@ -37,7 +37,7 @@ export const Toolbar: React.FC = () => {
     if (notes.length > 0) alert(`CAD import notes:\n- ${notes.join('\n- ')}`);
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -79,13 +79,13 @@ export const Toolbar: React.FC = () => {
     }
   };
 
-  const handleClearDxf = () => {
+  const handleClearDxf = (): void => {
     clearDxfData();
     setFileName(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleUnitToggle = () => {
+  const handleUnitToggle = (): void => {
     const isImperial = project.units === 'imperial';
     setProject({
       units: isImperial ? 'metric' : 'imperial',

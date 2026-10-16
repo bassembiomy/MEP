@@ -2,7 +2,7 @@ import { sizeDuctAcoustically, verifyDuctSectionAcoustics } from './acousticDuct
 import { DiffuserPos } from './diffuserPlacer';
 import { getPolygonCentroid, calculateOptimalIndoorUnitPos } from './geometry';
 import { DuctSegment } from '../store/projectStore';
-import { DuctLocationCategory, AcousticSensitivity, DuctSectionCategory } from './types';
+import { DuctLocationCategory, AcousticSensitivity, DuctSectionCategory, DuctAcousticVerification } from './types';
 import {
   buildOrthogonalTree,
   chooseReturnCollar,
@@ -37,7 +37,7 @@ const ON_LINE_TOL_FT = 0.5;
 const STATION_SNAP_FT = 0.1;
 const MIN_PIECE_FT = 1.0;
 
-function polygonBounds(points: number[]) {
+function polygonBounds(points: number[]): { minX: number; maxX: number; minY: number; maxY: number; width: number; height: number; } {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (let i = 0; i + 1 < points.length; i += 2) {
     minX = Math.min(minX, points[i]);
@@ -113,7 +113,7 @@ export function routeDucts(
   const horizontal = axis === 'h';
 
   const fixedHeight = units === 'imperial' ? 10 : 200 / MM_PER_IN;
-  const toMm = (inches: number) => Math.round((inches * MM_PER_IN) / METRIC_STEP_MM) * METRIC_STEP_MM;
+  const toMm = (inches: number): number => Math.round((inches * MM_PER_IN) / METRIC_STEP_MM) * METRIC_STEP_MM;
 
   const ducts: RoutedDuctSegment[] = [];
 
@@ -125,7 +125,7 @@ export function routeDucts(
     lengthFt: number,
     lock?: { heightIn: number; widthIn: number },
     friction?: number
-  ) => {
+  ): { geom: SizedGeometry; verification: DuctAcousticVerification; } => {
     const sizing = sizeDuctAcoustically(cfm, {
       locationCategory,
       targetNc,
@@ -196,7 +196,7 @@ export function routeDucts(
     network: 'supply' | 'return',
     rootParentId: string | undefined,
     idOf: (seg: TopoSegment, trunkIdx: number, branchIdx: number) => string
-  ) => {
+  ): void => {
     const idsByIndex: string[] = [];
     let trunkCount = 0;
     let branchCount = 0;
@@ -331,7 +331,7 @@ export function routeDucts(
         const unitU = horizontal ? unitPos.x : unitPos.y;
         const pref = centreU - unitU >= 0 ? 1 : -1;
         const baseLen = Math.max(3 * ppf, Math.min(6 * ppf, Math.abs(centreU - unitU) || 6 * ppf));
-        const endFor = (d: number, l: number) =>
+        const endFor = (d: number, l: number): { x: number; y: number; } =>
           horizontal ? { x: collar.x + d * l, y: collar.y } : { x: collar.x, y: collar.y + d * l };
         let end = endFor(pref, baseLen);
         outer: for (const l of [baseLen, baseLen * 0.67, baseLen * 0.33]) {

@@ -99,7 +99,7 @@ export function calculateZoneLoad(zone: Zone, project: ProjectMetadata): LoadRes
   const peopleSensible = occupants * spaceType.sensibleGain;
   const peopleLatent = occupants * spaceType.latentGain;
   // Overrides are expressed in W/ft² (imperial) or W/m² (metric)
-  const wPerFt2 = (override: number | undefined, def: number) =>
+  const wPerFt2 = (override: number | undefined, def: number): number =>
     override !== undefined ? (imperial ? override : override / SQFT_PER_SQM) : def;
   const lightingSensible = BTUH_PER_W * areaFt2 * wPerFt2(zone.lightingOverride, spaceType.lightingDensity);
   const equipmentSensible = BTUH_PER_W * areaFt2 * wPerFt2(zone.equipmentOverride, spaceType.equipmentDensity);
@@ -161,9 +161,9 @@ export function calculateZoneLoad(zone: Zone, project: ProjectMetadata): LoadRes
   // 9. Convert to project units
   const L = imperial ? 1 : 1 / BTUH_PER_W; // Btu/h -> project load
   const A = imperial ? 1 : LPS_PER_CFM; // CFM -> project airflow
-  const r1 = (v: number) => Math.round(v * 10) / 10;
-  const out = (v: number) => Math.round(v * L);
-  const flow = (v: number) => (imperial ? Math.round(v) : Math.round(v * A * 10) / 10); // L/s keeps 0.1 resolution
+  const r1 = (v: number): number => Math.round(v * 10) / 10;
+  const out = (v: number): number => Math.round(v * L);
+  const flow = (v: number): number => (imperial ? Math.round(v) : Math.round(v * A * 10) / 10); // L/s keeps 0.1 resolution
 
   return {
     area: r1(imperial ? areaFt2 : areaFt2 / SQFT_PER_SQM),

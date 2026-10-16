@@ -65,7 +65,7 @@ export function routeReturnDucts(
     ? grilles.reduce((s, t) => s + t.cfm, 0)
     : zone.returnCfm || Math.round(zone.supplyCfm * 0.88);
 
-  const r2 = (n: number) => parseFloat(n.toFixed(2));
+  const r2 = (n: number): number => parseFloat(n.toFixed(2));
   const stubId = `RDS-${zone.unitTag}-1`;
   const stub: SteppedDuctSection = {
     id: stubId,
@@ -127,7 +127,7 @@ export function routeReturnDucts(
     const unitU = horizontal ? eqPos.x : eqPos.y;
     const pref = centreU - unitU >= 0 ? 1 : -1;
     const baseLen = Math.max(3, Math.min(PLENUM_INTAKE_LENGTH_FT, Math.abs(centreU - unitU) || PLENUM_INTAKE_LENGTH_FT));
-    const endFor = (d: number, l: number) =>
+    const endFor = (d: number, l: number): { x: number; y: number; } =>
       horizontal ? { x: collar.x + d * l, y: collar.y } : { x: collar.x, y: collar.y + d * l };
     // longest intake run (preferring the centre side) that stays inside the room
     let end = endFor(pref, baseLen);

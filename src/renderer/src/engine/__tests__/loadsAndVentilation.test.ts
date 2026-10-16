@@ -5,13 +5,13 @@ import { distributeLoadsAcrossZones } from '../zoning/loadDistribution';
 import { calculateSolarLoadWeights } from '../zoning/solarLoadWeighting';
 import { Zone, ProjectMetadata } from '../../store/projectStore';
 
-function assert(c: boolean, m: string) { if (!c) throw new Error(`Assertion Failed: ${m}`); }
-function near(a: number, b: number, tol: number, m: string) {
+function assert(c: boolean, m: string): void { if (!c) throw new Error(`Assertion Failed: ${m}`); }
+function near(a: number, b: number, tol: number, m: string): void {
   assert(Math.abs(a - b) <= tol, `${m}: got ${a}, expected ${b} +/- ${tol}`);
 }
 
 const imp: ProjectMetadata = { name: 't', location: 'x', scale: 10, units: 'imperial', outdoorDb: 95, indoorDb: 75 } as ProjectMetadata;
-const rect = (wFt: number, hFt: number, scale: number) => [0, 0, wFt * scale, 0, wFt * scale, hFt * scale, 0, hFt * scale];
+const rect = (wFt: number, hFt: number, scale: number): number[] => [0, 0, wFt * scale, 0, wFt * scale, hFt * scale, 0, hFt * scale];
 const mk = (over: Record<string, unknown>, pts: number[]): Zone => ({
   id: 'z', name: 'z', points: pts, spaceTypeId: 'office', ceilingHeight: 10, occupants: 0, diffusers: [], ducts: [], ...over
 } as unknown as Zone);

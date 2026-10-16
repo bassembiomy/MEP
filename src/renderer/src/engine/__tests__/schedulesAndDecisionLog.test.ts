@@ -2,7 +2,7 @@ import { executeAirDistributionDesign } from '../airDistributionEngine';
 import { generateMasterSchedules } from '../export/exportSchedules';
 import { exportFullEngineeringDesignReport } from '../export/exportDesignReport';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
 

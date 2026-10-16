@@ -20,7 +20,7 @@ import { EquipmentServiceZone } from '../zoning/zonePartitioner';
 import { validateSystemAirMassBalance } from '../validation/massBalanceValidator';
 import { validateSpatialCoordination } from '../validation/spatialValidator';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
 
@@ -31,19 +31,19 @@ const RECT = [0, 0, 40, 0, 40, 20, 0, 20];
 const L_SHAPE = [0, 0, 100, 0, 100, 300, 400, 300, 400, 400, 0, 400]; // treated as ft-scale
 const U_SHAPE = [0, 0, 30, 0, 30, 30, 20, 30, 20, 10, 10, 10, 10, 30, 0, 30];
 
-function unique(pts: Pt[]) {
+function unique(pts: Pt[]): boolean {
   return new Set(pts.map(p => `${p.x.toFixed(3)},${p.y.toFixed(3)}`)).size === pts.length;
 }
-function allInside(pts: Pt[], poly: number[]) {
+function allInside(pts: Pt[], poly: number[]): boolean {
   return pts.every(p => isPointInPolygon(p.x, p.y, poly));
 }
-function minPair(pts: Pt[]) {
+function minPair(pts: Pt[]): number {
   let m = Infinity;
   for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) m = Math.min(m, Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y));
   return m;
 }
 /** nearest-neighbour distance per point (spacing uniformity metric) */
-function nnDistances(pts: Pt[]) {
+function nnDistances(pts: Pt[]): number[] {
   return pts.map((p, i) => Math.min(...pts.filter((_, j) => j !== i).map(q => Math.hypot(p.x - q.x, p.y - q.y))));
 }
 
@@ -251,7 +251,7 @@ for (const [name, poly] of [['rect', RECT], ['L', L_SHAPE], ['U', U_SHAPE]] as [
 // ---------------------------------------------------------------------------
 {
   const z = makeZone(U_SHAPE, 1800);
-  const run = () => {
+  const run = (): string => {
     const s = placeSupplyDiffusersForZone(z);
     return JSON.stringify([s, placeReturnGrillesForZone(z, s)]);
   };

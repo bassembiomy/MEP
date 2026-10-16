@@ -86,7 +86,7 @@ export const ZonePropertiesPanel: React.FC = () => {
     isEnhanced
   );
 
-  const handleOptimizePlacement = () => {
+  const handleOptimizePlacement = (): void => {
     const optOdu = calculateOptimalOutdoorUnitPos(selectedZone.points, zones, dxfEntities);
 
     const sizing = getCatalogSizingForZone(
@@ -178,7 +178,7 @@ export const ZonePropertiesPanel: React.FC = () => {
     });
   };
 
-  const handleUpdate = (field: keyof Zone, value: any) => {
+  const handleUpdate = (field: keyof Zone, value: any): void => {
     let updatedZone: Zone = {
       ...selectedZone,
       [field]: value

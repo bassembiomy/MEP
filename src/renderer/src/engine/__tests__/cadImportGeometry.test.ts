@@ -1,17 +1,17 @@
 import {
-  parseDxfText, normalizeCadToCanvas, dwgInsertToXf, transformEntityByInsert, splinePoints, stripMtext, CadEntity,
+  parseDxfText, normalizeCadToCanvas, dwgInsertToXf, transformEntityByInsert, splinePoints, stripMtext, CadEntity, ParsedDxf,
 } from '../dxfParser';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
-function near(a: number, b: number, tol: number, msg: string) {
+function near(a: number, b: number, tol: number, msg: string): void {
   assert(Math.abs(a - b) <= tol, `${msg}: expected ${b}, got ${a}`);
 }
 
 type P = [number, string | number];
 const dxf = (header: P[], entities: P[], blocks: P[] = [], tables: P[] = []): string => {
-  const sec = (name: string, body: P[]) => [[0, 'SECTION'], [2, name], ...body, [0, 'ENDSEC']] as P[];
+  const sec = (name: string, body: P[]): P[] => [[0, 'SECTION'], [2, name], ...body, [0, 'ENDSEC']] as P[];
   const all: P[] = [
     ...sec('HEADER', header),
     ...(tables.length ? sec('TABLES', tables) : []),
@@ -41,7 +41,7 @@ console.log('=== Running CAD Import Geometry Tests ===');
 
 // 2. INSUNITS scaling -> exact px (10 m square room, 10 px/ft imperial)
 {
-  const room = (units: number, size: number) =>
+  const room = (units: number, size: number): ParsedDxf =>
     parseDxfText(dxf(insunitsHdr(units), [...line(0, 0, size, 0), ...line(size, 0, size, size)]));
   const mm = room(4, 10000);
   assert(mm.insunits === 4, 'insunits parsed');

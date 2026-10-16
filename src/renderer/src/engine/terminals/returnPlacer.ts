@@ -61,7 +61,7 @@ export function selectReturnPositions(
   }
   if (!cand.length) return [];
 
-  const dSup = (p: { x: number; y: number }) =>
+  const dSup = (p: { x: number; y: number }): number =>
     supplies.length ? Math.min(...supplies.map(s => Math.hypot(p.x - s.x, p.y - s.y))) : Infinity;
 
   const picked: { x: number; y: number }[] = [];
@@ -96,8 +96,8 @@ export function selectReturnPositions(
     let p = cand[bi];
     const wallClr = (opts.wallClearanceFt ?? WALL_CLEARANCE_FT) * u;
     if (supplies.length && dSup(p) < sep - 1e-6) {
-      const f = (q: { x: number; y: number }) => Math.min(dSup(q), sep);
-      const okAt = (q: { x: number; y: number }) =>
+      const f = (q: { x: number; y: number }): number => Math.min(dSup(q), sep);
+      const okAt = (q: { x: number; y: number }): boolean =>
         isPointInsideWithClearance(q.x, q.y, polygon, wallClr) && picked.every((o) => Math.hypot(q.x - o.x, q.y - o.y) >= retSep - 1e-6);
       for (let h = 0.5 * u; h >= 0.01 * u; h /= 2) {
         for (let it = 0; it < 80; it++) {
@@ -141,7 +141,7 @@ export function placeReturnGrillesForZone(
   // A small bay cannot hold the preferred count: drop returns closer than the 4 ft minimum to any supply or to
   // another return, but always keep the best-separated one.
   const minSep = MIN_TERMINAL_SPACING_FT * unitPerFt;
-  const dS = (p: { x: number; y: number }) =>
+  const dS = (p: { x: number; y: number }): number =>
     supplyPts.length ? Math.min(...supplyPts.map(s => Math.hypot(p.x - s.x, p.y - s.y))) : Infinity;
   const keptPos: { x: number; y: number }[] = [];
   for (const p of positions) {

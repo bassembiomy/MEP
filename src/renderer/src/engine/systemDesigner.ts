@@ -126,7 +126,7 @@ function clamp(val: number, min: number = 0, max: number = 100): number {
 
 function sizingDiagnostics(equip: EquipmentCatalogItem, s: SizingCheck, loadBtu: number, cfm: number, label: string = ''): DiagnosticItem[] {
   const out: DiagnosticItem[] = [];
-  const pct = (r: number) => `${(r * 100).toFixed(0)}%`;
+  const pct = (r: number): string => `${(r * 100).toFixed(0)}%`;
   const prefix = label ? `${label}: ` : '';
   if (s.failures.includes('DEFICIT')) {
     out.push({
@@ -612,7 +612,7 @@ export function generateSystemCandidates(
   candidates.sort((a, b) => {
     if (a.isValid !== b.isValid) return a.isValid ? -1 : 1;
     // A strictly in-window selection always outranks a Manual S relaxation (NEXT_NOMINAL_SIZE / MIN_AVAILABLE_SIZE).
-    const relax = (c: SystemDesignCandidate) =>
+    const relax = (c: SystemDesignCandidate): 0 | 1 =>
       c.diagnostics.some((d) => d.code === 'NEXT_NOMINAL_SIZE' || d.code === 'MIN_AVAILABLE_SIZE') ? 1 : 0;
     if (relax(a) !== relax(b)) return relax(a) - relax(b);
     if (b.subscores.totalScore !== a.subscores.totalScore) return b.subscores.totalScore - a.subscores.totalScore;

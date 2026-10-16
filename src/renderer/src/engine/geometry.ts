@@ -253,7 +253,7 @@ export const THROW_RATIO_MAX = 1.25;
 
 export type WallSide = 'north' | 'south' | 'east' | 'west';
 
-export function getPolygonBounds(points: number[]) {
+export function getPolygonBounds(points: number[]): { minX: number; maxX: number; minY: number; maxY: number; width: number; height: number; } {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (let i = 0; i + 1 < points.length; i += 2) {
     const x = points[i], y = points[i + 1];
@@ -306,7 +306,7 @@ export function clipPolygonToRect(
   let pts: P[] = [];
   for (let i = 0; i + 1 < subject.length; i += 2) pts.push({ x: subject[i], y: subject[i + 1] });
 
-  const clipEdge = (inside: (p: P) => boolean, intersect: (a: P, b: P) => P) => {
+  const clipEdge = (inside: (p: P) => boolean, intersect: (a: P, b: P) => P): void => {
     const out: P[] = [];
     for (let i = 0; i < pts.length; i++) {
       const cur = pts[i];
@@ -527,7 +527,7 @@ export function layoutTerminalGrid(points: number[], n: number, options: Termina
       && new Set(snapped.map(p => `${p.x.toFixed(4)},${p.y.toFixed(4)}`)).size === snapped.length;
     if (ok && (chosen.length < 2 || minPairDistance(snapped) >= minPairDistance(chosen) * 0.95)) {
       // also reject a snap that makes the layout visibly less even
-      const evenness = (pts: Pt[]) => {
+      const evenness = (pts: Pt[]): number => {
         if (pts.length < 2) return 1;
         const nn = pts.map((p, i) => Math.min(...pts.filter((_, j) => j !== i).map(q => Math.hypot(p.x - q.x, p.y - q.y))));
         return Math.max(...nn) / Math.min(...nn);
@@ -594,7 +594,7 @@ export interface OutdoorUnitPlacement {
   wall: { x1: number; y1: number; x2: number; y2: number };
 }
 
-function envelopeOf(points: number[], allZones: any[] | undefined, dxfBoundingBox: any) {
+function envelopeOf(points: number[], allZones: any[] | undefined, dxfBoundingBox: any): { minX: number; maxX: number; minY: number; maxY: number; width: number; height: number; } {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   if (dxfBoundingBox) {
     ({ minX, maxX, minY, maxY } = dxfBoundingBox);
@@ -630,7 +630,7 @@ export function calculateOutdoorUnitPlacement(
   const centroid = getPolygonCentroid(points);
   const tol = Math.max(0.5 * u, 1e-6);
 
-  const onEnvelope = (e: WallEdge) => {
+  const onEnvelope = (e: WallEdge): boolean => {
     const vertical = Math.abs(e.ax - e.bx) <= tol, horizontal = Math.abs(e.ay - e.by) <= tol;
     if (vertical) return Math.abs(e.ax - env.minX) <= tol || Math.abs(e.ax - env.maxX) <= tol;
     if (horizontal) return Math.abs(e.ay - env.minY) <= tol || Math.abs(e.ay - env.maxY) <= tol;

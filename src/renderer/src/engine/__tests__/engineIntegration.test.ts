@@ -3,10 +3,10 @@ import { calculateAshrae621Ventilation } from '../outdoorAir/outdoorAirCalculato
 import { isPointInPolygon } from '../geometry';
 import { polygonFtToPx, pxPerFt } from '../units';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
-const near = (a: number, b: number, tol: number) => Math.abs(a - b) <= tol;
+const near = (a: number, b: number, tol: number): boolean => Math.abs(a - b) <= tol;
 
 const polyFt = [0, 0, 40, 0, 40, 25, 0, 25];
 const base: AirDistributionDesignInput = {
