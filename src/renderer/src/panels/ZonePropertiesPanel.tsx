@@ -4,6 +4,7 @@ import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
 import { calculateZoneLoad } from '../engine/loadCalc';
 import { placeDiffusers } from '../engine/diffuserPlacer';
 import { routeDucts } from '../engine/ductRouter';
+import { pxPerFt } from '../engine/units';
 import { calculateOptimalOutdoorUnitPos, calculateOptimalIndoorUnitPos } from '../engine/geometry';
 import { getCatalogSizingForZone } from '../engine/systemDesigner';
 import { STANDARD_DUCT_TYPES } from '../engine/hvacCatalogs';
@@ -49,7 +50,8 @@ export const ZonePropertiesPanel: React.FC = () => {
     selectedZone.systemType === 'concealed' ||
     selectedZone.systemType === 'packaged' ||
     selectedZone.systemType === 'ahu' ||
-    selectedZone.systemType === 'vrf';
+    selectedZone.systemType === 'vrf' ||
+    selectedZone.systemType === 'fcu';
 
   const defaultSpaceTarget = DEFAULT_SPACE_NC_TARGETS[selectedZone.spaceTypeId] || {
     nc: 32,
@@ -113,7 +115,7 @@ export const ZonePropertiesPanel: React.FC = () => {
             loadResult.supplyCfm,
             isImperial,
             spacing,
-            project.scale,
+            pxPerFt(project.scale, project.units),
             dxfEntities,
             'cassette',
             loadResult.totalLoad,
@@ -128,7 +130,7 @@ export const ZonePropertiesPanel: React.FC = () => {
         loadResult.supplyCfm,
         isImperial,
         spacing,
-        project.scale,
+        pxPerFt(project.scale, project.units),
         dxfEntities,
         selectedZone.systemType || 'concealed',
         loadResult.totalLoad,
@@ -155,7 +157,8 @@ export const ZonePropertiesPanel: React.FC = () => {
           locationCategory: currentLocCategory,
           enhancedPerformance: isEnhanced,
           zoneName: selectedZone.name
-        }
+        },
+        pxPerFt(project.scale, project.units)
       );
       finalDucts = routed.ducts;
     } else {
@@ -210,7 +213,8 @@ export const ZonePropertiesPanel: React.FC = () => {
       updatedZone.systemType === 'concealed' ||
       updatedZone.systemType === 'packaged' ||
       updatedZone.systemType === 'ahu' ||
-      updatedZone.systemType === 'vrf';
+      updatedZone.systemType === 'vrf' ||
+      updatedZone.systemType === 'fcu';
 
     let finalOutdoorUnitPos = updatedZone.outdoorUnitPos;
     if (!finalOutdoorUnitPos) {
@@ -228,7 +232,7 @@ export const ZonePropertiesPanel: React.FC = () => {
             newLoads.supplyCfm,
             isImperial,
             spacing,
-            project.scale,
+            pxPerFt(project.scale, project.units),
             dxfEntities,
             'cassette',
             newLoads.totalLoad,
@@ -243,7 +247,7 @@ export const ZonePropertiesPanel: React.FC = () => {
         newLoads.supplyCfm,
         isImperial,
         spacing,
-        project.scale,
+        pxPerFt(project.scale, project.units),
         dxfEntities,
         updatedZone.systemType || 'concealed',
         newLoads.totalLoad,
@@ -276,7 +280,8 @@ export const ZonePropertiesPanel: React.FC = () => {
             locationCategory: zoneLocCategory,
             enhancedPerformance: zoneEnhanced,
             zoneName: updatedZone.name
-          }
+          },
+          pxPerFt(project.scale, project.units)
         );
         finalDucts = routed.ducts;
         finalUnitPos = routed.unitPos;

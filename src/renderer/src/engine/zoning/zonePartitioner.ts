@@ -44,6 +44,11 @@ export interface EquipmentServiceZone {
   };
   
   serviceAreaPolygon: number[];
+  /**
+   * Full room outline (feet). Ducts must stay inside THIS polygon: a service bay of an L / U room can consist
+   * of disconnected pieces that are only joined through a neighbouring bay.
+   */
+  roomPolygon?: number[];
   occupiedAreaPolygon?: number[];
   
   sensibleLoadBtu: number;
@@ -120,6 +125,8 @@ export function partitionRoomIntoServiceZones(input: EquipmentServiceZoneInput):
   });
 
   const bbox = getPolygonBoundingBox(roomPolygon);
+  // one array shared by every zone of this room (the duct routers key per-room layout bookkeeping on it)
+  const sharedRoomPolygon = roomPolygon.slice();
   const zones: EquipmentServiceZone[] = [];
 
   // Determine partitioning axis: slice along Y (horizontal bays) or along X (vertical bays)
@@ -199,6 +206,7 @@ export function partitionRoomIntoServiceZones(input: EquipmentServiceZoneInput):
         wallSide: mountingWallSide
       },
       serviceAreaPolygon: bayPoly,
+      roomPolygon: sharedRoomPolygon,
       sensibleLoadBtu: slice.sensibleBtu,
       latentLoadBtu: slice.latentBtu,
       totalLoadBtu: slice.totalBtu,

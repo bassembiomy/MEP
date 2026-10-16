@@ -6,9 +6,19 @@ import {
   RETURN_COLLAR_OFFSET_FT,
   STEPPED_ROUTER_TOLERANCES,
   serviceAreaBounds,
+  avoidLayoutsFor,
+  rememberZoneLayout,
+  zoneRoutingPolygons,
   topologyToSections
 } from './steppedDuctRouter';
-import { buildOrthogonalTree, pickAxis, TopoTerminal } from './orthogonalTopology';
+import {
+  buildOrthogonalTree,
+  chooseReturnCollar,
+  pickAxis,
+  segmentInsidePolygon,
+  splitRootTerminals,
+  TopoTerminal
+} from './orthogonalTopology';
 import { sizeDuctNetwork } from './aerodynamicDuctSizer';
 
 /** Plenum-return intake run length (ft) when no return grilles are supplied. */
@@ -33,13 +43,22 @@ export function routeReturnDucts(
   const axis = pickAxis(box);
   const horizontal = axis === 'h';
 
-  // Return collar sits on the room-centre side of the supply trunk line so the two trunks never overlap
-  const centreV = horizontal ? (box.minY + box.maxY) / 2 : (box.minX + box.maxX) / 2;
-  const unitV = horizontal ? eqPos.y : eqPos.x;
-  const sign = centreV - unitV >= 0 ? 1 : -1;
-  const collar = horizontal
-    ? { x: eqPos.x, y: eqPos.y + sign * RETURN_COLLAR_OFFSET_FT }
-    : { x: eqPos.x + sign * RETURN_COLLAR_OFFSET_FT, y: eqPos.y };
+  // Inside constraint: the full room outline (service bays of L / U rooms can be disconnected pieces)
+  const { bayPoly, roomPoly } = zoneRoutingPolygons(zone);
+  const grillePts = returnTerminals.filter((t) => t.cfm > 0).map((t) => ({ x: t.position.x, y: t.position.y }));
+
+  // Return collar sits RETURN_COLLAR_OFFSET_FT off the supply trunk line, on the side that is inside the room with
+  // >= 1 ft wall clearance (the side holding more grilles wins, then the room-centre side).
+  const collar = chooseReturnCollar(
+    { x: eqPos.x, y: eqPos.y },
+    axis,
+    RETURN_COLLAR_OFFSET_FT,
+    roomPoly,
+    grillePts,
+    { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 },
+    1,
+    bayPoly
+  );
 
   const grilles = returnTerminals.filter((t) => t.cfm > 0);
   const totalReturnCfm = grilles.length > 0
@@ -75,12 +94,22 @@ export function routeReturnDucts(
   let sections: SteppedDuctSection[];
 
   if (grilles.length > 0) {
-    const terminals: TopoTerminal[] = grilles.map((t) => ({ id: t.id, x: t.position.x, y: t.position.y, cfm: t.cfm }));
-    const segs = buildOrthogonalTree(collar, terminals, {
+    const all: TopoTerminal[] = grilles.map((t) => ({ id: t.id, x: t.position.x, y: t.position.y, cfm: t.cfm }));
+    const treeBase = {
       axis,
       snapTol: STEPPED_ROUTER_TOLERANCES.STATION_SNAP_FT,
       onLineTol: STEPPED_ROUTER_TOLERANCES.ON_LINE_TOL_FT,
       minLen: STEPPED_ROUTER_TOLERANCES.MIN_PIECE_FT
+    };
+    // Grilles sitting on the collar itself are served by the stub (it ends there); the tree carries the rest
+    const { rest, atRoot } = splitRootTerminals(collar, all, treeBase);
+    stub.directDiffusers = atRoot.map((t) => t.id);
+    const segs = buildOrthogonalTree(collar, rest, {
+      ...treeBase,
+      polygon: bayPoly ?? roomPoly,
+      fallbackPolygon: roomPoly,
+      // the unit connection (supply root -> collar) and the supply network must not be re-used by the return tree
+      avoid: [{ start: { x: eqPos.x, y: eqPos.y }, end: collar }, ...avoidLayoutsFor(zone, true)]
     });
     const tree = topologyToSections(zone, segs, {
       systemType: 'return',
@@ -96,11 +125,20 @@ export function routeReturnDucts(
     // Plenum / open return: single intake run from the collar toward the room centre
     const centreU = horizontal ? (box.minX + box.maxX) / 2 : (box.minY + box.maxY) / 2;
     const unitU = horizontal ? eqPos.x : eqPos.y;
-    const dir = centreU - unitU >= 0 ? 1 : -1;
-    const len = Math.max(3, Math.min(PLENUM_INTAKE_LENGTH_FT, Math.abs(centreU - unitU) || PLENUM_INTAKE_LENGTH_FT));
-    const end = horizontal
-      ? { x: collar.x + dir * len, y: collar.y }
-      : { x: collar.x, y: collar.y + dir * len };
+    const pref = centreU - unitU >= 0 ? 1 : -1;
+    const baseLen = Math.max(3, Math.min(PLENUM_INTAKE_LENGTH_FT, Math.abs(centreU - unitU) || PLENUM_INTAKE_LENGTH_FT));
+    const endFor = (d: number, l: number) =>
+      horizontal ? { x: collar.x + d * l, y: collar.y } : { x: collar.x, y: collar.y + d * l };
+    // longest intake run (preferring the centre side) that stays inside the room
+    let end = endFor(pref, baseLen);
+    if (roomPoly) {
+      outer: for (const l of [baseLen, baseLen * 0.67, baseLen * 0.33]) {
+        for (const d of [pref, -pref]) {
+          const cand = endFor(d, l);
+          if (segmentInsidePolygon(collar, cand, roomPoly, 0.2, 0.5, [collar])) { end = cand; break outer; }
+        }
+      }
+    }
     const runId = `RDS-${zone.unitTag}-2`;
     const run: SteppedDuctSection = {
       ...stub,
@@ -116,5 +154,6 @@ export function routeReturnDucts(
     sections = [stub, run];
   }
 
+  rememberZoneLayout(zone, 'ret', sections.map((d) => ({ start: d.startPoint, end: d.endPoint })));
   return sizeDuctNetwork(sections, profile, zone.maxAvailableCeilingDepthIn ?? 14);
 }

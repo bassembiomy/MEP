@@ -3,7 +3,16 @@ import { DiffuserPos } from './diffuserPlacer';
 import { getPolygonCentroid, calculateOptimalIndoorUnitPos } from './geometry';
 import { DuctSegment } from '../store/projectStore';
 import { DuctLocationCategory, AcousticSensitivity, DuctSectionCategory } from './types';
-import { buildOrthogonalTree, pickAxis, TopoSegment, TopoTerminal } from './ducts/orthogonalTopology';
+import {
+  buildOrthogonalTree,
+  chooseReturnCollar,
+  pickAxis,
+  segmentInsidePolygon,
+  splitRootTerminals,
+  Seg2,
+  TopoSegment,
+  TopoTerminal
+} from './ducts/orthogonalTopology';
 import { DEFAULT_PX_PER_FT, MM_PER_IN, METRIC_STEP_MM } from './ducts/ductUnits';
 
 export interface RouteDuctAcousticOptions {
@@ -245,29 +254,44 @@ export function routeDucts(
     axis,
     snapTol: STATION_SNAP_FT * ppf,
     onLineTol: ON_LINE_TOL_FT * ppf,
-    minLen: MIN_PIECE_FT * ppf
+    minLen: MIN_PIECE_FT * ppf,
+    polygon: points,
+    clearance: 0.2 * ppf
   };
 
+  const isDuctedSystem = systemType === 'concealed' || systemType === 'packaged' || systemType === 'ahu' || systemType === 'vrf' || systemType === 'fcu';
+  const unitXY = { x: unitPos.x, y: unitPos.y };
+
+  // Return collar: off the supply trunk line, on the side that is inside the room (>= 1 ft wall clearance),
+  // preferring the side that holds more return grilles. Chosen first so the supply tree can keep clear of the stub.
+  const collar = isDuctedSystem
+    ? chooseReturnCollar(
+        unitXY,
+        axis,
+        RETURN_COLLAR_OFFSET_FT * ppf,
+        points,
+        returnDiffusers.map((d) => ({ x: d.x, y: d.y })),
+        { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 },
+        ppf
+      )
+    : null;
+
   // 2. Supply: orthogonal trunk + perpendicular branches
+  let supplyAvoid: Seg2[] = [];
   if (supplyDiffusers.length > 0) {
     const terminals: TopoTerminal[] = supplyDiffusers.map((d) => ({ id: d.id, x: d.x, y: d.y, cfm: d.cfm }));
-    const segs = buildOrthogonalTree({ x: unitPos.x, y: unitPos.y }, terminals, treeOpts);
+    const segs = buildOrthogonalTree(unitXY, terminals, {
+      ...treeOpts,
+      avoid: collar ? [{ start: unitXY, end: collar }] : []
+    });
+    supplyAvoid = segs.map((g) => ({ start: g.start, end: g.end }));
     emitTree(segs, 'supply', undefined, (seg, t, b) =>
       seg.kind === 'trunk' ? `duct-trunk-${zoneId}-${t}` : `duct-branch-${zoneId}-${b}`
     );
   }
 
   // 3. For Ducted Systems (Concealed, Packaged, AHU, VRF), add orthogonal return ductwork
-  const isDuctedSystem = systemType === 'concealed' || systemType === 'packaged' || systemType === 'ahu' || systemType === 'vrf';
-  if (isDuctedSystem) {
-    const centreV = horizontal ? (box.minY + box.maxY) / 2 : (box.minX + box.maxX) / 2;
-    const unitV = horizontal ? unitPos.y : unitPos.x;
-    const sign = centreV - unitV >= 0 ? 1 : -1;
-    const off = RETURN_COLLAR_OFFSET_FT * ppf;
-    const collar = horizontal
-      ? { x: unitPos.x, y: unitPos.y + sign * off }
-      : { x: unitPos.x + sign * off, y: unitPos.y };
-
+  if (isDuctedSystem && collar) {
     const totalFlow = supplyDiffusers.reduce((sum, d) => sum + d.cfm, 0);
     const returnFlow = returnDiffusers.length > 0
       ? returnDiffusers.reduce((s, d) => s + d.cfm, 0)
@@ -275,14 +299,17 @@ export function routeDucts(
 
     if (returnFlow > 0) {
       const stubId = `duct-return-${zoneId}-stub`;
+      const terminals: TopoTerminal[] = returnDiffusers.map((d) => ({ id: d.id, x: d.x, y: d.y, cfm: d.cfm }));
+      // Grilles sitting on the collar are served by the stub itself (it ends there)
+      const { rest, atRoot } = splitRootTerminals(collar, terminals, treeOpts);
       const stubSeg: TopoSegment = {
         key: -1,
         kind: 'trunk',
-        start: { x: unitPos.x, y: unitPos.y },
+        start: unitXY,
         end: collar,
         flow: returnFlow,
         parent: -1,
-        direct: [],
+        direct: atRoot.map((t) => t.id),
         downstream: returnDiffusers.map((d) => d.id),
         orientation: horizontal ? 'v' : 'h',
         isTakeoff: false,
@@ -291,24 +318,34 @@ export function routeDucts(
       emitTree([stubSeg], 'return', undefined, () => stubId);
 
       if (returnDiffusers.length > 0) {
-        const terminals: TopoTerminal[] = returnDiffusers.map((d) => ({ id: d.id, x: d.x, y: d.y, cfm: d.cfm }));
-        const segs = buildOrthogonalTree(collar, terminals, treeOpts);
+        const segs = buildOrthogonalTree(collar, rest, {
+          ...treeOpts,
+          // keep clear of the unit connection and of the whole supply network
+          avoid: [{ start: unitXY, end: collar }, ...supplyAvoid]
+        });
         let n = 0;
         emitTree(segs, 'return', stubId, () => `duct-return-${zoneId}-${n++}`);
       } else {
         // Plenum return: short orthogonal intake run from the collar toward the room centre
         const centreU = horizontal ? centroid.x : centroid.y;
         const unitU = horizontal ? unitPos.x : unitPos.y;
-        const dir = centreU - unitU >= 0 ? 1 : -1;
-        const len = Math.max(3 * ppf, Math.min(6 * ppf, Math.abs(centreU - unitU) || 6 * ppf));
-        const end = horizontal
-          ? { x: collar.x + dir * len, y: collar.y }
-          : { x: collar.x, y: collar.y + dir * len };
+        const pref = centreU - unitU >= 0 ? 1 : -1;
+        const baseLen = Math.max(3 * ppf, Math.min(6 * ppf, Math.abs(centreU - unitU) || 6 * ppf));
+        const endFor = (d: number, l: number) =>
+          horizontal ? { x: collar.x + d * l, y: collar.y } : { x: collar.x, y: collar.y + d * l };
+        let end = endFor(pref, baseLen);
+        outer: for (const l of [baseLen, baseLen * 0.67, baseLen * 0.33]) {
+          for (const d of [pref, -pref]) {
+            const cand = endFor(d, l);
+            if (segmentInsidePolygon(collar, cand, points, 0.2 * ppf, 0.5 * ppf, [collar])) { end = cand; break outer; }
+          }
+        }
         const runSeg: TopoSegment = {
           ...stubSeg,
           start: collar,
           end,
           parent: -1,
+          direct: [],
           orientation: horizontal ? 'h' : 'v'
         };
         emitTree([runSeg], 'return', stubId, () => `duct-return-${zoneId}`);

@@ -434,12 +434,18 @@ export function normalizeCadToCanvas(entities: CadEntity[], opts: NormalizeOptio
     } else {
       const extent = Math.max(src.maxX - src.minX, src.maxY - src.minY);
       needsCalibration = true;
-      if (extent > 5000) {
+      // Unitless drawing: guess from the extent. Bands: > 2000 units => millimetres (a 2 m+ room), 200-2000 => inches
+      // (a typical 17-170 ft plan drawn in inches), < 200 => feet. Always flagged for calibration.
+      const shown = Math.round(extent * 100) / 100;
+      if (extent > 2000) {
         k = 1 / 304.8;
-        warning = `Drawing has no unit information (INSUNITS unset) and its extents are ${Math.round(extent)} units; assumed millimetres. Please verify the scale.`;
+        warning = `Drawing has no unit information (INSUNITS unset) and its extents are ${shown} units; assumed millimetres. Please verify the scale.`;
+      } else if (extent >= 200) {
+        k = 1 / 12;
+        warning = `Drawing has no unit information (INSUNITS unset) and its extents are ${shown} units; assumed inches. Please verify the scale.`;
       } else {
         k = 1;
-        warning = `Drawing has no unit information (INSUNITS unset); assumed feet (extents ${Math.round(extent * 100) / 100} units). Please verify the scale.`;
+        warning = `Drawing has no unit information (INSUNITS unset); assumed feet (extents ${shown} units). Please verify the scale.`;
       }
     }
   }

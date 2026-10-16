@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Stage, Layer, Line, Circle, Text, Group, Shape, Rect } from 'react-konva';
-import { useProjectStore, DuctSegment, DxfEntity, Zone } from '../store/projectStore';
-import { getPolygonCentroid } from '../engine/geometry';
+import { useProjectStore, DuctSegment, DxfEntity, Zone, Diffuser } from '../store/projectStore';
+import { getPolygonCentroid, clampPointInsidePolygon, isPointInsideWithClearance } from '../engine/geometry';
 import { calculateZoneLoad } from '../engine/loadCalc';
 import { routeDucts } from '../engine/ductRouter';
 import { routeOrthogonalRefrigerantPiping } from '../engine/spatialPlanner';
@@ -160,8 +160,8 @@ export const FloorPlanCanvas: React.FC = () => {
 
   // ───────── DXF derived data (computed once per DXF) ─────────
   const dxfGroups = useMemo(
-    () => groupByLayerColor(dxfEntities, (l) => dxfLayersRef.current[l]?.color),
-    [dxfEntities]
+    () => groupByLayerColor(dxfEntities, (l) => dxfLayers[l]?.color),
+    [dxfEntities, dxfLayers]
   );
   const dxfTexts = useMemo(
     () => dxfEntities.filter((e) => (e.type === 'TEXT' || e.type === 'MTEXT') && e.text),
@@ -392,13 +392,18 @@ export const FloorPlanCanvas: React.FC = () => {
     e.evt.preventDefault();
     const stage = stageRef.current;
     if (!stage) return;
-    const oldScale = stageScale;
+    // Read the live stage transform (not the render closure) so fast wheel ticks between renders accumulate
+    const oldScale = stage.scaleX() || stageScaleRef.current;
     const pointer = stage.getPointerPosition();
     if (!pointer) return;
-    const mousePointTo = { x: (pointer.x - stagePos.x) / oldScale, y: (pointer.y - stagePos.y) / oldScale };
+    const mousePointTo = { x: (pointer.x - stage.x()) / oldScale, y: (pointer.y - stage.y()) / oldScale };
     const newScale = clampZoom(oldScale * Math.exp(-e.evt.deltaY * 0.0018));
+    const newPos = { x: pointer.x - mousePointTo.x * newScale, y: pointer.y - mousePointTo.y * newScale };
+    stage.scale({ x: newScale, y: newScale });
+    stage.position(newPos);
+    stageScaleRef.current = newScale;
     setStageScale(newScale);
-    setStagePos({ x: pointer.x - mousePointTo.x * newScale, y: pointer.y - mousePointTo.y * newScale });
+    setStagePos(newPos);
   };
 
   const handleZoomBtn = (factor: number) => {
@@ -420,7 +425,50 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   const isDuctedSystem = (zone: Zone) =>
-    zone.systemType === 'concealed' || zone.systemType === 'packaged' || zone.systemType === 'ahu';
+    zone.systemType === 'concealed' ||
+    zone.systemType === 'packaged' ||
+    zone.systemType === 'ahu' ||
+    zone.systemType === 'vrf' ||
+    zone.systemType === 'fcu';
+
+  /**
+   * Routes every indoor unit of the zone with the correct px-per-foot scale. Diffusers carry no unit association,
+   * so each one is served by its nearest unit; each unit gets its own supply + return network.
+   */
+  const routeZoneNetworks = (
+    zone: Zone,
+    diffusers: Diffuser[],
+    positions: Array<{ x: number; y: number }>
+  ): { ducts: DuctSegment[]; unitPos: { x: number; y: number } | undefined; unitPositions?: Array<{ x: number; y: number }> } => {
+    const acoustic = {
+      targetNc: zone.targetNc,
+      locationCategory: zone.ductLocationCategory,
+      acousticSensitivity: zone.acousticSensitivity,
+      enhancedPerformance: zone.enhancedAcousticPerformance,
+      zoneName: zone.name
+    };
+    if (positions.length <= 1) {
+      const r = routeDucts(zone.points, diffusers, project.units, zone.id, positions[0], zone.systemType, zone.outdoorUnitPos, acoustic, k);
+      return { ducts: r.ducts, unitPos: positions.length ? positions[0] : r.ducts.length ? r.unitPos : undefined };
+    }
+    const groups: Diffuser[][] = positions.map(() => []);
+    for (const d of diffusers) {
+      let best = 0;
+      let bd = Infinity;
+      positions.forEach((p, i) => {
+        const dd = Math.hypot(d.x - p.x, d.y - p.y);
+        if (dd < bd) { bd = dd; best = i; }
+      });
+      groups[best].push(d);
+    }
+    const ducts: DuctSegment[] = [];
+    positions.forEach((p, i) => {
+      if (groups[i].length === 0) return;
+      const r = routeDucts(zone.points, groups[i], project.units, i === 0 ? zone.id : `${zone.id}-u${i}`, p, zone.systemType, zone.outdoorUnitPos, acoustic, k);
+      ducts.push(...r.ducts);
+    });
+    return { ducts, unitPos: positions[0], unitPositions: positions };
+  };
 
   const commitVertex = (zoneId: string, pointIdx: number, x: number, y: number) => {
     const zone = zones.find((z) => z.id === zoneId);
@@ -428,7 +476,31 @@ export const FloorPlanCanvas: React.FC = () => {
     const pts = [...zone.points];
     pts[pointIdx * 2] = x;
     pts[pointIdx * 2 + 1] = y;
-    updateZone(zoneId, { points: pts });
+    if (pts.length < 6 || zone.diffusers.length === 0) {
+      updateZone(zoneId, { points: pts });
+      return;
+    }
+    // Terminals / units that the edit pushed outside the room (or against a wall) are pulled back inside
+    const margin = Math.min(k, 1.5 * k);
+    const fits = (p: { x: number; y: number }) => isPointInsideWithClearance(p.x, p.y, pts, 0.5 * k);
+    const pull = <T extends { x: number; y: number }>(p: T): T => {
+      if (fits(p)) return p;
+      const c = clampPointInsidePolygon(p.x, p.y, pts, margin);
+      return { ...p, x: c.x, y: c.y };
+    };
+    const diffusers = zone.isDiffusersLocked ? zone.diffusers : zone.diffusers.map(pull);
+    const positions = unitPositionsOf(zone).map(pull);
+    const patch: Partial<Zone> = { points: pts, diffusers };
+    if (positions.length) {
+      patch.unitPos = positions[0];
+      if (zone.unitPositions) patch.unitPositions = positions;
+    }
+    if (isDuctedSystem(zone) && !zone.isDuctLocked) {
+      const routed = routeZoneNetworks({ ...zone, points: pts }, diffusers, positions);
+      patch.ducts = routed.ducts;
+      if (routed.unitPos) patch.unitPos = routed.unitPos;
+    }
+    updateZone(zoneId, patch);
   };
 
   const commitDiffuser = (zoneId: string, diffuserId: string, x: number, y: number) => {
@@ -436,8 +508,8 @@ export const FloorPlanCanvas: React.FC = () => {
     if (!zone) return;
     const updated = zone.diffusers.map((d) => (d.id === diffuserId ? { ...d, x, y } : d));
     if (isDuctedSystem(zone)) {
-      const { ducts, unitPos } = routeDucts(zone.points, updated, project.units, zone.id, zone.unitPos, zone.systemType);
-      updateZone(zoneId, { diffusers: updated, ducts, unitPos });
+      const routed = routeZoneNetworks(zone, updated, unitPositionsOf(zone));
+      updateZone(zoneId, { diffusers: updated, ducts: routed.ducts, ...(routed.unitPos ? { unitPos: routed.unitPos } : {}) });
     } else {
       updateZone(zoneId, { diffusers: updated, ducts: [] });
     }
@@ -446,18 +518,18 @@ export const FloorPlanCanvas: React.FC = () => {
   const commitIndoorUnit = (zoneId: string, idx: number, x: number, y: number) => {
     const zone = zones.find((z) => z.id === zoneId);
     if (!zone) return;
-    if (idx === 0) {
-      if (isDuctedSystem(zone)) {
-        const { ducts, unitPos } = routeDucts(zone.points, zone.diffusers, project.units, zone.id, { x, y }, zone.systemType);
-        updateZone(zoneId, { ducts, unitPos });
-      } else {
-        updateZone(zoneId, { unitPos: { x, y } });
-      }
-    } else if (zone.unitPositions) {
-      const next = zone.unitPositions.slice();
-      next[idx] = { x, y };
-      updateZone(zoneId, { unitPositions: next });
+    const positions = unitPositionsOf(zone).slice();
+    if (positions.length === 0) positions.push({ x, y });
+    else positions[Math.min(idx, positions.length - 1)] = { x, y };
+    const patch: Partial<Zone> = {};
+    if (idx === 0) patch.unitPos = { x, y };
+    if (zone.unitPositions) patch.unitPositions = positions;
+    if (isDuctedSystem(zone)) {
+      const routed = routeZoneNetworks(zone, zone.diffusers, positions);
+      patch.ducts = routed.ducts;
+      if (idx === 0 && routed.unitPos) patch.unitPos = routed.unitPos;
     }
+    updateZone(zoneId, patch);
   };
 
   const commitOutdoorUnit = (zoneId: string, idx: number, x: number, y: number) => {
