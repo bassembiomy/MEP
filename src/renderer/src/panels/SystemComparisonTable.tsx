@@ -1,7 +1,10 @@
 import React from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoad } from '../engine/loadCalc';
-import { recommendSystemsForZone } from '../engine/systemDesigner';
+import { generateSystemCandidates } from '../engine/systemDesigner';
+import { deliveredCfmFor } from '../engine/systemArchitecture/equipmentSelector';
+import { toBtuh, toCfm } from '../engine/units';
+import { formatAirflow, formatLoad, formatPressure } from '../format/units';
 import { Award, DollarSign, Zap, Database, Upload, CheckCircle2, Sliders } from 'lucide-react';
 
 export const SystemComparisonTable: React.FC = () => {
@@ -12,7 +15,8 @@ export const SystemComparisonTable: React.FC = () => {
     loadedCatalogs,
     setLoadedCatalogs,
     selectedSystemTypes,
-    setSelectedSystemTypes
+    setSelectedSystemTypes,
+    optimizationWeights
   } = useProjectStore();
 
   const selectedZone = zones.find((z) => z.id === selectedZoneId);
@@ -93,15 +97,52 @@ export const SystemComparisonTable: React.FC = () => {
   const displayCfm = selectedZone ? calculateZoneLoad(selectedZone, project).supplyCfm : totalCfm;
   const spaceTypeId = selectedZone ? selectedZone.spaceTypeId : 'office';
 
-  // Run the recommendation sizer
-  const recommendations = recommendSystemsForZone(
-    displayArea,
+  // Same candidate pipeline, inputs and weights as the Optimizer Studio so both panels agree on model,
+  // delivered airflow and installed capacity.
+  const selectedLoad = selectedZone ? calculateZoneLoad(selectedZone, project) : null;
+  const summary = generateSystemCandidates(
     displayLoad,
-    spaceTypeId,
-    isImperial,
+    selectedLoad ? selectedLoad.sensibleLoad : displayLoad * 0.75,
     displayCfm,
-    loadedCatalogs
+    spaceTypeId,
+    displayArea,
+    isImperial,
+    optimizationWeights,
+    selectedSystemTypes,
+    loadedCatalogs,
+    selectedZone ? selectedZone.ducts : [],
+    selectedZone ? selectedZone.diffusers : []
   );
+  const recommendations = summary.candidates.map((cand) => {
+    const estCost: 'Low' | 'Medium' | 'Medium-High' | 'High' | 'Very High' =
+      cand.equipment.costIndex <= 35 ? 'Low' : cand.equipment.costIndex <= 60 ? 'Medium' : cand.equipment.costIndex <= 75 ? 'Medium-High' : cand.equipment.costIndex <= 90 ? 'High' : 'Very High';
+    const estEfficiency: 'Standard' | 'High' | 'Very High' =
+      cand.subscores.sEnergy >= 85 ? 'Very High' : cand.subscores.sEnergy >= 65 ? 'High' : 'Standard';
+    const airUnit = cand.indoorUnit || cand.equipment;
+    const installedBtu = cand.installedCapacityBtu ?? cand.quantity * cand.equipment.totalCapacityBtuPerHour;
+    return {
+      id: cand.id,
+      type: cand.systemType as string,
+      name: `${cand.equipment.manufacturer} ${cand.equipment.model} (${cand.systemType.toUpperCase()})`,
+      score: cand.subscores.totalScore,
+      reason: cand.tradeOffSummary,
+      pros: [
+        `Installed Capacity: ${formatLoad(installedBtu, project.units)}`,
+        airUnit.capabilities.hasExternalStaticPressure
+          ? `Rated ESP: ${formatPressure(airUnit.maxRatedEspInWg, project.units)}`
+          : 'Direct quiet air distribution without duct resistance'
+      ],
+      estUnits: cand.quantity,
+      unitCapacityBtu: airUnit.totalCapacityBtuPerHour,
+      installedBtu,
+      estCost,
+      estEfficiency,
+      reference: cand.equipment.provenance.source,
+      modelLabel: cand.indoorUnit ? `${cand.equipment.model} + ${cand.indoorUnit.model}` : cand.equipment.model,
+      deliveredCfm: cand.deliveredCfm ?? deliveredCfmFor(airUnit, cand.quantity, toCfm(displayCfm, project.units)),
+      esp: airUnit.capabilities.hasExternalStaticPressure ? formatPressure(airUnit.maxRatedEspInWg, project.units) : undefined
+    };
+  });
 
   // List of all 6 system types
   const systemTypes = [
@@ -154,8 +195,8 @@ export const SystemComparisonTable: React.FC = () => {
           </h2>
           <p className="text-[11px] text-neutral-500 mt-1">
             {selectedZone
-              ? `Recommendations for ${selectedZone.name} (Load: ${displayLoad.toLocaleString()} ${isImperial ? 'Btu/h' : 'W'}, Airflow: ${displayCfm.toLocaleString()} ${isImperial ? 'CFM' : 'L/s'})`
-              : `Aggregate building recommendations (Total Load: ${displayLoad.toLocaleString()} ${isImperial ? 'Btu/h' : 'W'}, Total Airflow: ${displayCfm.toLocaleString()} ${isImperial ? 'CFM' : 'L/s'})`}
+              ? `Recommendations for ${selectedZone.name} (Load: ${formatLoad(toBtuh(displayLoad, project.units), project.units)}, Airflow: ${formatAirflow(toCfm(displayCfm, project.units), project.units)})`
+              : `Aggregate building recommendations (Total Load: ${formatLoad(toBtuh(displayLoad, project.units), project.units)}, Total Airflow: ${formatAirflow(toCfm(displayCfm, project.units), project.units)})`}
           </p>
         </div>
 
@@ -220,7 +261,7 @@ export const SystemComparisonTable: React.FC = () => {
 
           return (
             <div
-              key={rec.type}
+              key={rec.id}
               className="flex flex-col justify-between bg-neutral-950 border border-neutral-850 hover:border-neutral-750 p-4 rounded-xl transition-all duration-300 group shadow-md"
             >
               <div>
@@ -254,10 +295,10 @@ export const SystemComparisonTable: React.FC = () => {
                         <strong className="text-neutral-200 font-mono">{rec.esp}</strong>
                       </div>
                     )}
-                    {rec.cfm && (
+                    {rec.deliveredCfm > 0 && (
                       <div className="flex justify-between">
-                        <span>Total Catalog Flowrate:</span>
-                        <strong className="text-neutral-200 font-mono">{rec.cfm.toLocaleString()} CFM</strong>
+                        <span>Delivered Airflow:</span>
+                        <strong className="text-neutral-200 font-mono">{formatAirflow(rec.deliveredCfm, project.units)}</strong>
                       </div>
                     )}
                     <div className="flex justify-between border-t border-neutral-850 pt-1 mt-1 text-[9px] text-neutral-500">
@@ -294,7 +335,7 @@ export const SystemComparisonTable: React.FC = () => {
                 </div>
 
                 <span className="text-neutral-400 font-semibold font-mono bg-neutral-900 border border-neutral-850 px-2 py-0.5 rounded">
-                  {rec.estUnits} Unit{rec.estUnits > 1 ? 's' : ''} × {(rec.unitCapacity / (isImperial ? 12000 : 3517)).toFixed(1)} Tons
+                  {rec.estUnits} Unit{rec.estUnits > 1 ? 's' : ''} × {(rec.unitCapacityBtu / 12000).toFixed(1)} TR
                 </span>
               </div>
             </div>

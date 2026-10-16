@@ -25,6 +25,10 @@ import {
   FileSpreadsheet
 } from 'lucide-react';
 import { DuctAcousticVerification } from '../engine/types';
+import { toCfm } from '../engine/units';
+import { formatAirflow, formatVelocity, formatPressure, formatDuctSize } from '../format/units';
+
+const isDuctedCheck = (t: string | undefined): boolean => t === 'concealed' || t === 'packaged' || t === 'ahu' || t === 'vrf' || t === 'fcu';
 
 export const StaticPressurePanel: React.FC = () => {
   const { selectedZoneId, zones, project } = useProjectStore();
@@ -41,12 +45,20 @@ export const StaticPressurePanel: React.FC = () => {
     );
   }
 
-  const isImperial = project.units === 'imperial';
+  const units = project.units;
   const loadResult = calculateZoneLoad(selectedZone, project);
   const isDucted =
     selectedZone.systemType === 'concealed' ||
     selectedZone.systemType === 'packaged' ||
-    selectedZone.systemType === 'ahu';
+    selectedZone.systemType === 'ahu' ||
+    selectedZone.systemType === 'vrf' ||
+    selectedZone.systemType === 'fcu';
+
+  // Single airflow source: the zone's required design airflow (CFM) vs. what the drawn duct network carries.
+  const designCfm = toCfm(loadResult.supplyCfm, units);
+  const supplyTrunks = selectedZone.ducts.filter((d) => d.type !== 'return');
+  const trunkCfm = supplyTrunks.length > 0 ? Math.max(...supplyTrunks.map((d) => d.cfm)) : 0;
+  const flowMismatch = isDuctedCheck(selectedZone.systemType) && trunkCfm > 0 && Math.abs(trunkCfm - designCfm) / Math.max(designCfm, 1) > 0.1;
 
   // Solve critical path
   const defaultDuctType = STANDARD_DUCT_TYPES[0];
@@ -61,12 +73,12 @@ export const StaticPressurePanel: React.FC = () => {
   // Match equipment record
   const matchingEquip =
     STANDARD_EQUIPMENT_CATALOG.find(
-      (e) => e.systemType === selectedZone.systemType && e.nominalCfm >= loadResult.supplyCfm * 0.7
+      (e) => e.systemType === selectedZone.systemType && e.nominalCfm >= designCfm * 0.7
     ) || STANDARD_EQUIPMENT_CATALOG[0];
 
   const fanResult = evaluateFanOperatingPoint(
     matchingEquip,
-    loadResult.supplyCfm,
+    designCfm,
     criticalPath.espRequiredInWg
   );
 
@@ -88,6 +100,11 @@ export const StaticPressurePanel: React.FC = () => {
     });
   });
 
+  const ductDims = (id: string, fallback: string): string => {
+    const d = selectedZone.ducts.find((x) => x.id === id);
+    return d && d.widthIn > 0 && d.heightIn > 0 ? formatDuctSize(d.widthIn, d.heightIn, units) : fallback;
+  };
+
   const passCount = acousticVerifications.filter((v) => v.complianceStatus === 'PASS').length;
   const failCount = acousticVerifications.length - passCount;
   const allPass = failCount === 0;
@@ -102,7 +119,7 @@ export const StaticPressurePanel: React.FC = () => {
             HVAC Duct Sizing, Acoustic Noise & Pressure Solver
           </h2>
           <p className="text-[11px] text-neutral-500 mt-1">
-            Analyzing {selectedZone.name} ({isDucted ? 'Ducted System' : 'Unducted System'}) — Total Supply Flow: {loadResult.supplyCfm} {isImperial ? 'CFM' : 'L/s'} — Target NC {targetNc}
+            Analyzing {selectedZone.name} ({isDucted ? 'Ducted System' : 'Unducted System'}) — Total Supply Flow: {formatAirflow(designCfm, units)} — Target NC {targetNc}
           </p>
         </div>
 
@@ -117,13 +134,13 @@ export const StaticPressurePanel: React.FC = () => {
           <div className="bg-neutral-950 border border-neutral-800 px-3.5 py-2 rounded-xl text-right">
             <span className="text-[9px] font-bold text-neutral-500 block uppercase">Total Required ESP</span>
             <span className="text-xs font-bold font-mono text-blue-400">
-              {criticalPath.espRequiredInWg.toFixed(3)} in.wg
+              {formatPressure(criticalPath.espRequiredInWg, units)}
             </span>
           </div>
           <div className="bg-neutral-950 border border-neutral-800 px-3.5 py-2 rounded-xl text-right">
             <span className="text-[9px] font-bold text-neutral-500 block uppercase">Fan Rating</span>
             <span className={`text-xs font-bold font-mono ${fanResult.isValid ? 'text-emerald-400' : 'text-red-400'}`}>
-              {matchingEquip.maxRatedEspInWg.toFixed(2)} in.wg
+              {formatPressure(matchingEquip.maxRatedEspInWg, units)}
             </span>
           </div>
         </div>
@@ -155,12 +172,23 @@ export const StaticPressurePanel: React.FC = () => {
         </button>
       </div>
 
+      {flowMismatch && (
+        <div className="bg-amber-950/30 border border-amber-800/50 text-amber-300 text-[11px] p-3 rounded-xl flex items-start gap-2">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <span>
+            The drawn duct network carries <strong>{formatAirflow(trunkCfm, units)}</strong> in its trunk but this zone requires{' '}
+            <strong>{formatAirflow(designCfm, units)}</strong>. The pressure results below describe the drawn network; re-run Auto-Layout or
+            apply a design from the Optimizer to resize it.
+          </span>
+        </div>
+      )}
+
       {!isDucted ? (
         <div className="bg-neutral-950/60 border border-neutral-850 p-6 rounded-xl text-center text-neutral-400 text-xs">
           <ShieldCheck size={28} className="text-teal-500 mx-auto mb-2" />
           <p className="font-bold text-neutral-200">Unducted System Active ({selectedZone.systemType?.toUpperCase()})</p>
           <p className="text-[11px] text-neutral-500 mt-1 max-w-md mx-auto">
-            This system utilizes integral direct-discharge terminals. External ductwork and external static pressure resistance are not applicable (External ESP = 0.00 in.wg).
+            This system utilizes integral direct-discharge terminals. External ductwork and external static pressure resistance are not applicable (External ESP = {formatPressure(0, units)}).
           </p>
         </div>
       ) : activeSubTab === 'acoustic' ? (
@@ -188,12 +216,12 @@ export const StaticPressurePanel: React.FC = () => {
                   <th className="py-2.5 px-3">Duct ID</th>
                   <th className="py-2.5 px-3">Type</th>
                   <th className="py-2.5 px-3">Upstream → Downstream</th>
-                  <th className="py-2.5 px-3 text-right">Flow (CFM)</th>
+                  <th className="py-2.5 px-3 text-right">Flow</th>
                   <th className="py-2.5 px-3">Dimensions</th>
-                  <th className="py-2.5 px-3 text-right">Area (sq.ft)</th>
-                  <th className="py-2.5 px-3 text-right">Actual Vel (FPM)</th>
+                  <th className="py-2.5 px-3 text-right">Area</th>
+                  <th className="py-2.5 px-3 text-right">Actual Velocity</th>
                   <th className="py-2.5 px-3 text-right">Acoustic Limit</th>
-                  <th className="py-2.5 px-3 text-right">ΔP (in.wg)</th>
+                  <th className="py-2.5 px-3 text-right">ΔP</th>
                   <th className="py-2.5 px-3 text-center">Status</th>
                   <th className="py-2.5 px-3">Acoustic Diagnostics & Remediation</th>
                 </tr>
@@ -213,9 +241,9 @@ export const StaticPressurePanel: React.FC = () => {
                       <td className="py-2.5 px-3 font-sans text-[10px] text-neutral-400">
                         {item.upstreamNode} → {item.downstreamNode}
                       </td>
-                      <td className="py-2.5 px-3 text-right text-emerald-400 font-bold">{item.cfm}</td>
-                      <td className="py-2.5 px-3 text-neutral-200 font-bold">{item.dimensionsLabel}</td>
-                      <td className="py-2.5 px-3 text-right text-neutral-400">{item.crossSectionalAreaSqFt.toFixed(3)}</td>
+                      <td className="py-2.5 px-3 text-right text-emerald-400 font-bold">{formatAirflow(item.cfm, units)}</td>
+                      <td className="py-2.5 px-3 text-neutral-200 font-bold">{ductDims(item.ductId, item.dimensionsLabel)}</td>
+                      <td className="py-2.5 px-3 text-right text-neutral-400">{units === 'metric' ? `${(item.crossSectionalAreaSqFt * 0.092903).toFixed(3)} m\u00B2` : `${item.crossSectionalAreaSqFt.toFixed(3)} ft\u00B2`}</td>
                       <td
                         className={`py-2.5 px-3 text-right font-bold ${
                           item.actualVelocityFpm > item.allowableAcousticVelocityFpm
@@ -225,10 +253,10 @@ export const StaticPressurePanel: React.FC = () => {
                             : 'text-emerald-400'
                         }`}
                       >
-                        {item.actualVelocityFpm}
+                        {formatVelocity(item.actualVelocityFpm, units)}
                       </td>
-                      <td className="py-2.5 px-3 text-right text-purple-300">{item.allowableAcousticVelocityFpm}</td>
-                      <td className="py-2.5 px-3 text-right text-amber-400">{item.pressureLossInWg.toFixed(3)}</td>
+                      <td className="py-2.5 px-3 text-right text-purple-300">{formatVelocity(item.allowableAcousticVelocityFpm, units)}</td>
+                      <td className="py-2.5 px-3 text-right text-amber-400">{formatPressure(item.pressureLossInWg, units)}</td>
                       <td className="py-2.5 px-3 text-center">
                         <span
                           className={`inline-flex items-center gap-1 text-[9px] font-sans font-bold uppercase px-2 py-0.5 rounded ${
@@ -283,7 +311,7 @@ export const StaticPressurePanel: React.FC = () => {
                     : 'Fan External Static Pressure Deficit'}
                 </p>
                 <p className="text-[11px] opacity-80 mt-0.5">
-                  Operating Point: {fanResult.operatingCfm} CFM @ {fanResult.operatingEspInWg} in.wg (Operating Margin: +{fanResult.fanMarginInWg} in.wg)
+                  Operating Point: {formatAirflow(fanResult.operatingCfm, units)} @ {formatPressure(fanResult.operatingEspInWg, units)} (Operating Margin: +{formatPressure(fanResult.fanMarginInWg, units)})
                 </p>
               </div>
             </div>
@@ -300,7 +328,7 @@ export const StaticPressurePanel: React.FC = () => {
                 Critical Path Loss Breakdown (Highest Resistance Path)
               </span>
               <span className="text-[10px] text-neutral-500 font-mono">
-                Raw Loss: {criticalPath.totalLossInWg} in.wg + 15% Safety Margin ({criticalPath.marginInWg} in.wg)
+                Raw Loss: {formatPressure(criticalPath.totalLossInWg, units)} + 15% Safety Margin ({formatPressure(criticalPath.marginInWg, units)})
               </span>
             </div>
 
@@ -310,11 +338,11 @@ export const StaticPressurePanel: React.FC = () => {
                   <tr className="border-b border-neutral-800 text-neutral-500 font-bold uppercase tracking-wider text-[9px]">
                     <th className="py-2.5 px-3">Segment / Component</th>
                     <th className="py-2.5 px-3">Type</th>
-                    <th className="py-2.5 px-3 text-right">Flow (CFM)</th>
-                    <th className="py-2.5 px-3 text-right">Velocity (FPM)</th>
-                    <th className="py-2.5 px-3 text-right">Pv (in.wg)</th>
-                    <th className="py-2.5 px-3 text-right">ΔP (in.wg)</th>
-                    <th className="py-2.5 px-3 text-right">Cumulative (in.wg)</th>
+                    <th className="py-2.5 px-3 text-right">Flow</th>
+                    <th className="py-2.5 px-3 text-right">Velocity</th>
+                    <th className="py-2.5 px-3 text-right">Pv</th>
+                    <th className="py-2.5 px-3 text-right">ΔP</th>
+                    <th className="py-2.5 px-3 text-right">Cumulative</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-850/60 text-neutral-300 font-mono">
@@ -322,22 +350,22 @@ export const StaticPressurePanel: React.FC = () => {
                     <tr key={seg.id} className="hover:bg-neutral-900/40">
                       <td className="py-2 px-3 font-sans font-medium text-neutral-200">{seg.name}</td>
                       <td className="py-2 px-3 font-sans text-neutral-400 capitalize">{seg.type.replace('-', ' ')}</td>
-                      <td className="py-2 px-3 text-right text-emerald-400">{seg.cfm}</td>
-                      <td className="py-2 px-3 text-right">{seg.velocityFpm}</td>
-                      <td className="py-2 px-3 text-right text-neutral-400">{seg.velocityPressureInWg.toFixed(3)}</td>
-                      <td className="py-2 px-3 text-right text-amber-400 font-bold">{seg.deltaPInWg.toFixed(3)}</td>
-                      <td className="py-2 px-3 text-right text-blue-400 font-bold">{seg.cumulativePInWg.toFixed(3)}</td>
+                      <td className="py-2 px-3 text-right text-emerald-400">{formatAirflow(seg.cfm, units)}</td>
+                      <td className="py-2 px-3 text-right">{formatVelocity(seg.velocityFpm, units)}</td>
+                      <td className="py-2 px-3 text-right text-neutral-400">{formatPressure(seg.velocityPressureInWg, units)}</td>
+                      <td className="py-2 px-3 text-right text-amber-400 font-bold">{formatPressure(seg.deltaPInWg, units)}</td>
+                      <td className="py-2 px-3 text-right text-blue-400 font-bold">{formatPressure(seg.cumulativePInWg, units)}</td>
                     </tr>
                   ))}
                   {criticalPath.returnSegments.map((seg) => (
                     <tr key={seg.id} className="hover:bg-neutral-900/40 bg-neutral-950/40">
                       <td className="py-2 px-3 font-sans font-medium text-neutral-300">{seg.name}</td>
                       <td className="py-2 px-3 font-sans text-neutral-400 capitalize">{seg.type.replace('-', ' ')}</td>
-                      <td className="py-2 px-3 text-right text-emerald-400">{seg.cfm}</td>
-                      <td className="py-2 px-3 text-right">{seg.velocityFpm}</td>
-                      <td className="py-2 px-3 text-right text-neutral-400">{seg.velocityPressureInWg.toFixed(3)}</td>
-                      <td className="py-2 px-3 text-right text-amber-400 font-bold">{seg.deltaPInWg.toFixed(3)}</td>
-                      <td className="py-2 px-3 text-right text-blue-400 font-bold">{seg.cumulativePInWg.toFixed(3)}</td>
+                      <td className="py-2 px-3 text-right text-emerald-400">{formatAirflow(seg.cfm, units)}</td>
+                      <td className="py-2 px-3 text-right">{formatVelocity(seg.velocityFpm, units)}</td>
+                      <td className="py-2 px-3 text-right text-neutral-400">{formatPressure(seg.velocityPressureInWg, units)}</td>
+                      <td className="py-2 px-3 text-right text-amber-400 font-bold">{formatPressure(seg.deltaPInWg, units)}</td>
+                      <td className="py-2 px-3 text-right text-blue-400 font-bold">{formatPressure(seg.cumulativePInWg, units)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -356,11 +384,11 @@ export const StaticPressurePanel: React.FC = () => {
                   <div key={b.branchId} className="bg-neutral-950 border border-neutral-850 p-3 rounded-xl flex flex-col gap-1.5">
                     <div className="flex justify-between items-center">
                       <span className="text-xs font-bold text-neutral-200">Terminal {b.terminalId.slice(-4)}</span>
-                      <span className="text-[10px] font-mono text-emerald-400">{b.branchFlowCfm} CFM</span>
+                      <span className="text-[10px] font-mono text-emerald-400">{formatAirflow(b.branchFlowCfm, units)}</span>
                     </div>
                     <div className="flex justify-between text-[10px] text-neutral-400">
                       <span>Path Resistance:</span>
-                      <span className="font-mono">{b.branchResistanceInWg.toFixed(3)} in.wg</span>
+                      <span className="font-mono">{formatPressure(b.branchResistanceInWg, units)}</span>
                     </div>
                     <div className="flex justify-between text-[10px] text-neutral-400 border-t border-neutral-850 pt-1">
                       <span>Damper Action:</span>

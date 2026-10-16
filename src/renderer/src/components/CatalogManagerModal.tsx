@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
+import { ModalPortal } from './ModalPortal';
 import { Database, Download, Trash2, Upload, X, AlertTriangle } from 'lucide-react';
 import { useCatalogStore } from '../store/catalogStore';
 import { parseCatalogFile, exportCatalogTemplate, CatalogImportError } from '../engine/catalogImport';
@@ -52,8 +53,8 @@ export const CatalogManagerModal: React.FC<CatalogManagerProps> = ({ isOpen, onC
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-4xl max-h-[85vh] bg-neutral-900/95 border border-neutral-750 rounded-2xl shadow-2xl flex flex-col overflow-hidden text-xs">
+    <ModalPortal onClose={onClose} widthClass="max-w-4xl" label="Equipment Catalogs">
+      <div className="w-full bg-neutral-900 border border-neutral-700 rounded-2xl shadow-2xl flex flex-col text-xs">
         <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800 bg-neutral-950/80">
           <div className="flex items-center gap-2">
             <div className="p-1.5 bg-blue-600/20 text-blue-400 rounded-lg border border-blue-500/30">
@@ -154,6 +155,6 @@ export const CatalogManagerModal: React.FC<CatalogManagerProps> = ({ isOpen, onC
           )}
         </div>
       </div>
-    </div>
+    </ModalPortal>
   );
 };
