@@ -377,7 +377,13 @@ assert(near(retRound.areaSqFt || 0, (Math.PI * (retRound.diameterIn || 0) ** 2) 
 // scale awareness: same px geometry at 20 px/ft is half the length => lower friction, never larger duct
 const a = routeDucts(roomPx, difs, 'imperial', 'z1', { x: 300, y: 180 }, 'concealed', undefined, {}, 10).ducts as Array<DuctSegment & { lengthFt: number }>;
 const b = routeDucts(roomPx, difs, 'imperial', 'z1', { x: 300, y: 180 }, 'concealed', undefined, {}, 20).ducts as Array<DuctSegment & { lengthFt: number }>;
-assert(near(a[0].lengthFt, 2 * b[0].lengthFt, 0.02), 'pxPerFt scales lengths (ft = px / pxPerFt)');
+// (clearances are in feet, so the routed geometry differs between scales; each length must still equal px length / pxPerFt)
+for (const [list, k] of [[a, 10], [b, 20]] as Array<[Array<DuctSegment & { lengthFt: number }>, number]>) {
+  for (const d of list) {
+    const px = Math.hypot(d.points[2] - d.points[0], d.points[3] - d.points[1]);
+    assert(near(d.lengthFt, px / k, 0.02), `pxPerFt scales lengths (ft = px / pxPerFt): ${d.id} ${d.lengthFt} vs ${(px / k).toFixed(2)}`);
+  }
+}
 console.log('✔ 8. Canvas router: orthogonal, conserved, standard imperial/metric sizes, pxPerFt-aware, returns routed');
 
 // ------------------------------------------------------------------------------------------------
