@@ -1,4 +1,11 @@
 import type { Zone, BoundingBox } from '../store/projectStore';
+import {
+  Rect,
+  pointInRect,
+  DEFAULT_ODU_LENGTH_IN,
+  DEFAULT_ODU_DEPTH_IN,
+  ODU_MIN_SPACING_FT
+} from './ducts/clearance';
 // Helper geometry functions for polyline/polygon zones and diffuser/duct routing
 //
 // COORDINATE CONVENTION: canvas/engine Y grows DOWN. "north" = minY (top of the
@@ -348,6 +355,8 @@ export interface TerminalGridOptions {
   wallClearanceFt?: number;
   /** Ceiling grid in ft to snap to when it keeps containment/uniformity (0 disables). */
   snapGridFt?: number;
+  /** Rectangles (drawing units) no terminal centre may fall into, e.g. indoor unit footprint + service clearance. */
+  keepOuts?: Rect[];
 }
 
 export interface TerminalGridResult {
@@ -393,7 +402,7 @@ function pruneToCount(pts: Pt[], n: number, centre: Pt): Pt[] {
 }
 
 /** Candidate lattice of points inside the polygon, each at least `clearance` from the walls. */
-export function latticePointsInPolygon(points: number[], step: number, clearance: number): Pt[] {
+export function latticePointsInPolygon(points: number[], step: number, clearance: number, keepOuts: Rect[] = []): Pt[] {
   const b = getPolygonBounds(points);
   const out: Pt[] = [];
   if (!(step > 0)) return out;
@@ -404,7 +413,7 @@ export function latticePointsInPolygon(points: number[], step: number, clearance
   for (let i = 0; i < nx; i++)
     for (let j = 0; j < ny; j++) {
       const x = ox + i * step, y = oy + j * step;
-      if (isPointInsideWithClearance(x, y, points, clearance)) out.push({ x, y });
+      if (isPointInsideWithClearance(x, y, points, clearance) && !keepOuts.some((k) => pointInRect({ x, y }, k))) out.push({ x, y });
     }
   return out;
 }
@@ -432,6 +441,8 @@ export function layoutTerminalGrid(points: number[], n: number, options: Termina
   const W = Math.max(b.width, 1e-6), H = Math.max(b.height, 1e-6);
   const wallClr = (options.wallClearanceFt ?? WALL_CLEARANCE_FT) * u;
   const centroid = getPolygonCentroid(points);
+  const keepOuts = options.keepOuts ?? [];
+  const blocked = (x: number, y: number): boolean => keepOuts.some((k) => pointInRect({ x, y }, k));
 
   const cellCentres = (rows: number, cols: number, clr: number): Pt[] => {
     const cw = W / cols, ch = H / rows;
@@ -440,7 +451,7 @@ export function layoutTerminalGrid(points: number[], n: number, options: Termina
     for (let r = 0; r < rows; r++)
       for (let c = 0; c < cols; c++) {
         const x = b.minX + (c + 0.5) * cw, y = b.minY + (r + 0.5) * ch;
-        if (isPointInsideWithClearance(x, y, points, effClr)) pts.push({ x, y });
+        if (isPointInsideWithClearance(x, y, points, effClr) && !blocked(x, y)) pts.push({ x, y });
       }
     return pts;
   };
@@ -491,7 +502,7 @@ export function layoutTerminalGrid(points: number[], n: number, options: Termina
     for (const clrFactor of [1, 0.5, 0.25, 0.05]) {
       const clr = wallClr * clrFactor;
       const step = Math.max(0.5 * u, Math.max(W, H) / 120);
-      const cand = latticePointsInPolygon(points, step, clr);
+      const cand = latticePointsInPolygon(points, step, clr, keepOuts);
       if (cand.length === 0) continue;
       const picked: Pt[] = [];
       const wallD = cand.map(p => distanceToPolygonEdge(p.x, p.y, points));
@@ -524,7 +535,7 @@ export function layoutTerminalGrid(points: number[], n: number, options: Termina
     const g = snapFt * u;
     const snapped = chosen.map(p => ({ x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g }));
     const effClr = Math.min(wallClr, 0.5 * Math.min(W / cols, H / rows));
-    const ok = snapped.every(p => isPointInsideWithClearance(p.x, p.y, points, effClr))
+    const ok = snapped.every(p => isPointInsideWithClearance(p.x, p.y, points, effClr) && !blocked(p.x, p.y))
       && new Set(snapped.map(p => `${p.x.toFixed(4)},${p.y.toFixed(4)}`)).size === snapped.length;
     if (ok && (chosen.length < 2 || minPairDistance(snapped) >= minPairDistance(chosen) * 0.95)) {
       // also reject a snap that makes the layout visibly less even
@@ -593,6 +604,86 @@ export interface OutdoorUnitPlacement {
   wallSide: WallSide;
   /** the exterior wall segment the unit sits against, in drawing units */
   wall: { x1: number; y1: number; x2: number; y2: number };
+  /** footprint axis (long side, along the wall) angle in degrees, 0 = +x */
+  angleDeg?: number;
+  /** footprint length along the wall / depth away from it, in FEET */
+  lengthFt?: number;
+  depthFt?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Oriented-rectangle helpers (footprints of outdoor / wall-mounted units)
+// ---------------------------------------------------------------------------
+export type Pt2 = { x: number; y: number };
+
+/** Corners of a rectangle centred at (cx, cy) with long axis along unit vector (tx, ty). */
+export function orientedRectCorners(cx: number, cy: number, tx: number, ty: number, along: number, across: number): Pt2[] {
+  const nx = -ty, ny = tx;
+  const a = along / 2, c = across / 2;
+  return [
+    { x: cx - tx * a - nx * c, y: cy - ty * a - ny * c },
+    { x: cx + tx * a - nx * c, y: cy + ty * a - ny * c },
+    { x: cx + tx * a + nx * c, y: cy + ty * a + ny * c },
+    { x: cx - tx * a + nx * c, y: cy - ty * a + ny * c }
+  ];
+}
+
+const flat = (pts: Pt2[]): number[] => pts.flatMap((p) => [p.x, p.y]);
+
+function segSegDistance(a: Pt2, b: Pt2, c: Pt2, d: Pt2): number {
+  const o = (p: Pt2, q: Pt2, r: Pt2): number => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  const d1 = o(a, b, c), d2 = o(a, b, d), d3 = o(c, d, a), d4 = o(c, d, b);
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return 0;
+  return Math.min(
+    distanceToSegment(a.x, a.y, c.x, c.y, d.x, d.y),
+    distanceToSegment(b.x, b.y, c.x, c.y, d.x, d.y),
+    distanceToSegment(c.x, c.y, a.x, a.y, b.x, b.y),
+    distanceToSegment(d.x, d.y, a.x, a.y, b.x, b.y)
+  );
+}
+
+/**
+ * Gap between a convex footprint (4 corners) and a polygon: 0 when they touch or overlap (including full containment
+ * either way), otherwise the shortest distance between their outlines.
+ */
+export function footprintPolygonGap(corners: Pt2[], poly: number[]): number {
+  if (poly.length < 6) return Infinity;
+  if (corners.some((c) => isPointInPolygon(c.x, c.y, poly))) return 0;
+  const cf = flat(corners);
+  for (let i = 0; i + 1 < poly.length; i += 2) if (isPointInPolygon(poly[i], poly[i + 1], cf)) return 0;
+  let best = Infinity;
+  const m = poly.length / 2;
+  for (let k = 0, j = m - 1; k < m; j = k++) {
+    const p = { x: poly[2 * j], y: poly[2 * j + 1] }, q = { x: poly[2 * k], y: poly[2 * k + 1] };
+    for (let i = 0; i < 4; i++) best = Math.min(best, segSegDistance(corners[i], corners[(i + 1) % 4], p, q));
+    if (best === 0) return 0;
+  }
+  return best;
+}
+
+/** True when the footprint lies entirely inside the polygon (touching the boundary allowed within `tol`). */
+export function footprintInsidePolygon(corners: Pt2[], poly: number[], tol = 1e-6): boolean {
+  const m = poly.length / 2;
+  for (const c of corners) {
+    if (!isPointInPolygon(c.x, c.y, poly) && distanceToPolygonEdge(c.x, c.y, poly) > tol) return false;
+  }
+  // no polygon edge may properly cross through the footprint
+  for (let k = 0, j = m - 1; k < m; j = k++) {
+    const p = { x: poly[2 * j], y: poly[2 * j + 1] }, q = { x: poly[2 * k], y: poly[2 * k + 1] };
+    for (let i = 0; i < 4; i++) {
+      const a = corners[i], b = corners[(i + 1) % 4];
+      const o = (u: Pt2, v: Pt2, w: Pt2): number => (v.x - u.x) * (w.y - u.y) - (v.y - u.y) * (w.x - u.x);
+      const d1 = o(a, b, p), d2 = o(a, b, q), d3 = o(p, q, a), d4 = o(p, q, b);
+      const eps = 1e-9;
+      if (((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps)) && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps))) return false;
+    }
+  }
+  // polygon vertex strictly inside the footprint (reflex corner poking into it)
+  const cf = flat(corners);
+  for (let i = 0; i + 1 < poly.length; i += 2) {
+    if (isPointInPolygon(poly[i], poly[i + 1], cf) && distanceToPolygonEdge(poly[i], poly[i + 1], cf) > tol) return false;
+  }
+  return true;
 }
 
 function envelopeOf(points: number[], allZones: Zone[] | undefined, dxfBoundingBox: BoundingBox | null): { minX: number; maxX: number; minY: number; maxY: number; width: number; height: number; } {
@@ -612,9 +703,26 @@ function envelopeOf(points: number[], allZones: Zone[] | undefined, dxfBoundingB
   return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
 }
 
+export interface OutdoorUnitOptions {
+  side?: WallSide;
+  /** Footprint depth AWAY from the wall (ft). Default 13 in. */
+  unitDepthFt?: number;
+  /** Footprint length ALONG the wall (ft). Default 34 in. */
+  unitLengthFt?: number;
+  /** Clearance between the wall and the unit's near face (ft). Default 1. */
+  clearanceFt?: number;
+  /** Neighbouring zone outlines (drawing units); the unit never overlaps them. Defaults to `allZones` minus this zone. */
+  otherZonePolygons?: number[][];
+  /** Footprints (4 corners, drawing units) of outdoor units already placed; keeps >= ODU_MIN_SPACING_FT from them. */
+  placedFootprints?: Pt2[][];
+  /** Slide the unit along its wall towards this point (e.g. its indoor unit). */
+  preferNear?: Pt2;
+}
+
 /**
  * Places the outdoor unit OUTSIDE the zone, against its longest exterior wall (or the wall
- * facing `opts.side`), offset by depth/2 + clearance. Returns the wall side as well.
+ * facing `opts.side`), its near face `clearanceFt` (>= 1 ft) off the wall. The footprint (default 34 x 13 in) never
+ * overlaps another zone, an already placed outdoor unit (>= 1 ft apart) or the room itself. Returns the wall side as well.
  * "Exterior" = edges lying on the building envelope; falls back to the longest edge.
  */
 export function calculateOutdoorUnitPlacement(
@@ -622,7 +730,7 @@ export function calculateOutdoorUnitPlacement(
   allZones: Zone[] = [],
   dxfBoundingBox: BoundingBox | null = null,
   unitPerFt: number = 1,
-  opts: { side?: WallSide; unitDepthFt?: number; clearanceFt?: number } = {}
+  opts: OutdoorUnitOptions = {}
 ): OutdoorUnitPlacement {
   const u = unitPerFt > 0 ? unitPerFt : 1;
   if (points.length < 6) return { x: 0, y: 0, wallSide: 'east', wall: { x1: 0, y1: 0, x2: 0, y2: 0 } };
@@ -630,6 +738,11 @@ export function calculateOutdoorUnitPlacement(
   const edges = polygonEdges(points);
   const centroid = getPolygonCentroid(points);
   const tol = Math.max(0.5 * u, 1e-6);
+
+  const sameRing = (a: number[], b: number[]): boolean => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 1e-6);
+  const others: number[][] = opts.otherZonePolygons
+    ?? (allZones || []).map((z) => z.points || []).filter((p) => p.length >= 6 && !sameRing(p, points));
+  const placed = opts.placedFootprints ?? [];
 
   const onEnvelope = (e: WallEdge): boolean => {
     const vertical = Math.abs(e.ax - e.bx) <= tol, horizontal = Math.abs(e.ay - e.by) <= tol;
@@ -646,29 +759,70 @@ export function calculateOutdoorUnitPlacement(
   const exterior = pool.filter(onEnvelope);
   if (exterior.length) pool = exterior;
 
-  const best = pool.slice().sort((a, b) => {
+  const rank = (list: WallEdge[]): WallEdge[] => list.slice().sort((a, b) => {
     if (Math.abs(a.length - b.length) > tol) return b.length - a.length;
     // tie: wall closest to the zone centroid (shortest distribution run)
     return Math.hypot(a.mx - centroid.x, a.my - centroid.y) - Math.hypot(b.mx - centroid.x, b.my - centroid.y);
-  })[0];
+  });
+  // preferred pool first, then every other wall as a fallback when the preferred ones are blocked
+  const ranked = [...rank(pool), ...rank(edges.filter((e) => !pool.includes(e)))];
 
-  const depth = (opts.unitDepthFt ?? ODU_DEFAULT_DEPTH_FT) * u;
-  const clr = (opts.clearanceFt ?? ODU_CLEARANCE_FT) * u;
-  const snap = u; // 1 ft grid
-  let off = depth / 2 + clr;
-  let x = best.mx, y = best.my;
-  for (let attempt = 0; attempt < 8; attempt++) {
-    // snap, then RE-CHECK that the unit is still outside the polygon
-    x = Math.round((best.mx + best.nx * off) / snap) * snap;
-    y = Math.round((best.my + best.ny * off) / snap) * snap;
-    if (!isPointInPolygon(x, y, points) && distanceToPolygonEdge(x, y, points) >= depth / 2 + clr - snap / 2 - 1e-6) break;
-    off += snap;
+  const depth = (opts.unitDepthFt ?? DEFAULT_ODU_DEPTH_IN / 12) * u;
+  const length = (opts.unitLengthFt ?? DEFAULT_ODU_LENGTH_IN / 12) * u;
+  const clr = Math.max(opts.clearanceFt ?? ODU_CLEARANCE_FT, 0) * u;
+  const spacing = ODU_MIN_SPACING_FT * u;
+  const r2 = (v: number): number => Math.round(v * 100) / 100;
+
+  const build = (e: WallEdge, t: number, off: number): { x: number; y: number; corners: Pt2[]; tx: number; ty: number } => {
+    const tx = (e.bx - e.ax) / e.length, ty = (e.by - e.ay) / e.length;
+    const cx = e.ax + tx * t + e.nx * off, cy = e.ay + ty * t + e.ny * off;
+    return { x: r2(cx), y: r2(cy), corners: orientedRectCorners(r2(cx), r2(cy), tx, ty, length, depth), tx, ty };
+  };
+  const valid = (corners: Pt2[]): boolean => {
+    if (footprintPolygonGap(corners, points) < clr - 1e-6) return false;
+    if (others.some((o) => footprintPolygonGap(corners, o) < 0.25 * u)) return false;
+    if (placed.some((p) => footprintPolygonGap(p, flat(corners)) < spacing - 1e-6)) return false;
+    return true;
+  };
+
+  const near = opts.preferNear;
+  for (const e of ranked) {
+    const lo = Math.min(length / 2 + 0.25 * u, e.length / 2), hi = Math.max(e.length - length / 2 - 0.25 * u, e.length / 2);
+    const t0raw = near ? ((near.x - e.ax) * (e.bx - e.ax) + (near.y - e.ay) * (e.by - e.ay)) / e.length : e.length / 2;
+    const t0 = Math.min(hi, Math.max(lo, t0raw));
+    const step = 0.5 * u;
+    const ts: number[] = [t0];
+    for (let k = 1; t0 - k * step >= lo - 1e-9 || t0 + k * step <= hi + 1e-9; k++) {
+      if (t0 + k * step <= hi + 1e-9) ts.push(t0 + k * step);
+      if (t0 - k * step >= lo - 1e-9) ts.push(t0 - k * step);
+    }
+    for (let extra = 0; extra <= 8; extra++) {
+      const off = clr + depth / 2 + extra * u;
+      for (const t of ts) {
+        const c = build(e, t, off);
+        if (valid(c.corners)) {
+          return {
+            x: c.x, y: c.y, wallSide: e.side,
+            wall: { x1: e.ax, y1: e.ay, x2: e.bx, y2: e.by },
+            angleDeg: (Math.atan2(c.ty, c.tx) * 180) / Math.PI, lengthFt: length / u, depthFt: depth / u
+          };
+        }
+      }
+    }
   }
-  if (isPointInPolygon(x, y, points)) {
-    x = best.mx + best.nx * (off + depth);
-    y = best.my + best.ny * (off + depth);
+  // Nothing free: best wall, pushed out until the footprint is clear of the room
+  const best = ranked[0];
+  let off = clr + depth / 2;
+  let c = build(best, best.length / 2, off);
+  for (let k = 0; k < 20 && (isPointInPolygon(c.x, c.y, points) || footprintPolygonGap(c.corners, points) < clr - 1e-6); k++) {
+    off += u;
+    c = build(best, best.length / 2, off);
   }
-  return { x, y, wallSide: best.side, wall: { x1: best.ax, y1: best.ay, x2: best.bx, y2: best.by } };
+  return {
+    x: c.x, y: c.y, wallSide: best.side,
+    wall: { x1: best.ax, y1: best.ay, x2: best.bx, y2: best.by },
+    angleDeg: (Math.atan2(c.ty, c.tx) * 180) / Math.PI, lengthFt: length / u, depthFt: depth / u
+  };
 }
 
 /**
@@ -734,4 +888,101 @@ export function calculateOptimalIndoorUnitPos(
     if (isPointInsideWithClearance(x, y, points, Math.min(clr, 0.25 * u))) return { x, y };
   }
   return { x: centroid.x, y: centroid.y };
+}
+
+// ---------------------------------------------------------------------------
+// Wall-mounted indoor units (high-wall splits)
+// ---------------------------------------------------------------------------
+export const WALL_UNIT_DEFAULT_WIDTH_FT = 3;
+export const WALL_UNIT_DEFAULT_DEPTH_FT = 10 / 12;
+
+export interface WallMountedUnitPlacement {
+  /** unit centre, drawing units */
+  x: number;
+  y: number;
+  /** the side of the room the host wall is on (east wall = unit faces west) */
+  wallSide: WallSide;
+  /** drawing rotation in degrees, same convention as the zone partitioner (east 270, west 90, south 0, north 180) */
+  rotation: number;
+  wall: { x1: number; y1: number; x2: number; y2: number };
+  /** unit length axis angle (along the wall), degrees */
+  angleDeg: number;
+  widthFt: number;
+  depthFt: number;
+}
+
+/**
+ * Places a wall-mounted unit ON a wall: the back of the unit is flush with the wall line (centre = depth/2 inside it)
+ * and the whole footprint lies inside the room and within the wall segment. Host wall: the wall facing
+ * `opts.exteriorSide` when known, otherwise the longest wall (ties: nearest the outdoor unit). The unit is centred on
+ * the wall segment, or slid along it until the footprint is fully inside (L / U rooms). With `opts.near` (e.g. a
+ * user-dragged position) the nearest wall is used and the unit is snapped to the projection of that point.
+ */
+export function calculateWallMountedUnitPos(
+  points: number[],
+  unitPerFt: number = 1,
+  opts: { exteriorSide?: WallSide; outdoorUnitPos?: Pt2; near?: Pt2; unitWidthFt?: number; unitDepthFt?: number } = {}
+): WallMountedUnitPlacement {
+  const u = unitPerFt > 0 ? unitPerFt : 1;
+  const width = (opts.unitWidthFt ?? WALL_UNIT_DEFAULT_WIDTH_FT) * u;
+  const depth = (opts.unitDepthFt ?? WALL_UNIT_DEFAULT_DEPTH_FT) * u;
+  const fallback: WallMountedUnitPlacement = {
+    x: 0, y: 0, wallSide: 'east', rotation: 270, wall: { x1: 0, y1: 0, x2: 0, y2: 0 }, angleDeg: 0, widthFt: width / u, depthFt: depth / u
+  };
+  if (points.length < 6) return fallback;
+  const edges = polygonEdges(points);
+  if (!edges.length) return fallback;
+  const tol = 0.5 * u;
+  const odu = opts.outdoorUnitPos && (opts.outdoorUnitPos.x !== 0 || opts.outdoorUnitPos.y !== 0) ? opts.outdoorUnitPos : undefined;
+
+  const ranked = edges.slice().sort((a, b) => {
+    if (opts.near) {
+      const da = distanceToSegment(opts.near.x, opts.near.y, a.ax, a.ay, a.bx, a.by);
+      const db = distanceToSegment(opts.near.x, opts.near.y, b.ax, b.ay, b.bx, b.by);
+      if (Math.abs(da - db) > tol) return da - db;
+    } else if (opts.exteriorSide) {
+      const fa = a.side === opts.exteriorSide ? 0 : 1, fb = b.side === opts.exteriorSide ? 0 : 1;
+      if (fa !== fb) return fa - fb;
+    }
+    if (Math.abs(a.length - b.length) > tol) return b.length - a.length;
+    if (odu) {
+      return distanceToSegment(odu.x, odu.y, a.ax, a.ay, a.bx, a.by) - distanceToSegment(odu.x, odu.y, b.ax, b.ay, b.bx, b.by);
+    }
+    return 0;
+  });
+
+  const rotationOf = (side: WallSide): number => (side === 'east' ? 270 : side === 'west' ? 90 : side === 'north' ? 180 : 0);
+  const r2 = (v: number): number => Math.round(v * 100) / 100;
+  const place = (e: WallEdge, t: number): { x: number; y: number; corners: Pt2[]; tx: number; ty: number } => {
+    const tx = (e.bx - e.ax) / e.length, ty = (e.by - e.ay) / e.length;
+    // inward normal = -outward normal; centre sits depth/2 inside the wall line (back flush)
+    const cx = e.ax + tx * t - e.nx * (depth / 2), cy = e.ay + ty * t - e.ny * (depth / 2);
+    return { x: cx, y: cy, corners: orientedRectCorners(cx, cy, tx, ty, width, depth), tx, ty };
+  };
+  const result = (e: WallEdge, c: { x: number; y: number; tx: number; ty: number }): WallMountedUnitPlacement => ({
+    x: r2(c.x), y: r2(c.y), wallSide: e.side, rotation: rotationOf(e.side),
+    wall: { x1: e.ax, y1: e.ay, x2: e.bx, y2: e.by },
+    angleDeg: (Math.atan2(c.ty, c.tx) * 180) / Math.PI, widthFt: width / u, depthFt: depth / u
+  });
+
+  for (const e of ranked) {
+    const margin = 0.5 * u;
+    const lo = width / 2 + margin, hi = e.length - width / 2 - margin;
+    if (hi < lo - 1e-9) continue; // wall shorter than the unit
+    const tProj = opts.near ? ((opts.near.x - e.ax) * (e.bx - e.ax) + (opts.near.y - e.ay) * (e.by - e.ay)) / e.length : e.length / 2;
+    const t0 = Math.min(hi, Math.max(lo, tProj));
+    const step = 0.5 * u;
+    const ts: number[] = [t0];
+    for (let k = 1; t0 - k * step >= lo - 1e-9 || t0 + k * step <= hi + 1e-9; k++) {
+      if (t0 + k * step <= hi + 1e-9) ts.push(t0 + k * step);
+      if (t0 - k * step >= lo - 1e-9) ts.push(t0 - k * step);
+    }
+    for (const t of ts) {
+      const c = place(e, t);
+      if (footprintInsidePolygon(c.corners, points, 1e-4 * u)) return result(e, c);
+    }
+  }
+  // No wall can hold the full footprint: use the longest wall's midpoint (still flush to the wall)
+  const e = edges.slice().sort((a, b) => b.length - a.length)[0];
+  return result(e, place(e, e.length / 2));
 }

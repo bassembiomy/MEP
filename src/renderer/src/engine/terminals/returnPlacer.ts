@@ -10,6 +10,7 @@ import {
   RETURN_SUPPLY_MIN_SEP_FT,
   MIN_TERMINAL_SPACING_FT
 } from '../geometry';
+import { pointInRect, type Rect } from '../ducts/clearance';
 
 /** Default return = 90% of supply when no exhaust / exfiltration data is available. */
 export const DEFAULT_RETURN_TO_SUPPLY_RATIO = 0.9;
@@ -34,6 +35,8 @@ export interface ReturnPositionOptions {
   minSupplySeparationFt?: number;
   /** Preferred location (e.g. the unit's plenum return side); the first return is placed nearest to it. */
   anchor?: { x: number; y: number };
+  /** Rectangles (drawing units) no return grille centre may fall into (indoor unit footprint + service clearance). */
+  keepOuts?: Rect[];
 }
 
 /**
@@ -54,9 +57,10 @@ export function selectReturnPositions(
   const retSep = MIN_TERMINAL_SPACING_FT * u;
   const step = Math.max(0.5 * u, Math.max(b.width, b.height) / 100);
 
+  const keepOuts = opts.keepOuts ?? [];
   let cand: { x: number; y: number }[] = [];
   for (const f of [1, 0.5, 0.25, 0.05]) {
-    cand = latticePointsInPolygon(polygon, step, (opts.wallClearanceFt ?? WALL_CLEARANCE_FT) * u * f);
+    cand = latticePointsInPolygon(polygon, step, (opts.wallClearanceFt ?? WALL_CLEARANCE_FT) * u * f, keepOuts);
     if (cand.length) break;
   }
   if (!cand.length) return [];
@@ -98,7 +102,7 @@ export function selectReturnPositions(
     if (supplies.length && dSup(p) < sep - 1e-6) {
       const f = (q: { x: number; y: number }): number => Math.min(dSup(q), sep);
       const okAt = (q: { x: number; y: number }): boolean =>
-        isPointInsideWithClearance(q.x, q.y, polygon, wallClr) && picked.every((o) => Math.hypot(q.x - o.x, q.y - o.y) >= retSep - 1e-6);
+        isPointInsideWithClearance(q.x, q.y, polygon, wallClr) && !keepOuts.some((k) => pointInRect(q, k)) && picked.every((o) => Math.hypot(q.x - o.x, q.y - o.y) >= retSep - 1e-6);
       for (let h = 0.5 * u; h >= 0.01 * u; h /= 2) {
         for (let it = 0; it < 80; it++) {
           let best = p, bf = f(p);
@@ -119,7 +123,7 @@ export function selectReturnPositions(
 export function placeReturnGrillesForZone(
   zone: EquipmentServiceZone,
   supplyTerminals: CoordinatedAirTerminal[],
-  options: { unitPerFt?: number; exhaustCfm?: number; exfiltrationCfm?: number } = {}
+  options: { unitPerFt?: number; exhaustCfm?: number; exfiltrationCfm?: number; keepOuts?: Rect[] } = {}
 ): CoordinatedAirTerminal[] {
   const unitPerFt = options.unitPerFt ?? 1;
   const returnCfm = zone.returnCfm || computeReturnCfm(zone.supplyCfm, options);
@@ -136,7 +140,7 @@ export function placeReturnGrillesForZone(
     : undefined;
 
   const supplyPts = supplyTerminals.map(t => t.position);
-  let positions = selectReturnPositions(zone.serviceAreaPolygon, supplyPts, numReturns, { unitPerFt, anchor });
+  let positions = selectReturnPositions(zone.serviceAreaPolygon, supplyPts, numReturns, { unitPerFt, anchor, keepOuts: options.keepOuts });
   if (positions.length === 0) return [];
   // A small bay cannot hold the preferred count: drop returns closer than the 4 ft minimum to any supply or to
   // another return, but always keep the best-separated one.

@@ -13,6 +13,7 @@
  */
 
 import { isPointInPolygon, distanceToPolygonEdge } from '../geometry';
+import { Rect, inflateRect, rectsOverlap, ductOverlapsRect, orthogonalCrossing, countCrossings } from './clearance';
 
 export interface Pt2 {
   x: number;
@@ -68,6 +69,37 @@ export interface TopologyOptions {
   clearance?: number;
   /** Segments of OTHER networks (or the unit return stub) this tree must not run collinear with */
   avoid?: Seg2[];
+  /**
+   * Terminal faces (same coordinate units). Giving this switches the builder to CLEARANCE mode: the trunk line is
+   * moved off the diffuser rows (a perpendicular stub from the unit when needed), no duct body may overlap a terminal face
+   * other than its own final run-out, and duct edges keep `wallClear` from the walls.
+   */
+  obstacles?: TopoObstacle[];
+  /** Half widths of trunk-kind and branch-kind ducts (coordinate units) used for the clearance checks */
+  hwTrunk?: number;
+  hwBranch?: number;
+  /** Minimum duct EDGE to wall distance (coordinate units) */
+  wallClear?: number;
+  /** Minimum gap between a duct edge and a foreign terminal face (coordinate units) */
+  termClear?: number;
+  /** Minimum perpendicular offset of the trunk line from the root (coordinate units); relaxed in steps when unattainable */
+  minRootOffset?: number;
+  /** Minimum distance between parallel ducts of other networks (coordinate units); default two trunk widths + 0.25 ft */
+  parallelSpacing?: number;
+}
+
+export interface TopoObstacle {
+  /** terminal id: the segment that ENDS at this terminal's centre may enter the face */
+  id: string;
+  rect: Rect;
+}
+
+export interface TopoResult {
+  segs: TopoSegment[];
+  /** all clearance rules hold (always true in legacy mode) */
+  valid: boolean;
+  /** crossings with `avoid` segments (clearance mode) */
+  crossings: number;
 }
 
 export function pickAxis(bbox: { width: number; height: number }): 'h' | 'v' {
@@ -448,6 +480,22 @@ function clusterLines(vals: number[], tol: number, rootVal: number): number[] {
   return reps;
 }
 
+const ductBodyBox = (s: Seg2, hw: number): Rect => ({
+  minX: Math.min(s.start.x, s.end.x) - hw,
+  maxX: Math.max(s.start.x, s.end.x) + hw,
+  minY: Math.min(s.start.y, s.end.y) - hw,
+  maxY: Math.max(s.start.y, s.end.y) + hw
+});
+
+interface GridCtx {
+  obstacles: TopoObstacle[];
+  hw: number;
+  termClear: number;
+  blockCross: boolean;
+  crossAvoid: Seg2[];
+  rootRadius: number;
+}
+
 function gridRoute(
   root: Pt2,
   terminals: TopoTerminal[],
@@ -455,7 +503,8 @@ function gridRoute(
   poly: number[],
   clr: number,
   avoid: Seg2[],
-  avoidGap: number
+  avoidGap: number,
+  ctx?: GridCtx
 ): TopoSegment[] | null {
   const live = terminals.filter((t) => t.cfm > 0);
   if (live.length === 0) return [];
@@ -498,6 +547,10 @@ function gridRoute(
   const termNodes = live.map((t) => idx(nearest(xs, t.x), nearest(ys, t.y)));
   if (termNodes.some((n) => n === rootNode)) return null;
   const special = new Set<number>([rootNode, ...termNodes]);
+  const termNodeSet = new Set<number>(termNodes);
+  const ownerNode = new Map<string, number>();
+  live.forEach((t, i) => ownerNode.set(t.id, termNodes[i]));
+  const termPos = new Map<string, Pt2>(live.map((t) => [t.id, { x: t.x, y: t.y }]));
   const px = (n: number): number => xs[Math.floor(n / ny)];
   const py = (n: number): number => ys[n % ny];
   const P = (n: number): Pt2 => ({ x: px(n), y: py(n) });
@@ -530,6 +583,28 @@ function gridRoute(
           if (collinearOverlap(seg, s, avoidGap) > 1e-6) { ok = false; break; }
         }
       }
+      if (ok && ctx) {
+        const seg = { start: pa, end: pb };
+        const body = ductBodyBox(seg, ctx.hw);
+        for (const o of ctx.obstacles) {
+          const own = ownerNode.get(o.id);
+          if (own !== undefined && (own === a || own === b)) continue; // run-out entering its own terminal
+          if (!rectsOverlap(body, inflateRect(o.rect, ctx.termClear), 1e-6)) continue;
+          const tp = termPos.get(o.id);
+          // head-on approach to its own terminal may pass through the clearance margin, never through the bare face
+          const headOn = own !== undefined && tp !== undefined &&
+            (Math.abs(pa.y - pb.y) < EPS ? Math.abs(pa.y - tp.y) <= ctx.hw + 1e-6 : Math.abs(pa.x - tp.x) <= ctx.hw + 1e-6);
+          if (headOn && !rectsOverlap(body, o.rect, 1e-6)) continue;
+          ok = false;
+          break;
+        }
+        if (ok && ctx.blockCross) {
+          for (const sg of ctx.crossAvoid) {
+            const cp = orthogonalCrossing(seg, sg, 0.02 * opts.minLen);
+            if (cp && Math.hypot(cp.x - root.x, cp.y - root.y) > ctx.rootRadius) { ok = false; break; }
+          }
+        }
+      }
     }
     edgeCache.set(key, ok);
     return ok;
@@ -547,6 +622,7 @@ function gridRoute(
     prev.fill(-2);
     const heap = new MinHeap();
     for (const n of parentNode.keys()) {
+      if (termNodeSet.has(n)) continue; // a terminal is always a leaf: ducts never continue through a diffuser
       for (let d = 0; d < 2; d++) {
         dist[n * 2 + d] = 0;
         prev[n * 2 + d] = -1;
@@ -650,13 +726,208 @@ function gridRoute(
   return out;
 }
 
+// ───────────────────────────── clearance mode ─────────────────────────────
+/** Standard tree whose trunk line sits at perpendicular coordinate `vStar` (a stub joins it to the root). */
+function stubbedTree(root: Pt2, terminals: TopoTerminal[], opts: TopologyOptions, vStar: number): TopoSegment[] {
+  const horizontal = opts.axis === 'h';
+  const rv = horizontal ? root.y : root.x;
+  if (Math.abs(vStar - rv) < 1e-9) return buildStandardTree(root, terminals, opts);
+  const root2 = horizontal ? { x: root.x, y: vStar } : { x: vStar, y: root.y };
+  const inner = buildStandardTree(root2, terminals, opts);
+  const live = terminals.filter((t) => t.cfm > 0);
+  const stub: TopoSegment = {
+    key: 0,
+    kind: 'trunk',
+    start: { x: root.x, y: root.y },
+    end: root2,
+    flow: live.reduce((a, t) => a + t.cfm, 0),
+    parent: -1,
+    direct: [],
+    downstream: live.map((t) => t.id),
+    orientation: horizontal ? 'v' : 'h',
+    isTakeoff: false,
+    onTrunk: false
+  };
+  return [stub, ...inner.map((g) => ({ ...g, key: g.key + 1, parent: g.parent >= 0 ? g.parent + 1 : 0 }))];
+}
+
+/** Clearance-mode validation: inside the room with the duct EDGE off the wall, off every foreign terminal face, no overlaps. */
+function checkClearanceLayout(
+  segs: TopoSegment[],
+  root: Pt2,
+  terminals: TopoTerminal[],
+  opts: TopologyOptions,
+  poly: number[] | undefined
+): { ok: boolean; crossings: number } {
+  const hwT = opts.hwTrunk ?? 0;
+  const hwB = opts.hwBranch ?? hwT;
+  const wallClear = opts.wallClear ?? 0;
+  const termClear = Math.max((opts.termClear ?? 0) - 1e-6, 0);
+  const endTol = Math.max(opts.snapTol, 1e-6);
+  const pos = new Map(terminals.map((t) => [t.id, { x: t.x, y: t.y }]));
+  const exempt: Pt2[] = [root, ...terminals.map((t) => ({ x: t.x, y: t.y }))];
+  const step = Math.max(0.5 * opts.minLen, 1e-6);
+  const obstacles = opts.obstacles ?? [];
+  for (const sg of segs) {
+    const hw = sg.kind === 'trunk' ? hwT : hwB;
+    if (poly && poly.length >= 6 && !segmentInsidePolygon(sg.start, sg.end, poly, hw + wallClear, step, exempt)) return { ok: false, crossings: 0 };
+    for (const o of obstacles) {
+      if (!ductOverlapsRect(sg, hw, inflateRect(o.rect, termClear))) continue;
+      const tp = pos.get(o.id);
+      const owns = !!tp && sg.direct.includes(o.id) && Math.hypot(sg.end.x - tp.x, sg.end.y - tp.y) <= endTol;
+      if (!owns) return { ok: false, crossings: 0 };
+    }
+  }
+  const tol = 0.012 * opts.minLen;
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 1; j < segs.length; j++) if (collinearOverlap(segs[i], segs[j], tol) > 1e-6) return { ok: false, crossings: 0 };
+    // parallel ducts of another network / zone keep their bodies apart (two trunk half widths + a hand of clearance)
+    for (const a of opts.avoid || []) if (collinearOverlap(segs[i], a, opts.parallelSpacing ?? 2 * hwT + 0.25 * opts.minLen) > 1e-6) return { ok: false, crossings: 0 };
+  }
+  return { ok: true, crossings: countCrossings(segs, opts.avoid || [], [root], Math.max(opts.snapTol, 1e-6), 0.02 * opts.minLen) };
+}
+
+/** Candidate perpendicular coordinates for the trunk line, cheapest first. */
+function trunkLineCandidates(root: Pt2, terminals: TopoTerminal[], opts: TopologyOptions, minOffset: number): number[] {
+  const h = opts.axis === 'h';
+  const rv = h ? root.y : root.x;
+  const live = terminals.filter((t) => t.cfm > 0);
+  if (!live.length) return [rv];
+  const uOf = (p: Pt2): number => (h ? p.x : p.y);
+  const vOf = (p: Pt2): number => (h ? p.y : p.x);
+  const hwT = opts.hwTrunk ?? 0;
+  const gap = hwT + (opts.termClear ?? 0);
+  const us = live.map(uOf).concat(uOf(root));
+  const uMin = Math.min(...us) - gap, uMax = Math.max(...us) + gap;
+  const buf = 0.15 * opts.minLen; // comfort margin on top of the hard clearance
+  const eps = 0.02 * opts.minLen;
+  const raw: Array<[number, number]> = [];
+  for (const o of opts.obstacles ?? []) {
+    const [u1, u2] = h ? [o.rect.minX, o.rect.maxX] : [o.rect.minY, o.rect.maxY];
+    if (u2 < uMin || u1 > uMax) continue;
+    const [v1, v2] = h ? [o.rect.minY, o.rect.maxY] : [o.rect.minX, o.rect.maxX];
+    raw.push([v1 - gap - buf, v2 + gap + buf]);
+  }
+  raw.sort((a, b) => a[0] - b[0]);
+  const bands: Array<[number, number]> = [];
+  for (const b of raw) {
+    const last = bands[bands.length - 1];
+    if (last && b[0] <= last[1]) last[1] = Math.max(last[1], b[1]);
+    else bands.push([b[0], b[1]]);
+  }
+  const cands: number[] = [rv];
+  for (let k = 1; k <= 4; k++) cands.push(rv + k * opts.minLen, rv - k * opts.minLen);
+  for (const b of bands) cands.push(b[0] - eps, b[1] + eps);
+  for (let i = 0; i + 1 < bands.length; i++) cands.push((bands[i][1] + bands[i + 1][0]) / 2);
+  const free = (v: number): boolean => !bands.some((b) => v > b[0] + 1e-9 && v < b[1] - 1e-9);
+  const stubOk = (v: number): boolean => {
+    const d = Math.abs(v - rv);
+    return (d < 1e-9 || d >= 0.99 * opts.minLen) && d >= minOffset - 1e-9;
+  };
+  const vs = live.map((t) => vOf(t));
+  const cost = (v: number): number => vs.reduce((a, x) => a + Math.abs(x - v), 0) + 1.5 * Math.abs(v - rv);
+  const uniq: number[] = [];
+  for (const v of cands.filter((c) => free(c) && stubOk(c)).sort((a, b) => cost(a) - cost(b) || Math.abs(a - rv) - Math.abs(b - rv))) {
+    if (!uniq.some((q) => Math.abs(q - v) < eps)) uniq.push(v);
+  }
+  return uniq;
+}
+
+function clearanceTree(root: Pt2, terminals: TopoTerminal[], opts: TopologyOptions): TopoResult {
+  let res = clearanceTree0(root, terminals, opts);
+  // congested rooms: accept ducts of different networks running closer in parallel before giving up on clean layouts
+  if (!res.valid) {
+    const relaxed = clearanceTree0(root, terminals, { ...opts, parallelSpacing: 0.012 * opts.minLen });
+    if (relaxed.valid) res = relaxed;
+  }
+  return res;
+}
+
+function clearanceTree0(root: Pt2, terminals: TopoTerminal[], opts: TopologyOptions): TopoResult {
+  const polys = [opts.polygon, opts.fallbackPolygon].filter((p): p is number[] => !!p && p.length >= 6);
+  const live = terminals.filter((t) => t.cfm > 0);
+  const avoid = opts.avoid || [];
+  const minOff = opts.minRootOffset ?? 0;
+  const offsets = minOff > 0 ? [minOff, (minOff * 2) / 3, minOff / 3, 0] : [0];
+  let best = null as { segs: TopoSegment[]; crossings: number } | null;
+
+  // 1. straight trunk + perpendicular takeoffs, trunk line moved off the diffuser rows
+  for (const poly of polys.length ? polys : [undefined]) {
+    for (const off of offsets) {
+      let evaluated = 0;
+      for (const v of trunkLineCandidates(root, terminals, opts, off)) {
+        if (++evaluated > 48) break;
+        const segs = stubbedTree(root, terminals, opts, v);
+        const r = checkClearanceLayout(segs, root, terminals, opts, poly);
+        if (!r.ok) continue;
+        if (r.crossings === 0) return { segs, valid: true, crossings: 0 };
+        if (!best || r.crossings < best.crossings) best = { segs, crossings: r.crossings };
+      }
+    }
+    if (best) break;
+  }
+
+  // 2. orthogonal grid router around the terminals (L / U / rotated rooms, congested rows): no crossings first
+  const hwBr = opts.hwBranch ?? opts.hwTrunk ?? 0;
+  const rootRadius = Math.max(opts.snapTol, 1e-6);
+  const tryGrid = (blockCross: boolean): { segs: TopoSegment[]; crossings: number } | null => {
+    // edges use the (wider) trunk half width first, then the branch half width in congested rows; the crossing-free
+    // search is limited to one variant (it is an optimisation, the second pass accepts crossings)
+    for (const hw of blockCross ? [hwBr] : hwBr < (opts.hwTrunk ?? 0) ? [opts.hwTrunk ?? 0, hwBr] : [hwBr]) {
+      const clr = hw + (opts.wallClear ?? 0);
+      for (const poly of polys) {
+        const gaps = avoid.length ? (blockCross ? [0.012 * opts.minLen] : [0.5 * opts.minLen, 0.012 * opts.minLen]) : [0];
+        for (const gap of gaps) {
+          const ctx: GridCtx = { obstacles: opts.obstacles ?? [], hw, termClear: opts.termClear ?? 0, blockCross, crossAvoid: avoid, rootRadius };
+          const r = gridRoute(root, terminals, opts, poly, clr, avoid, gap, ctx);
+          if (!r) continue;
+          const chk = checkClearanceLayout(r, root, terminals, opts, poly);
+          if (chk.ok) return { segs: r, crossings: chk.crossings };
+        }
+      }
+    }
+    return null;
+  };
+  if (!best || best.crossings > 0) {
+    const g0 = tryGrid(true);
+    if (g0) return { segs: g0.segs, valid: true, crossings: g0.crossings };
+    if (!best) {
+      const g1 = tryGrid(false);
+      if (g1) best = g1;
+    }
+  }
+  if (best) return { segs: best.segs, valid: true, crossings: best.crossings };
+
+  // 3. nothing satisfies the clearance rules: legacy layout, reported invalid
+  const legacy = buildLegacyTree(root, terminals, { ...opts, obstacles: undefined });
+  return { segs: legacy.length || !live.length ? legacy : [], valid: false, crossings: 0 };
+}
+
 /**
  * Builds the orthogonal tree rooted at `root`. Segments are ordered so every parent precedes its
  * children. When a room polygon is supplied the straight trunk + branch layout is validated (inside the
  * room with wall clearance, no collinear overlap, clear of `avoid`); if it fails the tree is re-routed on
  * an orthogonal grid that stays inside the room (L / U / rotated rooms).
+ * With `opts.obstacles` the clearance-mode rules apply too (see `TopologyOptions.obstacles`).
  */
+export function buildOrthogonalTreeChecked(
+  root: { x: number; y: number },
+  terminals: TopoTerminal[],
+  opts: TopologyOptions
+): TopoResult {
+  if (opts.obstacles) return clearanceTree(root, terminals, opts);
+  return { segs: buildLegacyTree(root, terminals, opts), valid: true, crossings: 0 };
+}
+
 export function buildOrthogonalTree(
+  root: { x: number; y: number },
+  terminals: TopoTerminal[],
+  opts: TopologyOptions
+): TopoSegment[] {
+  return buildOrthogonalTreeChecked(root, terminals, opts).segs;
+}
+
+function buildLegacyTree(
   root: { x: number; y: number },
   terminals: TopoTerminal[],
   opts: TopologyOptions

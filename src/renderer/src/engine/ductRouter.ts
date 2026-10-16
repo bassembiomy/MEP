@@ -1,6 +1,8 @@
 import { sizeDuctAcoustically, verifyDuctSectionAcoustics } from './acousticDuctEngine';
 import { DiffuserPos } from './diffuserPlacer';
-import { getPolygonCentroid, calculateOptimalIndoorUnitPos } from './geometry';
+import { getPolygonCentroid, calculateOptimalIndoorUnitPos, calculateWallMountedUnitPos } from './geometry';
+import { findClearanceIssue } from './ducts/clearanceCheck';
+import { WALL_DUCT_CLEARANCE_FT, DUCT_TERMINAL_CLEARANCE_FT, scaleRect, terminalFaceRectFt, orthogonalCrossing } from './ducts/clearance';
 import { DuctSegment } from '../store/projectStore';
 import { DuctLocationCategory, AcousticSensitivity, DuctSectionCategory, DuctAcousticVerification } from './types';
 import {
@@ -8,7 +10,6 @@ import {
   chooseReturnCollar,
   pickAxis,
   segmentInsidePolygon,
-  splitRootTerminals,
   Seg2,
   TopoSegment,
   TopoTerminal
@@ -29,7 +30,15 @@ export interface RouteDuctAcousticOptions {
 }
 
 /** DuctSegment plus the topology link used for static-pressure path walking. */
-export type RoutedDuctSegment = DuctSegment & { parentDuctId?: string; lengthFt?: number };
+export type RoutedDuctSegment = DuctSegment & {
+  parentDuctId?: string;
+  lengthFt?: number;
+  /** Unavoidable supply / return plan crossing: this duct needs a vertical offset against `crossoverWith`. */
+  crossover?: boolean;
+  crossoverWith?: string[];
+  /** No clean layout exists in this room: the clearance rule this duct still breaks. */
+  clearanceIssue?: string;
+};
 
 /** Lateral offset between the supply trunk line and the return collar (ft). */
 const RETURN_COLLAR_OFFSET_FT = 3;
@@ -80,6 +89,16 @@ export function routeDucts(
 ): { ducts: DuctSegment[]; unitPos: { x: number; y: number } } {
   // Non-ducted systems (High Wall, standard Cassette) do not use supply duct networks
   if (systemType === 'high-wall' || systemType === 'cassette') {
+    if (systemType === 'high-wall' && points.length >= 6) {
+      // A wall-mounted unit sits ON a wall (back flush, inside the room): snap a floating position onto the nearest wall.
+      const hasCustom = !!customUnitPos && (customUnitPos.x !== 0 || customUnitPos.y !== 0);
+      const wall = calculateWallMountedUnitPos(points, pxPerFt > 0 ? pxPerFt : DEFAULT_PX_PER_FT, {
+        outdoorUnitPos,
+        near: hasCustom ? customUnitPos : undefined
+      });
+      const keep = hasCustom && Math.hypot(wall.x - customUnitPos!.x, wall.y - customUnitPos!.y) < 0.05 * (pxPerFt > 0 ? pxPerFt : DEFAULT_PX_PER_FT);
+      return { ducts: [], unitPos: keep ? customUnitPos! : { x: wall.x, y: wall.y } };
+    }
     return { ducts: [], unitPos: customUnitPos || { x: 0, y: 0 } };
   }
 
@@ -104,7 +123,7 @@ export function routeDucts(
   // 1. Determine Indoor Unit Position (FCU / AHU / RTU Entry)
   let unitPos = customUnitPos;
   if (!unitPos || (unitPos.x === 0 && unitPos.y === 0)) {
-    unitPos = calculateOptimalIndoorUnitPos(points, outdoorUnitPos);
+    unitPos = calculateOptimalIndoorUnitPos(points, outdoorUnitPos, ppf);
   }
 
   const centroid = getPolygonCentroid(points);
@@ -191,6 +210,9 @@ export function routeDucts(
     return { geom, verification };
   };
 
+  /** Sized half widths (ft) of everything emitted in the current attempt: the clearance loop feeds them back. */
+  let needs: Array<{ trunk: boolean; hwFt: number }> = [];
+
   const emitTree = (
     segs: TopoSegment[],
     network: 'supply' | 'return',
@@ -230,6 +252,7 @@ export function routeDucts(
         network === 'return' ? (frictionRateTarget ?? 0.08) : undefined
       );
 
+      needs.push({ trunk: trunkLike, hwFt: Math.max(geom.widthVal, ductShape === 'round' ? geom.diameterVal : 0) / 24 });
       ducts.push({
         id,
         type: network === 'return' ? 'return' : trunkLike ? 'trunk' : 'branch',
@@ -262,94 +285,136 @@ export function routeDucts(
   const isDuctedSystem = systemType === 'concealed' || systemType === 'packaged' || systemType === 'ahu' || systemType === 'vrf' || systemType === 'fcu';
   const unitXY = { x: unitPos.x, y: unitPos.y };
 
-  // Return collar: off the supply trunk line, on the side that is inside the room (>= 1 ft wall clearance),
-  // preferring the side that holds more return grilles. Chosen first so the supply tree can keep clear of the stub.
-  const collar = isDuctedSystem
-    ? chooseReturnCollar(
-        unitXY,
-        axis,
-        RETURN_COLLAR_OFFSET_FT * ppf,
-        points,
-        returnDiffusers.map((d) => ({ x: d.x, y: d.y })),
-        { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 },
-        ppf
-      )
-    : null;
+  // Terminal faces (px) the ducts must stay off; the trunk is moved off the diffuser rows, each terminal gets a short
+  // perpendicular run-out, and the duct EDGE keeps WALL_DUCT_CLEARANCE_FT from the walls.
+  const metric = units === 'metric';
+  const obstacles = diffusers.map((d) => ({
+    id: d.id,
+    rect: scaleRect(terminalFaceRectFt({ x: d.x / ppf, y: d.y / ppf }, d.size, metric), ppf)
+  }));
 
-  // 2. Supply: orthogonal trunk + perpendicular branches
-  let supplyAvoid: Seg2[] = [];
-  if (supplyDiffusers.length > 0) {
-    const terminals: TopoTerminal[] = supplyDiffusers.map((d) => ({ id: d.id, x: d.x, y: d.y, cfm: d.cfm }));
-    const segs = buildOrthogonalTree(unitXY, terminals, {
-      ...treeOpts,
-      avoid: collar ? [{ start: unitXY, end: collar }] : []
-    });
-    supplyAvoid = segs.map((g) => ({ start: g.start, end: g.end }));
-    emitTree(segs, 'supply', undefined, (seg, t, b) =>
-      seg.kind === 'trunk' ? `duct-trunk-${zoneId}-${t}` : `duct-branch-${zoneId}-${b}`
-    );
-  }
+  const buildAll = (hwT: number, hwB: number): void => {
+    ducts.length = 0;
+    needs = [];
+    const clearanceOpts = {
+      obstacles,
+      hwTrunk: hwT * ppf,
+      hwBranch: hwB * ppf,
+      wallClear: WALL_DUCT_CLEARANCE_FT * ppf,
+      termClear: DUCT_TERMINAL_CLEARANCE_FT * ppf
+    };
 
-  // 3. For Ducted Systems (Concealed, Packaged, AHU, VRF), add orthogonal return ductwork
-  if (isDuctedSystem && collar) {
+    // 2. Supply: orthogonal trunk + perpendicular branches
+    let supplyAvoid: Seg2[] = [];
+    if (supplyDiffusers.length > 0) {
+      const terminals: TopoTerminal[] = supplyDiffusers.map((d) => ({ id: d.id, x: d.x, y: d.y, cfm: d.cfm }));
+      const segs = buildOrthogonalTree(unitXY, terminals, { ...treeOpts, ...clearanceOpts, avoid: [] });
+      supplyAvoid = segs.map((g) => ({ start: g.start, end: g.end }));
+      emitTree(segs, 'supply', undefined, (seg, t, b) =>
+        seg.kind === 'trunk' ? `duct-trunk-${zoneId}-${t}` : `duct-branch-${zoneId}-${b}`
+      );
+    }
+
+    // 3. For Ducted Systems (Concealed, Packaged, AHU, VRF), add orthogonal return ductwork
+    if (!isDuctedSystem) return;
     const totalFlow = supplyDiffusers.reduce((sum, d) => sum + d.cfm, 0);
     const returnFlow = returnDiffusers.length > 0
-      ? returnDiffusers.reduce((s, d) => s + d.cfm, 0)
+      ? returnDiffusers.reduce((sum, d) => sum + d.cfm, 0)
       : Math.round(totalFlow * 0.9);
+    if (!(returnFlow > 0)) return;
 
-    if (returnFlow > 0) {
-      const stubId = `duct-return-${zoneId}-stub`;
+    if (returnDiffusers.length > 0) {
+      // Return trunk on its own line off the unit (>= collar offset from the supply trunk), clear of the supply network
       const terminals: TopoTerminal[] = returnDiffusers.map((d) => ({ id: d.id, x: d.x, y: d.y, cfm: d.cfm }));
-      // Grilles sitting on the collar are served by the stub itself (it ends there)
-      const { rest, atRoot } = splitRootTerminals(collar, terminals, treeOpts);
-      const stubSeg: TopoSegment = {
-        key: -1,
-        kind: 'trunk',
-        start: unitXY,
-        end: collar,
-        flow: returnFlow,
-        parent: -1,
-        direct: atRoot.map((t) => t.id),
-        downstream: returnDiffusers.map((d) => d.id),
-        orientation: horizontal ? 'v' : 'h',
-        isTakeoff: false,
-        onTrunk: false
-      };
-      emitTree([stubSeg], 'return', undefined, () => stubId);
+      const segs = buildOrthogonalTree(unitXY, terminals, {
+        ...treeOpts,
+        ...clearanceOpts,
+        avoid: supplyAvoid,
+        minRootOffset: RETURN_COLLAR_OFFSET_FT * ppf
+      });
+      let n = 0;
+      emitTree(segs, 'return', undefined, () => `duct-return-${zoneId}-${n++}`);
+      return;
+    }
 
-      if (returnDiffusers.length > 0) {
-        const segs = buildOrthogonalTree(collar, rest, {
-          ...treeOpts,
-          // keep clear of the unit connection and of the whole supply network
-          avoid: [{ start: unitXY, end: collar }, ...supplyAvoid]
-        });
-        let n = 0;
-        emitTree(segs, 'return', stubId, () => `duct-return-${zoneId}-${n++}`);
-      } else {
-        // Plenum return: short orthogonal intake run from the collar toward the room centre
-        const centreU = horizontal ? centroid.x : centroid.y;
-        const unitU = horizontal ? unitPos.x : unitPos.y;
-        const pref = centreU - unitU >= 0 ? 1 : -1;
-        const baseLen = Math.max(3 * ppf, Math.min(6 * ppf, Math.abs(centreU - unitU) || 6 * ppf));
-        const endFor = (d: number, l: number): { x: number; y: number; } =>
-          horizontal ? { x: collar.x + d * l, y: collar.y } : { x: collar.x, y: collar.y + d * l };
-        let end = endFor(pref, baseLen);
-        outer: for (const l of [baseLen, baseLen * 0.67, baseLen * 0.33]) {
-          for (const d of [pref, -pref]) {
-            const cand = endFor(d, l);
-            if (segmentInsidePolygon(collar, cand, points, 0.2 * ppf, 0.5 * ppf, [collar])) { end = cand; break outer; }
-          }
-        }
-        const runSeg: TopoSegment = {
-          ...stubSeg,
-          start: collar,
-          end,
-          parent: -1,
-          direct: [],
-          orientation: horizontal ? 'h' : 'v'
-        };
-        emitTree([runSeg], 'return', stubId, () => `duct-return-${zoneId}`);
+    // Plenum return: stub to the collar, then a short orthogonal intake run toward the room centre
+    const collar = chooseReturnCollar(
+      unitXY,
+      axis,
+      RETURN_COLLAR_OFFSET_FT * ppf,
+      points,
+      [],
+      { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 },
+      ppf
+    );
+    const stubId = `duct-return-${zoneId}-stub`;
+    const stubSeg: TopoSegment = {
+      key: -1,
+      kind: 'trunk',
+      start: unitXY,
+      end: collar,
+      flow: returnFlow,
+      parent: -1,
+      direct: [],
+      downstream: [],
+      orientation: horizontal ? 'v' : 'h',
+      isTakeoff: false,
+      onTrunk: false
+    };
+    emitTree([stubSeg], 'return', undefined, () => stubId);
+    const centreU = horizontal ? centroid.x : centroid.y;
+    const unitU = horizontal ? unitPos.x : unitPos.y;
+    const pref = centreU - unitU >= 0 ? 1 : -1;
+    const baseLen = Math.max(3 * ppf, Math.min(6 * ppf, Math.abs(centreU - unitU) || 6 * ppf));
+    const endFor = (d: number, l: number): { x: number; y: number; } =>
+      horizontal ? { x: collar.x + d * l, y: collar.y } : { x: collar.x, y: collar.y + d * l };
+    let end = endFor(pref, baseLen);
+    outer: for (const l of [baseLen, baseLen * 0.67, baseLen * 0.33]) {
+      for (const d of [pref, -pref]) {
+        const cand = endFor(d, l);
+        if (segmentInsidePolygon(collar, cand, points, 0.2 * ppf, 0.5 * ppf, [collar])) { end = cand; break outer; }
       }
+    }
+    const runSeg: TopoSegment = { ...stubSeg, start: collar, end, parent: -1, direct: [], orientation: horizontal ? 'h' : 'v' };
+    emitTree([runSeg], 'return', stubId, () => `duct-return-${zoneId}`);
+  };
+
+  // Route -> size -> verify: the sized half widths feed back into the clearance rules until they agree.
+  let hwT = 0.6, hwB = 0.4;
+  for (let iter = 0; iter < 4; iter++) {
+    buildAll(hwT, hwB);
+    const needT = needs.reduce((m, x) => (x.trunk ? Math.max(m, x.hwFt) : m), 0);
+    const needB = needs.reduce((m, x) => (x.trunk ? m : Math.max(m, x.hwFt)), 0);
+    if (needT <= hwT + 1e-6 && needB <= hwB + 1e-6) break;
+    hwT = Math.max(hwT, needT);
+    hwB = Math.max(hwB, needB);
+  }
+
+  // Ducts that still break a clearance rule (rooms too small for a clean layout) are flagged, never silent
+  for (const d of ducts) {
+    const issue = findClearanceIssue(
+      { seg: { start: { x: d.points[0], y: d.points[1] }, end: { x: d.points[2], y: d.points[3] } }, width: (d.widthIn / 12) * ppf, endsAt: diffusers.map((q) => q.id) },
+      points,
+      obstacles,
+      ppf
+    );
+    if (issue) { d.clearanceIssue = issue; }
+  }
+
+  // Unavoidable supply / return crossings are flagged: the crossing ducts need a vertical offset
+  for (const sd of ducts) {
+    if (sd.type === 'return') continue;
+    for (const rd of ducts) {
+      if (rd.type !== 'return') continue;
+      const p = orthogonalCrossing(
+        { start: { x: sd.points[0], y: sd.points[1] }, end: { x: sd.points[2], y: sd.points[3] } },
+        { start: { x: rd.points[0], y: rd.points[1] }, end: { x: rd.points[2], y: rd.points[3] } },
+        0.02 * ppf
+      );
+      if (!p || Math.hypot(p.x - unitXY.x, p.y - unitXY.y) <= 0.1 * ppf) continue;
+      sd.crossover = true; rd.crossover = true;
+      sd.crossoverWith = [...(sd.crossoverWith ?? []), rd.id];
+      rd.crossoverWith = [...(rd.crossoverWith ?? []), sd.id];
     }
   }
 

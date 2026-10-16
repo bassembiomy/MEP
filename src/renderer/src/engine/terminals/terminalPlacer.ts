@@ -2,6 +2,7 @@ import { EquipmentServiceZone, DesignControlMode } from '../zoning/zonePartition
 import { selectBestDiffuserFromCatalog, neckAreaSqFt, MAX_NECK_VELOCITY_FPM } from './diffuserSelector';
 import { STANDARD_DIFFUSER_CATALOG } from '../hvacCatalogs';
 import { DiffuserCatalogItem } from '../types';
+import type { Rect } from '../ducts/clearance';
 import { layoutTerminalGrid, THROW_RATIO_MIN, THROW_RATIO_MAX, MIN_TERMINAL_SPACING_FT } from '../geometry';
 
 export interface CoordinatedAirTerminal {
@@ -84,7 +85,7 @@ export function selectDiffuserCountAndSize(
   polygonFt: number[],
   zoneCfm: number,
   targetNc: number,
-  options: { catalog?: DiffuserCatalogItem[]; maxNeckVelocityFpm?: number; maxCount?: number; unitPerFt?: number } = {}
+  options: { catalog?: DiffuserCatalogItem[]; maxNeckVelocityFpm?: number; maxCount?: number; unitPerFt?: number; keepOuts?: Rect[] } = {}
 ): ThrowSelection | null {
   const catalog = options.catalog ?? STANDARD_DIFFUSER_CATALOG;
   const vLimit = options.maxNeckVelocityFpm ?? MAX_NECK_VELOCITY_FPM;
@@ -98,7 +99,7 @@ export function selectDiffuserCountAndSize(
     let bestScore = Infinity;
     const seenCounts = new Set<number>();
     for (let n = 1; n <= nMax; n++) {
-      const grid = layoutTerminalGrid(polygonFt, n, { unitPerFt: options.unitPerFt ?? 1 });
+      const grid = layoutTerminalGrid(polygonFt, n, { unitPerFt: options.unitPerFt ?? 1, keepOuts: options.keepOuts });
       const actual = grid.points.length;
       if (actual < 1 || seenCounts.has(actual)) continue;
       seenCounts.add(actual);
@@ -178,14 +179,14 @@ function emitTerminals(
  */
 export function placeSupplyDiffusersForZone(
   zone: EquipmentServiceZone,
-  options: { targetCfmPerDiffuser?: number; unitPerFt?: number; optimizeThrow?: boolean } = {}
+  options: { targetCfmPerDiffuser?: number; unitPerFt?: number; optimizeThrow?: boolean; keepOuts?: Rect[] } = {}
 ): CoordinatedAirTerminal[] {
-  const { targetCfmPerDiffuser = 350, unitPerFt = 1, optimizeThrow = false } = options;
+  const { targetCfmPerDiffuser = 350, unitPerFt = 1, optimizeThrow = false, keepOuts } = options;
   const zoneCfm = zone.supplyCfm;
   if (!(zoneCfm > 0) || zone.serviceAreaPolygon.length < 6) return [];
 
   if (optimizeThrow) {
-    const sel = selectDiffuserCountAndSize(zone.serviceAreaPolygon, zoneCfm, zone.targetNc, { unitPerFt });
+    const sel = selectDiffuserCountAndSize(zone.serviceAreaPolygon, zoneCfm, zone.targetNc, { unitPerFt, keepOuts });
     if (sel) {
       const item = sel.item;
       const face = item.faceSizeIn ? `${item.faceSizeIn.width}"x${item.faceSizeIn.height}"` : '24"x24"';
@@ -209,7 +210,7 @@ export function placeSupplyDiffusersForZone(
     selected = selectBestDiffuserFromCatalog(Math.round(zoneCfm / numDiffusers), zone.targetNc);
   }
 
-  const grid = layoutTerminalGrid(zone.serviceAreaPolygon, numDiffusers, { unitPerFt });
+  const grid = layoutTerminalGrid(zone.serviceAreaPolygon, numDiffusers, { unitPerFt, keepOuts });
   if (grid.points.length === 0) return [];
   numDiffusers = grid.points.length; // the room may hold fewer than requested; never stack terminals
 

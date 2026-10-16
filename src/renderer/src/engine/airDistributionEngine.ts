@@ -5,14 +5,15 @@ import { generateDesignDecisionLog } from './systemArchitecture/designDecisionLo
 import { partitionRoomIntoServiceZones, EquipmentServiceZone } from './zoning/zonePartitioner';
 import { placeSupplyDiffusersForZone, CoordinatedAirTerminal } from './terminals/terminalPlacer';
 import { placeReturnGrillesForZone } from './terminals/returnPlacer';
-import { routeSteppedSupplyDucts, ductSegments, SteppedDuctSection } from './ducts/steppedDuctRouter';
-import type { Seg2 } from './ducts/orthogonalTopology';
+import { routeSteppedSupplyDucts, ductSegments, flagCrossovers, SteppedDuctSection } from './ducts/steppedDuctRouter';
+import type { Seg2, TopoObstacle } from './ducts/orthogonalTopology';
+import { Rect, inflateRect, ductBodyRect, terminalFaceRectFt, unitFootprintFt, unitKeepOutFt, DEFAULT_IDU_LENGTH_IN, DEFAULT_IDU_WIDTH_IN, DUCT_TERMINAL_CLEARANCE_FT } from './ducts/clearance';
 import { routeReturnDucts } from './ducts/returnDuctRouter';
 import { sizeDuctNetwork } from './ducts/aerodynamicDuctSizer';
 import { routeFreshAirDucts, OutdoorAirSystem } from './outdoorAir/freshAirRouter';
 import { calculateAshrae621Ventilation, Ashrae621Result } from './outdoorAir/outdoorAirCalculator';
 import { polygonPxToFt, pxPerFt, UnitSystem, MM_PER_IN } from './units';
-import { calculateOutdoorUnitPlacement, isPointInPolygon, MIN_TERMINAL_SPACING_FT } from './geometry';
+import { calculateOutdoorUnitPlacement, MIN_TERMINAL_SPACING_FT, Pt2 } from './geometry';
 import { executeMasterHvacValidation, MasterValidationReport } from './validation/hvacValidator';
 
 export interface AirDistributionDesignInput {
@@ -43,6 +44,11 @@ export interface AirDistributionDesignInput {
   ventilationEffectivenessEz?: number;
   /** Local exhaust from the room (CFM). Default 0. */
   exhaustCfm?: number;
+  /**
+   * Outlines of the OTHER zones of the project, in the same units as `roomPolygon` (canvas px when `scalePxPerUnit` is
+   * given, else ft). Outdoor units are never placed inside / overlapping them.
+   */
+  otherZonePolygons?: number[][];
 }
 
 export interface DesignMassBalance {
@@ -81,8 +87,34 @@ export interface AirDistributionDesignResult {
   units?: 'imperial' | 'metric';
   ventilation: Ashrae621Result;
   massBalance: DesignMassBalance;
-  /** Outdoor unit centre per service zone, in FEET, outside the room on an exterior wall. */
-  outdoorUnitPositions: Array<{ x: number; y: number; wallSide: string }>;
+  /**
+   * Outdoor unit per service zone, in FEET, outside the room on an exterior wall. `angleDeg` is the footprint's long
+   * axis (along the wall), `lengthFt` x `depthFt` the footprint (default 34 x 13 in).
+   */
+  outdoorUnitPositions: Array<{ x: number; y: number; wallSide: string; angleDeg?: number; lengthFt?: number; depthFt?: number }>;
+  /** Indoor unit footprint (in) used for the keep-out zones, per service zone id. */
+  unitFootprintsIn?: Record<string, { lengthIn: number; widthIn: number }>;
+  /** Layout compromises (e.g. keep-out zone relaxed because the room is too small to honour it). */
+  layoutWarnings?: string[];
+}
+
+/** Terminal faces of the whole room as routing obstacles (ft). */
+function terminalObstacles(terms: CoordinatedAirTerminal[]): TopoObstacle[] {
+  return terms.map((t) => ({ id: t.id, rect: terminalFaceRectFt(t.position, t.faceDimension) }));
+}
+
+/** Terminal-centre exclusion zones (ft): unit footprint + service clearance + half the largest face. */
+function terminalKeepOuts(
+  zones: EquipmentServiceZone[],
+  dims: Record<string, { lengthIn: number; widthIn: number }>,
+  level: 'service' | 'footprint' | 'none'
+): Rect[] {
+  if (level === 'none') return [];
+  return zones.map((z) => {
+    const d = dims[z.id];
+    const base = level === 'service' ? unitKeepOutFt(z.equipmentPosition, d) : unitFootprintFt(z.equipmentPosition, d);
+    return inflateRect(base, 1.0);
+  });
 }
 
 /** Makes the last terminal absorb rounding so the group's CFM sums exactly to `total`. */
@@ -228,50 +260,120 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   const allSupplyDucts: SteppedDuctSection[] = [];
   const allReturnDucts: SteppedDuctSection[] = [];
 
-  // Terminals first, then ALL supply networks (each avoiding the segments already routed), then the return
-  // networks (each avoiding every supply segment plus the returns routed before it). Explicit data flow only.
+  // Indoor unit footprints come from the selected catalog item (default ducted unit 40 x 24 in)
+  const catDims = chosenCandidate.equipmentDetails?.catalogItem?.dimensionsIn;
+  const unitDims: Record<string, { lengthIn: number; widthIn: number }> = {};
+  for (const z of serviceZones) {
+    unitDims[z.id] = catDims && catDims.width > 0 && catDims.depth > 0
+      ? { lengthIn: Math.max(catDims.width, catDims.depth), widthIn: Math.min(catDims.width, catDims.depth) }
+      : { lengthIn: DEFAULT_IDU_LENGTH_IN, widthIn: DEFAULT_IDU_WIDTH_IN };
+  }
+  const layoutWarnings: string[] = [];
+
+  // Order: supply terminals (outside every unit's footprint + 2 ft service clearance) -> supply networks -> return grilles
+  // (outside the units' keep-outs AND clear of the routed supply ducts) -> return networks. Each network avoids the
+  // segments already routed; explicit data flow only.
   const supplyByZone = new Map<string, CoordinatedAirTerminal[]>();
   const returnByZone = new Map<string, CoordinatedAirTerminal[]>();
   for (const zone of serviceZones) {
-    const supplyInZone = placeSupplyDiffusersForZone(zone, { targetCfmPerDiffuser: 350, optimizeThrow: true });
-    const returnInZone = spreadReturnCfm(placeReturnGrillesForZone(zone, supplyInZone), zone.returnCfm);
+    let supplyInZone: CoordinatedAirTerminal[] = [];
+    for (const level of ['service', 'footprint', 'none'] as const) {
+      supplyInZone = placeSupplyDiffusersForZone(zone, { targetCfmPerDiffuser: 350, optimizeThrow: true, keepOuts: terminalKeepOuts(serviceZones, unitDims, level) });
+      if (supplyInZone.length > 0) {
+        if (level !== 'service') layoutWarnings.push(`${zone.unitTag}: ${level === 'footprint' ? 'unit service clearance' : 'unit keep-out'} relaxed - bay too small for the full keep-out zone`);
+        break;
+      }
+    }
     supplyByZone.set(zone.id, supplyInZone);
-    returnByZone.set(zone.id, returnInZone);
     allSupplyTerminals.push(...supplyInZone);
-    allReturnTerminals.push(...returnInZone);
   }
 
-  const supplyNetwork: Seg2[] = [];
+  const routeSupply = (obstacles: TopoObstacle[]): void => {
+    allSupplyDucts.length = 0;
+    const network: Seg2[] = [];
+    for (const zone of serviceZones) {
+      // Phase 5 & 6: Stepped Duct Network Routing & Sizing
+      const raw = routeSteppedSupplyDucts(zone, supplyByZone.get(zone.id)!, profile, network, { obstacles, units });
+      const sized = sizeDuctNetwork(raw, profile, maxAvailableCeilingDepthIn, units);
+      allSupplyDucts.push(...sized);
+      network.push(...ductSegments(sized));
+    }
+  };
+  routeSupply(terminalObstacles(allSupplyTerminals));
+
+  // Return grilles keep off the supply ducts: body + 0.5 ft edge clearance + the largest half face
+  const supplyStrips = (): Rect[] => allSupplyDucts.map((d) =>
+    inflateRect(ductBodyRect({ start: d.startPoint, end: d.endPoint }, d.widthIn / 24), DUCT_TERMINAL_CLEARANCE_FT + 1.0));
+  let ductStripsRelaxed = false;
   for (const zone of serviceZones) {
-    // Phase 5 & 6: Stepped Duct Network Routing & Sizing
-    const rawSupplyDucts = routeSteppedSupplyDucts(zone, supplyByZone.get(zone.id)!, profile, supplyNetwork);
-    const sizedSupply = sizeDuctNetwork(rawSupplyDucts, profile, maxAvailableCeilingDepthIn, units);
-    allSupplyDucts.push(...sizedSupply);
-    supplyNetwork.push(...ductSegments(sizedSupply));
+    let ret: CoordinatedAirTerminal[] = [];
+    const strips = supplyStrips();
+    const attempts: Array<{ level: 'service' | 'footprint' | 'none'; ducts: boolean }> = [
+      { level: 'service', ducts: true }, { level: 'footprint', ducts: true },
+      { level: 'service', ducts: false }, { level: 'footprint', ducts: false }, { level: 'none', ducts: false }
+    ];
+    for (const at of attempts) {
+      const keepOuts = [...terminalKeepOuts(serviceZones, unitDims, at.level), ...(at.ducts ? strips : [])];
+      ret = spreadReturnCfm(placeReturnGrillesForZone(zone, supplyByZone.get(zone.id)!, { keepOuts }), zone.returnCfm);
+      const sup = supplyByZone.get(zone.id)!;
+      const separated = ret.every((r) => sup.every((q) => Math.hypot(r.position.x - q.position.x, r.position.y - q.position.y) >= MIN_TERMINAL_SPACING_FT - 1e-6));
+      // a layout that squeezes a grille closer than 4 ft to a supply is only accepted when nothing better exists
+      if (ret.length > 0 && (separated || at === attempts[attempts.length - 1])) {
+        if (!at.ducts) ductStripsRelaxed = true;
+        if (at.level !== 'service' && !layoutWarnings.some((w) => w.startsWith(`${zone.unitTag}: unit`))) {
+          layoutWarnings.push(`${zone.unitTag}: ${at.level === 'footprint' ? 'unit service clearance' : 'unit keep-out'} relaxed - bay too small for the full keep-out zone`);
+        }
+        break;
+      }
+    }
+    returnByZone.set(zone.id, ret);
+    allReturnTerminals.push(...ret);
   }
+  const routing = { obstacles: terminalObstacles([...allSupplyTerminals, ...allReturnTerminals]), units };
+  // a return grille that could not keep off the supply ducts: re-route the supply networks around it
+  if (ductStripsRelaxed) routeSupply(routing.obstacles);
+  const supplyNetwork: Seg2[] = ductSegments(allSupplyDucts);
 
   const returnNetwork: Seg2[] = [];
   for (const zone of serviceZones) {
-    const rawReturnDucts = routeReturnDucts(zone, returnByZone.get(zone.id)!, profile, [...supplyNetwork, ...returnNetwork]);
+    const rawReturnDucts = routeReturnDucts(zone, returnByZone.get(zone.id)!, profile, [...supplyNetwork, ...returnNetwork], routing);
     const sizedReturn = sizeDuctNetwork(rawReturnDucts, profile, maxAvailableCeilingDepthIn, units);
     allReturnDucts.push(...sizedReturn);
     returnNetwork.push(...ductSegments(sizedReturn));
   }
+  const crossovers = flagCrossovers(allSupplyDucts, allReturnDucts, serviceZones.map((z) => z.equipmentPosition));
+  if (crossovers > 0) layoutWarnings.push(`${crossovers} supply / return crossover(s) could not be routed around - vertical offset required`);
 
-  // Outdoor units: outside the room on an exterior wall (feet), spaced along that wall
-  const oduBase = calculateOutdoorUnitPlacement(roomPolygon, [], null, 1, { side: mountingWallSide });
-  const alongX = oduBase.wallSide === 'north' || oduBase.wallSide === 'south';
-  const outdoorUnitPositions = serviceZones.map((_, idx) => {
-    const off = (idx - (serviceZones.length - 1) / 2) * 4;
-    const p = { x: oduBase.x + (alongX ? off : 0), y: oduBase.y + (alongX ? 0 : off) };
-    const ok = !isPointInPolygon(p.x, p.y, roomPolygon);
-    return { x: ok ? p.x : oduBase.x, y: ok ? p.y : oduBase.y, wallSide: oduBase.wallSide };
+  // Outdoor units: outside the room on an exterior wall (feet), >= 1 ft off the wall, never over another zone,
+  // spaced >= 1 ft apart along that wall (34 x 13 in footprint)
+  const others = (input.otherZonePolygons ?? []).map((p) => (hasScale ? polygonPxToFt(p, scalePxPerUnit as number, units) : p.slice()));
+  const placedOdu: Pt2[][] = [];
+  const outdoorUnitPositions = serviceZones.map((z) => {
+    const p = calculateOutdoorUnitPlacement(roomPolygon, [], null, 1, {
+      side: mountingWallSide,
+      otherZonePolygons: others,
+      placedFootprints: placedOdu,
+      preferNear: { x: z.equipmentPosition.x, y: z.equipmentPosition.y }
+    });
+    const rad = ((p.angleDeg ?? 0) * Math.PI) / 180;
+    const tx = Math.cos(rad), ty = Math.sin(rad);
+    const L = p.lengthFt ?? 0, D = p.depthFt ?? 0;
+    placedOdu.push([
+      { x: p.x - tx * L / 2 + ty * D / 2, y: p.y - ty * L / 2 - tx * D / 2 },
+      { x: p.x + tx * L / 2 + ty * D / 2, y: p.y + ty * L / 2 - tx * D / 2 },
+      { x: p.x + tx * L / 2 - ty * D / 2, y: p.y + ty * L / 2 + tx * D / 2 },
+      { x: p.x - tx * L / 2 - ty * D / 2, y: p.y - ty * L / 2 + tx * D / 2 }
+    ]);
+    return { x: p.x, y: p.y, wallSide: p.wallSide as string, angleDeg: p.angleDeg, lengthFt: p.lengthFt, depthFt: p.depthFt, wall: p.wall };
   });
+  const oduBase = outdoorUnitPositions[0]
+    ? outdoorUnitPositions[0].wall
+    : { x1: 0, y1: 0, x2: 0, y2: 0 };
 
   // Phase 7: Dedicated Outdoor Air System (intake louver on the same exterior wall)
   const outdoorAirSystem = routeFreshAirDucts(serviceZones, totalOaCfm, {
-    x: (oduBase.wall.x1 + oduBase.wall.x2) / 2,
-    y: (oduBase.wall.y1 + oduBase.wall.y2) / 2
+    x: (oduBase.x1 + oduBase.x2) / 2,
+    y: (oduBase.y1 + oduBase.y2) / 2
   });
 
   // Phase 8: Master 9-Point Validation
@@ -328,7 +430,9 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     units: units === 'metric' ? 'metric' : 'imperial',
     ventilation,
     massBalance,
-    outdoorUnitPositions
+    outdoorUnitPositions: outdoorUnitPositions.map(({ wall: _wall, ...rest }) => rest),
+    unitFootprintsIn: unitDims,
+    layoutWarnings
   };
 }
 

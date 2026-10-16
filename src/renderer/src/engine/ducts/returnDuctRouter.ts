@@ -3,6 +3,9 @@ import { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
 import { ASHRAE_PROFILE, StandardsProfile } from '../standards/designStandards';
 import {
   SteppedDuctSection,
+  RoutingContext,
+  requiredHalfWidthsFt,
+  flagClearanceIssues,
   RETURN_COLLAR_OFFSET_FT,
   STEPPED_ROUTER_TOLERANCES,
   serviceAreaBounds,
@@ -19,6 +22,7 @@ import {
   TopoTerminal
 } from './orthogonalTopology';
 import { sizeDuctNetwork } from './aerodynamicDuctSizer';
+import { DUCT_TERMINAL_CLEARANCE_FT, WALL_DUCT_CLEARANCE_FT } from './clearance';
 
 /** Plenum-return intake run length (ft) when no return grilles are supplied. */
 const PLENUM_INTAKE_LENGTH_FT = 6;
@@ -34,7 +38,8 @@ export function routeReturnDucts(
   returnTerminals: CoordinatedAirTerminal[] = [],
   profile: StandardsProfile = ASHRAE_PROFILE,
   /** Segments already routed (this zone's supply + all other zones' supply / earlier returns) to keep clear of. */
-  avoidSegments: Seg2[] = []
+  avoidSegments: Seg2[] = [],
+  ctx: RoutingContext = {}
 ): SteppedDuctSection[] {
   const eqPos = zone.equipmentPosition;
   const poly = zone.serviceAreaPolygon && zone.serviceAreaPolygon.length >= 6
@@ -67,6 +72,41 @@ export function routeReturnDucts(
     : zone.returnCfm || Math.round(zone.supplyCfm * 0.88);
 
   const r2 = (n: number): number => parseFloat(n.toFixed(2));
+
+  // Clearance mode: the return trunk leaves the unit on its own line (>= collar offset from the supply trunk, on the
+  // side the supply stub does not use), stays off every diffuser face and keeps its edge off the walls. The router
+  // sizes the result and feeds the sized half widths back until routing and sizing agree.
+  if (ctx.obstacles !== undefined && grilles.length > 0) {
+    const terminals: TopoTerminal[] = grilles.map((t) => ({ id: t.id, x: t.position.x, y: t.position.y, cfm: t.cfm }));
+    const depth = zone.maxAvailableCeilingDepthIn ?? 14;
+    let hwT = 0.7, hwB = 0.4;
+    let sized: SteppedDuctSection[] = [];
+    for (let iter = 0; iter < 4; iter++) {
+      const segs = buildOrthogonalTree({ x: eqPos.x, y: eqPos.y }, terminals, {
+        axis,
+        snapTol: STEPPED_ROUTER_TOLERANCES.STATION_SNAP_FT,
+        onLineTol: STEPPED_ROUTER_TOLERANCES.ON_LINE_TOL_FT,
+        minLen: STEPPED_ROUTER_TOLERANCES.MIN_PIECE_FT,
+        polygon: bayPoly ?? roomPoly,
+        fallbackPolygon: roomPoly,
+        avoid: avoidSegments,
+        obstacles: ctx.obstacles,
+        hwTrunk: hwT,
+        hwBranch: hwB,
+        wallClear: WALL_DUCT_CLEARANCE_FT,
+        termClear: DUCT_TERMINAL_CLEARANCE_FT,
+        minRootOffset: RETURN_COLLAR_OFFSET_FT
+      });
+      const sections = topologyToSections(zone, segs, { systemType: 'return', idPrefix: 'RDS', root: { x: eqPos.x, y: eqPos.y }, axis });
+      sized = sizeDuctNetwork(sections, profile, depth, ctx.units);
+      const need = requiredHalfWidthsFt(sized);
+      if (need.trunk <= hwT + 1e-6 && need.branch <= hwB + 1e-6) break;
+      hwT = Math.max(hwT, need.trunk);
+      hwB = Math.max(hwB, need.branch);
+    }
+    return flagClearanceIssues(sized, roomPoly, ctx.obstacles);
+  }
+
   const stubId = `RDS-${zone.unitTag}-1`;
   const stub: SteppedDuctSection = {
     id: stubId,

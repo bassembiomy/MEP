@@ -1,8 +1,11 @@
 import { EquipmentServiceZone, DesignControlMode } from '../zoning/zonePartitioner';
 import { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
 import { ASHRAE_PROFILE, StandardsProfile } from '../standards/designStandards';
-import { buildOrthogonalTree, pickAxis, returnStubCandidates, Seg2, TopoSegment, TopoTerminal } from './orthogonalTopology';
+import { buildOrthogonalTree, pickAxis, returnStubCandidates, Seg2, TopoObstacle, TopoSegment, TopoTerminal } from './orthogonalTopology';
 import { sizeDuctNetwork } from './aerodynamicDuctSizer';
+import { DUCT_TERMINAL_CLEARANCE_FT, WALL_DUCT_CLEARANCE_FT, orthogonalCrossing } from './clearance';
+import { findClearanceIssue } from './clearanceCheck';
+import type { UnitSystem } from '../units';
 
 export interface SteppedDuctSection {
   id: string;
@@ -36,6 +39,77 @@ export interface SteppedDuctSection {
   /** true when friction / velocity / aspect / depth criteria were all met by the selected size */
   meetsDesignCriteria?: boolean;
   designWarnings?: string[];
+  /**
+   * Supply / return plan crossing that could not be routed around: this section crosses the listed foreign-network
+   * sections and needs a vertical offset (one duct passes above the other).
+   */
+  crossover?: boolean;
+  crossoverWith?: string[];
+  /** Set when no clean layout exists in this room: the rule this section still breaks (wall / terminal clearance). */
+  clearanceIssue?: string;
+}
+
+/** Verifies the sized sections against the plan clearance rules and flags every section that still breaks one. */
+export function flagClearanceIssues(
+  sections: SteppedDuctSection[],
+  roomPolygon: number[] | undefined,
+  obstacles: ReadonlyArray<TopoObstacle>
+): SteppedDuctSection[] {
+  for (const s of sections) {
+    const issue = findClearanceIssue(
+      { seg: { start: s.startPoint, end: s.endPoint }, width: s.widthIn / 12, endsAt: s.directDiffusers ?? [] },
+      roomPolygon,
+      obstacles
+    );
+    if (issue) {
+      s.clearanceIssue = issue;
+      s.designWarnings = [...(s.designWarnings ?? []), `Clearance: ${issue}`];
+    }
+  }
+  return sections;
+}
+
+/** Terminal faces and sizing units shared by the routers; giving `obstacles` switches them to clearance mode. */
+export interface RoutingContext {
+  /** Faces (ft) of every terminal of the room. */
+  obstacles?: TopoObstacle[];
+  units?: UnitSystem | string;
+}
+
+/**
+ * Marks every supply / return section pair that crosses in plan (outside the shared unit roots) as a "crossover":
+ * the crossing was unavoidable and needs a vertical offset. Returns the number of crossings.
+ */
+export function flagCrossovers(
+  supply: SteppedDuctSection[],
+  returns: SteppedDuctSection[],
+  roots: ReadonlyArray<{ x: number; y: number }>
+): number {
+  let n = 0;
+  for (const s of supply) {
+    for (const r of returns) {
+      const p = orthogonalCrossing({ start: s.startPoint, end: s.endPoint }, { start: r.startPoint, end: r.endPoint }, 0.02);
+      if (!p || roots.some((q) => Math.hypot(q.x - p.x, q.y - p.y) <= 0.1)) continue;
+      n++;
+      for (const [a, b] of [[s, r], [r, s]] as Array<[SteppedDuctSection, SteppedDuctSection]>) {
+        a.crossover = true;
+        a.crossoverWith = [...(a.crossoverWith ?? []), b.id];
+        a.designWarnings = [...(a.designWarnings ?? []), `Crossover with ${b.id}: vertical offset required`];
+      }
+    }
+  }
+  return n;
+}
+
+/** Half widths (ft) of the sized sections: trunk-role and branch / run-out role. */
+export function requiredHalfWidthsFt(sections: ReadonlyArray<SteppedDuctSection>): { trunk: number; branch: number } {
+  let trunk = 0, branch = 0;
+  for (const s of sections) {
+    const hw = Math.max(s.widthIn, s.shape === 'round' ? s.diameterIn ?? s.widthIn : 0) / 24;
+    if (s.role === 'main-trunk') trunk = Math.max(trunk, hw);
+    else branch = Math.max(branch, hw);
+  }
+  return { trunk, branch };
 }
 
 /** Lateral offset (ft) between the supply trunk line and the return trunk line / unit return collar. */
@@ -140,7 +214,8 @@ export function routeSteppedSupplyDucts(
   supplyTerminals: CoordinatedAirTerminal[],
   profile: StandardsProfile = ASHRAE_PROFILE,
   /** Segments already routed by neighbouring zones (explicit data flow; no hidden shared state). */
-  avoidSegments: Seg2[] = []
+  avoidSegments: Seg2[] = [],
+  ctx: RoutingContext = {}
 ): SteppedDuctSection[] {
   if (supplyTerminals.length === 0) return [];
 
@@ -152,25 +227,41 @@ export function routeSteppedSupplyDucts(
   const { bayPoly, roomPoly } = zoneRoutingPolygons(zone);
 
   const terminals: TopoTerminal[] = supplyTerminals.map((t) => ({ id: t.id, x: t.position.x, y: t.position.y, cfm: t.cfm }));
-  const segs = buildOrthogonalTree({ x: eqPos.x, y: eqPos.y }, terminals, {
-    axis,
-    snapTol: STATION_SNAP_FT,
-    onLineTol: ON_LINE_TOL_FT,
-    minLen: MIN_PIECE_FT,
-    polygon: bayPoly ?? roomPoly,
-    fallbackPolygon: roomPoly,
-    // never run along the unit's return collar stub (either side)
-    avoid: [...returnStubCandidates({ x: eqPos.x, y: eqPos.y }, axis, RETURN_COLLAR_OFFSET_FT), ...avoidSegments]
-  });
+  const clearance = ctx.obstacles !== undefined;
+  const depth = zone.maxAvailableCeilingDepthIn ?? 14;
 
-  const sections = topologyToSections(zone, segs, {
-    systemType: 'supply',
-    idPrefix: 'DS',
-    root: { x: eqPos.x, y: eqPos.y },
-    axis
-  });
-
-  return sizeDuctNetwork(sections, profile, zone.maxAvailableCeilingDepthIn ?? 14);
+  // Clearance mode: route -> size -> verify; the duct EDGE (not the centreline) must clear walls and diffusers, so the
+  // sized half widths feed back into the routing until they agree.
+  let hwT = 0.6, hwB = 0.4;
+  let sized: SteppedDuctSection[] = [];
+  for (let iter = 0; iter < (clearance ? 4 : 1); iter++) {
+    const segs = buildOrthogonalTree({ x: eqPos.x, y: eqPos.y }, terminals, {
+      axis,
+      snapTol: STATION_SNAP_FT,
+      onLineTol: ON_LINE_TOL_FT,
+      minLen: MIN_PIECE_FT,
+      polygon: bayPoly ?? roomPoly,
+      fallbackPolygon: roomPoly,
+      // never run along the unit's return collar stub (either side); clearance mode places the return stub afterwards
+      avoid: clearance ? avoidSegments : [...returnStubCandidates({ x: eqPos.x, y: eqPos.y }, axis, RETURN_COLLAR_OFFSET_FT), ...avoidSegments],
+      ...(clearance
+        ? { obstacles: ctx.obstacles, hwTrunk: hwT, hwBranch: hwB, wallClear: WALL_DUCT_CLEARANCE_FT, termClear: DUCT_TERMINAL_CLEARANCE_FT }
+        : {})
+    });
+    const sections = topologyToSections(zone, segs, {
+      systemType: 'supply',
+      idPrefix: 'DS',
+      root: { x: eqPos.x, y: eqPos.y },
+      axis
+    });
+    sized = sizeDuctNetwork(sections, profile, depth, ctx.units);
+    if (!clearance) break;
+    const need = requiredHalfWidthsFt(sized);
+    if (need.trunk <= hwT + 1e-6 && need.branch <= hwB + 1e-6) break;
+    hwT = Math.max(hwT, need.trunk);
+    hwB = Math.max(hwB, need.branch);
+  }
+  return clearance ? flagClearanceIssues(sized, roomPoly, ctx.obstacles!) : sized;
 }
 
 export const STEPPED_ROUTER_TOLERANCES = { ON_LINE_TOL_FT, STATION_SNAP_FT, MIN_PIECE_FT };

@@ -14,7 +14,8 @@ import { generateSystemCandidates } from '../systemDesigner';
 import { executeAirDistributionDesign, convertDesignResultToZonePayload } from '../airDistributionEngine';
 import { routeDucts } from '../ductRouter';
 import { pxPerFt, toBtuh, toCfm, toSqFt, SQFT_PER_SQM, BTUH_PER_W, CFM_PER_LPS, MM_PER_IN } from '../units';
-import { isPointInPolygon } from '../geometry';
+import { isPointInPolygon, calculateWallMountedUnitPos } from '../geometry';
+import { unitFootprintFt, unitKeepOutFt } from '../ducts/clearance';
 import { frictionRateExact, rectangularEquivalentDiameter } from '../ducts/ductPressureCalculator';
 import { terminalFacePx, ductHalfWidthPx, parseTerminalSizeIn } from '../../canvas/drawingGeometry';
 import type { Zone, ProjectMetadata } from '../../store/projectStore';
@@ -83,9 +84,10 @@ const polyArea = (poly: number[]): number => {
   }
   return Math.abs(s) / 2;
 };
-const bboxOf = (poly: number[]): { w: number; h: number; } => {
+const bboxOf = (poly: number[]): { w: number; h: number; minX: number; maxX: number; minY: number; maxY: number; cx: number; cy: number } => {
   const xs = poly.filter((_, i) => i % 2 === 0), ys = poly.filter((_, i) => i % 2 === 1);
-  return { w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  return { w: maxX - minX, h: maxY - minY, minX, maxX, minY, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
 };
 const rel = (a: number, b: number): number => Math.abs(a - b) / Math.max(Math.abs(b), 1e-9);
 
@@ -332,6 +334,103 @@ function checkDuctNetworks(
   }
 }
 
+// ───────────────────────── Plan clash checks (shared) ─────────────────────────
+const WALL_DUCT_CLEARANCE_FT = 0.5;
+const CLASH_TOL_FT = 0.02;
+interface ClashSeg { id: string; a: P; b: P; wIn: number; network: 'supply' | 'return'; crossover: boolean; flagged?: boolean }
+interface ClashTerm { id: string; p: P; w: number; h: number } // face size in inches
+
+/** Interior overlap (ft) between the duct body (segment +- width/2) and a terminal face rectangle. */
+function bodyFaceOverlap(s: ClashSeg, t: ClashTerm, ftPerCoord: number): number {
+  const hw = s.wIn / 24;
+  const ax = s.a.x * ftPerCoord, ay = s.a.y * ftPerCoord, bx = s.b.x * ftPerCoord, by = s.b.y * ftPerCoord;
+  const px = t.p.x * ftPerCoord, py = t.p.y * ftPerCoord;
+  const ox = Math.min(Math.max(ax, bx) + hw, px + t.w / 24) - Math.max(Math.min(ax, bx) - hw, px - t.w / 24);
+  const oy = Math.min(Math.max(ay, by) + hw, py + t.h / 24) - Math.max(Math.min(ay, by) - hw, py - t.h / 24);
+  return Math.min(ox, oy);
+}
+
+/** Proper/touching crossing point of two axis-aligned segments (ft), or null. */
+function crossPoint(s: ClashSeg, t: ClashSeg, ftPerCoord: number): P | null {
+  const f = (p: P): P => ({ x: p.x * ftPerCoord, y: p.y * ftPerCoord });
+  const a = f(s.a), b = f(s.b), c = f(t.a), d = f(t.b);
+  const sh = Math.abs(a.y - b.y) < 1e-6, sv = Math.abs(a.x - b.x) < 1e-6;
+  const th = Math.abs(c.y - d.y) < 1e-6, tv = Math.abs(c.x - d.x) < 1e-6;
+  const within = (v: number, p: number, q: number): boolean => v >= Math.min(p, q) - CLASH_TOL_FT && v <= Math.max(p, q) + CLASH_TOL_FT;
+  if (sh && !sv && tv && !th) return within(c.x, a.x, b.x) && within(a.y, c.y, d.y) ? { x: c.x, y: a.y } : null;
+  if (sv && !sh && th && !tv) return within(a.x, c.x, d.x) && within(c.y, a.y, b.y) ? { x: a.x, y: c.y } : null;
+  return null;
+}
+
+function checkClashes(tag: string, segs: ClashSeg[], terms: ClashTerm[], roomPoly: number[], ftPerCoord: number, roots: P[]): void {
+  const polyF = roomPoly.map((v) => v * ftPerCoord);
+  // 1. duct EDGE (centreline +- width/2) stays >= 0.5 ft inside the wall along its whole length
+  {
+    let bad: string | null = null;
+    for (const s of segs) {
+      if (s.flagged) { flaggedClearance[tag] = (flaggedClearance[tag] || 0) + 1; if (process.env.INVARIANTS_FLAGS) console.log(`FLAG ${tag} ${current.id} area=${current.area.toFixed(0)} ${s.id}`); continue; }
+      const L = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) * ftPerCoord;
+      const n = Math.max(1, Math.ceil(L / 0.25));
+      for (let i = 0; i <= n; i++) {
+        const p = { x: (s.a.x + ((s.b.x - s.a.x) * i) / n) * ftPerCoord, y: (s.a.y + ((s.b.y - s.a.y) * i) / n) * ftPerCoord };
+        const need = s.wIn / 24 + WALL_DUCT_CLEARANCE_FT - CLASH_TOL_FT;
+        const wd = wallDist(p, polyF);
+        if (!isPointInPolygon(p.x, p.y, polyF) || wd < need) {
+          bad ??= `${s.id} (${s.wIn}" wide) at (${p.x.toFixed(2)},${p.y.toFixed(2)})ft: wall distance ${wd.toFixed(2)} ft, edge clearance ${(wd - s.wIn / 24).toFixed(2)} ft < 0.5`;
+          break;
+        }
+      }
+    }
+    check(`${tag}.ductEdgeInsideWithClearance`, !bad, () => bad!);
+  }
+  // 2. no duct body through a terminal face, except the final run-out that ends at that terminal's centre
+  {
+    let bad: string | null = null;
+    for (const s of segs) {
+      if (s.flagged) continue;
+      for (const t of terms) {
+        const ov = bodyFaceOverlap(s, t, ftPerCoord);
+        if (ov <= 0.01) continue;
+        const endsAtCentre = Math.hypot(s.b.x - t.p.x, s.b.y - t.p.y) * ftPerCoord <= 0.15;
+        if (!endsAtCentre) bad ??= `${s.id} (${s.wIn}" wide, ${s.network}) passes through terminal ${t.id} face ${t.w}"x${t.h}" at (${(t.p.x * ftPerCoord).toFixed(2)},${(t.p.y * ftPerCoord).toFixed(2)})ft (overlap ${ov.toFixed(2)} ft)`;
+      }
+    }
+    check(`${tag}.noDuctThroughForeignTerminal`, !bad, () => bad!);
+  }
+  // 3. supply and return networks do not cross in plan (an unavoidable crossing must be flagged as a crossover)
+  {
+    let unflagged: string | null = null;
+    let crossings = 0;
+    for (const s of segs) {
+      if (s.network !== 'supply') continue;
+      for (const r of segs) {
+        if (r.network !== 'return') continue;
+        const p = crossPoint(s, r, ftPerCoord);
+        if (!p || roots.some((q) => Math.hypot(q.x * ftPerCoord - p.x, q.y * ftPerCoord - p.y) <= 0.1)) continue;
+        crossings++;
+        if (!(s.crossover && r.crossover)) unflagged ??= `${s.id} crosses ${r.id} at (${p.x.toFixed(2)},${p.y.toFixed(2)})ft and is not flagged as a crossover`;
+      }
+    }
+    check(`${tag}.noSupplyReturnCrossing`, !unflagged, () => unflagged!);
+    crossoverTotals[tag] = (crossoverTotals[tag] || 0) + crossings;
+  }
+}
+const crossoverTotals: Record<string, number> = {};
+const flaggedClearance: Record<string, number> = {};
+
+/** Sampled test of an oriented rectangle (centre, long-axis angle, length x depth in ft). */
+function orientedSamples(c: P, angleDeg: number, L: number, D: number): P[] {
+  const a = (angleDeg * Math.PI) / 180, tx = Math.cos(a), ty = Math.sin(a), nx = -ty, ny = tx;
+  const pts: P[] = [];
+  const nL = Math.max(2, Math.ceil(L / 0.1)), nD = Math.max(2, Math.ceil(D / 0.1));
+  for (let i = 0; i <= nL; i++) for (let j = 0; j <= nD; j++) {
+    if (i !== 0 && i !== nL && j !== 0 && j !== nD && (i % 3 || j % 3)) continue; // dense boundary, sparse interior
+    const u = (i / nL - 0.5) * L, v = (j / nD - 0.5) * D;
+    pts.push({ x: c.x + tx * u + nx * v, y: c.y + ty * u + ny * v });
+  }
+  return pts;
+}
+
 // ───────────────────────── Main loop ─────────────────────────
 const t0 = Date.now();
 let caseCount = 0;
@@ -344,10 +443,12 @@ for (let ri = 0; ri < rooms.length; ri++) {
   const bestIds: Record<string, string | null> = {};
 
   for (const uc of [IMPERIAL, METRIC]) {
+    const id = `R${String(ri).padStart(2, '0')}-${room.shape}-${room.spaceTypeId}-${uc.units}`;
+    // INVARIANTS_ONLY=<substring of case id> runs just the matching cases (debugging aid)
+    if (process.env.INVARIANTS_ONLY && !id.includes(process.env.INVARIANTS_ONLY)) continue;
     caseCount++;
     const k = pxPerFt(uc.scale, uc.units);
     const pxPoly = room.polyFt.map((v) => v * k);
-    const id = `R${String(ri).padStart(2, '0')}-${room.shape}-${room.spaceTypeId}-${uc.units}`;
     current = {
       id,
       area: areaFt2,
@@ -454,11 +555,15 @@ for (let ri = 0; ri < rooms.length; ri++) {
       exhaustCfm: toCfm(load.exhaustCfm || 0, uc.units),
       systemType: 'concealed',
       mountingWallSide: 'east' as const,
-      maxAvailableCeilingDepthIn: 14
+      maxAvailableCeilingDepthIn: 14,
+      // every third room has a neighbouring zone directly east of its bounding box: the ODU must not overlap it
+      otherZonePolygons: ri % 3 === 0
+        ? [[bb.maxX, bb.minY, bb.maxX + 40, bb.minY, bb.maxX + 40, bb.maxY, bb.maxX, bb.maxY].map((v) => v * k)]
+        : undefined
     };
     let design: ReturnType<typeof executeAirDistributionDesign>;
     try {
-      design = executeAirDistributionDesign(input);
+      const tA = Date.now(); design = executeAirDistributionDesign(input); if (process.env.INVARIANTS_TIME) console.log(`engine ${id} ${Date.now() - tA} ms`);
       check('crash.executeAirDistributionDesign', true, () => '');
     } catch (e) {
       check('crash.executeAirDistributionDesign', false, () => String((e as Error).stack || e).split('\n').slice(0, 3).join(' | '));
@@ -557,6 +662,80 @@ for (let ri = 0; ri < rooms.length; ri++) {
       const terms: NetTerm[] = allTerms.map((t) => ({ id: t.id, p: t.position, cfm: t.cfm, network: t.type === 'return' ? 'return' : 'supply', unit: t.unitId }));
       const roots = new Map(design.serviceZones.map((z) => [z.id, { x: z.equipmentPosition.x, y: z.equipmentPosition.y }]));
       checkDuctNetworks('ducts(engine)', segs, terms, roots, polyFt, 1, uc.units === 'metric');
+
+      // plan clashes: wall clearance of the duct edge, ducts through terminals, supply/return crossings
+      const csegs: ClashSeg[] = [...design.supplyDucts, ...design.returnDucts].map((d) => ({
+        id: d.id, a: d.startPoint, b: d.endPoint, wIn: d.widthIn, network: d.systemType === 'return' ? 'return' : 'supply', crossover: !!d.crossover, flagged: !!d.clearanceIssue
+      }));
+      const cterms: ClashTerm[] = allTerms.map((t) => {
+        const f = parseTerminalSizeIn(t.faceDimension) ?? { w: 24, h: 24 };
+        return { id: t.id, p: t.position, w: f.w, h: f.h };
+      });
+      checkClashes('ducts(engine)', csegs, cterms, polyFt, 1, design.serviceZones.map((z) => ({ x: z.equipmentPosition.x, y: z.equipmentPosition.y })));
+    }
+
+    // ── Indoor unit keep-out: no terminal face inside footprint + 2 ft service clearance ──
+    {
+      const warns = design.layoutWarnings || [];
+      const dropped = warns.some((w) => w.includes('unit keep-out relaxed'));
+      const footprintOnly = warns.some((w) => w.includes('service clearance relaxed'));
+      if (!dropped) {
+        let bad: string | null = null;
+        for (const t of allTerms) {
+          const f = parseTerminalSizeIn(t.faceDimension) ?? { w: 24, h: 24 };
+          for (const z of design.serviceZones) {
+            const dims = design.unitFootprintsIn?.[z.id];
+            const ko = footprintOnly ? unitFootprintFt(z.equipmentPosition, dims) : unitKeepOutFt(z.equipmentPosition, dims, 2);
+            const ox = Math.min(t.position.x + f.w / 24, ko.maxX) - Math.max(t.position.x - f.w / 24, ko.minX);
+            const oy = Math.min(t.position.y + f.h / 24, ko.maxY) - Math.max(t.position.y - f.h / 24, ko.minY);
+            if (ox > 0.01 && oy > 0.01) bad ??= `${t.type} ${t.id} face ${f.w}"x${f.h}" at (${t.position.x},${t.position.y}) overlaps ${z.unitTag} keep-out [${ko.minX.toFixed(1)}..${ko.maxX.toFixed(1)}] x [${ko.minY.toFixed(1)}..${ko.maxY.toFixed(1)}]`;
+          }
+        }
+        check('layout.noTerminalInUnitKeepout', !bad, () => bad!);
+      }
+    }
+
+    // ── Outdoor units: >= 1 ft outside the wall, clear of every other zone, >= 1 ft apart ──
+    {
+      let bad: string | null = null;
+      const neighbours = input.otherZonePolygons ? input.otherZonePolygons.map((p) => p.map((v) => v / k)) : [];
+      const boxes = design.outdoorUnitPositions.map((o) => ({
+        o, samples: orientedSamples(o, o.angleDeg ?? 0, o.lengthFt ?? 34 / 12, o.depthFt ?? 13 / 12)
+      }));
+      for (const { o, samples } of boxes) {
+        for (const p of samples) {
+          if (isPointInPolygon(p.x, p.y, polyFt)) { bad ??= `ODU at (${o.x},${o.y}) overlaps the room at (${p.x.toFixed(2)},${p.y.toFixed(2)})`; break; }
+          if (wallDist(p, polyFt) < 1 - 0.03) { bad ??= `ODU at (${o.x},${o.y}) only ${wallDist(p, polyFt).toFixed(2)} ft from the wall`; break; }
+          if (neighbours.some((n) => isPointInPolygon(p.x, p.y, n))) { bad ??= `ODU at (${o.x},${o.y}) inside a neighbouring zone`; break; }
+        }
+      }
+      for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+        let m = Infinity;
+        for (const a of boxes[i].samples) for (const b of boxes[j].samples) m = Math.min(m, Math.hypot(a.x - b.x, a.y - b.y));
+        if (m < 1 - 0.1) bad ??= `ODU ${i} and ${j} only ${m.toFixed(2)} ft apart`;
+      }
+      check('equipment.oduOutsideAllZonesAndNoOverlap', !bad, () => bad!);
+    }
+
+    // ── Wall-mounted (high-wall) unit sits ON a wall ──
+    {
+      const w = calculateWallMountedUnitPos(polyFt, 1, { exteriorSide: 'east' });
+      let bad: string | null = null;
+      const dEdge = Math.min(...edgesOf(polyFt).map(([a, b]) => distToSeg({ x: w.x, y: w.y }, a, b)));
+      if (Math.abs(dEdge - w.depthFt / 2) > 0.03) bad = `unit centre ${dEdge.toFixed(2)} ft from the nearest wall, expected depth/2 = ${(w.depthFt / 2).toFixed(2)} (back not flush)`;
+      const smp = orientedSamples({ x: w.x, y: w.y }, w.angleDeg, w.widthFt, w.depthFt);
+      for (const p of smp) if (!insideOrOn(p, polyFt, 0.03)) { bad ??= `footprint point (${p.x.toFixed(2)},${p.y.toFixed(2)}) outside the room`; break; }
+      const host = edgesOf(polyFt).find(([a, b]) => Math.abs(distToSeg({ x: w.x, y: w.y }, a, b) - dEdge) < 1e-6)!;
+      const L = Math.hypot(host[1].x - host[0].x, host[1].y - host[0].y);
+      const t = ((w.x - host[0].x) * (host[1].x - host[0].x) + (w.y - host[0].y) * (host[1].y - host[0].y)) / L;
+      if (t < w.widthFt / 2 - 0.03 || t > L - w.widthFt / 2 + 0.03) bad ??= `unit overhangs its wall segment (t=${t.toFixed(2)} of ${L.toFixed(2)} ft, width ${w.widthFt.toFixed(2)})`;
+      check('equipment.wallUnitOnWall', !bad, () => bad!);
+      // the canvas path: a floating (mid-room) high-wall position is snapped onto a wall by routeDucts
+      const floating = routeDucts(pxPoly, [], uc.units, zone.id, { x: bb.cx * k, y: bb.cy * k }, 'high-wall', undefined, {}, k).unitPos;
+      const fp = { x: floating.x / k, y: floating.y / k };
+      const dF = Math.min(...edgesOf(polyFt).map(([a, b]) => distToSeg(fp, a, b)));
+      check('equipment.wallUnitOnWall(routeDucts)', Math.abs(dF - w.depthFt / 2) <= 0.03 && isPointInPolygon(fp.x, fp.y, polyFt),
+        () => `high-wall unit left at ${dF.toFixed(2)} ft from the nearest wall (expected ${(w.depthFt / 2).toFixed(2)})`);
     }
 
     // ── Payload / drawing (canvas px) ──
@@ -601,7 +780,7 @@ for (let ri = 0; ri < rooms.length; ri++) {
       const diffusers = payload.diffusers.map((d) => ({ ...d }));
       let routed: ReturnType<typeof routeDucts> | null = null;
       try {
-        routed = routeDucts(pxPoly, diffusers, uc.units, zone.id, payload.unitPos, 'concealed', payload.outdoorUnitPos, { targetNc: 32 }, k);
+        const tB = Date.now(); routed = routeDucts(pxPoly, diffusers, uc.units, zone.id, payload.unitPos, 'concealed', payload.outdoorUnitPos, { targetNc: 32 }, k); if (process.env.INVARIANTS_TIME) console.log(`routeDucts ${id} ${Date.now() - tB} ms`);
         check('crash.routeDucts', true, () => '');
       } catch (e) {
         check('crash.routeDucts', false, () => String(e));
@@ -620,6 +799,15 @@ for (let ri = 0; ri < rooms.length; ri++) {
         }));
         const terms: NetTerm[] = payload.diffusers.map((d) => ({ id: d.id, p: { x: d.x, y: d.y }, cfm: d.cfm, network: d.type === 'return' ? 'return' : 'supply', unit: 'u' }));
         checkDuctNetworks('ducts(routeDucts)', segs, terms, new Map([['u', routed.unitPos]]), pxPoly, 1 / k, uc.units === 'metric');
+        const csegs: ClashSeg[] = (routed.ducts as Array<DuctSegment & { crossover?: boolean; clearanceIssue?: string }>).map((d) => ({
+          id: d.id, a: { x: d.points[0], y: d.points[1] }, b: { x: d.points[2], y: d.points[3] }, wIn: d.widthIn,
+          network: d.type === 'return' ? 'return' : 'supply', crossover: !!d.crossover, flagged: !!d.clearanceIssue
+        }));
+        const cterms: ClashTerm[] = payload.diffusers.map((d) => {
+          const f = parseTerminalSizeIn(d.size, uc.units) ?? { w: 24, h: 24 };
+          return { id: d.id, p: { x: d.x, y: d.y }, w: f.w, h: f.h };
+        });
+        checkClashes('ducts(routeDucts)', csegs, cterms, pxPoly, 1 / k, [routed.unitPos]);
       }
     }
   }
@@ -670,5 +858,7 @@ if (failing.length) {
     if (v && (v === '1' || name.includes(v))) for (const x of list) console.log(`    - ${x.caseId}: ${x.detail}`);
   }
 }
+for (const [tag, n] of Object.entries(flaggedClearance)) console.log(`${tag}: ${n} duct section(s) flagged clearanceIssue (rooms too small for a clean layout; reported on the duct)`);
+for (const [tag, n] of Object.entries(crossoverTotals)) console.log(`${tag}: ${n} flagged supply/return crossover(s) over the matrix (minimised; each is reported on the duct as a crossover)`);
 console.log(anyFail ? `\n${failing.length} invariant(s) FAILED` : '\nALL PROFESSIONAL INVARIANTS PASSED');
 process.exit(anyFail ? 1 : 0);
