@@ -1,6 +1,8 @@
 import React from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoad } from '../engine/loadCalc';
+import { toBtuh, toCfm, toSqFt } from '../engine/units';
+import { formatAirflow, formatArea, formatLoad } from '../format/units';
 import { Table } from 'lucide-react';
 
 export const LoadSummaryPanel: React.FC = () => {
@@ -25,6 +27,11 @@ export const LoadSummaryPanel: React.FC = () => {
     { area: 0, sensible: 0, totalLoad: 0, supplyCfm: 0, oaCfm: 0, exhaustCfm: 0, returnCfm: 0 }
   );
 
+  const units = project.units;
+  const fAir = (v: number): string => formatAirflow(toCfm(v, units), units);
+  const fLoad = (v: number): string => formatLoad(toBtuh(v, units), units);
+  const fArea = (v: number): string => formatArea(toSqFt(v, units), units);
+
   const totalTons = isImperial ? totals.totalLoad / 12000 : totals.totalLoad / 3517;
 
   return (
@@ -35,7 +42,7 @@ export const LoadSummaryPanel: React.FC = () => {
           Building Load Schedule & Air Balance
         </h2>
         <span className="text-[10px] text-neutral-500 font-medium">
-          Totals: {totals.area.toLocaleString()} {isImperial ? 'ft²' : 'm²'} |{' '}
+          Totals: {fArea(totals.area)} |{' '}
           {Math.round(totalTons * 10) / 10} TR
         </span>
       </div>
@@ -52,7 +59,7 @@ export const LoadSummaryPanel: React.FC = () => {
               <th className="py-2.5 text-right">Occupants</th>
               <th className="py-2.5 text-right">Total Load</th>
               <th className="py-2.5 text-right">Capacity (Tons)</th>
-              <th className="py-2.5 text-right">Supply CFM</th>
+              <th className="py-2.5 text-right">Supply Air</th>
               <th className="py-2.5 text-right">Fresh OA</th>
               <th className="py-2.5 text-right">Exhaust</th>
               <th className="py-2.5 text-right">Return</th>
@@ -65,32 +72,32 @@ export const LoadSummaryPanel: React.FC = () => {
                 <tr key={z.id} className="hover:bg-neutral-950/40 transition-colors">
                   <td className="py-3 font-sans font-medium text-neutral-200">{z.name}</td>
                   <td className="py-3 font-sans text-neutral-400 capitalize">{z.spaceTypeId.replace('-', ' ')}</td>
-                  <td className="py-3 text-right">{load.area.toLocaleString()}</td>
+                  <td className="py-3 text-right">{fArea(load.area)}</td>
                   <td className="py-3 text-right">{load.occupants}</td>
                   <td className="py-3 text-right">
-                    {load.totalLoad.toLocaleString()} {isImperial ? 'Btu/h' : 'W'}
+                    {fLoad(load.totalLoad)}
                   </td>
                   <td className="py-3 text-right text-amber-500 font-bold">{load.totalTons}</td>
-                  <td className="py-3 text-right text-emerald-400">{load.supplyCfm}</td>
-                  <td className="py-3 text-right text-neutral-400">{load.oaCfm}</td>
-                  <td className="py-3 text-right text-neutral-400">{load.exhaustCfm}</td>
-                  <td className="py-3 text-right text-teal-400">{load.returnCfm}</td>
+                  <td className="py-3 text-right text-emerald-400">{fAir(load.supplyCfm)}</td>
+                  <td className="py-3 text-right text-neutral-400">{fAir(load.oaCfm)}</td>
+                  <td className="py-3 text-right text-neutral-400">{fAir(load.exhaustCfm)}</td>
+                  <td className="py-3 text-right text-teal-400">{fAir(load.returnCfm)}</td>
                 </tr>
               );
             })}
             <tr className="border-t-2 border-neutral-800 font-bold bg-neutral-950/60 text-white">
               <td className="py-3 font-sans">Total Schedule</td>
               <td className="py-3 font-sans"></td>
-              <td className="py-3 text-right">{totals.area.toLocaleString()}</td>
+              <td className="py-3 text-right">{fArea(totals.area)}</td>
               <td className="py-3 text-right">{zones.reduce((sum, z) => sum + calculateZoneLoad(z, project).occupants, 0)}</td>
               <td className="py-3 text-right text-neutral-300">
-                {totals.totalLoad.toLocaleString()} {isImperial ? 'Btu/h' : 'W'}
+                {fLoad(totals.totalLoad)}
               </td>
               <td className="py-3 text-right text-amber-500 font-extrabold">{Math.round(totalTons * 10) / 10}</td>
-              <td className="py-3 text-right text-emerald-400">{totals.supplyCfm}</td>
-              <td className="py-3 text-right text-neutral-400">{totals.oaCfm}</td>
-              <td className="py-3 text-right text-neutral-400">{totals.exhaustCfm}</td>
-              <td className="py-3 text-right text-teal-400">{totals.returnCfm}</td>
+              <td className="py-3 text-right text-emerald-400">{fAir(totals.supplyCfm)}</td>
+              <td className="py-3 text-right text-neutral-400">{fAir(totals.oaCfm)}</td>
+              <td className="py-3 text-right text-neutral-400">{fAir(totals.exhaustCfm)}</td>
+              <td className="py-3 text-right text-teal-400">{fAir(totals.returnCfm)}</td>
             </tr>
           </tbody>
         </table>

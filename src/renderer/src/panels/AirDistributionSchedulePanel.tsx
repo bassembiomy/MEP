@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoad } from '../engine/loadCalc';
 import { toBtuh, toCfm, toSqFt, polygonFtToPx } from '../engine/units';
+import { formatAirflow, formatLoad, formatDuctSize, formatVelocity, formatPressure, formatArea, formatLength } from '../format/units';
 import { executeAirDistributionDesign, convertDesignResultToZonePayload } from '../engine/airDistributionEngine';
 import { generateMasterSchedules } from '../engine/export/exportSchedules';
 import { exportFullEngineeringDesignReport } from '../engine/export/exportDesignReport';
@@ -10,10 +11,23 @@ import { FileSpreadsheet, Download, Layers, Check } from 'lucide-react';
 
 type SubTabId = 'air-distribution' | 'ducts' | 'diffusers' | 'equipment' | 'outdoor-air' | 'validation' | 'decision-log';
 
+interface AirRow { room: string; loadBtu: number; reqCfm: number; delCfm: number; count: number; perDiff: number; retCfm: number; status: string }
+interface DuctRow { id: string; system: string; role: string; cfm: number; size: string; velFpm: number; dpInWg: number | null; nc: number | null; status: string }
+interface DiffRow { id: string; type: string; model: string; neck: string; face: string; cfm: number; throwFt: number; nc: number | null; status: string }
+
+/** Re-render an engine size string like 24"x12" in the project unit system (metric -> mm, 50 mm steps). */
+const reformatSize = (label: string, units: string): string => {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(?:"|in)?\s*[x\u00D7]\s*(\d+(?:\.\d+)?)\s*(?:"|in)?\s*$/i.exec(label || '');
+  return m ? formatDuctSize(parseFloat(m[1]), parseFloat(m[2]), units) : label;
+};
+
+const dash = '\u2014';
+
 export const AirDistributionSchedulePanel: React.FC = () => {
   const { project, zones, selectedZoneId, updateZone } = useProjectStore();
   const [activeSubTab, setActiveSubTab] = useState<SubTabId>('air-distribution');
   const [appliedToCad, setAppliedToCad] = useState<boolean>(false);
+  const [sourceOverride, setSourceOverride] = useState<'canvas' | 'proposal' | null>(null);
 
   const currentZone = zones.find((z) => z.id === selectedZoneId) || zones[0];
 
@@ -57,6 +71,53 @@ export const AirDistributionSchedulePanel: React.FC = () => {
 
   const schedules = generateMasterSchedules(design);
 
+  // ---- Single source of truth: what is ON THE CANVAS (zone diffusers/ducts) vs. the engine PROPOSAL ----
+  const supplyOnCanvas = currentZone.diffusers.filter((d) => d.type !== 'return' && d.type !== 'exhaust');
+  const returnOnCanvas = currentZone.diffusers.filter((d) => d.type === 'return');
+  const hasCanvas = currentZone.diffusers.length > 0 || currentZone.ducts.length > 0;
+  const source: 'canvas' | 'proposal' = sourceOverride ?? (hasCanvas ? 'canvas' : 'proposal');
+  const showCanvas = source === 'canvas' && hasCanvas;
+
+  const proposalAir: AirRow[] = schedules.airDistributionSchedule.map((r) => ({
+    room: r.roomName, loadBtu: r.designLoadBtu, reqCfm: r.requiredCfm, delCfm: r.deliveredCfm,
+    count: r.diffuserCount, perDiff: r.cfmPerDiffuser, retCfm: r.returnCfm, status: r.status
+  }));
+  const proposalDucts: DuctRow[] = schedules.ductSchedule.map((d) => ({
+    id: d.ductId, system: d.systemType, role: d.role, cfm: d.airflowCfm, size: reformatSize(d.sizeDimension, units),
+    velFpm: d.velocityFpm, dpInWg: d.pressureLossInWg, nc: d.ncRating, status: d.status
+  }));
+  const proposalDiffs: DiffRow[] = schedules.diffuserSchedule.map((t) => ({
+    id: t.terminalId, type: t.type, model: t.model, neck: reformatSize(t.neckSize, units), face: reformatSize(t.faceSize, units),
+    cfm: t.cfm, throwFt: t.throwT50Ft, nc: t.ncRating, status: t.status
+  }));
+
+  const canvasDelivered = supplyOnCanvas.reduce((sum, d) => sum + d.cfm, 0);
+  const canvasRequired = toCfm(loadResult.supplyCfm, units);
+  const canvasAir: AirRow[] = [{
+    room: currentZone.name || 'Zone',
+    loadBtu: toBtuh(loadResult.totalLoad, units),
+    reqCfm: canvasRequired,
+    delCfm: canvasDelivered,
+    count: supplyOnCanvas.length,
+    perDiff: supplyOnCanvas.length ? canvasDelivered / supplyOnCanvas.length : 0,
+    retCfm: returnOnCanvas.reduce((sum, d) => sum + d.cfm, 0),
+    status: canvasRequired > 0 && Math.abs(canvasDelivered - canvasRequired) / canvasRequired <= 0.1 ? 'PASS' : 'REVIEW'
+  }];
+  const canvasDucts: DuctRow[] = currentZone.ducts.map((d) => ({
+    id: d.id, system: d.type === 'return' ? 'RETURN' : 'SUPPLY', role: d.type, cfm: d.cfm,
+    size: d.shape === 'round' && d.diameterIn ? `\u00D8${formatDuctSize(d.diameterIn, d.diameterIn, units).split('x')[0]}` : formatDuctSize(d.widthIn, d.heightIn, units),
+    velFpm: d.velocityFpm ?? 0, dpInWg: d.acousticVerification?.pressureLossInWg ?? null, nc: null,
+    status: d.acousticVerification?.complianceStatus === 'REQUIRES REDESIGN' ? 'REVIEW' : 'OK'
+  }));
+  const canvasDiffs: DiffRow[] = currentZone.diffusers.map((d) => ({
+    id: d.id, type: (d.type || 'supply').toUpperCase(), model: d.size, neck: dash, face: reformatSize(d.size, units),
+    cfm: d.cfm, throwFt: d.throwT50Ft ?? 0, nc: d.actualNc ?? null, status: 'ON CANVAS'
+  }));
+
+  const airRows = showCanvas ? canvasAir : proposalAir;
+  const ductRows = showCanvas ? canvasDucts : proposalDucts;
+  const diffRows = showCanvas ? canvasDiffs : proposalDiffs;
+
   const handleApplyToCad = (): void => {
     const payload = convertDesignResultToZonePayload(design);
     updateZone(currentZone.id, payload);
@@ -97,7 +158,7 @@ export const AirDistributionSchedulePanel: React.FC = () => {
               </span>
             </div>
             <p className="text-xs text-neutral-400 mt-0.5">
-              Room: <strong>{design.roomName}</strong> | Selected System: <strong>{design.selectedOption.unitCount} × {design.selectedOption.unitModel}</strong> ({design.selectedOption.totalDeliveredCfm} CFM Total)
+              Room: <strong>{design.roomName}</strong> | Selected System: <strong>{design.selectedOption.unitCount} × {design.selectedOption.unitModel}</strong> ({formatAirflow(design.selectedOption.totalDeliveredCfm, units)} Total)
             </p>
           </div>
         </div>
@@ -123,6 +184,35 @@ export const AirDistributionSchedulePanel: React.FC = () => {
             Export Engineering Report
           </button>
         </div>
+      </div>
+
+      {/* Source toggle: canvas (what is drawn) vs engine proposal */}
+      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+        <span className="text-neutral-500 font-semibold uppercase tracking-wider text-[9px]">Schedule source</span>
+        <button
+          onClick={() => setSourceOverride('canvas')}
+          disabled={!hasCanvas}
+          className={`px-2.5 py-1 rounded-lg border font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+            showCanvas ? 'bg-blue-600/20 border-blue-500/40 text-blue-300' : 'bg-neutral-950 border-neutral-800 text-neutral-400'
+          }`}
+        >
+          On canvas ({currentZone.diffusers.length} terminals, {currentZone.ducts.length} ducts)
+        </button>
+        <button
+          onClick={() => setSourceOverride('proposal')}
+          className={`px-2.5 py-1 rounded-lg border font-semibold cursor-pointer ${
+            !showCanvas ? 'bg-amber-600/20 border-amber-500/40 text-amber-300' : 'bg-neutral-950 border-neutral-800 text-neutral-400'
+          }`}
+        >
+          Engine proposal ({design.supplyTerminals.length + design.returnTerminals.length} terminals)
+        </button>
+        <span className="text-neutral-500">
+          {showCanvas
+            ? 'Showing the terminals and ducts currently drawn for this zone.'
+            : hasCanvas
+            ? 'Showing the engine proposal - it differs from the canvas until you apply it.'
+            : 'Nothing drawn yet - showing the engine proposal. Apply it to place it on the canvas.'}
+        </span>
       </div>
 
       {/* Sub-tab Navigation */}
@@ -158,24 +248,24 @@ export const AirDistributionSchedulePanel: React.FC = () => {
               <tr className="bg-neutral-950/60 text-neutral-400 border-b border-neutral-800">
                 <th className="py-2.5 px-3">Room</th>
                 <th className="py-2.5 px-3">Design Load</th>
-                <th className="py-2.5 px-3">Required CFM</th>
-                <th className="py-2.5 px-3">Delivered CFM</th>
+                <th className="py-2.5 px-3">Required Airflow</th>
+                <th className="py-2.5 px-3">Delivered Airflow</th>
                 <th className="py-2.5 px-3">Diffusers</th>
-                <th className="py-2.5 px-3">CFM / Diffuser</th>
-                <th className="py-2.5 px-3">Return CFM</th>
+                <th className="py-2.5 px-3">Airflow / Diffuser</th>
+                <th className="py-2.5 px-3">Return Airflow</th>
                 <th className="py-2.5 px-3">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-850">
-              {schedules.airDistributionSchedule.map((row, idx) => (
+              {airRows.map((row, idx) => (
                 <tr key={idx} className="hover:bg-neutral-850/40">
-                  <td className="py-2.5 px-3 font-semibold text-neutral-200">{row.roomName}</td>
-                  <td className="py-2.5 px-3 text-neutral-300">{row.designLoadBtu.toLocaleString()} Btu/h</td>
-                  <td className="py-2.5 px-3 text-neutral-300">{row.requiredCfm} CFM</td>
-                  <td className="py-2.5 px-3 text-blue-400 font-bold">{row.deliveredCfm} CFM</td>
-                  <td className="py-2.5 px-3 text-neutral-300">{row.diffuserCount}</td>
-                  <td className="py-2.5 px-3 text-emerald-400 font-semibold">{row.cfmPerDiffuser} CFM</td>
-                  <td className="py-2.5 px-3 text-purple-400 font-semibold">{row.returnCfm} CFM</td>
+                  <td className="py-2.5 px-3 font-semibold text-neutral-200">{row.room}</td>
+                  <td className="py-2.5 px-3 text-neutral-300">{formatLoad(row.loadBtu, units)}</td>
+                  <td className="py-2.5 px-3 text-neutral-300">{formatAirflow(row.reqCfm, units)}</td>
+                  <td className="py-2.5 px-3 text-blue-400 font-bold">{formatAirflow(row.delCfm, units)}</td>
+                  <td className="py-2.5 px-3 text-neutral-300">{row.count}</td>
+                  <td className="py-2.5 px-3 text-emerald-400 font-semibold">{formatAirflow(row.perDiff, units)}</td>
+                  <td className="py-2.5 px-3 text-purple-400 font-semibold">{formatAirflow(row.retCfm, units)}</td>
                   <td className="py-2.5 px-3">
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                       {row.status}
@@ -185,6 +275,17 @@ export const AirDistributionSchedulePanel: React.FC = () => {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {activeSubTab === 'air-distribution' && showCanvas && (
+        <div className="bg-amber-950/10 border border-amber-500/20 rounded-xl p-3 text-[11px] text-neutral-300">
+          <span className="text-[9px] font-bold uppercase tracking-wider text-amber-400">Engine proposal (not on canvas)</span>
+          <div className="mt-1 font-mono">
+            {proposalAir[0]?.count ?? 0} supply terminals | {formatAirflow(proposalAir[0]?.delCfm ?? 0, units)} delivered | {formatAirflow(proposalAir[0]?.perDiff ?? 0, units)} per terminal |
+            return {formatAirflow(proposalAir[0]?.retCfm ?? 0, units)}
+          </div>
+          <div className="text-neutral-500 mt-1">Use &quot;Apply AI Air Distribution to CAD&quot; to replace the canvas layout with this proposal.</div>
         </div>
       )}
 
@@ -206,22 +307,22 @@ export const AirDistributionSchedulePanel: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-850">
-              {schedules.ductSchedule.map((d, idx) => (
+              {ductRows.map((d, idx) => (
                 <tr key={idx} className="hover:bg-neutral-850/40 font-mono text-[11px]">
-                  <td className="py-2 px-3 font-semibold text-neutral-200">{d.ductId}</td>
+                  <td className="py-2 px-3 font-semibold text-neutral-200">{d.id}</td>
                   <td className="py-2 px-3">
                     <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
-                      d.systemType === 'SUPPLY' ? 'bg-cyan-500/10 text-cyan-400' : 'bg-purple-500/10 text-purple-400'
+                      d.system === 'SUPPLY' ? 'bg-cyan-500/10 text-cyan-400' : 'bg-purple-500/10 text-purple-400'
                     }`}>
-                      {d.systemType}
+                      {d.system}
                     </span>
                   </td>
                   <td className="py-2 px-3 text-neutral-400 capitalize">{d.role}</td>
-                  <td className="py-2 px-3 text-blue-400 font-bold">{d.airflowCfm} CFM</td>
-                  <td className="py-2 px-3 text-neutral-200 font-bold">{d.sizeDimension}</td>
-                  <td className="py-2 px-3 text-neutral-300">{d.velocityFpm} FPM</td>
-                  <td className="py-2 px-3 text-neutral-300">{d.pressureLossInWg.toFixed(3)} in. wg</td>
-                  <td className="py-2 px-3 text-neutral-300">NC {d.ncRating}</td>
+                  <td className="py-2 px-3 text-blue-400 font-bold">{formatAirflow(d.cfm, units)}</td>
+                  <td className="py-2 px-3 text-neutral-200 font-bold">{d.size}</td>
+                  <td className="py-2 px-3 text-neutral-300">{formatVelocity(d.velFpm, units)}</td>
+                  <td className="py-2 px-3 text-neutral-300">{d.dpInWg === null ? dash : formatPressure(d.dpInWg, units)}</td>
+                  <td className="py-2 px-3 text-neutral-300">{d.nc === null ? dash : `NC ${d.nc}`}</td>
                   <td className="py-2 px-3">
                     <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-400">
                       {d.status}
@@ -245,16 +346,16 @@ export const AirDistributionSchedulePanel: React.FC = () => {
                 <th className="py-2.5 px-3">Catalog Model</th>
                 <th className="py-2.5 px-3">Neck</th>
                 <th className="py-2.5 px-3">Face</th>
-                <th className="py-2.5 px-3">CFM</th>
+                <th className="py-2.5 px-3">Airflow</th>
                 <th className="py-2.5 px-3">Throw (T50)</th>
                 <th className="py-2.5 px-3">NC</th>
                 <th className="py-2.5 px-3">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-850">
-              {schedules.diffuserSchedule.map((t, idx) => (
+              {diffRows.map((t, idx) => (
                 <tr key={idx} className="hover:bg-neutral-850/40 text-[11px]">
-                  <td className="py-2 px-3 font-semibold text-neutral-200 font-mono">{t.terminalId}</td>
+                  <td className="py-2 px-3 font-semibold text-neutral-200 font-mono">{t.id}</td>
                   <td className="py-2 px-3">
                     <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
                       t.type === 'SUPPLY' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-purple-500/10 text-purple-400'
@@ -263,11 +364,11 @@ export const AirDistributionSchedulePanel: React.FC = () => {
                     </span>
                   </td>
                   <td className="py-2 px-3 text-neutral-300">{t.model}</td>
-                  <td className="py-2 px-3 text-neutral-400 font-mono">{t.neckSize}</td>
-                  <td className="py-2 px-3 text-neutral-400 font-mono">{t.faceSize}</td>
-                  <td className="py-2 px-3 text-blue-400 font-bold font-mono">{t.cfm} CFM</td>
-                  <td className="py-2 px-3 text-neutral-300 font-mono">{t.throwT50Ft > 0 ? `${t.throwT50Ft} ft` : 'N/A'}</td>
-                  <td className="py-2 px-3 text-neutral-300 font-mono">NC {t.ncRating}</td>
+                  <td className="py-2 px-3 text-neutral-400 font-mono">{t.neck}</td>
+                  <td className="py-2 px-3 text-neutral-400 font-mono">{t.face}</td>
+                  <td className="py-2 px-3 text-blue-400 font-bold font-mono">{formatAirflow(t.cfm, units)}</td>
+                  <td className="py-2 px-3 text-neutral-300 font-mono">{t.throwFt > 0 ? formatLength(t.throwFt, units) : 'N/A'}</td>
+                  <td className="py-2 px-3 text-neutral-300 font-mono">{t.nc === null ? dash : `NC ${t.nc}`}</td>
                   <td className="py-2 px-3">
                     <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-400">
                       {t.status}
@@ -283,6 +384,7 @@ export const AirDistributionSchedulePanel: React.FC = () => {
       {/* 4. Equipment Schedule */}
       {activeSubTab === 'equipment' && (
         <div className="overflow-x-auto">
+          <p className="text-[10px] text-amber-400/90 mb-2">Engine proposal - equipment is sized by the engine, not read from the canvas.</p>
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-neutral-950/60 text-neutral-400 border-b border-neutral-800">
@@ -290,8 +392,8 @@ export const AirDistributionSchedulePanel: React.FC = () => {
                 <th className="py-2.5 px-3">Equipment Model</th>
                 <th className="py-2.5 px-3">System Type</th>
                 <th className="py-2.5 px-3">Capacity</th>
-                <th className="py-2.5 px-3">Supply CFM</th>
-                <th className="py-2.5 px-3">Return CFM</th>
+                <th className="py-2.5 px-3">Supply Airflow</th>
+                <th className="py-2.5 px-3">Return Airflow</th>
                 <th className="py-2.5 px-3">ESP</th>
                 <th className="py-2.5 px-3">Ownership</th>
                 <th className="py-2.5 px-3">Status</th>
@@ -303,10 +405,10 @@ export const AirDistributionSchedulePanel: React.FC = () => {
                   <td className="py-2.5 px-3 font-semibold text-neutral-100 font-mono">{eq.unitTag}</td>
                   <td className="py-2.5 px-3 text-neutral-200 font-semibold">{modelDisplayName(eq.model)}</td>
                   <td className="py-2.5 px-3 text-neutral-400">{eq.systemType}</td>
-                  <td className="py-2.5 px-3 text-blue-400 font-bold">{eq.capacityBtu.toLocaleString()} Btu/h</td>
-                  <td className="py-2.5 px-3 text-emerald-400 font-bold">{eq.supplyCfm} CFM</td>
-                  <td className="py-2.5 px-3 text-purple-400 font-bold">{eq.returnCfm} CFM</td>
-                  <td className="py-2.5 px-3 text-neutral-300 font-mono">{eq.espInWg.toFixed(2)} in. wg</td>
+                  <td className="py-2.5 px-3 text-blue-400 font-bold">{formatLoad(eq.capacityBtu, units)}</td>
+                  <td className="py-2.5 px-3 text-emerald-400 font-bold">{formatAirflow(eq.supplyCfm, units)}</td>
+                  <td className="py-2.5 px-3 text-purple-400 font-bold">{formatAirflow(eq.returnCfm, units)}</td>
+                  <td className="py-2.5 px-3 text-neutral-300 font-mono">{formatPressure(eq.espInWg, units)}</td>
                   <td className="py-2.5 px-3">
                     <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">
                       {eq.controlMode.toUpperCase()}
@@ -345,11 +447,11 @@ export const AirDistributionSchedulePanel: React.FC = () => {
                 <tr key={idx} className="hover:bg-neutral-850/40 text-[11px]">
                   <td className="py-2.5 px-3 font-semibold text-neutral-100 font-mono">{oa.oaSystemId}</td>
                   <td className="py-2.5 px-3 text-neutral-200 font-mono">{oa.unitTag}</td>
-                  <td className="py-2.5 px-3 text-neutral-300">{oa.requiredOaCfm} CFM</td>
-                  <td className="py-2.5 px-3 text-amber-400 font-bold">{oa.deliveredOaCfm} CFM</td>
+                  <td className="py-2.5 px-3 text-neutral-300">{formatAirflow(oa.requiredOaCfm, units)}</td>
+                  <td className="py-2.5 px-3 text-amber-400 font-bold">{formatAirflow(oa.deliveredOaCfm, units)}</td>
                   <td className="py-2.5 px-3 text-neutral-200">{oa.louverModel}</td>
-                  <td className="py-2.5 px-3 text-neutral-300 font-mono">{oa.freeAreaSqFt} sq.ft</td>
-                  <td className="py-2.5 px-3 text-neutral-300 font-mono">{oa.faceVelocityFpm} FPM</td>
+                  <td className="py-2.5 px-3 text-neutral-300 font-mono">{formatArea(oa.freeAreaSqFt, units)}</td>
+                  <td className="py-2.5 px-3 text-neutral-300 font-mono">{formatVelocity(oa.faceVelocityFpm, units)}</td>
                   <td className="py-2.5 px-3">
                     <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-400">
                       {oa.status}

@@ -4,8 +4,9 @@ import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
 import { calculateZoneLoad } from '../engine/loadCalc';
 import { placeDiffusers } from '../engine/diffuserPlacer';
 import { routeDucts } from '../engine/ductRouter';
-import { pxPerFt } from '../engine/units';
-import { calculateOptimalOutdoorUnitPos, calculateOptimalIndoorUnitPos } from '../engine/geometry';
+import { pxPerFt, toCfm } from '../engine/units';
+import { formatAirflow, formatVelocity } from '../format/units';
+import { calculateOptimalOutdoorUnitPos, calculateOptimalIndoorUnitPos, getPolygonCentroid } from '../engine/geometry';
 import { getCatalogSizingForZone } from '../engine/systemDesigner';
 import { STANDARD_DUCT_TYPES } from '../engine/hvacCatalogs';
 import {
@@ -25,6 +26,97 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { DuctLocationCategory } from '../engine/types';
+
+type Pt = { x: number; y: number };
+
+const unitPositionsOf = (z: Zone): Pt[] =>
+  z.unitPositions && z.unitPositions.length > 0 ? z.unitPositions : z.unitPos ? [z.unitPos] : [];
+
+/** Midpoint of the longest interior interval of the polygon along the scanline coordinate `c` (axis 'x': x=c). */
+function scanlineMid(points: number[], axis: 'x' | 'y', c: number): number | null {
+  const n = points.length / 2;
+  const hits: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = { x: points[2 * i], y: points[2 * i + 1] };
+    const b = { x: points[2 * ((i + 1) % n)], y: points[2 * ((i + 1) % n) + 1] };
+    const a1 = axis === 'x' ? a.x : a.y;
+    const b1 = axis === 'x' ? b.x : b.y;
+    if ((a1 <= c && b1 > c) || (b1 <= c && a1 > c)) {
+      const t = (c - a1) / (b1 - a1);
+      hits.push(axis === 'x' ? a.y + t * (b.y - a.y) : a.x + t * (b.x - a.x));
+    }
+  }
+  hits.sort((p, q) => p - q);
+  let best: number | null = null;
+  let bestLen = -1;
+  for (let i = 0; i + 1 < hits.length; i += 2) {
+    const len = hits[i + 1] - hits[i];
+    if (len > bestLen) {
+      bestLen = len;
+      best = (hits[i] + hits[i + 1]) / 2;
+    }
+  }
+  return best;
+}
+
+/** Nearest point on the polygon boundary, inset toward `toward` by `inset` px. */
+function snapToWall(points: number[], p: Pt, toward: Pt, inset: number): Pt {
+  const n = points.length / 2;
+  let best = p;
+  let bd = Infinity;
+  for (let i = 0; i < n; i++) {
+    const ax = points[2 * i];
+    const ay = points[2 * i + 1];
+    const bx = points[2 * ((i + 1) % n)];
+    const by = points[2 * ((i + 1) % n) + 1];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((p.x - ax) * dx + (p.y - ay) * dy) / len2));
+    const q = { x: ax + t * dx, y: ay + t * dy };
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d < bd) {
+      bd = d;
+      best = q;
+    }
+  }
+  const vx = toward.x - best.x;
+  const vy = toward.y - best.y;
+  const vl = Math.hypot(vx, vy) || 1;
+  return { x: best.x + (vx / vl) * inset, y: best.y + (vy / vl) * inset };
+}
+
+/**
+ * Places `qty` indoor units: one per equal strip along the room's long axis (so each unit serves its own
+ * share of the floor). A single unit uses the engine's optimal wall/ceiling position.
+ */
+function layoutIndoorUnits(points: number[], qty: number, odu: Pt, unitPerFt: number, onWall: boolean): Pt[] {
+  if (qty <= 1) return [calculateOptimalIndoorUnitPos(points, odu, unitPerFt)];
+  const xs = points.filter((_, i) => i % 2 === 0);
+  const ys = points.filter((_, i) => i % 2 === 1);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const alongX = maxX - minX >= maxY - minY;
+  const centroid = getPolygonCentroid(points);
+  const out: Pt[] = [];
+  for (let i = 0; i < qty; i++) {
+    const t = (i + 0.5) / qty;
+    let p: Pt;
+    if (alongX) {
+      const x = minX + t * (maxX - minX);
+      const y = scanlineMid(points, 'x', x);
+      p = { x, y: y ?? centroid.y };
+    } else {
+      const y = minY + t * (maxY - minY);
+      const x = scanlineMid(points, 'y', y);
+      p = { x: x ?? centroid.x, y };
+    }
+    out.push(onWall ? snapToWall(points, p, centroid, 2 * unitPerFt) : p);
+  }
+  return out;
+}
 
 export const ZonePropertiesPanel: React.FC = () => {
   const { selectedZoneId, zones, updateZone, project, dxfEntities, dxfBoundingBox, loadedCatalogs } = useProjectStore();
@@ -86,94 +178,112 @@ export const ZonePropertiesPanel: React.FC = () => {
     isEnhanced
   );
 
-  const handleOptimizePlacement = (): void => {
-    const optOdu = calculateOptimalOutdoorUnitPos(selectedZone.points, zones, dxfBoundingBox);
+  const upf = pxPerFt(project.scale, project.units);
+
+  /**
+   * Builds the full placement/routing patch for a zone. `force` (Auto-Layout) recomputes every
+   * position; otherwise existing equipment positions are kept where they are still valid.
+   * All geometry calls get the real px-per-foot so clearances are physical (not 1/10 scale).
+   */
+  const buildLayout = (base: Zone, force: boolean): Partial<Zone> => {
+    const loads = calculateZoneLoad(base, project);
+    const nc = base.targetNc ?? (DEFAULT_SPACE_NC_TARGETS[base.spaceTypeId]?.nc || 32);
+    const loc: DuctLocationCategory = base.ductLocationCategory || 'above-suspended-ceiling';
+    const enhanced = base.enhancedAcousticPerformance || false;
+    const sys = base.systemType;
+    const ducted = sys === 'concealed' || sys === 'packaged' || sys === 'ahu' || sys === 'vrf' || sys === 'fcu';
 
     const sizing = getCatalogSizingForZone(
-      selectedZone.systemType,
-      loadResult.totalLoad,
-      loadResult.supplyCfm,
+      sys,
+      loads.totalLoad,
+      loads.supplyCfm,
       loadedCatalogs,
       isImperial,
-      loadResult.area,
-      selectedZone.spaceTypeId,
-      loadResult.sensibleLoad
+      loads.area,
+      base.spaceTypeId,
+      loads.sensibleLoad
     );
 
-    const optIu = selectedZone.systemType === 'cassette'
-      ? undefined
-      : calculateOptimalIndoorUnitPos(selectedZone.points, optOdu);
-    const spacing = isImperial ? 10 : 3;
+    const odu = force || !base.outdoorUnitPos
+      ? calculateOptimalOutdoorUnitPos(base.points, zones, dxfBoundingBox, upf)
+      : base.outdoorUnitPos;
 
-    let diffusers: Diffuser[] = [];
-    if (selectedZone.systemType === 'high-wall') {
+    const spacing = isImperial ? 10 : 3;
+    let diffusers: Diffuser[] = base.diffusers;
+    if (sys === 'high-wall') {
       diffusers = [];
-    } else if (selectedZone.systemType === 'cassette') {
-      diffusers = !selectedZone.isDiffusersLocked
-        ? placeDiffusers(
-            selectedZone.points,
-            loadResult.supplyCfm,
-            isImperial,
-            spacing,
-            pxPerFt(project.scale, project.units),
-            dxfEntities,
-            'cassette',
-            loadResult.totalLoad,
-            sizing.qty,
-            sizing.model,
-            currentTargetNc
-          )
-        : selectedZone.diffusers;
-    } else if (isDucted && !selectedZone.isDiffusersLocked) {
+    } else if ((sys === 'cassette' || ducted) && !base.isDiffusersLocked) {
       diffusers = placeDiffusers(
-        selectedZone.points,
-        loadResult.supplyCfm,
+        base.points,
+        loads.supplyCfm,
         isImperial,
         spacing,
-        pxPerFt(project.scale, project.units),
+        upf,
         dxfEntities,
-        selectedZone.systemType || 'concealed',
-        loadResult.totalLoad,
+        sys === 'cassette' ? 'cassette' : sys || 'concealed',
+        loads.totalLoad,
         sizing.qty,
         sizing.model,
-        currentTargetNc
+        nc
       );
-    } else {
-      diffusers = selectedZone.diffusers;
     }
 
-    let finalDucts: DuctSegment[] = [];
-    if (isDucted && optIu && !selectedZone.isDuctLocked) {
-      const routed = routeDucts(
-        selectedZone.points,
-        diffusers,
-        project.units,
-        selectedZone.id,
-        optIu,
-        selectedZone.systemType || 'concealed',
-        optOdu,
-        {
-          targetNc: currentTargetNc,
-          locationCategory: currentLocCategory,
-          enhancedPerformance: isEnhanced,
-          zoneName: selectedZone.name
-        },
-        pxPerFt(project.scale, project.units)
-      );
-      finalDucts = routed.ducts;
-    } else {
-      finalDucts = isDucted ? selectedZone.ducts : [];
+    // Indoor units: ALL units of the schedule are placed (unitPositions) and unitPos is the first one.
+    const existing = unitPositionsOf(base);
+    const wantUnits = force ? sys !== 'cassette' : ducted || sys === 'high-wall';
+    const qty = Math.max(1, Math.min(8, Math.round(sizing.qty || 1)));
+    let positions: Pt[] = [];
+    if (wantUnits) {
+      const recompute = force || sys === 'high-wall' || existing.length !== qty;
+      positions = recompute ? layoutIndoorUnits(base.points, qty, odu, upf, sys === 'high-wall') : existing;
     }
 
-    updateZone(selectedZone.id, {
-      unitPos: optIu,
-      outdoorUnitPos: optOdu,
+    let ducts: DuctSegment[] = ducted ? base.ducts : [];
+    if (ducted && positions.length > 0 && !base.isDuctLocked) {
+      const acoustic = { targetNc: nc, locationCategory: loc, enhancedPerformance: enhanced, zoneName: base.name };
+      if (positions.length === 1) {
+        const routed = routeDucts(base.points, diffusers, project.units, base.id, positions[0], sys || 'concealed', odu, acoustic, upf);
+        ducts = routed.ducts;
+        positions = [routed.unitPos];
+      } else {
+        const groups: Diffuser[][] = positions.map(() => []);
+        for (const d of diffusers) {
+          let best = 0;
+          let bd = Infinity;
+          positions.forEach((p, i) => {
+            const dd = Math.hypot(d.x - p.x, d.y - p.y);
+            if (dd < bd) { bd = dd; best = i; }
+          });
+          groups[best].push(d);
+        }
+        ducts = [];
+        positions.forEach((p, i) => {
+          if (groups[i].length === 0) return;
+          const r = routeDucts(base.points, groups[i], project.units, i === 0 ? base.id : `${base.id}-u${i}`, p, sys || 'concealed', odu, acoustic, upf);
+          ducts.push(...r.ducts);
+        });
+      }
+    }
+
+    const patch: Partial<Zone> = {
       diffusers,
-      ducts: finalDucts,
+      ducts,
+      unitPos: positions[0],
+      unitPositions: positions.length > 0 ? positions : undefined,
+      outdoorUnitPos: odu,
       catalogQty: sizing.qty,
       catalogModel: sizing.model,
-      catalogEsp: sizing.esp,
-      targetNc: currentTargetNc,
+      catalogEsp: sizing.esp
+    };
+    if (force) patch.outdoorUnitPositions = undefined;
+    return patch;
+  };
+
+  const handleOptimizePlacement = (): void => {
+    const nc = selectedZone.targetNc ?? defaultSpaceTarget.nc;
+    updateZone(selectedZone.id, {
+      ...buildLayout(selectedZone, true),
+      targetNc: nc,
       ductLocationCategory: currentLocCategory
     });
   };
@@ -193,119 +303,7 @@ export const ZonePropertiesPanel: React.FC = () => {
       }
     }
 
-    const zoneTargetNc = updatedZone.targetNc ?? (DEFAULT_SPACE_NC_TARGETS[updatedZone.spaceTypeId]?.nc || 32);
-    const zoneLocCategory: DuctLocationCategory = updatedZone.ductLocationCategory || 'above-suspended-ceiling';
-    const zoneEnhanced = updatedZone.enhancedAcousticPerformance || false;
-
-    const newLoads = calculateZoneLoad(updatedZone, project);
-    const sizing = getCatalogSizingForZone(
-      updatedZone.systemType,
-      newLoads.totalLoad,
-      newLoads.supplyCfm,
-      loadedCatalogs,
-      isImperial,
-      newLoads.area,
-      updatedZone.spaceTypeId,
-      newLoads.sensibleLoad
-    );
-
-    const isSystemDucted =
-      updatedZone.systemType === 'concealed' ||
-      updatedZone.systemType === 'packaged' ||
-      updatedZone.systemType === 'ahu' ||
-      updatedZone.systemType === 'vrf' ||
-      updatedZone.systemType === 'fcu';
-
-    let finalOutdoorUnitPos = updatedZone.outdoorUnitPos;
-    if (!finalOutdoorUnitPos) {
-      finalOutdoorUnitPos = calculateOptimalOutdoorUnitPos(selectedZone.points, zones, dxfBoundingBox);
-    }
-
-    const spacing = isImperial ? 10 : 3;
-    let diffusers: Diffuser[] = [];
-    if (updatedZone.systemType === 'high-wall') {
-      diffusers = [];
-    } else if (updatedZone.systemType === 'cassette') {
-      diffusers = !updatedZone.isDiffusersLocked
-        ? placeDiffusers(
-            selectedZone.points,
-            newLoads.supplyCfm,
-            isImperial,
-            spacing,
-            pxPerFt(project.scale, project.units),
-            dxfEntities,
-            'cassette',
-            newLoads.totalLoad,
-            sizing.qty,
-            sizing.model,
-            zoneTargetNc
-          )
-        : updatedZone.diffusers;
-    } else if (isSystemDucted && !updatedZone.isDiffusersLocked) {
-      diffusers = placeDiffusers(
-        selectedZone.points,
-        newLoads.supplyCfm,
-        isImperial,
-        spacing,
-        pxPerFt(project.scale, project.units),
-        dxfEntities,
-        updatedZone.systemType || 'concealed',
-        newLoads.totalLoad,
-        sizing.qty,
-        sizing.model,
-        zoneTargetNc
-      );
-    } else {
-      diffusers = updatedZone.diffusers;
-    }
-
-    let finalDucts: DuctSegment[] = [];
-    let finalUnitPos = updatedZone.unitPos;
-
-    if (isSystemDucted) {
-      if (!finalUnitPos) {
-        finalUnitPos = calculateOptimalIndoorUnitPos(selectedZone.points, finalOutdoorUnitPos);
-      }
-      if (!updatedZone.isDuctLocked) {
-        const routed = routeDucts(
-          selectedZone.points,
-          diffusers,
-          project.units,
-          selectedZone.id,
-          finalUnitPos,
-          updatedZone.systemType || 'concealed',
-          finalOutdoorUnitPos,
-          {
-            targetNc: zoneTargetNc,
-            locationCategory: zoneLocCategory,
-            enhancedPerformance: zoneEnhanced,
-            zoneName: updatedZone.name
-          },
-          pxPerFt(project.scale, project.units)
-        );
-        finalDucts = routed.ducts;
-        finalUnitPos = routed.unitPos;
-      } else {
-        finalDucts = updatedZone.ducts;
-      }
-    } else if (updatedZone.systemType === 'high-wall') {
-      finalDucts = [];
-      finalUnitPos = calculateOptimalIndoorUnitPos(selectedZone.points, finalOutdoorUnitPos);
-    } else {
-      finalDucts = [];
-      finalUnitPos = undefined;
-    }
-
-    updateZone(selectedZone.id, {
-      ...updatedZone,
-      diffusers,
-      ducts: finalDucts,
-      unitPos: finalUnitPos,
-      outdoorUnitPos: finalOutdoorUnitPos,
-      catalogQty: sizing.qty,
-      catalogModel: sizing.model,
-      catalogEsp: sizing.esp
-    });
+    updateZone(selectedZone.id, { ...updatedZone, ...buildLayout(updatedZone, false) });
   };
 
   return (
@@ -382,7 +380,7 @@ export const ZonePropertiesPanel: React.FC = () => {
         <div className="flex flex-col gap-1.5">
           <div className="flex justify-between items-center text-[9px] text-neutral-500">
             <span>Design Room NC Target</span>
-            <span className="font-mono text-neutral-400">Limit: {mainAllowableVelocity} FPM (Main)</span>
+            <span className="font-mono text-neutral-400">Limit: {formatVelocity(mainAllowableVelocity, project.units)} (Main)</span>
           </div>
           <div className="flex gap-1.5 items-center">
             <input
@@ -444,7 +442,7 @@ export const ZonePropertiesPanel: React.FC = () => {
               </span>
             </div>
             <span className="font-mono text-[9px] opacity-80">
-              Max {maxActualVelocity} FPM
+              Max {formatVelocity(maxActualVelocity, project.units)}
             </span>
           </div>
         )}
@@ -607,15 +605,15 @@ export const ZonePropertiesPanel: React.FC = () => {
           </div>
           <div className="flex justify-between">
             <span className="text-neutral-500">Thermal Supply Flow:</span>
-            <span className="font-semibold text-neutral-300 font-mono">{loadResult.thermalCfm} CFM</span>
+            <span className="font-semibold text-neutral-300 font-mono">{formatAirflow(toCfm(loadResult.thermalCfm, project.units), project.units)}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-neutral-500">ASHRAE 62.1 Fresh Air:</span>
-            <span className="font-semibold text-teal-400 font-mono">{loadResult.vozCfm} CFM</span>
+            <span className="font-semibold text-teal-400 font-mono">{formatAirflow(toCfm(loadResult.vozCfm, project.units), project.units)}</span>
           </div>
           <div className="flex justify-between border-t border-neutral-800 pt-1.5 font-bold">
             <span className="text-neutral-400">Total Design Flow:</span>
-            <span className="text-emerald-400 font-mono">{loadResult.supplyCfm} CFM</span>
+            <span className="text-emerald-400 font-mono">{formatAirflow(toCfm(loadResult.supplyCfm, project.units), project.units)}</span>
           </div>
         </div>
       </div>

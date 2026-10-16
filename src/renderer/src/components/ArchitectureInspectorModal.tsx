@@ -1,6 +1,10 @@
 import { modelDisplayName } from '../engine/hvacCatalogs';
 import React, { useState } from 'react';
+import { ModalPortal } from './ModalPortal';
 import { SystemDesignCandidate } from '../engine/types';
+import { useProjectStore } from '../store/projectStore';
+import { formatAirflow, formatLoad, formatVelocity, formatPressure } from '../format/units';
+import { deliveredCfmFor } from '../engine/systemArchitecture/equipmentSelector';
 import {
   X,
   Layers,
@@ -16,11 +20,12 @@ import {
 } from 'lucide-react';
 
 interface ArchitectureInspectorModalProps {
-  candidate: SystemDesignCandidate;
+  candidate: SystemDesignCandidate & { deliveredCfm?: number; installedCapacityBtu?: number };
   onClose: () => void;
 }
 
 export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProps> = ({ candidate, onClose }) => {
+  const units = useProjectStore((st) => st.project.units);
   const [copied, setCopied] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
 
@@ -28,12 +33,12 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
 
   if (!arch) {
     return (
-      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-        <div className="bg-neutral-900 border border-neutral-800 p-6 rounded-2xl max-w-md w-full text-center">
+      <ModalPortal onClose={onClose} widthClass="max-w-md" label="Architecture Inspector">
+        <div className="bg-neutral-900 border border-neutral-800 p-6 rounded-2xl w-full text-center">
           <p className="text-neutral-400 text-xs">No architecture breakdown available for this candidate.</p>
           <button onClick={onClose} className="mt-4 px-4 py-2 bg-neutral-800 text-white rounded-lg text-xs">Close</button>
         </div>
-      </div>
+      </ModalPortal>
     );
   }
 
@@ -45,6 +50,16 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
     'controls-electrical': Sliders,
     accessories: ShieldCheck
   };
+
+  const sysType = candidate.systemType;
+  const directTitle = sysType === 'cassette' ? '4-Way Ceiling Discharge' : sysType === 'high-wall' ? 'Direct Wall-Mounted Discharge' : 'Direct Discharge';
+  const directDischargeNote =
+    sysType === 'cassette'
+      ? 'Zero external duct friction with 4-way direct air louvers.'
+      : sysType === 'high-wall'
+      ? 'Zero external duct friction; motorised horizontal discharge louver with Coanda throw.'
+      : 'Zero external duct friction; integral direct-discharge outlets.';
+  const directMaterial = sysType === 'cassette' ? 'Flush Ceiling Fascia' : sysType === 'high-wall' ? 'Wall-Mounted Indoor Unit' : 'Integral Outlet';
 
   const filteredComponents = selectedCategory === 'all'
     ? arch.components
@@ -64,8 +79,8 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
-      <div className="bg-neutral-900 border border-neutral-800 w-full max-w-5xl max-h-[90vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+    <ModalPortal onClose={onClose} widthClass="max-w-5xl" label="Architecture Inspector">
+      <div className="bg-neutral-900 border border-neutral-800 w-full rounded-2xl shadow-2xl flex flex-col">
         {/* Header */}
         <div className="p-5 border-b border-neutral-800 flex justify-between items-start bg-neutral-950/80">
           <div>
@@ -128,7 +143,7 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
                 <Sparkles size={12} className="text-amber-500" />
                 Physical Subsystem Flow Architecture
               </span>
-              <span className="text-[9px] text-neutral-500 font-mono">Loop: Primary $\rightarrow$ Distribution $\rightarrow$ Terminals $\rightarrow$ Return</span>
+              <span className="text-[9px] text-neutral-500 font-mono">Loop: Primary → Distribution → Terminals → Return</span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
@@ -140,7 +155,7 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
                   </span>
                   <strong className="text-neutral-200 block text-[11px] mt-1">{candidate.equipment.model}-ODU</strong>
                   <p className="text-[10px] text-neutral-400 mt-1">
-                    Inverter heat pump condensing unit rated at {candidate.equipment.totalCapacityBtuPerHour.toLocaleString()} Btu/h with variable-speed compressor.
+                    Inverter heat pump condensing unit rated at {formatLoad(candidate.equipment.totalCapacityBtuPerHour, units)} with variable-speed compressor.
                   </p>
                 </div>
                 <div className="mt-2 pt-2 border-t border-neutral-850 text-[9px] font-mono text-neutral-500">
@@ -156,7 +171,7 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
                   </span>
                   <strong className="text-neutral-200 block text-[11px] mt-1">{modelDisplayName(candidate.equipment.model)}</strong>
                   <p className="text-[10px] text-neutral-400 mt-1">
-                    Delivers {candidate.quantity * candidate.equipment.nominalCfm} CFM at {candidate.equipment.maxRatedEspInWg.toFixed(2)} in.wg available static pressure.
+                    Delivers {formatAirflow(candidate.deliveredCfm ?? deliveredCfmFor(candidate.equipment, candidate.quantity, 0), units)} at {formatPressure(candidate.equipment.maxRatedEspInWg, units)} available static pressure.
                   </p>
                 </div>
                 <div className="mt-2 pt-2 border-t border-neutral-850 text-[9px] font-mono text-neutral-500">
@@ -171,16 +186,16 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
                     <Layers size={12} /> Air Distribution Ductwork
                   </span>
                   <strong className="text-neutral-200 block text-[11px] mt-1">
-                    {candidate.ductwork ? 'Equal Friction Galvanized Trunk' : 'Direct Coanda Discharge'}
+                    {candidate.ductwork ? 'Equal Friction Galvanized Trunk' : directTitle}
                   </strong>
                   <p className="text-[10px] text-neutral-400 mt-1">
                     {candidate.ductwork
-                      ? `Max Velocity: ${candidate.ductwork.maxVelocityFpm} FPM, Critical Loss: ${candidate.ductwork.criticalPath.espRequiredInWg.toFixed(3)} in.wg`
-                      : 'Zero external duct friction with 4-way direct air louvers.'}
+                      ? `Max Velocity: ${formatVelocity(candidate.ductwork.maxVelocityFpm, units)}, Critical Loss: ${formatPressure(candidate.ductwork.criticalPath.espRequiredInWg, units)}`
+                      : directDischargeNote}
                   </p>
                 </div>
                 <div className="mt-2 pt-2 border-t border-neutral-850 text-[9px] font-mono text-neutral-500">
-                  Material: {candidate.ductwork?.ductType.name || 'Flush Ceiling Fascia'}
+                  Material: {candidate.ductwork?.ductType.name || directMaterial}
                 </div>
               </div>
 
@@ -301,6 +316,6 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
           </button>
         </div>
       </div>
-    </div>
+    </ModalPortal>
   );
 };

@@ -8,12 +8,16 @@ import { SystemComparisonTable } from './panels/SystemComparisonTable';
 import { LoadSummaryPanel } from './panels/LoadSummaryPanel';
 import { AirDistributionSchedulePanel } from './panels/AirDistributionSchedulePanel';
 import { useProjectStore } from './store/projectStore';
+import { calculateZoneLoad } from './engine/loadCalc';
+import { toCfm } from './engine/units';
+import { formatAirflow } from './format/units';
 import Versions from './components/Versions';
 import { CatalogManagerModal } from './components/CatalogManagerModal';
 import { Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table, FileSpreadsheet, Database } from 'lucide-react';
 
 function App(): React.JSX.Element {
-  const { project, setProject, activeTab, setActiveTab } = useProjectStore();
+  const { project, zones, setProject, activeTab, setActiveTab } = useProjectStore();
+  const totalCfm = zones.reduce((sum, z) => sum + toCfm(calculateZoneLoad(z, project).supplyCfm, project.units), 0);
   const [catalogOpen, setCatalogOpen] = useState(false);
 
   return (
@@ -41,8 +45,6 @@ function App(): React.JSX.Element {
           <Database size={14} />
           Equipment Catalogs
         </button>
-        <CatalogManagerModal isOpen={catalogOpen} onClose={() => setCatalogOpen(false)} />
-
         {/* Global Design Conditions */}
         <div className="flex flex-wrap gap-4 text-xs">
           <div className="flex flex-col">
@@ -53,6 +55,11 @@ function App(): React.JSX.Element {
               onChange={(e) => setProject({ name: e.target.value })}
               className="bg-transparent border-b border-transparent hover:border-neutral-800 focus:border-blue-600 focus:outline-none text-neutral-200 font-semibold py-0.5"
             />
+          </div>
+
+          <div className="flex flex-col">
+            <span className="text-[9px] font-bold text-neutral-500 uppercase">Total Design Airflow</span>
+            <span className="text-neutral-200 font-mono font-bold py-0.5">{formatAirflow(totalCfm, project.units)}</span>
           </div>
 
           <div className="flex flex-col">
@@ -82,6 +89,8 @@ function App(): React.JSX.Element {
           </div>
         </div>
       </header>
+
+      <CatalogManagerModal isOpen={catalogOpen} onClose={() => setCatalogOpen(false)} />
 
       {/* Main Workspace Layout */}
       <main className="relative z-10 flex-1 grid grid-cols-1 xl:grid-cols-4 gap-6 p-6">
@@ -180,7 +189,7 @@ function App(): React.JSX.Element {
             </div>
             <div className="text-[11px] text-neutral-500 leading-relaxed flex flex-col gap-2">
               <p>
-                <strong>Airflow & Ventilation:</strong> ASHRAE 62.1-2019 breathing zone ventilation ($V_{'{'}bz{'}'}$) combined with thermal sensible sensible heat ratio.
+                <strong>Airflow & Ventilation:</strong> ASHRAE 62.1-2019 breathing zone ventilation (Vbz) combined with the thermal sensible heat ratio.
               </p>
               <p>
                 <strong>Duct & Static Pressure:</strong> Darcy-Weisbach friction & K-factor dynamic losses along connected critical paths.

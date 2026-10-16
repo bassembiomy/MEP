@@ -2,7 +2,10 @@ import { modelDisplayName } from '../engine/hvacCatalogs';
 import React, { useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoad } from '../engine/loadCalc';
-import { generateSystemCandidates } from '../engine/systemDesigner';
+import { generateSystemCandidates, type DesignCandidate } from '../engine/systemDesigner';
+import { deliveredCfmFor } from '../engine/systemArchitecture/equipmentSelector';
+import { toCfm } from '../engine/units';
+import { formatAirflow, formatLoad, formatPressure, formatDuctSize } from '../format/units';
 import { createDeploymentPreview } from '../engine/deploymentManager';
 import { SelectionTraceViewer } from '../components/SelectionTraceViewer';
 import { ArchitectureInspectorModal } from '../components/ArchitectureInspectorModal';
@@ -50,7 +53,7 @@ export const OptimizerStudioPanel: React.FC = () => {
   }>({ status: 'idle' });
 
   const [cardTabs, setCardTabs] = useState<Record<string, 'overview' | 'components' | 'algorithm'>>({});
-  const [inspectingCandidate, setInspectingCandidate] = useState<SystemDesignCandidate | null>(null);
+  const [inspectingCandidate, setInspectingCandidate] = useState<DesignCandidate | null>(null);
 
   const getCardTab = (candId: string): 'overview' | 'components' | 'algorithm' => {
     return cardTabs[candId] || 'overview';
@@ -162,7 +165,7 @@ export const OptimizerStudioPanel: React.FC = () => {
             Redo ({redoStack.length})
           </button>
           <span className="bg-neutral-950 border border-neutral-800 px-3 py-1.5 rounded-xl text-neutral-400 font-mono text-[10px]">
-            Airflow: <strong className="text-emerald-400">{loadResult.supplyCfm} {isImperial ? 'CFM' : 'L/s'}</strong>
+            Airflow: <strong className="text-emerald-400">{formatAirflow(toCfm(loadResult.supplyCfm, project.units), project.units)}</strong>
           </span>
         </div>
       </div>
@@ -479,21 +482,21 @@ export const OptimizerStudioPanel: React.FC = () => {
                       <div className="flex justify-between border-b border-neutral-900 pb-1">
                         <span>Installed Capacity / Flow:</span>
                         <strong className="text-neutral-200 font-mono">
-                          {(cand.quantity * cand.equipment.totalCapacityBtuPerHour).toLocaleString()} Btu/h | {cand.quantity * cand.equipment.nominalCfm} CFM
+                          {formatLoad(cand.installedCapacityBtu ?? cand.quantity * cand.equipment.totalCapacityBtuPerHour, project.units)} | {formatAirflow(cand.deliveredCfm ?? deliveredCfmFor(cand.indoorUnit || cand.equipment, cand.quantity, toCfm(loadResult.supplyCfm, project.units)), project.units)}
                         </strong>
                       </div>
                       {cand.ductwork && (
                         <div className="flex justify-between border-b border-neutral-900 pb-1">
                           <span>Calculated Static Pressure:</span>
                           <strong className="text-blue-400 font-mono font-semibold">
-                            {cand.ductwork.criticalPath.espRequiredInWg.toFixed(3)} in.wg (Max Fan ESP: {cand.equipment.maxRatedEspInWg.toFixed(2)})
+                            {formatPressure(cand.ductwork.criticalPath.espRequiredInWg, project.units)} (Max Fan ESP: {formatPressure(cand.equipment.maxRatedEspInWg, project.units)})
                           </strong>
                         </div>
                       )}
                       <div className="flex justify-between">
                         <span>Diffuser Configuration:</span>
                         <strong className="text-teal-400 font-mono">
-                          {cand.diffusers.quantity} × {cand.diffusers.diffuserRecord.faceSizeIn.width}&quot;x{cand.diffusers.diffuserRecord.faceSizeIn.height}&quot; (NC {cand.diffusers.actualNc})
+                          {cand.diffusers.quantity} × {formatDuctSize(cand.diffusers.diffuserRecord.faceSizeIn.width, cand.diffusers.diffuserRecord.faceSizeIn.height, project.units)} (NC {cand.diffusers.actualNc})
                         </strong>
                       </div>
                     </div>
