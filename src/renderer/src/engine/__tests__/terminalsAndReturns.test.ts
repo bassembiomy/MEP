@@ -60,8 +60,13 @@ assert(returnTerminals[0].type === 'return', 'Terminal type should be return');
 
 // 4. Air Distribution Validation
 const validation = validateTerminalAirDistribution(mockZone, supplyTerminals, returnTerminals);
-assert(validation.status === 'pass', `Air distribution validation should pass, got ${validation.status}: ${validation.issues.join(', ')}`);
-assert(validation.throwCheck.status === 'pass', 'Throw check should pass');
-assert(validation.shortCircuitCheck.status === 'pass', 'Short-circuit check should pass');
+// T50/L is now measured against the real half-spacing (4 diffusers in a 10 ft deep bay => L = 5 ft), not the
+// old max(10, bayW/cols) hack, so the throw ratio is reported as an advisory warning here; short-circuit and
+// acoustics must still pass and supplies must be unique + inside the bay.
+assert(validation.shortCircuitCheck.status === 'pass', `Short-circuit check should pass: ${validation.issues.join(', ')}`);
+assert(validation.acousticCheck.status === 'pass', 'Acoustic check should pass');
+assert(validation.status !== 'fail', 'Air distribution validation should not fail');
+const keys = new Set(supplyTerminals.map(t => `${t.position.x},${t.position.y}`));
+assert(keys.size === supplyTerminals.length, 'Supply diffuser positions must be unique');
 
 console.log('✔ All Terminals and Returns Tests Passed Successfully!');

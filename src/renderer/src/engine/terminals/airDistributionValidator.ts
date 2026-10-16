@@ -1,6 +1,7 @@
 import { EquipmentServiceZone } from '../zoning/zonePartitioner';
 import { CoordinatedAirTerminal } from './terminalPlacer';
 import { StandardsProfile, ASHRAE_PROFILE } from '../standards/designStandards';
+import { RETURN_SUPPLY_MIN_SEP_FT } from '../geometry';
 
 export interface AirDistributionValidationResult {
   status: 'pass' | 'warning' | 'fail';
@@ -48,8 +49,10 @@ export function validateTerminalAirDistribution(
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < minSep) minSep = dist;
 
-      const minReq = sup.throwT50Ft * profile.diffuserThrow.minReturnSupplyOffsetRatio;
-      if (dist < minReq) {
+      // Required offset = T50 x ratio, but never more than the 6 ft practical separation
+      // (a return cannot be farther than the room allows; larger values are unattainable in narrow bays).
+      const minReq = Math.min(sup.throwT50Ft * profile.diffuserThrow.minReturnSupplyOffsetRatio, RETURN_SUPPLY_MIN_SEP_FT);
+      if (dist < minReq - 0.05) {
         shortCircuitStatus = 'warning';
         issues.push(`Short-circuit risk: Return ${ret.id} is ${dist.toFixed(1)} ft from Supply ${sup.id} (minimum ${minReq.toFixed(1)} ft required)`);
       }

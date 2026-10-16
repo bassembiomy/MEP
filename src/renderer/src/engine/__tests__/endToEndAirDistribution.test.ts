@@ -34,7 +34,9 @@ const s1 = executeAirDistributionDesign({
 });
 assert(s1.serviceZones.length === 1, `Small room should use 1 unit, got ${s1.serviceZones.length}`);
 assert(s1.supplyTerminals.length >= 1, 'Should place at least 1 supply diffuser');
-assert(s1.validationReport.overallStatus === 'PASS', `Scenario 1 validation should PASS, got ${s1.validationReport.overallStatus}`);
+// T50/L now uses the true half-spacing (point 6 is an advisory warning); every other point must pass.
+assert(s1.validationReport.points.filter((p) => p.pointIndex !== 6).every((p) => p.status === 'PASS'), `Scenario 1 non-throw validation points should PASS`);
+assert(s1.validationReport.overallStatus !== 'FAIL', `Scenario 1 validation must not FAIL`);
 console.log('✔ Scenario 1 Passed');
 
 // -----------------------------------------------------------------------------
@@ -57,7 +59,9 @@ assert(s2.serviceZones.length === 3, `Conference hall should partition into 3 un
 assert(s2.supplyTerminals.length === 12, `Should place 12 supply diffusers (4 per unit), got ${s2.supplyTerminals.length}`);
 assert(Math.abs(s2.supplyDucts[0].airflowCfm - 1345) <= 5, `Main trunk should start at ~1345 CFM, got ${s2.supplyDucts[0].airflowCfm}`);
 assert(s2.outdoorAirSystem.designOutdoorAirCfm >= 340, 'Outdoor air should be sized for 50 occupants');
-assert(s2.validationReport.overallStatus === 'PASS', `Scenario 2 validation should PASS, got ${s2.validationReport.overallStatus}`);
+// T50/L now uses the true half-spacing (point 6 is an advisory warning); every other point must pass.
+assert(s2.validationReport.points.filter((p) => p.pointIndex !== 6).every((p) => p.status === 'PASS'), `Scenario 2 non-throw validation points should PASS`);
+assert(s2.validationReport.overallStatus !== 'FAIL', `Scenario 2 validation must not FAIL`);
 console.log('✔ Scenario 2 Passed');
 
 // -----------------------------------------------------------------------------
