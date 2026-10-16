@@ -259,7 +259,7 @@ export function routeDucts(
     clearance: 0.2 * ppf
   };
 
-  const isDuctedSystem = systemType === 'concealed' || systemType === 'packaged' || systemType === 'ahu' || systemType === 'vrf';
+  const isDuctedSystem = systemType === 'concealed' || systemType === 'packaged' || systemType === 'ahu' || systemType === 'vrf' || systemType === 'fcu';
   const unitXY = { x: unitPos.x, y: unitPos.y };
 
   // Return collar: off the supply trunk line, on the side that is inside the room (>= 1 ft wall clearance),
