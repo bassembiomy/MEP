@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoad } from '../engine/loadCalc';
+import { toBtuh, toCfm, toSqFt, polygonFtToPx } from '../engine/units';
 import { executeAirDistributionDesign, convertDesignResultToZonePayload } from '../engine/airDistributionEngine';
 import { generateMasterSchedules } from '../engine/export/exportSchedules';
 import { exportFullEngineeringDesignReport } from '../engine/export/exportDesignReport';
@@ -26,19 +27,26 @@ export const AirDistributionSchedulePanel: React.FC = () => {
   // Calculate zone thermal load & airflow
   const loadResult = calculateZoneLoad(currentZone, project);
 
-  // Execute full air distribution engine on the selected zone
-  const roomPolygon = currentZone.points && currentZone.points.length >= 6
+  // Execute full air distribution engine. The canvas polygon is in px; the engine converts to ft
+  // (scale = px per ft or px per m) and all loads/airflows below are converted to Btu/h and CFM.
+  const units = project.units;
+  const hasPolygon = !!currentZone.points && currentZone.points.length >= 6;
+  const roomPolygon = hasPolygon
     ? currentZone.points
-    : [0, 0, 50, 0, 50, 30, 0, 30];
+    : polygonFtToPx([0, 0, 50, 0, 50, 30, 0, 30], project.scale, units);
 
   const design = executeAirDistributionDesign({
     roomName: currentZone.name || 'Conditioned Space',
     roomPolygon,
-    roomAreaSqFt: loadResult.area || 1500,
-    sensibleLoadBtu: loadResult.sensibleLoad || 120000,
-    totalLoadBtu: loadResult.totalLoad || 141000,
-    requiredCfm: loadResult.supplyCfm || 4000,
-    occupancyCount: currentZone.occupants || 50,
+    scalePxPerUnit: project.scale,
+    units,
+    roomAreaSqFt: toSqFt(loadResult.area, units) || 1500,
+    sensibleLoadBtu: toBtuh(loadResult.sensibleLoad, units) || 120000,
+    totalLoadBtu: toBtuh(loadResult.totalLoad, units) || 141000,
+    requiredCfm: toCfm(loadResult.supplyCfm, units) || 4000,
+    occupancyCount: loadResult.occupants || undefined,
+    spaceTypeId: currentZone.spaceTypeId || 'office',
+    exhaustCfm: toCfm(loadResult.exhaustCfm || 0, units),
     systemType: currentZone.systemType || 'concealed',
     mountingWallSide: 'east',
     maxAvailableCeilingDepthIn: 14

@@ -34,8 +34,8 @@ const s1 = executeAirDistributionDesign({
 });
 assert(s1.serviceZones.length === 1, `Small room should use 1 unit, got ${s1.serviceZones.length}`);
 assert(s1.supplyTerminals.length >= 1, 'Should place at least 1 supply diffuser');
-// T50/L now uses the true half-spacing (point 6 is an advisory warning); every other point must pass.
-assert(s1.validationReport.points.filter((p) => p.pointIndex !== 6).every((p) => p.status === 'PASS'), `Scenario 1 non-throw validation points should PASS`);
+// Diffuser count/size is selected so T50/L fits 0.75-1.25: ALL nine points must pass.
+assert(s1.validationReport.points.every((p) => p.status === 'PASS'), `Scenario 1: all 9 validation points should PASS: ${s1.validationReport.points.filter((p) => p.status !== 'PASS').map((p) => p.pointIndex + ' ' + p.metric).join(' | ')}`);
 assert(s1.validationReport.overallStatus !== 'FAIL', `Scenario 1 validation must not FAIL`);
 console.log('✔ Scenario 1 Passed');
 
@@ -56,7 +56,12 @@ const s2 = executeAirDistributionDesign({
   maxAvailableCeilingDepthIn: 16
 });
 assert(s2.serviceZones.length === 3, `Conference hall should partition into 3 units, got ${s2.serviceZones.length}`);
-assert(s2.supplyTerminals.length === 12, `Should place 12 supply diffusers (4 per unit), got ${s2.supplyTerminals.length}`);
+// Count is chosen by throw (T50/L) selection: at least the 4-per-unit baseline in every bay
+for (const z of s2.serviceZones) {
+  const n = s2.supplyTerminals.filter((t) => t.unitId === z.id).length;
+  assert(n >= 4, `Each unit bay should receive at least 4 supply diffusers, ${z.unitTag} got ${n}`);
+}
+assert(s2.supplyTerminals.length >= 12, `Should place at least 12 supply diffusers, got ${s2.supplyTerminals.length}`);
 assert(Math.abs(s2.supplyDucts[0].airflowCfm - 1400) <= 5, `Main trunk should start at ~1400 CFM, got ${s2.supplyDucts[0].airflowCfm}`);
 assert(s2.outdoorAirSystem.designOutdoorAirCfm >= 340, 'Outdoor air should be sized for 50 occupants');
 // T50/L now uses the true half-spacing (point 6 is an advisory warning); every other point must pass.

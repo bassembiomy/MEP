@@ -20,6 +20,9 @@ export interface MasterValidationInput {
   ducts: SteppedDuctSection[];
   outdoorAirSystem?: OutdoorAirSystem;
   profile?: StandardsProfile;
+  /** Room-level exhaust / exfiltration (CFM) for the mass balance. */
+  exhaustCfm?: number;
+  exfiltrationCfm?: number;
 }
 
 export interface MasterValidationReport {
@@ -39,7 +42,9 @@ export function executeMasterHvacValidation(input: MasterValidationInput): Maste
     terminals,
     ducts,
     outdoorAirSystem,
-    profile = ASHRAE_PROFILE
+    profile = ASHRAE_PROFILE,
+    exhaustCfm,
+    exfiltrationCfm
   } = input;
 
   const points: ValidationPointResult[] = [];
@@ -51,7 +56,7 @@ export function executeMasterHvacValidation(input: MasterValidationInput): Maste
   points.push(validateRoomAirflowVerification(requiredRoomCfm, terminals, profile));
 
   // Point 3: System Air Mass Balance
-  points.push(validateSystemAirMassBalance(zones, outdoorAirSystem));
+  points.push(validateSystemAirMassBalance(zones, outdoorAirSystem, { exhaustCfm, exfiltrationCfm }));
 
   // Point 4: Velocity Compliance Check
   let maxV = 0;
@@ -96,7 +101,7 @@ export function executeMasterHvacValidation(input: MasterValidationInput): Maste
   });
 
   // Point 9: Spatial Coordination & Clash Check
-  points.push(validateSpatialCoordination(zones, ducts, roomPolygon));
+  points.push(validateSpatialCoordination(zones, ducts, roomPolygon, terminals.filter((t) => t.type === 'supply' || t.type === 'return')));
 
   // Determine overall status
   const hasFail = points.some((p) => p.status === 'FAIL');

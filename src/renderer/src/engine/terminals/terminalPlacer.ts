@@ -1,6 +1,8 @@
 import { EquipmentServiceZone, DesignControlMode } from '../zoning/zonePartitioner';
-import { selectBestDiffuserFromCatalog } from './diffuserSelector';
-import { layoutTerminalGrid, THROW_RATIO_MIN, THROW_RATIO_MAX } from '../geometry';
+import { selectBestDiffuserFromCatalog, neckAreaSqFt, MAX_NECK_VELOCITY_FPM } from './diffuserSelector';
+import { STANDARD_DIFFUSER_CATALOG } from '../hvacCatalogs';
+import { DiffuserCatalogItem } from '../types';
+import { layoutTerminalGrid, THROW_RATIO_MIN, THROW_RATIO_MAX, MIN_TERMINAL_SPACING_FT } from '../geometry';
 
 export interface CoordinatedAirTerminal {
   id: string;
@@ -22,18 +24,180 @@ export interface CoordinatedAirTerminal {
   status: 'pass' | 'warning' | 'fail';
 }
 
+/** Lowest turndown of a diffuser relative to its catalog minimum CFM (design airflow at ~40% of tested minimum). */
+const MIN_TURNDOWN = 0.4;
+
+interface PerfPoint { nc: number; t50: number; dp: number }
+
+/**
+ * Catalog performance at an arbitrary CFM. Inside the tested range the table is interpolated;
+ * outside it throw and pressure scale from the nearest tested point (T50 ~ Q for a fixed neck,
+ * i.e. T50 ~ K*Q/sqrt(Ak); dP ~ Q^2); NC moves ~15 dB per decade of flow.
+ */
+export function diffuserPerformanceAt(item: DiffuserCatalogItem, cfm: number): PerfPoint {
+  const t = [...item.performanceTable].sort((a, b) => a.cfm - b.cfm);
+  if (t.length === 0) return { nc: 25, t50: 10, dp: 0.035 };
+  const first = t[0], last = t[t.length - 1];
+  if (cfm <= first.cfm) {
+    const f = cfm / first.cfm;
+    return { nc: Math.max(10, first.ncRating + 15 * Math.log10(Math.max(f, 1e-3))), t50: first.throwFt.t50 * f, dp: first.deltaPInWg * f * f };
+  }
+  if (cfm >= last.cfm) {
+    const f = cfm / last.cfm;
+    return { nc: last.ncRating + 15 * Math.log10(f), t50: last.throwFt.t50 * f, dp: last.deltaPInWg * f * f };
+  }
+  for (let i = 0; i < t.length - 1; i++) {
+    const a = t[i], b = t[i + 1];
+    if (cfm >= a.cfm && cfm <= b.cfm) {
+      const f = (cfm - a.cfm) / (b.cfm - a.cfm || 1);
+      return {
+        nc: a.ncRating + f * (b.ncRating - a.ncRating),
+        t50: a.throwFt.t50 + f * (b.throwFt.t50 - a.throwFt.t50),
+        dp: a.deltaPInWg + f * (b.deltaPInWg - a.deltaPInWg)
+      };
+    }
+  }
+  return { nc: last.ncRating, t50: last.throwFt.t50, dp: last.deltaPInWg };
+}
+
+export interface ThrowSelection {
+  count: number;
+  item: DiffuserCatalogItem;
+  cfmEach: number;
+  t50: number;
+  throwLengthFt: number;
+  ratio: number;
+  nc: number;
+  dp: number;
+  grid: ReturnType<typeof layoutTerminalGrid>;
+}
+
+/**
+ * Professional selection: for every candidate count n (grid layout) and catalog size, compute
+ * L (half the governing spacing / wall distance) and T50 at the actual per-diffuser CFM, then
+ * pick the combination minimising |T50/L - 1| subject to neck velocity <= limit, CFM within the
+ * item's range and NC <= target (+2). Deterministic; ties go to fewer, cheaper terminals.
+ */
+export function selectDiffuserCountAndSize(
+  polygonFt: number[],
+  zoneCfm: number,
+  targetNc: number,
+  options: { catalog?: DiffuserCatalogItem[]; maxNeckVelocityFpm?: number; maxCount?: number; unitPerFt?: number } = {}
+): ThrowSelection | null {
+  const catalog = options.catalog ?? STANDARD_DIFFUSER_CATALOG;
+  const vLimit = options.maxNeckVelocityFpm ?? MAX_NECK_VELOCITY_FPM;
+  const items = catalog.filter((d) => d.terminalType === 'square-ceiling' || d.terminalType === 'round-ceiling');
+  if (!items.length || !(zoneCfm > 0)) return null;
+  const minFlow = Math.min(...items.map((i) => i.minCfm * MIN_TURNDOWN));
+  const nMax = Math.max(1, Math.min(options.maxCount ?? 48, Math.floor(zoneCfm / Math.max(minFlow, 1))));
+
+  const tryPass = (ncTol: number, minSpacing: number): ThrowSelection | null => {
+    let best: ThrowSelection | null = null;
+    let bestScore = Infinity;
+    const seenCounts = new Set<number>();
+    for (let n = 1; n <= nMax; n++) {
+      const grid = layoutTerminalGrid(polygonFt, n, { unitPerFt: options.unitPerFt ?? 1 });
+      const actual = grid.points.length;
+      if (actual < 1 || seenCounts.has(actual)) continue;
+      seenCounts.add(actual);
+      if (actual > 1 && grid.minSpacingFt < minSpacing - 1e-6) continue;
+      const q = zoneCfm / actual;
+      const L = Math.max(grid.throwLengthFt, 1e-6);
+      for (const item of items) {
+        const area = neckAreaSqFt(item);
+        if (area > 0 && q / area > vLimit) continue;
+        if (q > item.maxCfm || q < item.minCfm * MIN_TURNDOWN) continue;
+        const perf = diffuserPerformanceAt(item, q);
+        if (perf.nc > targetNc + ncTol) continue;
+        const ratio = perf.t50 / L;
+        const inBand = ratio >= THROW_RATIO_MIN && ratio <= THROW_RATIO_MAX;
+        // Unreachable band: do not chase it with ever more terminals (strong count penalty)
+        const score = Math.abs(ratio - 1) + (inBand ? 0.02 : 0.15) * actual + 0.00001 * (item.costIndex ?? 0);
+        if (score < bestScore - 1e-12) {
+          bestScore = score;
+          best = { count: actual, item, cfmEach: q, t50: perf.t50, throwLengthFt: L, ratio, nc: perf.nc, dp: perf.dp, grid };
+        }
+      }
+    }
+    return best;
+  };
+  // Preferred spacing leaves room for a return grille >= MIN_TERMINAL_SPACING_FT from every supply
+  // (cell-corner return is s/sqrt(2) from four supplies); otherwise fall back to the bare minimum.
+  return tryPass(2, MIN_TERMINAL_SPACING_FT * Math.SQRT2) ?? tryPass(2, MIN_TERMINAL_SPACING_FT) ?? tryPass(2, 0) ?? tryPass(8, 0);
+}
+
+type TerminalDescriptor = {
+  model: string; neck: string; face: string; t50: number; ratio: number; nc: number; dp: number;
+  status: CoordinatedAirTerminal['status'];
+};
+
+function emitTerminals(
+  zone: EquipmentServiceZone,
+  pts: { x: number; y: number }[],
+  zoneCfm: number,
+  d: TerminalDescriptor
+): CoordinatedAirTerminal[] {
+  const n = pts.length;
+  const each = Math.round(zoneCfm / n);
+  const terminals: CoordinatedAirTerminal[] = [];
+  let remainingCfm = zoneCfm;
+  pts.forEach((p, i) => {
+    const thisCfm = i === n - 1 ? remainingCfm : each;
+    remainingCfm -= thisCfm;
+    terminals.push({
+      id: `SAD-${zone.unitTag}-${i + 1}`,
+      unitId: zone.id,
+      designControlMode: 'ai',
+      type: 'supply',
+      subtype: '4-way-ceiling',
+      position: { x: parseFloat(p.x.toFixed(2)), y: parseFloat(p.y.toFixed(2)) },
+      cfm: thisCfm,
+      catalogModel: d.model,
+      neckDimension: d.neck,
+      faceDimension: d.face,
+      throwT50Ft: d.t50,
+      throwRatio: d.ratio,
+      adjacentOverlapRatio: 0.85,
+      occupiedZoneVelocityFpm: 40,
+      ncRating: d.nc,
+      deltaPInWg: d.dp,
+      status: d.status
+    });
+  });
+  return terminals;
+}
+
 /**
  * Places supply diffusers on a professional cell-centred grid inside the zone polygon (feet).
- * Every position is inside the polygon, unique, and at least half a grid spacing from the walls.
- * `throwRatio` = T50 / L with L = half the governing spacing (0.75 - 1.25 passes).
+ * Count and catalog size are chosen by `selectDiffuserCountAndSize` so T50/L lands in 0.75 - 1.25
+ * where the catalog allows. Every position is inside the polygon, unique, and at least half a grid
+ * spacing from the walls. `throwRatio` = T50 / L with L = half the governing spacing.
+ * Default (optimizeThrow: false) uses the legacy `targetCfmPerDiffuser` count; the air-distribution engine passes `optimizeThrow: true`.
  */
 export function placeSupplyDiffusersForZone(
   zone: EquipmentServiceZone,
-  options: { targetCfmPerDiffuser?: number; unitPerFt?: number } = {}
+  options: { targetCfmPerDiffuser?: number; unitPerFt?: number; optimizeThrow?: boolean } = {}
 ): CoordinatedAirTerminal[] {
-  const { targetCfmPerDiffuser = 350, unitPerFt = 1 } = options;
+  const { targetCfmPerDiffuser = 350, unitPerFt = 1, optimizeThrow = false } = options;
   const zoneCfm = zone.supplyCfm;
   if (!(zoneCfm > 0) || zone.serviceAreaPolygon.length < 6) return [];
+
+  if (optimizeThrow) {
+    const sel = selectDiffuserCountAndSize(zone.serviceAreaPolygon, zoneCfm, zone.targetNc, { unitPerFt });
+    if (sel) {
+      const item = sel.item;
+      const face = item.faceSizeIn ? `${item.faceSizeIn.width}"x${item.faceSizeIn.height}"` : '24"x24"';
+      const neck = item.neckSizeIn
+        ? (item.neckSizeIn.diameter ? `${item.neckSizeIn.diameter}" dia` : `${item.neckSizeIn.width}"x${item.neckSizeIn.height}"`)
+        : '10"x10"';
+      const ratio = parseFloat(sel.ratio.toFixed(2));
+      const status: CoordinatedAirTerminal['status'] = ratio >= THROW_RATIO_MIN && ratio <= THROW_RATIO_MAX ? 'pass' : 'warning';
+      return emitTerminals(zone, sel.grid.points, zoneCfm, {
+        model: `${item.manufacturer} ${item.model}`, neck, face,
+        t50: parseFloat(sel.t50.toFixed(1)), ratio, nc: Math.round(sel.nc), dp: parseFloat(sel.dp.toFixed(3)), status
+      });
+    }
+  }
 
   let numDiffusers = Math.max(1, Math.round(zoneCfm / targetCfmPerDiffuser));
   let selected = selectBestDiffuserFromCatalog(Math.round(zoneCfm / numDiffusers), zone.targetNc);
@@ -52,33 +216,8 @@ export function placeSupplyDiffusersForZone(
   const throwRatio = parseFloat((selected.throwT50Ft / Math.max(grid.throwLengthFt, 1e-6)).toFixed(2));
   const status: CoordinatedAirTerminal['status'] =
     throwRatio >= THROW_RATIO_MIN && throwRatio <= THROW_RATIO_MAX && selected.withinLimits ? 'pass' : 'warning';
-
-  const terminals: CoordinatedAirTerminal[] = [];
-  let remainingCfm = zoneCfm;
-  grid.points.forEach((p, i) => {
-    const isLast = i === numDiffusers - 1;
-    const thisCfm = isLast ? remainingCfm : cfmPerDiffuser;
-    remainingCfm -= thisCfm;
-    terminals.push({
-      id: `SAD-${zone.unitTag}-${i + 1}`,
-      unitId: zone.id,
-      designControlMode: 'ai',
-      type: 'supply',
-      subtype: '4-way-ceiling',
-      position: { x: parseFloat(p.x.toFixed(2)), y: parseFloat(p.y.toFixed(2)) },
-      cfm: thisCfm,
-      catalogModel: selected.model,
-      neckDimension: selected.neckDimension,
-      faceDimension: selected.faceDimension,
-      throwT50Ft: selected.throwT50Ft,
-      throwRatio,
-      adjacentOverlapRatio: 0.85,
-      occupiedZoneVelocityFpm: 40,
-      ncRating: selected.actualNc,
-      deltaPInWg: selected.deltaPInWg,
-      status
-    });
+  return emitTerminals(zone, grid.points, zoneCfm, {
+    model: selected.model, neck: selected.neckDimension, face: selected.faceDimension,
+    t50: selected.throwT50Ft, ratio: throwRatio, nc: selected.actualNc, dp: selected.deltaPInWg, status
   });
-
-  return terminals;
 }
