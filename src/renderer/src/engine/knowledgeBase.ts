@@ -8,6 +8,11 @@ export interface SpaceType {
   equipmentDensity: number; // W/ft²
   sensibleGain: number; // Btu/h per person
   latentGain: number; // Btu/h per person
+  /** Exhaust-only space (ASHRAE 62.1 Table 6-4): no supply OA credit, mechanical exhaust required. */
+  exhaustOnly?: boolean;
+  exhaustCfmPerFixture?: number; // CFM per fixture (water closet / urinal)
+  exhaustCfmPerSqFt?: number; // CFM/ft² fallback when fixture count unknown
+  exhaustMinCfm?: number; // minimum exhaust CFM for the room
 }
 
 export interface HealthcareSpace {
@@ -66,7 +71,7 @@ export const ASHRAE_SPACE_TYPES: SpaceType[] = [
     ra: 0.12,
     density: 25,
     lightingDensity: 0.94, // ~10.1 W/m²
-    equipmentDensity: 20.0, // High equipment density (~215 W/m²)
+    equipmentDensity: 4.0, // ~43 W/m² (dense PC lab; 20 W/ft² was an order-of-magnitude error)
     sensibleGain: 250,
     latentGain: 200
   },
@@ -83,10 +88,10 @@ export const ASHRAE_SPACE_TYPES: SpaceType[] = [
   },
   {
     id: 'lobby',
-    name: 'Hotel Lobby',
-    rp: 7.6,
+    name: 'Main Entry Lobby',
+    rp: 5,
     ra: 0.06,
-    density: 30,
+    density: 10,
     lightingDensity: 0.50, // ~5.4 W/m²
     equipmentDensity: 0.75,
     sensibleGain: 250,
@@ -95,7 +100,7 @@ export const ASHRAE_SPACE_TYPES: SpaceType[] = [
   {
     id: 'breakroom',
     name: 'Break Room / Lounge',
-    rp: 2.5,
+    rp: 5,
     ra: 0.06,
     density: 25,
     lightingDensity: 0.58, // ~6.3 W/m²
@@ -107,14 +112,70 @@ export const ASHRAE_SPACE_TYPES: SpaceType[] = [
     id: 'retail',
     name: 'Retail Store',
     rp: 7.5,
-    ra: 0.09,
+    ra: 0.12,
     density: 15,
     lightingDensity: 1.20,
     equipmentDensity: 0.30,
     sensibleGain: 250,
     latentGain: 250
+  },
+  {
+    id: 'auditorium',
+    name: 'Auditorium / Assembly Seating',
+    rp: 5,
+    ra: 0.06,
+    density: 150,
+    lightingDensity: 0.90,
+    equipmentDensity: 0.05,
+    sensibleGain: 245,
+    latentGain: 105
+  },
+  {
+    id: 'corridor',
+    name: 'Corridor',
+    rp: 0,
+    ra: 0.06,
+    density: 0,
+    lightingDensity: 0.66,
+    equipmentDensity: 0.05,
+    sensibleGain: 250,
+    latentGain: 200
+  },
+  {
+    id: 'toilet-public',
+    name: 'Toilet Room (Public)',
+    rp: 0,
+    ra: 0,
+    density: 0,
+    lightingDensity: 0.98,
+    equipmentDensity: 0.10,
+    sensibleGain: 250,
+    latentGain: 200,
+    exhaustOnly: true,
+    exhaustCfmPerFixture: 50, // continuous; 70 intermittent (Table 6-4)
+    exhaustCfmPerSqFt: 2.0,
+    exhaustMinCfm: 50
+  },
+  {
+    id: 'toilet-private',
+    name: 'Toilet Room (Private)',
+    rp: 0,
+    ra: 0,
+    density: 0,
+    lightingDensity: 0.98,
+    equipmentDensity: 0.10,
+    sensibleGain: 250,
+    latentGain: 200,
+    exhaustOnly: true,
+    exhaustCfmPerFixture: 25,
+    exhaustCfmPerSqFt: 1.0,
+    exhaustMinCfm: 25
   }
 ];
+
+export const SPACE_TYPE_BY_ID: Record<string, SpaceType> = Object.fromEntries(
+  ASHRAE_SPACE_TYPES.map((t) => [t.id, t])
+);
 
 export const ASHRAE_EXHAUST_RATES: ExhaustCategory[] = [
   { name: 'Public Toilets', continuousRate: 50, intermittentRate: 70, byArea: false }, // CFM/toilet
@@ -144,6 +205,13 @@ export const SMACNA_GAUGE_TABLE = [
   { maxDimension: 84, thicknessMm: 1.00, gauge: 20 },
   { maxDimension: 9999, thicknessMm: 1.20, gauge: 18 }
 ];
+
+/** Glazing defaults for the simplified cooling-load method. */
+export const DEFAULT_GLASS = {
+  shgc: 0.4, // double-glazed low-e
+  /** Design-hour solar heat gain through unit glass area incl. cooling-load factor, Btu/(h·ft²) */
+  solarFactorBtuhFt2: 60
+};
 
 export const DEFAULT_U_VALUES = {
   wall: 0.34, // Btu/(hr·ft²·°F)

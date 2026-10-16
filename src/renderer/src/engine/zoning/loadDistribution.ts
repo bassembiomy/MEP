@@ -4,6 +4,10 @@ export interface LoadDistributionInput {
   totalCfm: number;
   totalOutdoorAirCfm: number;
   weights: number[];
+  /** Total zone exhaust CFM (return = supply - exhaust - exfiltration). Default 0. */
+  totalExhaustCfm?: number;
+  /** Total building exfiltration CFM if modeled. Default 0. */
+  totalExfiltrationCfm?: number;
 }
 
 export interface ZoneLoadSlice {
@@ -17,8 +21,15 @@ export interface ZoneLoadSlice {
 }
 
 export function distributeLoadsAcrossZones(input: LoadDistributionInput): ZoneLoadSlice[] {
-  const { totalSensibleBtu, totalLatentBtu, totalCfm, totalOutdoorAirCfm, weights } = input;
-  const n = weights.length;
+  const { totalSensibleBtu, totalLatentBtu, totalCfm, totalOutdoorAirCfm } = input;
+  const totalExhaust = Math.max(0, input.totalExhaustCfm ?? 0);
+  const totalExfil = Math.max(0, input.totalExfiltrationCfm ?? 0);
+  const n = input.weights.length;
+
+  // Validate weights: clamp negatives / non-finite, normalise so they sum to exactly 1.
+  const clean = input.weights.map((w) => (Number.isFinite(w) && w > 0 ? w : 0));
+  const wSum = clean.reduce((a, b) => a + b, 0);
+  const weights = wSum > 0 ? clean.map((w) => w / wSum) : clean.map(() => (n > 0 ? 1 / n : 0));
   const slices: ZoneLoadSlice[] = [];
 
   let accumulatedSensible = 0;
@@ -30,10 +41,10 @@ export function distributeLoadsAcrossZones(input: LoadDistributionInput): ZoneLo
     const w = weights[i];
     const isLast = i === n - 1;
 
-    const sensible = isLast ? totalSensibleBtu - accumulatedSensible : Math.round(totalSensibleBtu * w);
-    const latent = isLast ? totalLatentBtu - accumulatedLatent : Math.round(totalLatentBtu * w);
-    const cfm = isLast ? totalCfm - accumulatedCfm : Math.round(totalCfm * w);
-    const oa = isLast ? totalOutdoorAirCfm - accumulatedOa : Math.round(totalOutdoorAirCfm * w);
+    const sensible = Math.max(0, isLast ? totalSensibleBtu - accumulatedSensible : Math.round(totalSensibleBtu * w));
+    const latent = Math.max(0, isLast ? totalLatentBtu - accumulatedLatent : Math.round(totalLatentBtu * w));
+    const cfm = Math.max(0, isLast ? totalCfm - accumulatedCfm : Math.round(totalCfm * w));
+    const oa = Math.max(0, isLast ? totalOutdoorAirCfm - accumulatedOa : Math.round(totalOutdoorAirCfm * w));
 
     accumulatedSensible += sensible;
     accumulatedLatent += latent;
@@ -46,7 +57,8 @@ export function distributeLoadsAcrossZones(input: LoadDistributionInput): ZoneLo
       latentBtu: latent,
       totalBtu: sensible + latent,
       supplyCfm: cfm,
-      returnCfm: Math.round(cfm * 0.88), // typical return cfm
+      // Return = supply - exhaust - exfiltration (mass balance), never negative.
+      returnCfm: Math.max(0, cfm - Math.round((totalExhaust + totalExfil) * w)),
       outdoorAirCfm: oa
     });
   }

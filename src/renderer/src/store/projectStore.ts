@@ -238,7 +238,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       points,
       spaceTypeId: 'office',
       ceilingHeight: 10,
-      occupants: 1,
+      occupants: 0, // 0 = not user-specified: loadCalc derives it from ASHRAE 62.1 density x area
       systemType: 'concealed',
       diffusers: [],
       ducts: [],
