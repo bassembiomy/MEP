@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ModalPortal } from './ModalPortal';
 import { useProjectStore, AnnotationVisibility } from '../store/projectStore';
 import {
   Layers,
@@ -64,7 +65,8 @@ export const CadLayerManagerModal: React.FC<CadLayerManagerProps> = ({ isOpen, o
   ];
 
   return (
-    <div className="absolute top-14 right-4 z-40 w-84 max-h-[75vh] bg-neutral-900/95 border border-neutral-750 rounded-2xl shadow-2xl backdrop-blur-xl flex flex-col overflow-hidden text-xs">
+    <ModalPortal onClose={onClose} widthClass="max-w-md" label="CAD Layers & Visibility">
+    <div className="w-full bg-neutral-900 border border-neutral-700 rounded-2xl shadow-2xl flex flex-col text-xs">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800 bg-neutral-950/80">
         <div className="flex items-center gap-2">
@@ -267,5 +269,6 @@ export const CadLayerManagerModal: React.FC<CadLayerManagerProps> = ({ isOpen, o
         </button>
       </div>
     </div>
+    </ModalPortal>
   );
 };

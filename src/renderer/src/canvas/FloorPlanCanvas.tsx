@@ -5,7 +5,7 @@ import { getPolygonCentroid, clampPointInsidePolygon, isPointInsideWithClearance
 import { calculateZoneLoad } from '../engine/loadCalc';
 import { routeDucts } from '../engine/ductRouter';
 import { routeOrthogonalRefrigerantPiping } from '../engine/spatialPlanner';
-import { pxPerFt } from '../engine/units';
+import { pxPerFt, toCfm, toBtuh } from '../engine/units';
 import { STANDARD_EQUIPMENT_CATALOG } from '../engine/hvacCatalogs';
 import { CadLayerManagerModal } from '../components/CadLayerManagerModal';
 import Konva from 'konva';
@@ -36,13 +36,30 @@ import {
   DrawingUnit,
   feetPerDrawingUnit,
   feetPerUnitFromCalibration,
-  segmentTagPlacement,
-  ductSizeText,
-  diffuserTagText,
   roomDimensionLines,
   dimTick,
-  formatLength
+  formatLength,
+  terminalFaceIn,
+  FIT_PADDING,
+  doubleClickFinish,
+  assignTerminalsToUnits,
+  labelSpotInPolygon,
+  supplyCfmOf,
+  isSelfContainedSystem,
+  uprightAngle
 } from './drawingGeometry';
+import { formatAirflow, formatLoad, formatDuctSize, formatTerminalSize, formatVelocity } from './displayFormat';
+import {
+  layoutLabels,
+  measureLabel,
+  compassCandidates,
+  ductTagCandidates,
+  scaleBucket,
+  bucketScale,
+  LabelRequest,
+  PlacedLabel,
+  Rect as LRect
+} from './labelLayout';
 
 // Duct outline geometry cache (keyed by the zone's duct array identity, then k).
 const ductGeomCache = new WeakMap<DuctSegment[], { k: number; runs: DuctRunOutline[] }>();
@@ -77,6 +94,52 @@ const ZERO_PTS = [0, 0, 0, 0];
 const rad = (d: number): number => (d * Math.PI) / 180;
 const rawCtx = (context: Konva.Context): CanvasRenderingContext2D =>
   (context as unknown as { _context: CanvasRenderingContext2D })._context;
+
+interface LabelLine { text: string; color: string; bold?: boolean }
+interface LabelItem {
+  id: string;
+  zoneId: string;
+  kind: 'zone' | 'terminal' | 'duct';
+  placed: PlacedLabel;
+  lines: LabelLine[];
+  fontPx: number;
+  anchorWorld: { x: number; y: number };
+  bg?: string;
+  border?: string;
+}
+interface DuctSection { id: string; text: string; duct: DuctSegment; pieces: number[][]; network: 'supply' | 'return' }
+
+/** Split each duct run into sections of consecutive equal size; one tag per section. */
+function buildDuctSections(ducts: DuctSegment[], runs: DuctRunOutline[], units: string): DuctSection[] {
+  const byId = new Map<string, DuctSegment>();
+  for (const d of ducts) byId.set(d.id, d);
+  const out: DuctSection[] = [];
+  for (const run of runs) {
+    const n = Math.min(run.segIds.length, Math.floor(run.center.length / 2) - 1);
+    let cur: DuctSection | null = null;
+    let curLen = -1;
+    for (let i = 0; i < n; i++) {
+      const d = byId.get(run.segIds[i].split(/[#~]/)[0]);
+      if (!d) { cur = null; continue; }
+      const piece = [run.center[i * 2], run.center[i * 2 + 1], run.center[i * 2 + 2], run.center[i * 2 + 3]];
+      const text = d.shape === 'round'
+        ? formatDuctSize(d.diameterIn || d.widthIn, d.diameterIn || d.widthIn, units, true)
+        : formatDuctSize(d.widthIn, d.heightIn, units);
+      const len = Math.hypot(piece[2] - piece[0], piece[3] - piece[1]);
+      if (cur && cur.text === text) {
+        cur.pieces.push(piece);
+        if (len > curLen) { cur.duct = d; curLen = len; }
+      } else {
+        cur = { id: `${run.id}:${i}`, text, duct: d, pieces: [piece], network: run.network };
+        curLen = len;
+        out.push(cur);
+      }
+    }
+  }
+  return out;
+}
+
+const isSupplyTerminal = (d: { type?: string }): boolean => d.type !== 'return' && d.type !== 'exhaust';
 
 const unitPositionsOf = (zone: Zone): { x: number; y: number; }[] =>
   zone.unitPositions && zone.unitPositions.length > 0 ? zone.unitPositions : zone.unitPos ? [zone.unitPos] : [];
@@ -124,6 +187,8 @@ export const FloorPlanCanvas: React.FC = () => {
   const [calib, setCalib] = useState<{ stage: 'p1' | 'p2' | 'enter'; p1?: { x: number; y: number }; p2?: { x: number; y: number } } | null>(null);
   const [calibDist, setCalibDist] = useState<string>('');
   const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
+  // Detailed annotations: CFM / velocity on duct-section tags and NC on terminal tags (off = clean shop drawing).
+  const [detailed, setDetailed] = useState<boolean>(false);
   const calibRef = useRef(calib);
   // Stable, mutable registry of zone line nodes (populated from Konva ref callbacks, read in event handlers).
   const [zoneLineNodes] = useState<Map<string, Konva.Line>>(() => new Map());
@@ -133,6 +198,13 @@ export const FloorPlanCanvas: React.FC = () => {
   const stageScaleRef = useRef<number>(1);
   const tempPointsRef = useRef<number[]>(tempPoints);
   const drawModeRef = useRef(drawMode);
+  // Wheel zoom runs on the Konva stage directly; React state is synced after the wheel goes idle.
+  const wheelViewRef = useRef<{ scale: number; x: number; y: number } | null>(null);
+  const wheelRafRef = useRef<number | null>(null);
+  const wheelSyncRef = useRef<number | undefined>(undefined);
+  // Screen positions of the last two polygon clicks (double-click finish rule) and the last close time.
+  const clickLogRef = useRef<Array<{ sx: number; sy: number }>>([]);
+  const lastCloseAtRef = useRef<number>(0);
 
   // Cursor / rubber band live on their own layer and are driven imperatively (no React re-render per mousemove).
   const cursorLayerRef = useRef<Konva.Layer>(null);
@@ -233,7 +305,7 @@ export const FloorPlanCanvas: React.FC = () => {
     const parts: Array<Bounds | null> = [dxfBoundingBox];
     for (const z of zones) {
       parts.push(pointsBounds(z.points));
-      for (const p of [...unitPositionsOf(z), ...outdoorPositionsOf(z)]) {
+      for (const p of [...unitPositionsOf(z), ...(isSelfContainedSystem(z.systemType) ? [] : outdoorPositionsOf(z))]) {
         parts.push({ minX: p.x, minY: p.y, maxX: p.x, maxY: p.y });
       }
     }
@@ -250,7 +322,7 @@ export const FloorPlanCanvas: React.FC = () => {
       minY: b.minY - Math.max(0, (minSpan - (b.maxY - b.minY)) / 2),
       maxY: b.maxY + Math.max(0, (minSpan - (b.maxY - b.minY)) / 2)
     };
-    const f = fitBounds(bb, size.w, size.h, 0.85);
+    const f = fitBounds(bb, size.w, size.h, 0.92, FIT_PADDING);
     setStageScale(f.scale);
     setStagePos({ x: f.x, y: f.y });
   }, [allContentBounds, size.w, size.h, k]);
@@ -262,7 +334,7 @@ export const FloorPlanCanvas: React.FC = () => {
       handleFitDesign();
       return;
     }
-    const f = fitBounds(b, size.w, size.h, 0.65);
+    const f = fitBounds(b, size.w, size.h, 0.7, FIT_PADDING);
     setStageScale(f.scale);
     setStagePos({ x: f.x, y: f.y });
   }, [selectedZoneId, zones, handleFitDesign, size.w, size.h]);
@@ -390,11 +462,13 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   const closePolygon = useCallback(() => {
-    const res = validateClosablePolygon(tempPointsRef.current);
+    // Always read the live store (never a render-time snapshot) so fast clicks cannot see stale vertices.
+    const res = validateClosablePolygon(useProjectStore.getState().tempPoints);
     if (!res.ok) {
       showMessage(res.message || 'Cannot close polygon.');
       return;
     }
+    lastCloseAtRef.current = Date.now();
     addZone(res.points);
     clearTempPoints();
   }, [addZone, clearTempPoints, showMessage]);
@@ -421,10 +495,14 @@ export const FloorPlanCanvas: React.FC = () => {
     if (!stage) return;
     const raw = pointerWorld(stage);
     if (!raw) return;
-    const tp = tempPointsRef.current;
+    // Second click of a double-click that just closed the polygon must not start a stray vertex.
+    if (Date.now() - lastCloseAtRef.current < 450) return;
+    const scr = stage.getPointerPosition();
+    if (scr) clickLogRef.current = [...clickLogRef.current, { sx: scr.x, sy: scr.y }].slice(-2);
+    const tp = useProjectStore.getState().tempPoints;
 
     // Close when the click lands within 8 screen px of the first point
-    if (tp.length >= 6 && isNearFirstPoint(tp, raw.x, raw.y, 8 / stageScale)) {
+    if (tp.length >= 6 && isNearFirstPoint(tp, raw.x, raw.y, 8 / stageScaleRef.current)) {
       closePolygon();
       return;
     }
@@ -453,27 +531,67 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   const handleDoubleClick = (): void => {
-    if (drawMode === 'polyline' && tempPointsRef.current.length >= 6) closePolygon();
+    if (drawModeRef.current !== 'polyline') return;
+    const log = clickLogRef.current;
+    if (log.length < 2) return;
+    const gap = Math.hypot(log[1].sx - log[0].sx, log[1].sy - log[0].sy);
+    const tp = useProjectStore.getState().tempPoints;
+    // Finish only when both clicks of the double-click hit the same spot (<= 4 screen px); the duplicate vertex
+    // added by the second click is dropped. Two fast clicks on different vertices never close the polygon.
+    const res = doubleClickFinish(tp, gap, 4 / stageScaleRef.current);
+    if (!res.finish) return;
+    const v = validateClosablePolygon(res.points);
+    if (!v.ok) {
+      showMessage(v.message || 'Cannot close polygon.');
+      return;
+    }
+    lastCloseAtRef.current = Date.now();
+    clickLogRef.current = [];
+    addZone(v.points);
+    clearTempPoints();
   };
 
-  // Cursor-anchored exponential zoom
+  // Cursor-anchored exponential zoom. Applied to the Konva stage inside rAF (no React render per tick);
+  // React state follows ~120 ms after the last tick.
   const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>): void => {
     e.evt.preventDefault();
     const stage = stageRef.current;
     if (!stage) return;
-    // Read the live stage transform (not the render closure) so fast wheel ticks between renders accumulate
-    const oldScale = stage.scaleX() || stageScaleRef.current;
     const pointer = stage.getPointerPosition();
     if (!pointer) return;
-    const mousePointTo = { x: (pointer.x - stage.x()) / oldScale, y: (pointer.y - stage.y()) / oldScale };
-    const newScale = clampZoom(oldScale * Math.exp(-e.evt.deltaY * 0.0018));
-    const newPos = { x: pointer.x - mousePointTo.x * newScale, y: pointer.y - mousePointTo.y * newScale };
-    stage.scale({ x: newScale, y: newScale });
-    stage.position(newPos);
-    stageScaleRef.current = newScale;
-    setStageScale(newScale);
-    setStagePos(newPos);
+    const cur = wheelViewRef.current ?? { scale: stage.scaleX() || stageScaleRef.current, x: stage.x(), y: stage.y() };
+    const mp = { x: (pointer.x - cur.x) / cur.scale, y: (pointer.y - cur.y) / cur.scale };
+    const ns = clampZoom(cur.scale * Math.exp(-e.evt.deltaY * 0.0018));
+    wheelViewRef.current = { scale: ns, x: pointer.x - mp.x * ns, y: pointer.y - mp.y * ns };
+    stageScaleRef.current = ns;
+    if (wheelRafRef.current === null) {
+      wheelRafRef.current = requestAnimationFrame(() => {
+        wheelRafRef.current = null;
+        const v = wheelViewRef.current;
+        wheelViewRef.current = null;
+        const st = stageRef.current;
+        if (!v || !st) return;
+        st.scale({ x: v.scale, y: v.scale });
+        st.position({ x: v.x, y: v.y });
+        st.batchDraw();
+      });
+    }
+    window.clearTimeout(wheelSyncRef.current);
+    wheelSyncRef.current = window.setTimeout(() => {
+      const st = stageRef.current;
+      if (!st) return;
+      setStageScale(st.scaleX());
+      setStagePos({ x: st.x(), y: st.y() });
+    }, 120);
   };
+
+  useEffect(
+    () => () => {
+      if (wheelRafRef.current !== null) cancelAnimationFrame(wheelRafRef.current);
+      window.clearTimeout(wheelSyncRef.current);
+    },
+    []
+  );
 
   const handleZoomBtn = (factor: number): void => {
     const centerPoint = { x: (size.w / 2 - stagePos.x) / stageScale, y: (size.h / 2 - stagePos.y) / stageScale };
@@ -523,8 +641,14 @@ export const FloorPlanCanvas: React.FC = () => {
       const r = routeDucts(zone.points, diffusers, project.units, zone.id, positions[0], zone.systemType, zone.outdoorUnitPos, acoustic, k);
       return { ducts: r.ducts, unitPos: positions.length ? positions[0] : r.ducts.length ? r.unitPos : undefined };
     }
+    // Capacity-constrained assignment: supply terminals go to the nearest unit that still has airflow capacity
+    // (greedy), returns to the nearest unit. Warn when a unit is still pushed >5% past its delivered CFM.
     const groups: Diffuser[][] = positions.map(() => []);
+    const supply = diffusers.filter(isSupplyTerminal);
+    const asg = assignTerminalsToUnits(supply, positions);
+    asg.groups.forEach((g, ui) => g.forEach((ti) => groups[ui].push(supply[ti])));
     for (const d of diffusers) {
+      if (isSupplyTerminal(d)) continue;
       let best = 0;
       let bd = Infinity;
       positions.forEach((p, i) => {
@@ -532,6 +656,12 @@ export const FloorPlanCanvas: React.FC = () => {
         if (dd < bd) { bd = dd; best = i; }
       });
       groups[best].push(d);
+    }
+    if (asg.anyOverloaded) {
+      const worst = asg.loads.reduce((bi, l, i, arr) => (l > arr[bi] ? i : bi), 0);
+      showMessage(
+        `Unit ${worst + 1} would serve ${formatAirflow(asg.loads[worst], project.units)} but delivers ${formatAirflow(asg.capacity, project.units)} - move terminals or add a unit.`
+      );
     }
     const ducts: DuctSegment[] = [];
     positions.forEach((p, i) => {
@@ -740,6 +870,189 @@ export const FloorPlanCanvas: React.FC = () => {
     );
   };
 
+  // ───────── Annotation layout (collision-free labels; recomputed per zoom bucket, not per wheel tick) ─────────
+  const sBucket = scaleBucket(stageScale);
+  const fontFactor = (project.equipmentScale || 1.5) / 1.5;
+  const labelItems = useMemo(() => {
+    const s = bucketScale(sBucket);
+    const tier = getLodTier(s);
+    const ff = fontFactor;
+    const units = project.units;
+    const av = annotationVisibility;
+    const obstacles: LRect[] = [];
+    const reqs: LabelRequest[] = [];
+    const meta = new Map<string, Omit<LabelItem, 'placed'>>();
+    const pad = 2;
+    const addObstacle = (cx: number, cy: number, w: number, h: number): void => {
+      const ww = Math.max(w, 6), hh = Math.max(h, 6);
+      obstacles.push({ x: cx * s - ww / 2 - pad, y: cy * s - hh / 2 - pad, w: ww + 2 * pad, h: hh + 2 * pad });
+    };
+    const colorLine = (text: string, color: string): LabelLine => ({ text, color, bold: true });
+
+    for (const z of zones) {
+      const selfContained = isSelfContainedSystem(z.systemType);
+      const avoid: Array<{ x: number; y: number; r: number }> = [];
+      // symbols are obstacles for every label
+      for (const d of z.diffusers) {
+        const face = terminalFacePx(d, k, units);
+        addObstacle(d.x, d.y, face.w * s, face.h * s);
+        avoid.push({ x: d.x, y: d.y, r: Math.max(face.w, face.h) / 2 + 8 / s });
+      }
+      const kind = unitKindForSystem(z.systemType);
+      const fp = unitFootprintPx(kind, k, catalogDimsFor(z.catalogModel));
+      for (const u of unitPositionsOf(z)) {
+        addObstacle(u.x, u.y, fp.w * s, fp.d * s);
+        // equipment tag below the unit (always kept): same size rule as the symbol label
+        const fs = Math.max(9.5 * textScale, 10 / s) * s;
+        const tw = 7 * 0.6 * fs;
+        obstacles.push({ x: u.x * s - tw / 2, y: (u.y + fp.d / 2) * s + 2 * textScale * s, w: tw, h: fs * 1.25 });
+        avoid.push({ x: u.x, y: u.y, r: Math.hypot(fp.w, fp.d) / 2 + 8 / s });
+      }
+      if (!selfContained) {
+        const ofp = unitFootprintPx('odu', k, outdoorDimsFor(z));
+        for (const o of outdoorPositionsOf(z)) {
+          addObstacle(o.x, o.y, ofp.w * s, ofp.d * s);
+          avoid.push({ x: o.x, y: o.y, r: Math.hypot(ofp.w, ofp.d) / 2 });
+        }
+      }
+
+      // Zone label: largest empty area of the polygon, away from terminals / units
+      if (av.zoneLabels && z.points.length >= 6) {
+        const spot = labelSpotInPolygon(z.points, avoid) ?? { ...getPolygonCentroid(z.points), clearance: 0 };
+        const supply = z.diffusers.length > 0
+          ? supplyCfmOf(z.diffusers)
+          : toCfm(calculateZoneLoad(z, project).supplyCfm, units);
+        const lines: LabelLine[] = [
+          colorLine(z.name, z.id === selectedZoneId ? '#60a5fa' : '#e5e5e5'),
+          colorLine(`${formatAirflow(supply, units)} (${z.systemType || 'concealed'})`, '#10b981')
+        ];
+        const fontPx = 12 * ff;
+        const size = measureLabel(lines.map((l) => l.text), fontPx);
+        const anchor = { x: spot.x * s, y: spot.y * s };
+        const id = `z:${z.id}`;
+        reqs.push({
+          id, lines: lines.map((l) => l.text), fontPx, priority: 50, mandatory: true, anchor,
+          candidates: [{ x: anchor.x, y: anchor.y }, ...compassCandidates(anchor, { w: 0, h: 0 }, size, 8)]
+        });
+        meta.set(id, { id, zoneId: z.id, kind: 'zone', lines, fontPx, anchorWorld: { x: spot.x, y: spot.y } });
+      }
+
+      // ONE tag per terminal: "CD-1" / "18x18 . 162 CFM"
+      if (tier >= 2 && (av.diffuserTags || av.diffuserCfm)) {
+        let nS = 0, nR = 0, nE = 0;
+        for (const d of z.diffusers) {
+          const code = d.type === 'return' ? 'RG' : d.type === 'exhaust' ? 'EG' : z.systemType === 'high-wall' ? 'HW' : 'CD';
+          const num = d.type === 'return' ? ++nR : d.type === 'exhaust' ? ++nE : ++nS;
+          const f = terminalFaceIn(d, units);
+          const lines: LabelLine[] = [];
+          const col = d.type === 'return' ? '#d8b4fe' : '#fde047';
+          if (av.diffuserTags) lines.push(colorLine(`${code}-${num}`, col));
+          const second: string[] = [];
+          if (av.diffuserTags) second.push(formatTerminalSize(f.w, f.h, units));
+          if (av.diffuserCfm) second.push(formatAirflow(d.cfm, units));
+          if (detailed && d.actualNc) second.push(`NC ${d.actualNc}`);
+          if (second.length) lines.push({ text: second.join(' · '), color: col, bold: false });
+          if (!lines.length) continue;
+          const face = terminalFacePx(d, k, units);
+          const id = `t:${z.id}:${d.id}`;
+          const fontPx = 10 * ff;
+          reqs.push({
+            id, lines: lines.map((l) => l.text), fontPx, priority: 30,
+            anchor: { x: d.x * s, y: d.y * s }, anchorHalf: { w: (face.w * s) / 2, h: (face.h * s) / 2 }
+          });
+          meta.set(id, {
+            id, zoneId: z.id, kind: 'terminal', lines, fontPx, anchorWorld: { x: d.x, y: d.y },
+            bg: 'rgba(12,12,12,0.72)'
+          });
+        }
+      }
+
+      // Duct size ONCE per section (size only; CFM / velocity only in Detailed mode)
+      const ductTagOn = av.ductSizeBadges || av.dimensions || (detailed && av.ductCfm);
+      if (tier >= 2 && ductTagOn && (av.ducts || av.ductCenterlines) && z.ducts.length) {
+        const sections = buildDuctSections(z.ducts, getDuctRuns(z.ducts, k), units);
+        for (const sec of sections) {
+          const lines: LabelLine[] = [];
+          const col = sec.network === 'return' ? '#cbd5e1' : '#67e8f9';
+          if (av.ductSizeBadges || av.dimensions) lines.push(colorLine(sec.text, col));
+          if (detailed) {
+            const d = sec.duct;
+            const vel = d.velocityFpm || Math.round(d.cfm / Math.max(0.1, (d.widthIn * d.heightIn) / 144));
+            const parts: string[] = [];
+            if (av.ductCfm) parts.push(formatAirflow(d.cfm, units));
+            if (av.ductSizeBadges) parts.push(formatVelocity(vel, units));
+            if (parts.length) lines.push({ text: parts.join(' · '), color: '#facc15', bold: false });
+          }
+          if (!lines.length) continue;
+          const fontPx = 9 * ff;
+          const size = measureLabel(lines.map((l) => l.text), fontPx);
+          const hw = ductHalfWidthPx(sec.duct.widthIn || sec.duct.diameterIn || 0, k) * s;
+          const pieces = sec.pieces.map((p) => p.map((v) => v * s));
+          const cands = ductTagCandidates(pieces, hw, size);
+          if (!cands.length) continue; // no piece long enough at this zoom: hidden
+          let li = 0, ll = -1;
+          sec.pieces.forEach((p, i) => {
+            const l = Math.hypot(p[2] - p[0], p[3] - p[1]);
+            if (l > ll) { ll = l; li = i; }
+          });
+          const lp = sec.pieces[li];
+          const aw = { x: (lp[0] + lp[2]) / 2, y: (lp[1] + lp[3]) / 2 };
+          const id = `d:${z.id}:${sec.id}`;
+          reqs.push({ id, lines: lines.map((l) => l.text), fontPx, priority: 20, anchor: { x: aw.x * s, y: aw.y * s }, candidates: cands });
+          meta.set(id, {
+            id, zoneId: z.id, kind: 'duct', lines, fontPx, anchorWorld: aw,
+            bg: 'rgba(15,23,42,0.88)', border: sec.network === 'return' ? '#64748b' : '#38bdf8'
+          });
+        }
+      }
+    }
+
+    const placed = layoutLabels(reqs, obstacles);
+    const byZone = new Map<string, LabelItem[]>();
+    placed.forEach((pl, id) => {
+      const m = meta.get(id);
+      if (!m || !pl.visible) return;
+      const arr = byZone.get(m.zoneId) ?? [];
+      arr.push({ ...m, placed: pl });
+      byZone.set(m.zoneId, arr);
+    });
+    return byZone;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zones, project.units, project.scale, k, sBucket, annotationVisibility, detailed, fontFactor, textScale, selectedZoneId]);
+
+  /** A placed label: constant screen-size text with a box sized to the measured text. */
+  const renderLabelItem = (it: LabelItem): React.JSX.Element => {
+    const p = it.placed;
+    const sc = stageScale;
+    const x = it.anchorWorld.x + p.dx / sc;
+    const y = it.anchorWorld.y + p.dy / sc;
+    const lh = it.fontPx * 1.25;
+    return (
+      <Group key={it.id} x={x} y={y} rotation={uprightAngle(p.angleDeg)} scaleX={1 / sc} scaleY={1 / sc} listening={false}>
+        {it.bg && (
+          <Rect x={-p.w / 2} y={-p.h / 2} width={p.w} height={p.h} fill={it.bg} stroke={it.border} strokeWidth={it.border ? 0.8 : 0} cornerRadius={2} />
+        )}
+        {it.lines.map((ln, i) => (
+          <Text
+            key={i}
+            x={-p.w / 2}
+            y={-p.h / 2 + 1 + i * lh}
+            width={p.w}
+            height={lh}
+            align="center"
+            verticalAlign="middle"
+            wrap="none"
+            text={ln.text}
+            fontSize={it.fontPx}
+            fontStyle={ln.bold === false ? 'normal' : 'bold'}
+            fill={ln.color}
+            listening={false}
+          />
+        ))}
+      </Group>
+    );
+  };
+
   // ───────── Symbols (true physical size) ─────────
   const renderIndoorUnitSymbol = (zone: Zone, uIdx: number, ts: number): React.JSX.Element => {
     const kind = unitKindForSystem(zone.systemType);
@@ -870,30 +1183,12 @@ export const FloorPlanCanvas: React.FC = () => {
     );
   };
 
-  /** Shop-drawing dimension layer for one zone (geometry in world px, text/ticks constant in screen px). */
+  /** Shop-drawing dimension layer for one zone: dimension lines only (tags come from the shared label layout). */
   const renderDimensions = (zone: Zone): React.JSX.Element | null => {
     if (!annotationVisibility.dimensions) return null;
     const out: React.ReactNode[] = [];
     const px = 1 / stageScale;
-    // Duct size tags along the longest segment of each duct, rotated with it, always upright
-    for (const d of zone.ducts) {
-      if (d.points.length < 4) continue;
-      let bi = 0, bl = -1;
-      for (let i = 0; i + 3 < d.points.length; i += 2) {
-        const l = Math.hypot(d.points[i + 2] - d.points[i], d.points[i + 3] - d.points[i + 1]);
-        if (l > bl) { bl = l; bi = i; }
-      }
-      const txt = ductSizeText(d, project.units);
-      if (bl * stageScale < txt.length * 6.2 + 10) continue; // no room on screen
-      const pl = segmentTagPlacement(d.points[bi], d.points[bi + 1], d.points[bi + 2], d.points[bi + 3], ductHalfWidthPx(d.widthIn, k) + 7 * px);
-      out.push(renderTag(`dt-${d.id}`, pl.x, pl.y, pl.angleDeg, txt, d.type === 'return' ? '#cbd5e1' : '#67e8f9'));
-    }
-    // Diffuser tags: type-size-CFM
-    for (const dif of zone.diffusers) {
-      const face = terminalFacePx(dif, k, project.units);
-      const txt = diffuserTagText(dif, project.units);
-      out.push(renderTag(`ft-${dif.id}`, dif.x, dif.y + face.h / 2 + 8 * px, 0, txt, '#fde047', 9));
-    }
+    // Duct size and terminal tags live in the shared collision-free label layout (no duplicates here).
     // Room overall dimension lines
     const b = pointsBounds(zone.points);
     if (b) {
@@ -916,9 +1211,29 @@ export const FloorPlanCanvas: React.FC = () => {
     return <Group listening={false}>{out}</Group>;
   };
 
+  /** Zone polygon fill / outline: lives in its own layer BELOW all terminals, units and handles. */
+  const renderZoneFill = (zone: Zone): React.JSX.Element => {
+    const isSelected = zone.id === selectedZoneId;
+    return (
+      <Line
+        key={`fill-${zone.id}`}
+        points={zone.points}
+        closed
+        fill={isSelected ? 'rgba(59, 130, 246, 0.18)' : 'rgba(255, 255, 255, 0.03)'}
+        stroke={isSelected ? '#3b82f6' : '#525252'}
+        strokeWidth={getStrokeWidth(isSelected ? 2.5 : 1.2, isSelected ? 2.5 : 1.5)}
+        ref={(n) => {
+          if (n) zoneLineNodes.set(zone.id, n);
+          else zoneLineNodes.delete(zone.id);
+        }}
+        onClick={() => selectZone(zone.id)}
+        onTap={() => selectZone(zone.id)}
+      />
+    );
+  };
+
   const renderZone = (zone: Zone): React.JSX.Element => {
     const isSelected = zone.id === selectedZoneId;
-    const centroid = getPolygonCentroid(zone.points);
     const load = calculateZoneLoad(zone, project);
     const ts = textScale;
 
@@ -929,39 +1244,34 @@ export const FloorPlanCanvas: React.FC = () => {
     }
 
     const units = unitPositionsOf(zone);
-    const outdoors = outdoorPositionsOf(zone);
+    // Packaged RTUs are self-contained: no condensing unit symbol and no refrigerant lines.
+    const outdoors = isSelfContainedSystem(zone.systemType) ? [] : outdoorPositionsOf(zone);
+    const labels = labelItems.get(zone.id) ?? [];
     const ductRuns = annotationVisibility.ducts || annotationVisibility.ductCenterlines ? getDuctRuns(zone.ducts, k) : [];
     const unitFp = unitFootprintPx(unitKindForSystem(zone.systemType), k, catalogDimsFor(zone.catalogModel));
+    // Per-unit airflow vs delivered CFM (multi-unit ducted zones): the same assignment the router uses.
+    let unitOverload: ReturnType<typeof assignTerminalsToUnits> | null = null;
+    if (units.length >= 2 && isDuctedSystem(zone)) {
+      const sup = zone.diffusers.filter(isSupplyTerminal);
+      const a = assignTerminalsToUnits(sup, units);
+      if (a.anyOverloaded) unitOverload = a;
+    }
 
     return (
       <Group key={zone.id}>
-        {/* Zone Area Polygon */}
-        <Line
-          points={zone.points}
-          closed
-          fill={isSelected ? 'rgba(59, 130, 246, 0.18)' : 'rgba(255, 255, 255, 0.03)'}
-          stroke={isSelected ? '#3b82f6' : '#525252'}
-          strokeWidth={getStrokeWidth(isSelected ? 2.5 : 1.2, isSelected ? 2.5 : 1.5)}
-          ref={(n) => {
-            if (n) zoneLineNodes.set(zone.id, n);
-            else zoneLineNodes.delete(zone.id);
-          }}
-          onClick={() => selectZone(zone.id)}
-          onTap={() => selectZone(zone.id)}
-        />
-
         {/* Refrigerant line sets & master callout */}
         {(() => {
           if (units.length === 0 && outdoors.length === 0) return null;
 
           const qty = zone.catalogQty || units.length || 1;
-          const btuPerUnit = Math.round(load.totalLoad / Math.max(1, qty));
-          const supplyDiffusers = zone.diffusers.filter((d) => d.type !== 'return');
+          // load.* is in PROJECT units (W for metric): convert to Btu/h; terminal / duct CFM are always CFM.
+          const btuPerUnit = Math.round(toBtuh(load.totalLoad, project.units) / Math.max(1, qty));
+          const supplyDiffusers = zone.diffusers.filter(isSupplyTerminal);
           const returnDiffusers = zone.diffusers.filter((d) => d.type === 'return');
           const cfmPerUnit = Math.round(
-            (zone.diffusers.length > 0 ? supplyDiffusers.reduce((s, d) => s + d.cfm, 0) : load.supplyCfm) / Math.max(1, qty)
+            (zone.diffusers.length > 0 ? supplyCfmOf(supplyDiffusers) : toCfm(load.supplyCfm, project.units)) / Math.max(1, qty)
           );
-          const freshAirCfm = Math.round(load.supplyCfm * 0.15);
+          const freshAirCfm = Math.round(toCfm(load.supplyCfm, project.units) * 0.15);
           const sysLabel =
             zone.systemType === 'cassette' ? 'CASSETTE SPLIT'
             : zone.systemType === 'high-wall' ? 'HIGH WALL SPLIT'
@@ -981,22 +1291,22 @@ export const FloorPlanCanvas: React.FC = () => {
             }
             const out: string[] = [];
             groups.forEach((g, lbl) => {
-              out.push(`${g.n}-${tag} ${lbl}`, `${Math.round(g.cfm / g.n)} CFM-EACH`);
+              out.push(`${g.n}-${tag} ${lbl}`, `${formatAirflow(g.cfm / g.n, project.units)} EACH`);
             });
             return out;
           };
           const lines = [
             `${qty}-${sysLabel}`,
-            `${btuPerUnit.toLocaleString()} BTU/HR-EACH`,
-            `${cfmPerUnit} CFM-EACH`,
+            `${formatLoad(btuPerUnit, project.units)} EACH`,
+            `${formatAirflow(cfmPerUnit, project.units)} EACH`,
             ...termLines(supplyDiffusers, 'S.C.D'),
             ...termLines(returnDiffusers, 'R.C.D'),
-            `FA ${freshAirCfm} CFM`
+            `FA ${formatAirflow(freshAirCfm, project.units)}`
           ];
 
           return (
             <Group listening={false}>
-              {annotationVisibility.refrigerantPiping && units.map((uPos, uIdx) => {
+              {annotationVisibility.refrigerantPiping && !isSelfContainedSystem(zone.systemType) && units.map((uPos, uIdx) => {
                 const oPos = outdoors[uIdx] || outdoors[0] || { x: uPos.x + 3.5 * k, y: uPos.y + 3.5 * k };
                 const piping = routeOrthogonalRefrigerantPiping(oPos, [uPos]);
                 return (
@@ -1078,7 +1388,7 @@ export const FloorPlanCanvas: React.FC = () => {
           );
         })}
 
-        {/* Per-segment annotations: flow arrow, CFM text, size / velocity badge */}
+        {/* Per-segment annotations: flow arrow only (size / CFM tags come from the shared label layout) */}
         {zone.ducts.map((d) => {
           const x1 = d.points[0], y1 = d.points[1], x2 = d.points[2], y2 = d.points[3];
           const dx = x2 - x1, dy = y2 - y1;
@@ -1086,11 +1396,8 @@ export const FloorPlanCanvas: React.FC = () => {
           const ux = dx / len, uy = dy / len;
           const nx = -uy, ny = ux;
           const hw = ductHalfWidthPx(d.widthIn, k);
-          const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
           const ax = x1 + dx * 0.6, ay = y1 + dy * 0.6;
           const arrowLen = Math.min(Math.max(hw, 0.5 * k), len * 0.25);
-          const vel = d.velocityFpm || Math.round(d.cfm / Math.max(0.1, (d.widthIn * d.heightIn) / 144));
-          const casingColor = d.type === 'return' ? '#64748b' : d.type === 'trunk' ? '#06b6d4' : '#38bdf8';
           return (
             <Group key={`ann-${d.id}`} listening={false}>
               {annotationVisibility.ducts && len > 2.5 * k && (
@@ -1106,33 +1413,6 @@ export const FloorPlanCanvas: React.FC = () => {
                   lineJoin="round"
                 />
               )}
-              {annotationVisibility.ductCfm && (
-                <Text
-                  x={mx - 30 * ts}
-                  y={my - (hw + 12 * ts)}
-                  width={60 * ts}
-                  align="center"
-                  text={`${d.cfm} CFM`}
-                  fontSize={Math.max(8.5 * ts, 9 / stageScale)}
-                  fill="#facc15"
-                  fontStyle="bold"
-                />
-              )}
-              {annotationVisibility.ductSizeBadges && lodTier >= 2 && len > 4 * k && (
-                <Group x={mx} y={my + hw + 10 * ts}>
-                  <Rect
-                    x={-35 * Math.min(1.5, ts)} y={-8 * Math.min(1.5, ts)}
-                    width={70 * Math.min(1.5, ts)} height={16 * Math.min(1.5, ts)}
-                    fill="rgba(15, 23, 42, 0.92)" stroke={casingColor} strokeWidth={getStrokeWidth(0.8, 0.8)} cornerRadius={3}
-                  />
-                  <Text
-                    x={-33 * Math.min(1.5, ts)} y={-6 * Math.min(1.5, ts)} width={66 * Math.min(1.5, ts)}
-                    text={`${d.sizeLabel} • ${vel} FPM`}
-                    fontSize={Math.max(7.5 * ts, 8 / stageScale)}
-                    fill="#94a3b8" align="center"
-                  />
-                </Group>
-              )}
             </Group>
           );
         })}
@@ -1141,10 +1421,8 @@ export const FloorPlanCanvas: React.FC = () => {
         {zone.diffusers.map((dif) => {
           const face = terminalFacePx(dif, k, project.units);
           const fw = face.w, fh = face.h;
-          const sizeLbl = terminalSizeLabel(dif, project.units);
           const isReturn = dif.type === 'return';
           const strokeCol = isReturn ? '#c084fc' : '#10b981';
-          const tagX = fw / 2 + 3 * ts;
           const hatchSp = Math.max(Math.min(fw, fh) / 4, 2 / stageScale);
           return (
             <Group
@@ -1155,6 +1433,8 @@ export const FloorPlanCanvas: React.FC = () => {
               onDragMove={(e) => snapNodeDuringDrag(e.target)}
               onDragEnd={(e) => commitDiffuser(zone.id, dif.id, e.target.x(), e.target.y())}
             >
+              {/* full-face hit target: the terminal is grabbable anywhere on its face, incl. the centre */}
+              <Rect x={-fw / 2} y={-fh / 2} width={fw} height={fh} fill="rgba(0,0,0,0.001)" />
               {isReturn ? (
                 <Group>
                   {annotationVisibility.diffusers && (
@@ -1164,12 +1444,6 @@ export const FloorPlanCanvas: React.FC = () => {
                         <Line key={i} points={s} stroke="#c084fc" strokeWidth={getStrokeWidth(0.5, 0.8)} listening={false} />
                       ))}
                     </>
-                  )}
-                  {annotationVisibility.diffuserCfm && (
-                    <Text x={-fw / 2 - 10 * ts} y={fh / 2 + 2 * ts} width={fw + 20 * ts} align="center" text={`${dif.cfm} CFM`} fontSize={Math.max(8.5 * ts, 9 / stageScale)} fill="#facc15" fontStyle="bold" listening={false} />
-                  )}
-                  {annotationVisibility.diffuserTags && lodTier >= 2 && (
-                    <Text x={tagX} y={-fh / 2 - 8 * ts} text={`RG-1 (${sizeLbl})`} fontSize={Math.max(9 * ts, 9.5 / stageScale)} fill="#facc15" fontStyle="bold" listening={false} />
                   )}
                 </Group>
               ) : zone.systemType === 'high-wall' ? (
@@ -1198,16 +1472,6 @@ export const FloorPlanCanvas: React.FC = () => {
                       <Line points={[-fw / 2, fh / 2, fw / 2, -fh / 2]} stroke={strokeCol} strokeWidth={getStrokeWidth(0.6, 0.9)} />
                     </>
                   )}
-                  {annotationVisibility.diffuserCfm && (
-                    <Text x={-fw / 2 - 10 * ts} y={fh / 2 + 2 * ts} width={fw + 20 * ts} align="center" text={`${dif.cfm} CFM`} fontSize={Math.max(8.5 * ts, 9 / stageScale)} fill="#facc15" fontStyle="bold" listening={false} />
-                  )}
-                  {annotationVisibility.diffuserTags && lodTier >= 2 && (
-                    <Group x={tagX} y={-fh / 2 - 8 * ts} listening={false}>
-                      <Text text={`CD-1 (${sizeLbl})`} fontSize={Math.max(9 * ts, 9.5 / stageScale)} fill="#facc15" fontStyle="bold" />
-                      <Line points={[0, 11 * Math.min(1.5, ts), 48 * Math.min(1.5, ts), 11 * Math.min(1.5, ts)]} stroke="#facc15" strokeWidth={getStrokeWidth(0.9, 0.9)} />
-                      <Text y={13 * Math.min(1.5, ts)} text={`${dif.cfm} CFM${dif.actualNc ? ` • NC ${dif.actualNc}` : ''}`} fontSize={Math.max(8.5 * ts, 9 / stageScale)} fill="#facc15" fontStyle="bold" />
-                    </Group>
-                  )}
                   {annotationVisibility.throwRings && lodTier >= 3 && !!dif.throwT50Ft && dif.throwT50Ft > 0 && (
                     <Circle
                       radius={throwRadiusPx(dif.throwT50Ft, k)}
@@ -1234,6 +1498,15 @@ export const FloorPlanCanvas: React.FC = () => {
             onDragEnd={(e) => commitIndoorUnit(zone.id, uIdx, e.target.x(), e.target.y())}
           >
             {renderIndoorUnitSymbol(zone, uIdx, ts)}
+            {unitOverload && unitOverload.overloaded[uIdx] && (
+              <Group y={-unitFp.d / 2} listening={false}>
+                <Group scaleX={1 / stageScale} scaleY={1 / stageScale}>
+                  <Rect x={-62} y={-20} width={124} height={16} fill="#b91c1c" stroke="#fecaca" strokeWidth={0.8} cornerRadius={3} />
+                  <Text x={-62} y={-20} width={124} height={16} align="center" verticalAlign="middle" wrap="none" fontSize={9} fontStyle="bold" fill="#ffffff"
+                    text={`! ${formatAirflow(unitOverload.loads[uIdx], project.units)} > ${formatAirflow(unitOverload.capacity, project.units)}`} />
+                </Group>
+              </Group>
+            )}
           </Group>
         ))}
 
@@ -1251,33 +1524,8 @@ export const FloorPlanCanvas: React.FC = () => {
           </Group>
         ))}
 
-        {/* Centroid Labels */}
-        {annotationVisibility.zoneLabels && (
-          <>
-            <Text
-              x={centroid.x - 70 / stageScale}
-              y={centroid.y - 14 / stageScale}
-              text={zone.name}
-              fontSize={13 / stageScale}
-              fontStyle="bold"
-              fill={isSelected ? '#3b82f6' : '#d4d4d4'}
-              align="center"
-              width={140 / stageScale}
-              listening={false}
-            />
-            <Text
-              x={centroid.x - 70 / stageScale}
-              y={centroid.y + 3 / stageScale}
-              text={`${zone.diffusers.length > 0 ? zone.diffusers.reduce((s, d) => s + d.cfm, 0) : load.supplyCfm} ${project.units === 'imperial' ? 'CFM' : 'L/s'} (${zone.systemType || 'concealed'})`}
-              fontSize={11 / stageScale}
-              fontStyle="bold"
-              fill="#10b981"
-              align="center"
-              width={140 / stageScale}
-              listening={false}
-            />
-          </>
-        )}
+        {/* Collision-free labels: zone, one tag per terminal, one size tag per duct section */}
+        {labels.map(renderLabelItem)}
 
         {renderDimensions(zone)}
 
@@ -1332,7 +1580,7 @@ export const FloorPlanCanvas: React.FC = () => {
               <Text
                 x={(d.points[0] + d.points[2]) / 2}
                 y={(d.points[1] + d.points[3]) / 2 - fullW / 2 - 10 * ts}
-                text={`(Preview) ${d.sizeLabel}`}
+                text={`(Preview) ${formatDuctSize(d.widthIn, d.heightIn, project.units, d.shape === 'round')}`}
                 fontSize={Math.max(6 * ts, 6 / stageScale)}
                 fill="#60a5fa"
                 fontStyle="bold"
@@ -1361,7 +1609,7 @@ export const FloorPlanCanvas: React.FC = () => {
               <Text
                 x={face.w / 2 + 3 * ts}
                 y={-face.h / 2}
-                text={`(Preview) ${dif.size || terminalSizeLabel(dif, project.units)}\n${dif.cfm} CFM`}
+                text={`(Preview) ${terminalSizeLabel(dif, project.units)}\n${formatAirflow(dif.cfm, project.units)}`}
                 fontSize={Math.max(7 * ts, 6.5 / stageScale)}
                 fill="#93c5fd"
                 fontStyle="bold"
@@ -1438,7 +1686,10 @@ export const FloorPlanCanvas: React.FC = () => {
             {renderDxfText()}
           </Layer>
 
-          {/* MEP zones, equipment, ducts */}
+          {/* Zone fills: BELOW terminals / units so a terminal is always hit before the zone polygon */}
+          <Layer>{zones.map((z) => renderZoneFill(z))}</Layer>
+
+          {/* MEP equipment, ducts, labels (terminals / units listen; the rest is non-interactive) */}
           <Layer>
             {zones.map((z) => renderZone(z))}
             {renderPreview()}
@@ -1517,6 +1768,18 @@ export const FloorPlanCanvas: React.FC = () => {
         >
           <Magnet size={13} />
           <span>Snap {snapEnabled ? 'ON' : 'OFF'}</span>
+        </button>
+
+        <button
+          onClick={() => setDetailed((v) => !v)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border ${
+            detailed
+              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+              : 'bg-neutral-900/90 text-neutral-400 border-neutral-750'
+          }`}
+          title="Detailed annotations: duct CFM / velocity and terminal NC (off = clean size-only tags)"
+        >
+          <span>Detailed {detailed ? 'ON' : 'OFF'}</span>
         </button>
 
         <button

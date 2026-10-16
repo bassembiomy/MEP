@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { parseDxfText, ParsedDxf } from '../engine/dxfParser';
-import { FT_PER_M } from '../engine/units';
+import { FT_PER_M, M_PER_FT, SQFT_PER_SQM, CFM_PER_LPS, LPS_PER_CFM, BTUH_PER_W, W_PER_BTUH } from '../engine/units';
 import { DRAWING_UNITS, DrawingUnit, feetPerDrawingUnit } from '../canvas/drawingGeometry';
 import { parseDwgBuffer } from '../engine/dwgParser';
 import { MousePointer, PenTool, Hand, RefreshCw, Trash2, ShieldAlert, Upload, X, CheckCircle, LayoutGrid } from 'lucide-react';
@@ -16,6 +16,8 @@ export const Toolbar: React.FC = () => {
     clearTempPoints,
     selectedZoneId,
     deleteZone,
+    zones,
+    updateZone,
     dxfEntities,
     setCadData,
     calibrateCad,
@@ -97,6 +99,28 @@ export const Toolbar: React.FC = () => {
 
   const handleUnitToggle = (): void => {
     const isImperial = project.units === 'imperial';
+    // Zone fields stored in PROJECT units must be converted so the physical design stays the same:
+    // ceiling height (ft<->m), lighting/equipment overrides (W/ft2<->W/m2), manual airflow (CFM<->L/s)
+    // and manual load (Btu/h<->W).
+    const round = (v: number, d: number): number => Math.round(v * Math.pow(10, d)) / Math.pow(10, d);
+    for (const z of zones) {
+      const patch: Partial<typeof z> = {
+        ceilingHeight: round(isImperial ? z.ceilingHeight * M_PER_FT : z.ceilingHeight * FT_PER_M, 2)
+      };
+      if (z.lightingOverride !== undefined) {
+        patch.lightingOverride = round(isImperial ? z.lightingOverride * SQFT_PER_SQM : z.lightingOverride / SQFT_PER_SQM, 2);
+      }
+      if (z.equipmentOverride !== undefined) {
+        patch.equipmentOverride = round(isImperial ? z.equipmentOverride * SQFT_PER_SQM : z.equipmentOverride / SQFT_PER_SQM, 2);
+      }
+      if (z.manualCfmOverride !== undefined) {
+        patch.manualCfmOverride = round(isImperial ? z.manualCfmOverride * LPS_PER_CFM : z.manualCfmOverride * CFM_PER_LPS, 0);
+      }
+      if (z.manualCoolingOverride !== undefined) {
+        patch.manualCoolingOverride = round(isImperial ? z.manualCoolingOverride * W_PER_BTUH : z.manualCoolingOverride * BTUH_PER_W, 0);
+      }
+      updateZone(z.id, patch);
+    }
     setProject({
       units: isImperial ? 'metric' : 'imperial',
       // Convert design outdoor/indoor dry-bulbs for convenience
