@@ -1,5 +1,5 @@
 import { EquipmentCatalogItem } from '../types';
-import { STANDARD_EQUIPMENT_CATALOG } from '../hvacCatalogs';
+import { getEquipmentCatalog } from '../hvacCatalogs';
 
 // ---------------------------------------------------------------------------
 // Professional sizing rules (single source of truth for selector / optimizer /
@@ -284,7 +284,7 @@ function toResult(item: EquipmentCatalogItem, extra: Partial<SelectedEquipmentRe
 /** Catalog items eligible for a system type (same fallback chain as selectEquipmentForLoad). */
 export function catalogCandidatesForType(
   systemType: string = 'concealed',
-  catalog: EquipmentCatalogItem[] = STANDARD_EQUIPMENT_CATALOG
+  catalog: EquipmentCatalogItem[] = getEquipmentCatalog()
 ): EquipmentCatalogItem[] {
   const normalizedType = normalizeSystemType(systemType);
   let candidates = catalog.filter((item) => item.systemType === normalizedType);
@@ -310,7 +310,7 @@ export function selectEquipmentForLoad(
   reqCfm: number,
   reqBtu: number,
   systemType: string = 'concealed',
-  catalog: EquipmentCatalogItem[] = STANDARD_EQUIPMENT_CATALOG,
+  catalog: EquipmentCatalogItem[] = getEquipmentCatalog(),
   reqSensibleBtu: number = 0,
   designAmbientF: number = RATING_AMBIENT_F
 ): SelectedEquipmentResult | null {

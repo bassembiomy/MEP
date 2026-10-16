@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Toolbar } from './components/Toolbar';
 import { FloorPlanCanvas } from './canvas/FloorPlanCanvas';
 import { ZonePropertiesPanel } from './panels/ZonePropertiesPanel';
@@ -9,10 +9,12 @@ import { LoadSummaryPanel } from './panels/LoadSummaryPanel';
 import { AirDistributionSchedulePanel } from './panels/AirDistributionSchedulePanel';
 import { useProjectStore } from './store/projectStore';
 import Versions from './components/Versions';
-import { Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table, FileSpreadsheet } from 'lucide-react';
+import { CatalogManagerModal } from './components/CatalogManagerModal';
+import { Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table, FileSpreadsheet, Database } from 'lucide-react';
 
 function App(): React.JSX.Element {
   const { project, setProject, activeTab, setActiveTab } = useProjectStore();
+  const [catalogOpen, setCatalogOpen] = useState(false);
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans selection:bg-blue-600/30 selection:text-blue-200">
@@ -31,6 +33,15 @@ function App(): React.JSX.Element {
             <p className="text-[10px] text-neutral-500 font-medium">Deterministic System Optimizer & Aerodynamic Static Pressure Solver</p>
           </div>
         </div>
+
+        <button
+          onClick={() => setCatalogOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-neutral-900 text-neutral-300 hover:text-white hover:bg-neutral-850 border border-neutral-800 cursor-pointer"
+        >
+          <Database size={14} />
+          Equipment Catalogs
+        </button>
+        <CatalogManagerModal isOpen={catalogOpen} onClose={() => setCatalogOpen(false)} />
 
         {/* Global Design Conditions */}
         <div className="flex flex-wrap gap-4 text-xs">

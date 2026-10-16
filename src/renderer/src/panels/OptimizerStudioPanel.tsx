@@ -1,3 +1,4 @@
+import { modelDisplayName } from '../engine/hvacCatalogs';
 import React, { useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoad } from '../engine/loadCalc';
@@ -195,7 +196,7 @@ export const OptimizerStudioPanel: React.FC = () => {
           <div className="flex items-center gap-2 text-blue-300">
             <Eye size={16} className="text-blue-400 shrink-0" />
             <span>
-              Previewing: <strong>{activePreview.candidate.equipment.model}</strong> ({activePreview.manifest.terminals.length} terminals, {activePreview.manifest.ducts.length} duct segments)
+              Previewing: <strong>{modelDisplayName(activePreview.candidate.equipment.model)}</strong> ({activePreview.manifest.terminals.length} terminals, {activePreview.manifest.ducts.length} duct segments)
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -378,7 +379,7 @@ export const OptimizerStudioPanel: React.FC = () => {
                   <div>
                     <div className="flex items-center gap-2">
                       <h3 className="text-xs font-bold text-neutral-200">
-                        {cand.equipment.model}
+                        {modelDisplayName(cand.equipment.model)}
                         {cand.equipment.systemType === 'concealed' || cand.equipment.systemType === 'high-wall' || cand.equipment.systemType === 'cassette' || cand.equipment.systemType === 'fcu'
                           ? ` + Outdoor ACU (${cand.equipment.model.replace('42QSS', '38QUS').replace('42CE', '38CE')})`
                           : ''}

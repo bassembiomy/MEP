@@ -5,6 +5,21 @@ import {
   FittingLossDefinition
 } from './types';
 
+declare module './types' {
+  interface EquipmentCatalogItem {
+    /** Synthetic representative entry (model suffix "-G"); NOT a real manufacturer model. */
+    isGeneric?: boolean;
+    /** 'built-in' = shipped catalog, 'generic' = synthetic fill, 'imported' = user-imported manufacturer data. */
+    source?: 'built-in' | 'generic' | 'imported';
+    /** Optional manufacturer data carried by imported entries. */
+    refrigerant?: string;
+    weightLb?: number;
+  }
+}
+
+/** UI label appended wherever a generic (synthetic) model is shown. */
+export const GENERIC_MODEL_NOTE = '(generic \u2013 verify with manufacturer data)';
+
 /**
  * Standard System Equipment Catalog with Explicit Capabilities & Tabular Fan Curves
  * Marked with provenance metadata.
@@ -1660,6 +1675,8 @@ _fillSpec.forEach(({ kind, id, model, tons }) => {
     ...base,
     id,
     model,
+    isGeneric: true,
+    source: 'generic',
     nominalTons: tons,
     totalCapacityBtuPerHour: total,
     sensibleCapacityBtuPerHour: Math.round(total * 0.76),
@@ -1680,6 +1697,45 @@ _fillSpec.forEach(({ kind, id, model, tons }) => {
     provenance: { ...base.provenance, source: `${base.provenance?.source ?? 'Catalog'} (generic nominal size fill)` }
   });
 });
+
+STANDARD_EQUIPMENT_CATALOG.forEach((e) => {
+  if (!e.source) e.source = 'built-in';
+});
+
+// ---- Injectable catalog provider (keeps the engine pure; the UI store installs its own) ----
+let _equipmentCatalogProvider: (() => EquipmentCatalogItem[]) | null = null;
+
+/** Install (or clear with null) the function that returns the ACTIVE equipment catalog. */
+export function setEquipmentCatalogProvider(fn: (() => EquipmentCatalogItem[]) | null): void {
+  _equipmentCatalogProvider = fn;
+}
+
+/** Active equipment catalog: provider result, or the static built-in catalog by default. */
+export function getEquipmentCatalog(): EquipmentCatalogItem[] {
+  if (_equipmentCatalogProvider) {
+    try {
+      const c = _equipmentCatalogProvider();
+      if (Array.isArray(c) && c.length > 0) return c;
+    } catch {
+      /* fall through to static catalog */
+    }
+  }
+  return STANDARD_EQUIPMENT_CATALOG;
+}
+
+/** True when a model name belongs to a generic (synthetic) catalog entry. */
+export function isGenericModel(model: string | undefined): boolean {
+  if (!model) return false;
+  const all = [...STANDARD_EQUIPMENT_CATALOG, ...getEquipmentCatalog()];
+  const hit = all.find((e) => e.model === model);
+  return !!hit?.isGeneric;
+}
+
+/** Model name for display; generic entries carry the "verify with manufacturer data" note. */
+export function modelDisplayName(model: string | undefined): string {
+  if (!model) return '';
+  return isGenericModel(model) ? `${model} ${GENERIC_MODEL_NOTE}` : model;
+}
 
 /**
  * Standard Diffuser & Terminal Catalog with Performance Tables

@@ -378,7 +378,7 @@ for (let ri = 0; ri < rooms.length; ri++) {
     check('noNaN.load', !findNonFinite(load), () => findNonFinite(load)!);
 
     // ── Load invariants (imperial basis) ──
-    const roomSensBtuh = toBtuh(load.roomSensibleBtuh ?? 0, uc.units);
+    const roomSensBtuh = (load.roomSensibleBtuh ?? 0);
     const thermalCfm = toCfm(load.thermalCfm, uc.units);
     const supplyCfm = toCfm(load.supplyCfm, uc.units);
     const coilBtuh = toBtuh(load.totalLoad, uc.units);
@@ -399,7 +399,7 @@ for (let ri = 0; ri < rooms.length; ri++) {
     }
     const cfmPerTon = supplyCfm / (coilBtuh / 12000);
     check('load.cfmPerTon[250,550]', cfmPerTon >= 250 && cfmPerTon <= 550,
-      () => `${cfmPerTon.toFixed(0)} CFM/ton (supply ${supplyCfm.toFixed(0)} CFM, coil ${coilBtuh.toFixed(0)} Btu/h = ${(coilBtuh / 12000).toFixed(2)} t, room Qs ${roomSensBtuh.toFixed(0)}, OA Qs ${toBtuh(load.oaSensibleBtuh ?? 0, uc.units).toFixed(0)})`);
+      () => `${cfmPerTon.toFixed(0)} CFM/ton (supply ${supplyCfm.toFixed(0)} CFM, coil ${coilBtuh.toFixed(0)} Btu/h = ${(coilBtuh / 12000).toFixed(2)} t, room Qs ${roomSensBtuh.toFixed(0)}, OA Qs ${(load.oaSensibleBtuh ?? 0).toFixed(0)})`);
     check('load.areaMatchesPolygon', rel(areaSqFt, areaFt2) <= 0.01, () => `load area ${areaSqFt.toFixed(1)} ft2 vs polygon ${areaFt2.toFixed(1)} ft2`);
 
     // ── Selection (store / optimizer-panel path) ──
@@ -630,7 +630,7 @@ for (let ri = 0; ri < rooms.length; ri++) {
     const pairs: Array<[string, number, number]> = [
       ['area', I.area, M.area * SQFT_PER_SQM],
       ['occupants', I.occupants, M.occupants],
-      ['roomSensible', I.roomSensibleBtuh ?? 0, (M.roomSensibleBtuh ?? 0) * BTUH_PER_W],
+      ['roomSensible', I.roomSensibleBtuh ?? 0, (M.roomSensibleBtuh ?? 0)],
       ['coilSensible', I.sensibleLoad, M.sensibleLoad * BTUH_PER_W],
       ['totalLoad', I.totalLoad, M.totalLoad * BTUH_PER_W],
       ['supplyCfm', I.supplyCfm, M.supplyCfm * CFM_PER_LPS],

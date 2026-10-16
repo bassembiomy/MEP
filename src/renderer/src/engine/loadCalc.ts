@@ -9,12 +9,15 @@ export interface LoadResult {
   area: number; // sqft or sqm
   perimeter: number; // ft or m
   occupants: number;
-  sensibleLoad: number; // Btu/h or W
-  latentLoad: number; // Btu/h or W
-  totalLoad: number; // Btu/h or W
+  // NOTE: legacy fields sensibleLoad/latentLoad/totalLoad/supplyCfm (and the other CFM/area fields)
+  // stay in PROJECT units (Btu/h + CFM imperial, W + L/s metric). Use the explicit *Btuh / *W
+  // fields below when a fixed unit is needed.
+  sensibleLoad: number; // project units: Btu/h or W
+  latentLoad: number; // project units: Btu/h or W
+  totalLoad: number; // project units: Btu/h or W
   sensibleHeatRatio: number; // SHR = Qs / Qt
   totalTons: number; // Tonnage (1 TR = 12000 Btu/h or 3.517 kW)
-  supplyCfm: number; // Supply Airflow CFM or L/s
+  supplyCfm: number; // project units: Supply Airflow CFM or L/s
   thermalCfm: number; // Sensible thermal CFM or L/s
   vbzCfm: number; // Breathing zone ventilation CFM or L/s
   vozCfm: number; // Zone outdoor air intake CFM or L/s (Vbz / Ez)
@@ -23,11 +26,17 @@ export interface LoadResult {
   exhaustCfm: number; // Exhaust CFM or L/s
   returnCfm: number; // Return CFM or L/s
   // --- Room vs. coil load split (ASHRAE: OA is a coil/system load, not a room load) ---
-  roomSensibleBtuh?: number; // Btu/h or W (units follow project): envelope + internal, NO outdoor air
-  roomLatentBtuh?: number;
-  oaSensibleBtuh?: number; // outdoor-air sensible (coil load)
-  oaLatentBtuh?: number; // outdoor-air latent (coil load)
-  coilTotalBtuh?: number; // room + OA total; equals totalLoad
+  // *Btuh fields are ALWAYS Btu/h; *W twins are ALWAYS watts, regardless of project units.
+  roomSensibleBtuh?: number; // envelope + internal, NO outdoor air (Btu/h)
+  roomLatentBtuh?: number; // Btu/h
+  oaSensibleBtuh?: number; // outdoor-air sensible (coil load), Btu/h
+  oaLatentBtuh?: number; // outdoor-air latent (coil load), Btu/h
+  coilTotalBtuh?: number; // room + OA total, Btu/h (equals totalLoad when project is imperial)
+  roomSensibleW?: number; // W
+  roomLatentW?: number;
+  oaSensibleW?: number;
+  oaLatentW?: number;
+  coilTotalW?: number;
   /** Data-quality / fallback notes (unknown space type, bad scale, ...). */
   warnings?: string[];
 }
@@ -182,11 +191,16 @@ export function calculateZoneLoad(zone: Zone, project: ProjectMetadata): LoadRes
     oaCfm: flow(vozCfm),
     exhaustCfm: flow(exhaustCfm),
     returnCfm: flow(returnCfm),
-    roomSensibleBtuh: out(roomSensible),
-    roomLatentBtuh: out(roomLatent),
-    oaSensibleBtuh: out(oaSensible),
-    oaLatentBtuh: out(oaLatent),
-    coilTotalBtuh: out(coilTotal),
+    roomSensibleBtuh: Math.round(roomSensible),
+    roomLatentBtuh: Math.round(roomLatent),
+    oaSensibleBtuh: Math.round(oaSensible),
+    oaLatentBtuh: Math.round(oaLatent),
+    coilTotalBtuh: Math.round(coilTotal),
+    roomSensibleW: Math.round(roomSensible / BTUH_PER_W),
+    roomLatentW: Math.round(roomLatent / BTUH_PER_W),
+    oaSensibleW: Math.round(oaSensible / BTUH_PER_W),
+    oaLatentW: Math.round(oaLatent / BTUH_PER_W),
+    coilTotalW: Math.round(coilTotal / BTUH_PER_W),
     warnings: warnings.length ? warnings : undefined
   };
 }
