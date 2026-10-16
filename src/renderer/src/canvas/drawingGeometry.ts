@@ -354,12 +354,25 @@ export function pointsBounds(pts: number[]): Bounds | null {
   }
   return { minX, minY, maxX, maxY };
 }
-export function fitBounds(b: Bounds, viewW: number, viewH: number, margin = 0.85): { scale: number; x: number; y: number } {
+export interface FitPadding { top: number; right: number; bottom: number; left: number }
+/** Padding (screen px) that keeps content clear of the HUD / bottom-right zoom toolbar overlays. */
+export const FIT_PADDING: FitPadding = { top: 24, right: 24, bottom: 60, left: 24 };
+
+export function fitBounds(
+  b: Bounds,
+  viewW: number,
+  viewH: number,
+  margin = 0.85,
+  pad?: FitPadding
+): { scale: number; x: number; y: number } {
+  const p = pad ?? { top: 0, right: 0, bottom: 0, left: 0 };
+  const availW = Math.max(1, viewW - p.left - p.right);
+  const availH = Math.max(1, viewH - p.top - p.bottom);
   const w = Math.max(1e-6, b.maxX - b.minX);
   const h = Math.max(1e-6, b.maxY - b.minY);
-  const scale = clampZoom(Math.min(viewW / w, viewH / h) * margin);
+  const scale = clampZoom(Math.min(availW / w, availH / h) * margin);
   const cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
-  return { scale, x: viewW / 2 - cx * scale, y: viewH / 2 - cy * scale };
+  return { scale, x: p.left + availW / 2 - cx * scale, y: p.top + availH / 2 - cy * scale };
 }
 
 // ───────────────────────── DXF grouping ─────────────────────────
@@ -884,3 +897,169 @@ export function dimTick(x: number, y: number, size: number): number[] {
   const s = size / Math.SQRT2;
   return [x - s, y + s, x + s, y - s];
 }
+
+// ───────────────────────── Double-click finish rule ─────────────────────────
+
+/** Collapse consecutive vertices closer than `tol` (and a trailing vertex closer than `tol` to the first). */
+export function dropNearDuplicates(pts: number[], tol: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i + 1 < pts.length; i += 2) {
+    const n = out.length;
+    if (n >= 2 && Math.hypot(pts[i] - out[n - 2], pts[i + 1] - out[n - 1]) <= tol) continue;
+    out.push(pts[i], pts[i + 1]);
+  }
+  while (out.length >= 8 && Math.hypot(out[out.length - 2] - out[0], out[out.length - 1] - out[1]) <= tol) out.length -= 2;
+  return out;
+}
+
+export const DBLCLICK_MAX_GAP_PX = 4;
+
+export interface DoubleClickFinish { finish: boolean; points: number[]; reason?: string }
+/**
+ * A double-click finishes the polygon only when the two clicks of the double-click landed within `maxGapPx`
+ * SCREEN px of each other (so two fast clicks on different vertices never close it) and at least three distinct
+ * vertices exist. The returned points have the duplicate vertex of the second click removed.
+ */
+export function doubleClickFinish(
+  pts: number[],
+  clickGapPx: number,
+  tolWorld: number,
+  maxGapPx = DBLCLICK_MAX_GAP_PX
+): DoubleClickFinish {
+  const points = dropNearDuplicates(pts, Math.max(0, tolWorld));
+  if (!(clickGapPx <= maxGapPx)) return { finish: false, points, reason: 'clicks too far apart' };
+  if (points.length < 6) return { finish: false, points, reason: 'fewer than 3 distinct points' };
+  return { finish: true, points };
+}
+
+// ───────────────────────── Capacity-constrained terminal -> unit assignment ─────────────────────────
+
+export interface AssignTerminal { x: number; y: number; cfm: number }
+export interface AssignUnit { x: number; y: number }
+export interface UnitAssignment {
+  /** Terminal indices per unit. */
+  groups: number[][];
+  loads: number[];
+  capacity: number;
+  /** Units whose assigned CFM exceeds capacity by more than the tolerance. */
+  overloaded: boolean[];
+  anyOverloaded: boolean;
+}
+
+/**
+ * Greedy nearest-unit assignment honouring a per-unit airflow capacity (CFM). Terminals are processed largest first;
+ * each goes to the nearest unit that stays within capacity*(1+tol), otherwise to the unit that ends up least loaded.
+ * Pure and deterministic. `capacity` defaults to the equal share of the total airflow.
+ */
+export function assignTerminalsToUnits(
+  terminals: AssignTerminal[],
+  units: AssignUnit[],
+  capacity?: number,
+  tol = 0.05
+): UnitAssignment {
+  const n = units.length;
+  const total = terminals.reduce((s, t) => s + (t.cfm || 0), 0);
+  const cap = capacity !== undefined && capacity > 0 ? capacity : n > 0 ? total / n : 0;
+  const groups: number[][] = units.map(() => []);
+  const loads: number[] = units.map(() => 0);
+  const order = terminals.map((_, i) => i).sort((a, b) => (terminals[b].cfm || 0) - (terminals[a].cfm || 0) || a - b);
+  for (const ti of order) {
+    const t = terminals[ti];
+    const ranked = units
+      .map((u, ui) => ({ ui, d: Math.hypot(t.x - u.x, t.y - u.y) }))
+      .sort((a, b) => a.d - b.d || a.ui - b.ui);
+    let pick = -1;
+    for (const r of ranked) {
+      if (loads[r.ui] + (t.cfm || 0) <= cap * (1 + tol) + 1e-9) { pick = r.ui; break; }
+    }
+    if (pick < 0) {
+      let bl = Infinity;
+      for (const r of ranked) {
+        const l = loads[r.ui] + (t.cfm || 0);
+        if (l < bl - 1e-9) { bl = l; pick = r.ui; }
+      }
+    }
+    if (pick >= 0) { groups[pick].push(ti); loads[pick] += t.cfm || 0; }
+  }
+  groups.forEach((g) => g.sort((a, b) => a - b));
+  const overloaded = loads.map((l) => l > cap * (1 + tol) + 1e-9);
+  return { groups, loads, capacity: cap, overloaded, anyOverloaded: overloaded.some(Boolean) };
+}
+
+// ───────────────────────── Zone label spot / airflow helpers ─────────────────────────
+
+export function pointInPolygon(pts: number[], x: number, y: number): boolean {
+  let inside = false;
+  const n = pts.length / 2;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = pts[i * 2], yi = pts[i * 2 + 1], xj = pts[j * 2], yj = pts[j * 2 + 1];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  const l2 = dx * dx + dy * dy;
+  const t = l2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2)) : 0;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+/** Signed clearance to the polygon boundary: positive inside, negative outside. */
+export function polygonClearance(pts: number[], x: number, y: number): number {
+  const n = pts.length / 2;
+  let d = Infinity;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    d = Math.min(d, distToSegment(x, y, pts[i * 2], pts[i * 2 + 1], pts[j * 2], pts[j * 2 + 1]));
+  }
+  return pointInPolygon(pts, x, y) ? d : -d;
+}
+
+/**
+ * Best spot for a zone label: the point of the polygon with the largest clearance from the walls and from
+ * `avoid` discs (terminals / units). Grid search with refinement (pole of inaccessibility when `avoid` is empty).
+ */
+export function labelSpotInPolygon(
+  pts: number[],
+  avoid: Array<{ x: number; y: number; r: number }> = []
+): { x: number; y: number; clearance: number } | null {
+  const b = pointsBounds(pts);
+  if (!b || pts.length < 6) return null;
+  const score = (x: number, y: number, useAvoid: boolean): number => {
+    let s = polygonClearance(pts, x, y);
+    if (useAvoid) for (const a of avoid) s = Math.min(s, Math.hypot(x - a.x, y - a.y) - a.r);
+    return s;
+  };
+  const search = (useAvoid: boolean): { x: number; y: number; s: number } => {
+    let cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
+    let hw = (b.maxX - b.minX) / 2, hh = (b.maxY - b.minY) / 2;
+    let best = { x: cx, y: cy, s: score(cx, cy, useAvoid) };
+    const N = 14;
+    for (let pass = 0; pass < 5; pass++) {
+      for (let i = 0; i <= N; i++) {
+        for (let j = 0; j <= N; j++) {
+          const x = cx - hw + (2 * hw * i) / N, y = cy - hh + (2 * hh * j) / N;
+          const s = score(x, y, useAvoid);
+          if (s > best.s + 1e-12) best = { x, y, s };
+        }
+      }
+      cx = best.x; cy = best.y; hw /= 3.5; hh /= 3.5;
+    }
+    return best;
+  };
+  let r = search(true);
+  if (r.s <= 0) r = search(false); // crowded: fall back to the largest empty area w.r.t. walls only
+  return { x: r.x, y: r.y, clearance: r.s };
+}
+
+/** Supply airflow of a terminal list (CFM): returns and exhaust terminals are not supply. */
+export function supplyCfmOf(terminals: Array<{ type?: string; cfm: number }>): number {
+  let s = 0;
+  for (const t of terminals) if (t.type !== 'return' && t.type !== 'exhaust') s += t.cfm || 0;
+  return s;
+}
+
+/** Packaged rooftop units are self-contained: no separate condensing unit / refrigerant lines. */
+export const isSelfContainedSystem = (systemType?: string): boolean =>
+  systemType === 'packaged' || systemType === 'package' || systemType === 'rtu';
