@@ -22,6 +22,8 @@ export interface CoordinatedAirTerminal {
   ncRating: number;
   deltaPInWg: number;
   status: 'pass' | 'warning' | 'fail';
+  /** User-locked terminal: scoped recalculation keeps its position (and CFM) and lays the others out around it. */
+  locked?: boolean;
 }
 
 /** Lowest turndown of a diffuser relative to its catalog minimum CFM (design airflow at ~40% of tested minimum). */

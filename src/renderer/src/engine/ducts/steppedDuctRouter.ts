@@ -67,38 +67,9 @@ export function zoneRoutingPolygons(zone: EquipmentServiceZone): { bayPoly?: num
   return { bayPoly: bay, roomPoly: room };
 }
 
-/**
- * Layouts most recently routed per zone. Zones of one room share the same `roomPolygon` array, so routing a zone can
- * keep clear of the supply / return segments of its neighbours, and the return router can keep clear of the supply
- * network routed just before it (the engine routes supply then return per zone object).
- */
-interface ZoneLayout { supply: Seg2[]; ret: Seg2[] }
-const roomLayouts = new WeakMap<object, Map<string, ZoneLayout>>();
-function layoutOf(zone: EquipmentServiceZone): ZoneLayout | undefined {
-  const key = zone.roomPolygon;
-  if (!key) return undefined;
-  let m = roomLayouts.get(key);
-  if (!m) roomLayouts.set(key, (m = new Map()));
-  let l = m.get(zone.id);
-  if (!l) m.set(zone.id, (l = { supply: [], ret: [] }));
-  return l;
-}
-export function rememberZoneLayout(zone: EquipmentServiceZone, kind: 'supply' | 'ret', segs: Seg2[]): void {
-  const l = layoutOf(zone);
-  if (l) l[kind] = segs.map((g) => ({ start: { ...g.start }, end: { ...g.end } }));
-}
-/** Segments already routed for this zone's supply network and for the neighbouring zones of the same room. */
-export function avoidLayoutsFor(zone: EquipmentServiceZone, includeOwnSupply: boolean): Seg2[] {
-  const key = zone.roomPolygon;
-  const m = key ? roomLayouts.get(key) : undefined;
-  if (!m) return [];
-  const out: Seg2[] = [];
-  for (const [id, l] of m) {
-    if (id === zone.id) {
-      if (includeOwnSupply) out.push(...l.supply);
-    } else out.push(...l.supply, ...l.ret);
-  }
-  return out;
+/** Straight segments (start/end only) of routed duct sections, for use as `avoidSegments` of later routing calls. */
+export function ductSegments(sections: ReadonlyArray<{ startPoint: { x: number; y: number }; endPoint: { x: number; y: number } }>): Seg2[] {
+  return sections.map((d) => ({ start: { x: d.startPoint.x, y: d.startPoint.y }, end: { x: d.endPoint.x, y: d.endPoint.y } }));
 }
 
 export interface RouteTreeOptions {
@@ -167,7 +138,9 @@ export function topologyToSections(
 export function routeSteppedSupplyDucts(
   zone: EquipmentServiceZone,
   supplyTerminals: CoordinatedAirTerminal[],
-  profile: StandardsProfile = ASHRAE_PROFILE
+  profile: StandardsProfile = ASHRAE_PROFILE,
+  /** Segments already routed by neighbouring zones (explicit data flow; no hidden shared state). */
+  avoidSegments: Seg2[] = []
 ): SteppedDuctSection[] {
   if (supplyTerminals.length === 0) return [];
 
@@ -187,10 +160,9 @@ export function routeSteppedSupplyDucts(
     polygon: bayPoly ?? roomPoly,
     fallbackPolygon: roomPoly,
     // never run along the unit's return collar stub (either side)
-    avoid: [...returnStubCandidates({ x: eqPos.x, y: eqPos.y }, axis, RETURN_COLLAR_OFFSET_FT), ...avoidLayoutsFor(zone, false)]
+    avoid: [...returnStubCandidates({ x: eqPos.x, y: eqPos.y }, axis, RETURN_COLLAR_OFFSET_FT), ...avoidSegments]
   });
 
-  rememberZoneLayout(zone, 'supply', segs);
   const sections = topologyToSections(zone, segs, {
     systemType: 'supply',
     idPrefix: 'DS',

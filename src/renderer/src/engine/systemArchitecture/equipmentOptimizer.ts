@@ -98,14 +98,150 @@ function failureSeverity(c: SizingCheck): number {
   return sev;
 }
 
+/**
+ * Evaluates ONE arbitrary unit count against the full professional sizing rules (best catalogue model at that
+ * count). Used both by the optimizer sweep and to evaluate a user-chosen count; the option carries
+ * isValid / violations / capacityRatio so callers can surface problems instead of silently substituting.
+ * Returns null only when the count is impossible (not an integer in 1..MAX_UNIT_COUNT) or nothing is eligible.
+ */
+export function evaluateUnitCountOption(
+  n: number,
+  input: OptimizationInput,
+  eligibleItems?: ReturnType<typeof catalogCandidatesForType>
+): MultiUnitCandidate | null {
+  const {
+    sensibleLoadBtu,
+    totalLoadBtu,
+    requiredCfm,
+    roomAreaSqFt,
+    maxAvailableCeilingDepthIn = 14,
+    systemType = 'concealed'
+  } = input;
+  if (!Number.isInteger(n) || n < 1 || n > MAX_UNIT_COUNT) return null;
+  const eligible = eligibleItems ?? catalogCandidatesForType(systemType);
+  // Evaluate every single model at n units. Prefer a fully valid model (lowest capacity ratio);
+  // otherwise the least-bad one, ranking capacity-deficit / sensible failures last (slight oversize beats deficit).
+  let selection: SelectedEquipmentResult | null = null;
+  let bestKey = Infinity;
+  for (const item of eligible) {
+    const chk = evaluateSizing(item, n, totalLoadBtu, sensibleLoadBtu, requiredCfm);
+    const key = failureSeverity(chk) * 1000 + (chk.valid ? chk.capacityRatio : Math.abs(chk.capacityRatio - 1.1));
+    if (key < bestKey) {
+      bestKey = key;
+      selection = toSelectedEquipmentResult(item, chk.valid ? {} : { undersized: true, shortfalls: [] });
+    }
+  }
+  if (!selection) return null;
+
+  const deliveredCfm = deliveredCfmFor(selection.catalogItem, n, requiredCfm);
+  const deliveredBtu = selection.totalCapacityBtu * n;
+
+  // Hard professional rules: capacity 1.00-1.20x (1.15x fixed speed), sensible, airflow 0.95-1.25x.
+  const sizing: SizingCheck = evaluateSizing(selection.catalogItem, n, totalLoadBtu, sensibleLoadBtu, requiredCfm);
+  const violations: string[] = [];
+  if (sizing.failures.includes('DEFICIT')) {
+    violations.push(`delivered ${Math.round(deliveredBtu)} Btu/h < load ${Math.round(totalLoadBtu)} Btu/h`);
+  }
+  if (sizing.failures.includes('OVERSIZE')) {
+    violations.push(`capacity ratio ${sizing.capacityRatio.toFixed(2)} > ${sizing.maxCapacityRatio.toFixed(2)}`);
+  }
+  if (sizing.failures.includes('SENSIBLE')) {
+    violations.push(`sensible capacity below ${Math.round(sensibleLoadBtu)} Btu/h`);
+  }
+  if (sizing.failures.includes('AIRFLOW_LOW')) {
+    violations.push(`delivered ${deliveredCfm} CFM < ${AIRFLOW_RATIO_MIN} x ${Math.round(requiredCfm)} CFM`);
+  }
+  if (sizing.failures.includes('AIRFLOW_HIGH')) {
+    violations.push(`delivered ${deliveredCfm} CFM > ${AIRFLOW_RATIO_MAX} x ${Math.round(requiredCfm)} CFM`);
+  }
+  const isValid = violations.length === 0;
+
+  // 1. Capacity match score (0-20 pts)
+  const capRatio = totalLoadBtu > 0 ? deliveredBtu / totalLoadBtu : 1;
+  let capScore = 20 - Math.abs(capRatio - 1.05) * 40;
+  capScore = Math.max(0, Math.min(20, capScore));
+
+  // 2. Air distribution quality (0-20 pts) - larger areas benefit from multiple injection points
+  let distScore = 10;
+  if (roomAreaSqFt > 1000) {
+    distScore = n >= 2 ? (n === 3 ? 20 : 17) : 8;
+  } else if (roomAreaSqFt > 500) {
+    distScore = n === 2 ? 20 : (n === 1 ? 14 : 16);
+  } else {
+    distScore = n === 1 ? 20 : 12;
+  }
+
+  // 3. Acoustic performance (0-15 pts) - smaller units generate less localized noise
+  let acousticScore = 15;
+  if (selection.supplyCfm > 2500) acousticScore = 8;
+  else if (selection.supplyCfm > 1500) acousticScore = 11;
+  else acousticScore = 15;
+
+  // 4. ESP margin (0-15 pts)
+  const espScore = selection.availableEspInWg >= 0.35 ? 15 : (selection.availableEspInWg >= 0.25 ? 12 : 8);
+
+  // 5. Duct efficiency (0-15 pts) - shorter duct runs with multi-unit layout
+  let ductScore = 12;
+  if (n >= 3) ductScore = 15;
+  else if (n === 2) ductScore = 13;
+  else ductScore = 9;
+
+  // 6. Ceiling depth compatibility (0-10 pts): void must hold unit + clearance + duct connection
+  const eqHeight = selection.dimensionsIn.height || 10;
+  const voidNeeded = requiredCeilingVoidIn(selection);
+  const ceilingScore = voidNeeded <= maxAvailableCeilingDepthIn ? 10 : 2;
+
+  // 7. Redundancy (0-10 pts)
+  const redundancyScore = n >= 3 ? 10 : (n === 2 ? 8 : 2);
+
+  // 8. Unit count penalty (0 to -15 pts for complexity/cost)
+  const unitPenalty = (n - 1) * 3.5;
+
+  const totalScore = parseFloat(
+    (capScore + distScore + acousticScore + espScore + ductScore + ceilingScore + redundancyScore - unitPenalty).toFixed(1)
+  );
+
+  const rationale = `${n} × ${selection.model} (${selection.nominalTons} TR, ${selection.supplyCfm} CFM each) -> Total ${deliveredCfm} CFM, Score: ${totalScore}${isValid ? '' : ' [INVALID: ' + violations.join('; ') + ']'}`;
+
+  const option: MultiUnitCandidate = {
+    optionId: `option-${n}-unit`,
+    unitCount: n,
+    unitModel: selection.model,
+    nominalTonsPerUnit: selection.nominalTons,
+    cfmPerUnit: selection.supplyCfm,
+    capacityBtuPerUnit: selection.totalCapacityBtu,
+    totalDeliveredCfm: deliveredCfm,
+    totalDeliveredCapacityBtu: deliveredBtu,
+    availableEspInWg: selection.availableEspInWg,
+    equipmentHeightIn: eqHeight,
+    totalScore,
+    scoreBreakdown: {
+      capacityMatch: parseFloat(capScore.toFixed(1)),
+      distributionQuality: parseFloat(distScore.toFixed(1)),
+      acousticPerformance: parseFloat(acousticScore.toFixed(1)),
+      espMargin: parseFloat(espScore.toFixed(1)),
+      ductEfficiency: parseFloat(ductScore.toFixed(1)),
+      ceilingDepthMatch: parseFloat(ceilingScore.toFixed(1)),
+      redundancy: parseFloat(redundancyScore.toFixed(1)),
+      unitPenalty: parseFloat(unitPenalty.toFixed(1))
+    },
+    selectionRationale: rationale,
+    equipmentDetails: selection,
+    isValid,
+    violations,
+    warnings: [...sizing.warnings],
+    capacityRatio: parseFloat(capRatio.toFixed(3)),
+    requiredCeilingVoidIn: parseFloat(voidNeeded.toFixed(1))
+  };
+  return option;
+}
+
 export function optimizeMultiUnitCandidates(input: OptimizationInput): OptimizationResult {
   const {
     roomName,
     sensibleLoadBtu,
     totalLoadBtu,
     requiredCfm,
-    roomAreaSqFt,
-    maxAvailableCeilingDepthIn = 14,
     systemType = 'concealed',
     profile: _profile = ASHRAE_PROFILE
   } = input;
@@ -116,121 +252,9 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
   const eligible = catalogCandidatesForType(systemType);
 
   for (const n of testUnitCounts) {
-    // Evaluate every single model at n units. Prefer a fully valid model (lowest capacity ratio);
-    // otherwise the least-bad one, ranking capacity-deficit / sensible failures last (slight oversize beats deficit).
-    let selection: SelectedEquipmentResult | null = null;
-    let bestKey = Infinity;
-    for (const item of eligible) {
-      const chk = evaluateSizing(item, n, totalLoadBtu, sensibleLoadBtu, requiredCfm);
-      const key = failureSeverity(chk) * 1000 + (chk.valid ? chk.capacityRatio : Math.abs(chk.capacityRatio - 1.1));
-      if (key < bestKey) {
-        bestKey = key;
-        selection = toSelectedEquipmentResult(item, chk.valid ? {} : { undersized: true, shortfalls: [] });
-      }
-    }
-    if (!selection) continue;
-
-    const deliveredCfm = deliveredCfmFor(selection.catalogItem, n, requiredCfm);
-    const deliveredBtu = selection.totalCapacityBtu * n;
-
-    // Hard professional rules: capacity 1.00-1.20x (1.15x fixed speed), sensible, airflow 0.95-1.25x.
-    const sizing: SizingCheck = evaluateSizing(selection.catalogItem, n, totalLoadBtu, sensibleLoadBtu, requiredCfm);
-    const violations: string[] = [];
-    if (sizing.failures.includes('DEFICIT')) {
-      violations.push(`delivered ${Math.round(deliveredBtu)} Btu/h < load ${Math.round(totalLoadBtu)} Btu/h`);
-    }
-    if (sizing.failures.includes('OVERSIZE')) {
-      violations.push(`capacity ratio ${sizing.capacityRatio.toFixed(2)} > ${sizing.maxCapacityRatio.toFixed(2)}`);
-    }
-    if (sizing.failures.includes('SENSIBLE')) {
-      violations.push(`sensible capacity below ${Math.round(sensibleLoadBtu)} Btu/h`);
-    }
-    if (sizing.failures.includes('AIRFLOW_LOW')) {
-      violations.push(`delivered ${deliveredCfm} CFM < ${AIRFLOW_RATIO_MIN} x ${Math.round(requiredCfm)} CFM`);
-    }
-    if (sizing.failures.includes('AIRFLOW_HIGH')) {
-      violations.push(`delivered ${deliveredCfm} CFM > ${AIRFLOW_RATIO_MAX} x ${Math.round(requiredCfm)} CFM`);
-    }
-    const isValid = violations.length === 0;
-
-    // 1. Capacity match score (0-20 pts)
-    const capRatio = totalLoadBtu > 0 ? deliveredBtu / totalLoadBtu : 1;
-    let capScore = 20 - Math.abs(capRatio - 1.05) * 40;
-    capScore = Math.max(0, Math.min(20, capScore));
-
-    // 2. Air distribution quality (0-20 pts) - larger areas benefit from multiple injection points
-    let distScore = 10;
-    if (roomAreaSqFt > 1000) {
-      distScore = n >= 2 ? (n === 3 ? 20 : 17) : 8;
-    } else if (roomAreaSqFt > 500) {
-      distScore = n === 2 ? 20 : (n === 1 ? 14 : 16);
-    } else {
-      distScore = n === 1 ? 20 : 12;
-    }
-
-    // 3. Acoustic performance (0-15 pts) - smaller units generate less localized noise
-    let acousticScore = 15;
-    if (selection.supplyCfm > 2500) acousticScore = 8;
-    else if (selection.supplyCfm > 1500) acousticScore = 11;
-    else acousticScore = 15;
-
-    // 4. ESP margin (0-15 pts)
-    const espScore = selection.availableEspInWg >= 0.35 ? 15 : (selection.availableEspInWg >= 0.25 ? 12 : 8);
-
-    // 5. Duct efficiency (0-15 pts) - shorter duct runs with multi-unit layout
-    let ductScore = 12;
-    if (n >= 3) ductScore = 15;
-    else if (n === 2) ductScore = 13;
-    else ductScore = 9;
-
-    // 6. Ceiling depth compatibility (0-10 pts): void must hold unit + clearance + duct connection
-    const eqHeight = selection.dimensionsIn.height || 10;
-    const voidNeeded = requiredCeilingVoidIn(selection);
-    const ceilingScore = voidNeeded <= maxAvailableCeilingDepthIn ? 10 : 2;
-
-    // 7. Redundancy (0-10 pts)
-    const redundancyScore = n >= 3 ? 10 : (n === 2 ? 8 : 2);
-
-    // 8. Unit count penalty (0 to -15 pts for complexity/cost)
-    const unitPenalty = (n - 1) * 3.5;
-
-    const totalScore = parseFloat(
-      (capScore + distScore + acousticScore + espScore + ductScore + ceilingScore + redundancyScore - unitPenalty).toFixed(1)
-    );
-
-    const rationale = `${n} × ${selection.model} (${selection.nominalTons} TR, ${selection.supplyCfm} CFM each) -> Total ${deliveredCfm} CFM, Score: ${totalScore}${isValid ? '' : ' [INVALID: ' + violations.join('; ') + ']'}`;
-
-    const option: MultiUnitCandidate = {
-      optionId: `option-${n}-unit`,
-      unitCount: n,
-      unitModel: selection.model,
-      nominalTonsPerUnit: selection.nominalTons,
-      cfmPerUnit: selection.supplyCfm,
-      capacityBtuPerUnit: selection.totalCapacityBtu,
-      totalDeliveredCfm: deliveredCfm,
-      totalDeliveredCapacityBtu: deliveredBtu,
-      availableEspInWg: selection.availableEspInWg,
-      equipmentHeightIn: eqHeight,
-      totalScore,
-      scoreBreakdown: {
-        capacityMatch: parseFloat(capScore.toFixed(1)),
-        distributionQuality: parseFloat(distScore.toFixed(1)),
-        acousticPerformance: parseFloat(acousticScore.toFixed(1)),
-        espMargin: parseFloat(espScore.toFixed(1)),
-        ductEfficiency: parseFloat(ductScore.toFixed(1)),
-        ceilingDepthMatch: parseFloat(ceilingScore.toFixed(1)),
-        redundancy: parseFloat(redundancyScore.toFixed(1)),
-        unitPenalty: parseFloat(unitPenalty.toFixed(1))
-      },
-      selectionRationale: rationale,
-      equipmentDetails: selection,
-      isValid,
-      violations,
-      warnings: [...sizing.warnings],
-      capacityRatio: parseFloat(capRatio.toFixed(3)),
-      requiredCeilingVoidIn: parseFloat(voidNeeded.toFixed(1))
-    };
-    (isValid ? validCandidates : invalidCandidates).push(option);
+    const option = evaluateUnitCountOption(n, input, eligible);
+    if (!option) continue;
+    (option.isValid ? validCandidates : invalidCandidates).push(option);
   }
 
   // Valid options only; if none exist, surface the closest flagged options so callers can

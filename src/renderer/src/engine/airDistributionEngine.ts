@@ -1,16 +1,18 @@
 import { StandardsProfile, getStandardsProfile } from './standards/designStandards';
-import { optimizeMultiUnitCandidates, MultiUnitCandidate } from './systemArchitecture/equipmentOptimizer';
+import { optimizeMultiUnitCandidates, evaluateUnitCountOption, MultiUnitCandidate } from './systemArchitecture/equipmentOptimizer';
+import { evaluateSizing, MAX_UNIT_COUNT } from './systemArchitecture/equipmentSelector';
 import { generateDesignDecisionLog } from './systemArchitecture/designDecisionLogger';
 import { partitionRoomIntoServiceZones, EquipmentServiceZone } from './zoning/zonePartitioner';
 import { placeSupplyDiffusersForZone, CoordinatedAirTerminal } from './terminals/terminalPlacer';
 import { placeReturnGrillesForZone } from './terminals/returnPlacer';
-import { routeSteppedSupplyDucts, SteppedDuctSection } from './ducts/steppedDuctRouter';
+import { routeSteppedSupplyDucts, ductSegments, SteppedDuctSection } from './ducts/steppedDuctRouter';
+import type { Seg2 } from './ducts/orthogonalTopology';
 import { routeReturnDucts } from './ducts/returnDuctRouter';
 import { sizeDuctNetwork } from './ducts/aerodynamicDuctSizer';
 import { routeFreshAirDucts, OutdoorAirSystem } from './outdoorAir/freshAirRouter';
 import { calculateAshrae621Ventilation, Ashrae621Result } from './outdoorAir/outdoorAirCalculator';
 import { polygonPxToFt, pxPerFt, UnitSystem, MM_PER_IN } from './units';
-import { calculateOutdoorUnitPlacement, isPointInPolygon } from './geometry';
+import { calculateOutdoorUnitPlacement, isPointInPolygon, MIN_TERMINAL_SPACING_FT } from './geometry';
 import { executeMasterHvacValidation, MasterValidationReport } from './validation/hvacValidator';
 
 export interface AirDistributionDesignInput {
@@ -55,6 +57,12 @@ export interface AirDistributionDesignResult {
   roomName: string;
   standardsProfile: StandardsProfile;
   selectedOption: MultiUnitCandidate;
+  /** True when the user's `userOverrideUnitCount` was honoured (evaluated and used), even if it fails sizing rules. */
+  overrideApplied: boolean;
+  /** Sizing problems of the user-chosen unit count (e.g. "capacity ratio 0.87 -> DEFICIT"), or why it was impossible. */
+  overrideWarnings: string[];
+  /** Room-required airflow (CFM) the design was sized for; recalculation validates against this, not delivered CFM. */
+  requiredCfm?: number;
   allOptimizationCandidates: MultiUnitCandidate[];
   serviceZones: EquipmentServiceZone[];
   supplyTerminals: CoordinatedAirTerminal[];
@@ -134,9 +142,31 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   });
 
   let chosenCandidate = optimization.recommendedOption;
-  if (userOverrideUnitCount) {
-    const matched = optimization.candidates.find((c) => c.unitCount === userOverrideUnitCount);
-    if (matched) chosenCandidate = matched;
+  const allCandidates = optimization.candidates.slice();
+  let overrideApplied = false;
+  const overrideWarnings: string[] = [];
+  if (userOverrideUnitCount !== undefined && userOverrideUnitCount !== null) {
+    const n = userOverrideUnitCount;
+    const impossible = !Number.isInteger(n) || n < 1 || n > MAX_UNIT_COUNT;
+    const evaluated = impossible
+      ? null
+      : (optimization.candidates.find((c) => c.unitCount === n)
+        ?? evaluateUnitCountOption(n, { roomName, sensibleLoadBtu, totalLoadBtu, requiredCfm, roomAreaSqFt, maxAvailableCeilingDepthIn, systemType, profile }));
+    if (!evaluated) {
+      overrideWarnings.push(`Requested unit count ${n} is impossible (must be a whole number from 1 to ${MAX_UNIT_COUNT}); using the optimizer's choice of ${chosenCandidate.unitCount} unit(s).`);
+    } else {
+      chosenCandidate = evaluated;
+      overrideApplied = true;
+      if (!allCandidates.some((c) => c.unitCount === n)) allCandidates.push(evaluated);
+      if (!evaluated.isValid) {
+        const chk = evaluateSizing(evaluated.equipmentDetails.catalogItem, n, totalLoadBtu, sensibleLoadBtu, requiredCfm);
+        const ratio = (evaluated.capacityRatio ?? chk.capacityRatio).toFixed(2);
+        const tags = chk.failures.length ? chk.failures.join(', ') : 'SIZING';
+        overrideWarnings.push(`User-selected ${n} unit(s) fails sizing rules: capacity ratio ${ratio} -> ${tags}`);
+        for (const v of evaluated.violations ?? []) overrideWarnings.push(v);
+      }
+      for (const w of evaluated.warnings ?? []) overrideWarnings.push(w);
+    }
   }
 
   // Outdoor air: ASHRAE 62.1 VRP, Vbz = Rp*Pz + Ra*Az, Voz = Vbz/Ez (no arbitrary floor)
@@ -198,21 +228,34 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   const allSupplyDucts: SteppedDuctSection[] = [];
   const allReturnDucts: SteppedDuctSection[] = [];
 
+  // Terminals first, then ALL supply networks (each avoiding the segments already routed), then the return
+  // networks (each avoiding every supply segment plus the returns routed before it). Explicit data flow only.
+  const supplyByZone = new Map<string, CoordinatedAirTerminal[]>();
+  const returnByZone = new Map<string, CoordinatedAirTerminal[]>();
   for (const zone of serviceZones) {
     const supplyInZone = placeSupplyDiffusersForZone(zone, { targetCfmPerDiffuser: 350, optimizeThrow: true });
     const returnInZone = spreadReturnCfm(placeReturnGrillesForZone(zone, supplyInZone), zone.returnCfm);
-
+    supplyByZone.set(zone.id, supplyInZone);
+    returnByZone.set(zone.id, returnInZone);
     allSupplyTerminals.push(...supplyInZone);
     allReturnTerminals.push(...returnInZone);
+  }
 
+  const supplyNetwork: Seg2[] = [];
+  for (const zone of serviceZones) {
     // Phase 5 & 6: Stepped Duct Network Routing & Sizing
-    const rawSupplyDucts = routeSteppedSupplyDucts(zone, supplyInZone);
+    const rawSupplyDucts = routeSteppedSupplyDucts(zone, supplyByZone.get(zone.id)!, profile, supplyNetwork);
     const sizedSupply = sizeDuctNetwork(rawSupplyDucts, profile, maxAvailableCeilingDepthIn, units);
     allSupplyDucts.push(...sizedSupply);
+    supplyNetwork.push(...ductSegments(sizedSupply));
+  }
 
-    const rawReturnDucts = routeReturnDucts(zone, returnInZone);
+  const returnNetwork: Seg2[] = [];
+  for (const zone of serviceZones) {
+    const rawReturnDucts = routeReturnDucts(zone, returnByZone.get(zone.id)!, profile, [...supplyNetwork, ...returnNetwork]);
     const sizedReturn = sizeDuctNetwork(rawReturnDucts, profile, maxAvailableCeilingDepthIn, units);
     allReturnDucts.push(...sizedReturn);
+    returnNetwork.push(...ductSegments(sizedReturn));
   }
 
   // Outdoor units: outside the room on an exterior wall (feet), spaced along that wall
@@ -252,7 +295,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     requiredCfm,
     totalLoadBtu,
     selectedOption: chosenCandidate,
-    allCandidates: optimization.candidates,
+    allCandidates,
     validationSummary: {
       airflowStatus: validationReport.points[0].status,
       velocityStatus: validationReport.points[3].status,
@@ -267,7 +310,10 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     roomName,
     standardsProfile: profile,
     selectedOption: chosenCandidate,
-    allOptimizationCandidates: optimization.candidates,
+    overrideApplied,
+    overrideWarnings,
+    requiredCfm,
+    allOptimizationCandidates: allCandidates,
     serviceZones,
     supplyTerminals: allSupplyTerminals,
     returnTerminals: allReturnTerminals,
@@ -286,8 +332,42 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   };
 }
 
+const isLockedTerminal = (t: CoordinatedAirTerminal): boolean => t.locked === true || t.designControlMode === 'user-locked';
+
 /**
- * Executes Scoped Dependency Recalculation after a user modifies an equipment position or terminal
+ * Lays a zone's terminals out around the user-locked ones: every locked terminal keeps its position and CFM, the
+ * freshly placed positions nearest to each locked terminal (or closer than the minimum terminal spacing) are
+ * dropped, and the remaining zone airflow is spread over the other terminals (sum exact).
+ */
+function layoutAroundLocked(
+  fresh: CoordinatedAirTerminal[],
+  locked: CoordinatedAirTerminal[],
+  zoneCfm: number
+): CoordinatedAirTerminal[] {
+  if (locked.length === 0) return fresh;
+  const dist = (a: { x: number; y: number }, b: { x: number; y: number }): number => Math.hypot(a.x - b.x, a.y - b.y);
+  let pool = fresh.slice();
+  for (const l of locked) {
+    if (pool.length === 0) break;
+    let bi = 0;
+    for (let i = 1; i < pool.length; i++) if (dist(pool[i].position, l.position) < dist(pool[bi].position, l.position)) bi = i;
+    pool.splice(bi, 1);
+  }
+  pool = pool.filter((t) => locked.every((l) => dist(t.position, l.position) >= MIN_TERMINAL_SPACING_FT));
+  if (pool.length > 0) {
+    const remaining = Math.max(0, zoneCfm - locked.reduce((a, t) => a + t.cfm, 0));
+    const each = Math.round(remaining / pool.length);
+    pool.forEach((t) => { t.cfm = each; });
+    fixCfmSum(pool, remaining);
+  }
+  return [...locked, ...pool];
+}
+
+/**
+ * Executes Scoped Dependency Recalculation after a user modifies an equipment position or terminal.
+ * Terminals with `locked: true` keep their position and airflow; the zone's other terminals are re-laid out around
+ * them. Ducts of the zone are re-routed (avoiding the untouched zones' networks) and the result is validated against
+ * the ROOM-REQUIRED airflow, not the airflow the units happen to deliver.
  */
 export function recalculateScopedOverride(
   modifiedZoneId: string,
@@ -297,9 +377,20 @@ export function recalculateScopedOverride(
   const targetZone = updatedZones.find((z) => z.id === modifiedZoneId);
   if (!targetZone) return currentDesign;
 
-  // Re-run terminal placement for this modified zone while preserving user-locked terminals
-  const newSupply = placeSupplyDiffusersForZone(targetZone, { optimizeThrow: true });
-  const newReturn = spreadReturnCfm(placeReturnGrillesForZone(targetZone, newSupply), targetZone.returnCfm);
+  const lockedSupply = currentDesign.supplyTerminals.filter((t) => t.unitId === modifiedZoneId && isLockedTerminal(t));
+  const lockedReturn = currentDesign.returnTerminals.filter((t) => t.unitId === modifiedZoneId && isLockedTerminal(t));
+
+  // Re-run terminal placement for this modified zone around the user-locked terminals
+  const newSupply = layoutAroundLocked(
+    placeSupplyDiffusersForZone(targetZone, { optimizeThrow: true }),
+    lockedSupply,
+    targetZone.supplyCfm
+  );
+  const newReturn = layoutAroundLocked(
+    spreadReturnCfm(placeReturnGrillesForZone(targetZone, newSupply), targetZone.returnCfm),
+    lockedReturn,
+    targetZone.returnCfm
+  );
 
   // Filter out old terminals for this zone and insert newly recalculated ones
   const filteredSupply = currentDesign.supplyTerminals.filter((t) => t.unitId !== modifiedZoneId);
@@ -308,24 +399,26 @@ export function recalculateScopedOverride(
   const mergedSupply = [...filteredSupply, ...newSupply];
   const mergedReturn = [...filteredReturn, ...newReturn];
 
+  const otherSupplyDucts = currentDesign.supplyDucts.filter((d) => d.unitId !== modifiedZoneId);
+  const otherReturnDucts = currentDesign.returnDucts.filter((d) => d.unitId !== modifiedZoneId);
+  const othersNetwork = [...ductSegments(otherSupplyDucts), ...ductSegments(otherReturnDucts)];
+
   // Re-route and resize supply and return ducts for this zone
-  const rawSupply = routeSteppedSupplyDucts(targetZone, newSupply);
+  const rawSupply = routeSteppedSupplyDucts(targetZone, newSupply, currentDesign.standardsProfile, othersNetwork);
   const sizedSupply = sizeDuctNetwork(rawSupply, currentDesign.standardsProfile, targetZone.maxAvailableCeilingDepthIn, currentDesign.units);
 
-  const rawReturn = routeReturnDucts(targetZone, newReturn);
+  const rawReturn = routeReturnDucts(targetZone, newReturn, currentDesign.standardsProfile, [...othersNetwork, ...ductSegments(sizedSupply)]);
   const sizedReturn = sizeDuctNetwork(rawReturn, currentDesign.standardsProfile, targetZone.maxAvailableCeilingDepthIn, currentDesign.units);
 
-  const filteredSupplyDucts = currentDesign.supplyDucts.filter((d) => d.unitId !== modifiedZoneId);
-  const filteredReturnDucts = currentDesign.returnDucts.filter((d) => d.unitId !== modifiedZoneId);
+  const mergedSupplyDucts = [...otherSupplyDucts, ...sizedSupply];
+  const mergedReturnDucts = [...otherReturnDucts, ...sizedReturn];
 
-  const mergedSupplyDucts = [...filteredSupplyDucts, ...sizedSupply];
-  const mergedReturnDucts = [...filteredReturnDucts, ...sizedReturn];
-
-  // Re-run validation
+  // Re-run validation against the room-required airflow
+  const requiredRoomCfm = currentDesign.requiredCfm ?? updatedZones.reduce((a, z) => a + z.supplyCfm, 0);
   const validationReport = executeMasterHvacValidation({
     roomName: currentDesign.roomName,
     roomPolygon: currentDesign.roomPolygonFt?.length ? currentDesign.roomPolygonFt : targetZone.serviceAreaPolygon,
-    requiredRoomCfm: updatedZones.reduce((a, z) => a + z.supplyCfm, 0),
+    requiredRoomCfm,
     designLoadBtu: updatedZones.reduce((a, z) => a + z.totalLoadBtu, 0),
     zones: updatedZones,
     terminals: [...mergedSupply, ...mergedReturn],
