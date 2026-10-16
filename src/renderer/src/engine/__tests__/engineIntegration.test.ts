@@ -66,8 +66,8 @@ console.log('--- (c) ASHRAE 62.1 OA ---');
 const oa = calculateAshrae621Ventilation({ areaSqFt: 1000, spaceTypeId: 'office' });
 assert(oa.occupancyCount === 5, `1000 ft2 office default occupancy = 5, got ${oa.occupancyCount}`);
 assert(oa.vbzCfm === 85, `Vbz = 5*5 + 0.06*1000 = 85, got ${oa.vbzCfm}`);
-assert(oa.vozCfm === 106, `Voz = 85/0.8 = 106, got ${oa.vozCfm}`);
-assert(designFt.ventilation.vozCfm === 106 && designFt.outdoorAirSystem.designOutdoorAirCfm === 106, 'engine default OA = 106 CFM for 1000 ft2 office');
+assert(oa.vozCfm === 85, `Voz = 85/1.0 (Ez=1.0, ASHRAE 62.1 Table 6-4 cooling, ceiling supply) = 85, got ${oa.vozCfm}`);
+assert(designFt.ventilation.vozCfm === 85 && designFt.outdoorAirSystem.designOutdoorAirCfm === 85, 'engine default OA = 85 CFM for 1000 ft2 office');
 console.log('OK');
 
 // (d) mass balance
@@ -80,7 +80,7 @@ assert(mb.exfiltrationCfm === Math.max(0, mb.outdoorAirCfm - mb.exhaustCfm), 'ex
 assert(designFt.returnTerminals.reduce((a, t) => a + t.cfm, 0) === mb.returnCfm, 'return grille CFM must sum to the return value');
 const withExhaust = executeAirDistributionDesign({ ...base, exhaustCfm: 60 });
 assert(withExhaust.validationReport.points[2].status === 'PASS', 'mass balance with exhaust should PASS');
-assert(withExhaust.massBalance.exfiltrationCfm === 46, 'exfiltration = 106 - 60');
+assert(withExhaust.massBalance.exfiltrationCfm === 25, 'exfiltration = 85 - 60');
 console.log('OK');
 
 // (e) terminals inside polygon (+ spatial validator actually checked them)

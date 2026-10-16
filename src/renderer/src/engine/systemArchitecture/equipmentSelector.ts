@@ -28,6 +28,8 @@ export const RATING_AMBIENT_F = 95;
 /** Capacity loss per degF of design ambient above the rating condition. */
 const DERATE_PER_DEG_F = 0.005;
 const EPS = 1e-9;
+/** Maximum identical units considered when splitting a zone load. */
+export const MAX_UNIT_COUNT = 12;
 
 /**
  * Inverter / variable-capacity equipment may be oversized by up to 20%;
@@ -52,6 +54,23 @@ export function ambientDerateFactor(designAmbientF: number = RATING_AMBIENT_F): 
   return Math.max(0.7, 1 - excess * DERATE_PER_DEG_F);
 }
 
+/** Fan operating range of one unit (CFM); falls back to 0.8-1.2x nominal when the catalog omits it. */
+export function fanRange(equip: EquipmentCatalogItem): { min: number; max: number } {
+  const min = equip.minCfm > 0 ? equip.minCfm : equip.nominalCfm * 0.8;
+  const max = equip.maxCfm > 0 ? equip.maxCfm : equip.nominalCfm * 1.2;
+  return { min, max };
+}
+
+/**
+ * Airflow delivered by `qty` units for a design airflow: the fan is set to the design CFM when it lies in
+ * the combined fan range, otherwise it saturates at the range limit. No requirement => qty x nominal.
+ */
+export function deliveredCfmFor(equip: EquipmentCatalogItem, qty: number, designCfm: number): number {
+  if (!(designCfm > 0)) return qty * equip.nominalCfm;
+  const { min, max } = fanRange(equip);
+  return Math.min(qty * max, Math.max(qty * min, designCfm));
+}
+
 export interface SizingCheck {
   qty: number;
   installedCapacityBtu: number;
@@ -61,8 +80,10 @@ export interface SizingCheck {
   deratedRatio: number;
   /** derated installed sensible capacity / room sensible load (Infinity when no sensible load given). */
   sensibleRatio: number;
-  /** qty x nominal CFM / required CFM (Infinity when no airflow requirement). */
+  /** delivered CFM (fan set to design within qty x [minCfm, maxCfm]) / required CFM (Infinity when no requirement). */
   airflowRatio: number;
+  /** Airflow actually delivered by the installed units. */
+  deliveredCfm: number;
   derate: number;
   maxCapacityRatio: number;
   valid: boolean;
@@ -84,7 +105,8 @@ export function evaluateSizing(
   const deratedRatio = capacityRatio * derate;
   const sensibleRatio =
     sensibleBtu > 0 ? (qty * equip.sensibleCapacityBtuPerHour * derate) / sensibleBtu : Infinity;
-  const airflowRatio = requiredCfm > 0 ? (qty * equip.nominalCfm) / requiredCfm : Infinity;
+  const deliveredCfm = deliveredCfmFor(equip, qty, requiredCfm);
+  const airflowRatio = requiredCfm > 0 ? deliveredCfm / requiredCfm : Infinity;
   const maxCapacityRatio = maxCapacityRatioFor(equip);
 
   const failures: SizingCheck['failures'] = [];
@@ -92,6 +114,8 @@ export function evaluateSizing(
   if (capacityRatio > maxCapacityRatio + EPS) failures.push('OVERSIZE');
   if (sensibleRatio < 1 - EPS) failures.push('SENSIBLE');
   if (requiredCfm > 0) {
+    // Fan is set to the design CFM inside qty x [minCfm, maxCfm] (ratio exactly 1); outside the range it
+    // saturates, and the delivered/required window 0.95-1.25 bounds how far outside is tolerated.
     if (airflowRatio < AIRFLOW_RATIO_MIN - EPS) failures.push('AIRFLOW_LOW');
     if (airflowRatio > AIRFLOW_RATIO_MAX + EPS) failures.push('AIRFLOW_HIGH');
   }
@@ -103,6 +127,7 @@ export function evaluateSizing(
     deratedRatio,
     sensibleRatio,
     airflowRatio,
+    deliveredCfm,
     derate,
     maxCapacityRatio,
     valid: failures.length === 0,
@@ -128,7 +153,7 @@ export function sizeUnitQuantity(
     1,
     Math.ceil(loadBtu / (equip.totalCapacityBtuPerHour * derate) - EPS),
     sensibleBtu > 0 ? Math.ceil(sensibleBtu / (equip.sensibleCapacityBtuPerHour * derate) - EPS) : 1,
-    requiredCfm > 0 ? Math.ceil((requiredCfm * AIRFLOW_RATIO_MIN) / equip.nominalCfm - EPS) : 1
+    requiredCfm > 0 ? Math.ceil(requiredCfm / (fanRange(equip).max / AIRFLOW_RATIO_MIN) - EPS) : 1
   );
   for (let q = qMin; q <= Math.max(qMin, maxQty); q++) {
     const check = evaluateSizing(equip, q, loadBtu, sensibleBtu, requiredCfm, designAmbientF);
@@ -186,10 +211,28 @@ function toResult(item: EquipmentCatalogItem, extra: Partial<SelectedEquipmentRe
   };
 }
 
+/** Catalog items eligible for a system type (same fallback chain as selectEquipmentForLoad). */
+export function catalogCandidatesForType(
+  systemType: string = 'concealed',
+  catalog: EquipmentCatalogItem[] = STANDARD_EQUIPMENT_CATALOG
+): EquipmentCatalogItem[] {
+  const normalizedType = normalizeSystemType(systemType);
+  let candidates = catalog.filter((item) => item.systemType === normalizedType);
+  if (candidates.length === 0 && normalizedType === 'fcu') candidates = catalog.filter((item) => item.systemType === 'concealed');
+  if (candidates.length === 0) candidates = catalog.filter((item) => item.capabilities?.supportsDuctNetwork);
+  if (candidates.length === 0) candidates = catalog;
+  return candidates;
+}
+
+/** Export for callers that build a result from an explicit catalog item. */
+export function toSelectedEquipmentResult(item: EquipmentCatalogItem, extra: Partial<SelectedEquipmentResult> = {}): SelectedEquipmentResult {
+  return toResult(item, extra);
+}
+
 /**
  * Select ONE catalog unit for a (per-unit) requirement.
  * Hard filters: derated total capacity >= reqBtu, derated sensible >= reqSensibleBtu (when given),
- * nominal airflow within 0.95-1.25 of reqCfm and reqCfm <= maxCfm.
+ * reqCfm within the unit fan range [minCfm, maxCfm] (fan set to design CFM).
  * Among passing units the smallest capacity / requirement ratio wins.
  * When nothing passes, the closest unit is returned with `undersized: true`.
  */
@@ -228,13 +271,14 @@ export function selectEquipmentForLoad(
       notes.push(`sensible ${Math.round(sens)} < ${Math.round(reqSensibleBtu)} Btu/h`);
     }
     if (reqCfm > 0) {
-      const r = item.nominalCfm / reqCfm;
+      const { min, max } = fanRange(item);
+      const r = deliveredCfmFor(item, 1, reqCfm) / reqCfm;
       if (r < AIRFLOW_RATIO_MIN - EPS) {
         score += AIRFLOW_RATIO_MIN - r;
-        notes.push(`airflow ${item.nominalCfm} < ${Math.round(reqCfm * AIRFLOW_RATIO_MIN)} CFM`);
-      } else if (r > AIRFLOW_RATIO_MAX + EPS || reqCfm > item.maxCfm + EPS) {
-        score += Math.max(r - AIRFLOW_RATIO_MAX, 0) + (reqCfm > item.maxCfm ? (reqCfm - item.maxCfm) / reqCfm : 0);
-        notes.push(`airflow ${item.nominalCfm} CFM outside ${AIRFLOW_RATIO_MIN}-${AIRFLOW_RATIO_MAX}x of ${Math.round(reqCfm)} CFM`);
+        notes.push(`airflow ${Math.round(reqCfm)} CFM > unit maximum ${Math.round(max)} CFM`);
+      } else if (r > AIRFLOW_RATIO_MAX + EPS) {
+        score += r - AIRFLOW_RATIO_MAX;
+        notes.push(`airflow ${Math.round(reqCfm)} CFM < unit minimum ${Math.round(min)} CFM`);
       }
     }
     return { score, notes };

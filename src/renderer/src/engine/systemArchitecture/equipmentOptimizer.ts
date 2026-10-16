@@ -1,6 +1,9 @@
 import { StandardsProfile, ASHRAE_PROFILE } from '../standards/designStandards';
 import {
-  selectEquipmentForLoad,
+  catalogCandidatesForType,
+  toSelectedEquipmentResult,
+  deliveredCfmFor,
+  MAX_UNIT_COUNT,
   SelectedEquipmentResult,
   evaluateSizing,
   SizingCheck,
@@ -83,6 +86,16 @@ export function requiredCeilingVoidIn(eq: SelectedEquipmentResult): number {
   return unitH + MIN_CEILING_CLEARANCE_IN + Math.max(0, ductH - unitH);
 }
 
+/** Higher = worse. Capacity deficit / sensible shortfalls rank far below oversize or airflow-window failures. */
+function failureSeverity(c: SizingCheck): number {
+  let sev = 0;
+  if (c.failures.includes('DEFICIT')) sev += 100;
+  if (c.failures.includes('SENSIBLE')) sev += 100;
+  if (c.failures.includes('OVERSIZE')) sev += 10;
+  if (c.failures.includes('AIRFLOW_LOW') || c.failures.includes('AIRFLOW_HIGH')) sev += 10;
+  return sev;
+}
+
 export function optimizeMultiUnitCandidates(input: OptimizationInput): OptimizationResult {
   const {
     roomName,
@@ -97,29 +110,30 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
 
   const validCandidates: MultiUnitCandidate[] = [];
   const invalidCandidates: MultiUnitCandidate[] = [];
-  const testUnitCounts = [1, 2, 3, 4, 5, 6];
+  const testUnitCounts = Array.from({ length: MAX_UNIT_COUNT }, (_, i) => i + 1);
+  const eligible = catalogCandidatesForType(systemType);
 
   for (const n of testUnitCounts) {
-    const targetCfmPerUnit = requiredCfm / n;
-    const targetBtuPerUnit = totalLoadBtu / n;
-    const targetSensPerUnit = sensibleLoadBtu / n;
-
-    const selection = selectEquipmentForLoad(
-      targetCfmPerUnit,
-      targetBtuPerUnit,
-      systemType,
-      undefined,
-      targetSensPerUnit
-    );
+    // Evaluate every single model at n units. Prefer a fully valid model (lowest capacity ratio);
+    // otherwise the least-bad one, ranking capacity-deficit / sensible failures last (slight oversize beats deficit).
+    let selection: SelectedEquipmentResult | null = null;
+    let bestKey = Infinity;
+    for (const item of eligible) {
+      const chk = evaluateSizing(item, n, totalLoadBtu, sensibleLoadBtu, requiredCfm);
+      const key = failureSeverity(chk) * 1000 + (chk.valid ? chk.capacityRatio : Math.abs(chk.capacityRatio - 1.1));
+      if (key < bestKey) {
+        bestKey = key;
+        selection = toSelectedEquipmentResult(item, chk.valid ? {} : { undersized: true, shortfalls: [] });
+      }
+    }
     if (!selection) continue;
 
-    const deliveredCfm = selection.supplyCfm * n;
+    const deliveredCfm = deliveredCfmFor(selection.catalogItem, n, requiredCfm);
     const deliveredBtu = selection.totalCapacityBtu * n;
 
     // Hard professional rules: capacity 1.00-1.20x (1.15x fixed speed), sensible, airflow 0.95-1.25x.
     const sizing: SizingCheck = evaluateSizing(selection.catalogItem, n, totalLoadBtu, sensibleLoadBtu, requiredCfm);
     const violations: string[] = [];
-    if (selection.undersized) violations.push(...(selection.shortfalls || ['no catalog unit satisfies the per-unit requirement']));
     if (sizing.failures.includes('DEFICIT')) {
       violations.push(`delivered ${Math.round(deliveredBtu)} Btu/h < load ${Math.round(totalLoadBtu)} Btu/h`);
     }
@@ -220,7 +234,11 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
   // still proceed (they must treat recommendedOption.isValid === false as a warning).
   const hasValidOption = validCandidates.length > 0;
   const pool = hasValidOption ? validCandidates : invalidCandidates;
-  pool.sort((a, b) => b.totalScore - a.totalScore);
+  const sev = (o: MultiUnitCandidate) => {
+    const chk = evaluateSizing(o.equipmentDetails.catalogItem, o.unitCount, totalLoadBtu, sensibleLoadBtu, requiredCfm);
+    return failureSeverity(chk);
+  };
+  pool.sort((a, b) => (hasValidOption ? 0 : sev(a) - sev(b)) || b.totalScore - a.totalScore);
 
   return {
     roomName,

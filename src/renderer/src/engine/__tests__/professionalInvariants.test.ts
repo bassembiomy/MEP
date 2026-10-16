@@ -386,8 +386,17 @@ for (let ri = 0; ri < rooms.length; ri++) {
     const areaSqFt = toSqFt(load.area, uc.units);
     check('load.cfmFromRoomSensible(2%)', rel(thermalCfm, roomSensBtuh / (1.08 * 20)) <= 0.02,
       () => `thermalCfm ${thermalCfm.toFixed(1)} vs Qs_room/(1.08*20) ${(roomSensBtuh / 21.6).toFixed(1)}`);
-    check('load.supplyGeThermal', supplyCfm >= thermalCfm * 0.99,
-      () => `supply ${supplyCfm.toFixed(1)} < thermal ${thermalCfm.toFixed(1)}`);
+    // RULING (planner): for DX/refrigerant systems the design supply airflow is
+    // max(thermal, Voz, 350 CFM x coil tons) (coil tons include the OA load, so thermal CFM alone can drop to
+    // 228-300 CFM/ton). `thermalCfm` stays Qs_room/(1.08*20); `supplyCfm` is the design airflow (100 CFM floor).
+    check('load.supplyGeThermal', supplyCfm >= thermalCfm * 0.98,
+      () => `supply ${supplyCfm.toFixed(1)} < thermal ${thermalCfm.toFixed(1)} -2%`);
+    {
+      const voz = toCfm(load.vozCfm, uc.units);
+      const expected = Math.max(100, thermalCfm, voz, 350 * (coilBtuh / 12000));
+      check('load.supplyIsDesignAirflow(2%)', rel(supplyCfm, expected) <= 0.02,
+        () => `supply ${supplyCfm.toFixed(1)} vs max(thermal ${thermalCfm.toFixed(1)}, Voz ${voz.toFixed(1)}, 350*tons ${(350 * coilBtuh / 12000).toFixed(1)}) = ${expected.toFixed(1)}`);
+    }
     const cfmPerTon = supplyCfm / (coilBtuh / 12000);
     check('load.cfmPerTon[250,550]', cfmPerTon >= 250 && cfmPerTon <= 550,
       () => `${cfmPerTon.toFixed(0)} CFM/ton (supply ${supplyCfm.toFixed(0)} CFM, coil ${coilBtuh.toFixed(0)} Btu/h = ${(coilBtuh / 12000).toFixed(2)} t, room Qs ${roomSensBtuh.toFixed(0)}, OA Qs ${toBtuh(load.oaSensibleBtuh ?? 0, uc.units).toFixed(0)})`);

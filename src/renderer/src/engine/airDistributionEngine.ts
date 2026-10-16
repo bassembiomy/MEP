@@ -9,8 +9,8 @@ import { routeReturnDucts } from './ducts/returnDuctRouter';
 import { sizeDuctNetwork } from './ducts/aerodynamicDuctSizer';
 import { routeFreshAirDucts, OutdoorAirSystem } from './outdoorAir/freshAirRouter';
 import { calculateAshrae621Ventilation, Ashrae621Result } from './outdoorAir/outdoorAirCalculator';
-import { polygonPxToFt, pxPerFt, UnitSystem } from './units';
-import { calculateOutdoorUnitPlacement, isPointInPolygon, MIN_TERMINAL_SPACING_FT } from './geometry';
+import { polygonPxToFt, pxPerFt, UnitSystem, MM_PER_IN } from './units';
+import { calculateOutdoorUnitPlacement, isPointInPolygon } from './geometry';
 import { executeMasterHvacValidation, MasterValidationReport } from './validation/hvacValidator';
 
 export interface AirDistributionDesignInput {
@@ -37,7 +37,7 @@ export interface AirDistributionDesignInput {
   units?: 'imperial' | 'metric';
   /** ASHRAE 62.1 space type id (knowledgeBase ASHRAE_SPACE_TYPES). Default 'office'. */
   spaceTypeId?: string;
-  /** Zone air distribution effectiveness Ez. Default 0.8. */
+  /** Zone air distribution effectiveness Ez. Default 1.0 (cooling, ceiling supply). */
   ventilationEffectivenessEz?: number;
   /** Local exhaust from the room (CFM). Default 0. */
   exhaustCfm?: number;
@@ -69,6 +69,8 @@ export interface AirDistributionDesignResult {
   roomPolygonFt: number[];
   /** Canvas px per foot used at the boundary (1 when the input polygon was already in ft). */
   pxPerFt: number;
+  /** Project unit system the design was made in (drives duct size grid and labels). */
+  units?: 'imperial' | 'metric';
   ventilation: Ashrae621Result;
   massBalance: DesignMassBalance;
   /** Outdoor unit centre per service zone, in FEET, outside the room on an exterior wall. */
@@ -82,29 +84,12 @@ function fixCfmSum(terms: CoordinatedAirTerminal[], total: number): void {
   terms[terms.length - 1].cfm += total - sum;
 }
 
-/**
- * Keeps only returns that honour the minimum terminal spacing to every supply and to each other
- * (a small room cannot hold the placer's preferred count), then re-spreads the return CFM evenly.
- * At least one return is always kept (the best-separated one).
- */
-function pruneReturnsForSpacing(
-  returns: CoordinatedAirTerminal[],
-  supplies: CoordinatedAirTerminal[],
-  totalCfm: number
-): CoordinatedAirTerminal[] {
-  const sepToSupply = (r: CoordinatedAirTerminal) =>
-    supplies.length ? Math.min(...supplies.map((t) => Math.hypot(t.position.x - r.position.x, t.position.y - r.position.y))) : Infinity;
-  const kept: CoordinatedAirTerminal[] = [];
-  for (const r of returns) {
-    const ok = sepToSupply(r) >= MIN_TERMINAL_SPACING_FT - 1e-6
-      && kept.every((k) => Math.hypot(k.position.x - r.position.x, k.position.y - r.position.y) >= MIN_TERMINAL_SPACING_FT - 1e-6);
-    if (ok) kept.push(r);
-  }
-  if (!kept.length && returns.length) kept.push([...returns].sort((a, b) => sepToSupply(b) - sepToSupply(a))[0]);
-  const each = kept.length ? Math.round(totalCfm / kept.length) : 0;
-  kept.forEach((t) => { t.cfm = each; });
-  fixCfmSum(kept, totalCfm);
-  return kept;
+/** Spreads the zone return CFM evenly over its return grilles (sum exact). Position choice lives in returnPlacer. */
+function spreadReturnCfm(returns: CoordinatedAirTerminal[], totalCfm: number): CoordinatedAirTerminal[] {
+  const each = returns.length ? Math.round(totalCfm / returns.length) : 0;
+  returns.forEach((t) => { t.cfm = each; });
+  fixCfmSum(returns, totalCfm);
+  return returns;
 }
 
 export function executeAirDistributionDesign(input: AirDistributionDesignInput): AirDistributionDesignResult {
@@ -215,18 +200,18 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
 
   for (const zone of serviceZones) {
     const supplyInZone = placeSupplyDiffusersForZone(zone, { targetCfmPerDiffuser: 350, optimizeThrow: true });
-    const returnInZone = pruneReturnsForSpacing(placeReturnGrillesForZone(zone, supplyInZone), supplyInZone, zone.returnCfm);
+    const returnInZone = spreadReturnCfm(placeReturnGrillesForZone(zone, supplyInZone), zone.returnCfm);
 
     allSupplyTerminals.push(...supplyInZone);
     allReturnTerminals.push(...returnInZone);
 
     // Phase 5 & 6: Stepped Duct Network Routing & Sizing
     const rawSupplyDucts = routeSteppedSupplyDucts(zone, supplyInZone);
-    const sizedSupply = sizeDuctNetwork(rawSupplyDucts, profile, maxAvailableCeilingDepthIn);
+    const sizedSupply = sizeDuctNetwork(rawSupplyDucts, profile, maxAvailableCeilingDepthIn, units);
     allSupplyDucts.push(...sizedSupply);
 
     const rawReturnDucts = routeReturnDucts(zone, returnInZone);
-    const sizedReturn = sizeDuctNetwork(rawReturnDucts, profile, maxAvailableCeilingDepthIn);
+    const sizedReturn = sizeDuctNetwork(rawReturnDucts, profile, maxAvailableCeilingDepthIn, units);
     allReturnDucts.push(...sizedReturn);
   }
 
@@ -294,6 +279,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     timestamp: new Date().toISOString(),
     roomPolygonFt: roomPolygon,
     pxPerFt: pxFt,
+    units: units === 'metric' ? 'metric' : 'imperial',
     ventilation,
     massBalance,
     outdoorUnitPositions
@@ -313,7 +299,7 @@ export function recalculateScopedOverride(
 
   // Re-run terminal placement for this modified zone while preserving user-locked terminals
   const newSupply = placeSupplyDiffusersForZone(targetZone, { optimizeThrow: true });
-  const newReturn = pruneReturnsForSpacing(placeReturnGrillesForZone(targetZone, newSupply), newSupply, targetZone.returnCfm);
+  const newReturn = spreadReturnCfm(placeReturnGrillesForZone(targetZone, newSupply), targetZone.returnCfm);
 
   // Filter out old terminals for this zone and insert newly recalculated ones
   const filteredSupply = currentDesign.supplyTerminals.filter((t) => t.unitId !== modifiedZoneId);
@@ -324,10 +310,10 @@ export function recalculateScopedOverride(
 
   // Re-route and resize supply and return ducts for this zone
   const rawSupply = routeSteppedSupplyDucts(targetZone, newSupply);
-  const sizedSupply = sizeDuctNetwork(rawSupply, currentDesign.standardsProfile, targetZone.maxAvailableCeilingDepthIn);
+  const sizedSupply = sizeDuctNetwork(rawSupply, currentDesign.standardsProfile, targetZone.maxAvailableCeilingDepthIn, currentDesign.units);
 
   const rawReturn = routeReturnDucts(targetZone, newReturn);
-  const sizedReturn = sizeDuctNetwork(rawReturn, currentDesign.standardsProfile, targetZone.maxAvailableCeilingDepthIn);
+  const sizedReturn = sizeDuctNetwork(rawReturn, currentDesign.standardsProfile, targetZone.maxAvailableCeilingDepthIn, currentDesign.units);
 
   const filteredSupplyDucts = currentDesign.supplyDucts.filter((d) => d.unitId !== modifiedZoneId);
   const filteredReturnDucts = currentDesign.returnDucts.filter((d) => d.unitId !== modifiedZoneId);
@@ -367,7 +353,12 @@ export function recalculateScopedOverride(
  */
 export function convertDesignResultToZonePayload(design: AirDistributionDesignResult) {
   const k = design.pxPerFt && design.pxPerFt > 0 ? design.pxPerFt : 1;
-  const px = (v: number) => parseFloat((v * k).toFixed(2));
+  const px = (v: number) => v * k; // exact: px === ft x k (no geometry rounding)
+  const ductLabel = (w: number, h: number) => {
+    if (design.units !== 'metric') return `${w}"x${h}"`;
+    const mm = (v: number) => Math.round((v * MM_PER_IN) / 50) * 50;
+    return `${mm(w)}x${mm(h)}`;
+  };
   const pt = (p: { x: number; y: number }) => ({ x: px(p.x), y: px(p.y) });
 
   const diffusers = [
@@ -403,7 +394,7 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
       widthIn: d.widthIn,
       heightIn: d.heightIn,
       cfm: d.airflowCfm,
-      sizeLabel: `${d.widthIn}"x${d.heightIn}"`,
+      sizeLabel: ductLabel(d.widthIn, d.heightIn),
       velocityFpm: d.velocityFpm
     })),
     ...design.returnDucts.map((d) => ({
@@ -413,7 +404,7 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
       widthIn: d.widthIn,
       heightIn: d.heightIn,
       cfm: d.airflowCfm,
-      sizeLabel: `${d.widthIn}"x${d.heightIn}"`,
+      sizeLabel: ductLabel(d.widthIn, d.heightIn),
       velocityFpm: d.velocityFpm
     }))
   ];

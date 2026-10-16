@@ -1,6 +1,8 @@
 import { Zone, ProjectMetadata } from '../store/projectStore';
 import { ASHRAE_SPACE_TYPES, DEFAULT_U_VALUES, DEFAULT_GLASS } from './knowledgeBase';
 import { isImperial as isImp, pxPerFt, SQFT_PER_SQM, M_PER_FT, LPS_PER_CFM, CFM_PER_LPS, BTUH_PER_W, BTUH_PER_TON } from './units';
+import { DEFAULT_EZ_COOLING_CEILING } from './outdoorAir/outdoorAirCalculator';
+import { FT_PER_M } from './units';
 import { calculatePolygonArea, calculatePolygonPerimeter } from './geometry';
 
 export interface LoadResult {
@@ -83,7 +85,9 @@ export function calculateZoneLoad(zone: Zone, project: ProjectMetadata): LoadRes
   const hasRoof = extras.hasRoof ?? extras.isTopFloor ?? true; // legacy behaviour: roof load always applied
   const glassArea = Math.max(0, extras.glassAreaSqFt ?? 0);
   const wallLen = extras.exteriorWallLengthFt ?? perimeterFt * 0.5; // legacy: 50% of perimeter exposed
-  const grossWall = wallLen * zone.ceilingHeight;
+  // zone.ceilingHeight is in project length units (m for metric)
+  const ceilingFt = imperial ? zone.ceilingHeight : zone.ceilingHeight * FT_PER_M;
+  const grossWall = wallLen * ceilingFt;
   const netWall = Math.max(0, grossWall - glassArea);
   const wallSensible = DEFAULT_U_VALUES.wall * netWall * deltaT;
   const roofSensible = hasRoof ? DEFAULT_U_VALUES.roof * areaFt2 * deltaT : 0;
@@ -102,7 +106,7 @@ export function calculateZoneLoad(zone: Zone, project: ProjectMetadata): LoadRes
 
   // 5. ASHRAE 62.1-2019: Vbz = Rp*Pz + Ra*Az, computed in CFM then converted to project units
   const vbzCfm = spaceType.rp * occupants + spaceType.ra * areaFt2;
-  const ez = 1.0; // ceiling supply of cool air
+  const ez = DEFAULT_EZ_COOLING_CEILING; // ASHRAE 62.1 Table 6-4, ceiling supply of cool air
   const vozCfm = vbzCfm / ez;
 
   const oaSensible = 1.08 * vozCfm * deltaT;
@@ -131,7 +135,12 @@ export function calculateZoneLoad(zone: Zone, project: ProjectMetadata): LoadRes
   const supplyDeltaT = 20.0;
   const thermalCfm = roomSensible > 0 ? roomSensible / (1.08 * supplyDeltaT) : 0;
 
-  let calculatedSupply = Math.max(thermalCfm, vozCfm);
+  // RULING: DX/refrigerant coils need >= ~350 CFM/ton across the coil (coil tons include OA load),
+  // so design airflow = max(thermal, Voz, 350 x coil tons). Chilled-water systems size on thermal/OA only.
+  const sysType = String(zone.systemType ?? '').toLowerCase();
+  const isDx = !['chilled-water', 'cwu', 'ahu'].includes(sysType);
+  const coilMinCfm = isDx ? 350 * totalTons : 0;
+  let calculatedSupply = Math.max(thermalCfm, vozCfm, coilMinCfm);
   if (coilTotal > 0 && calculatedSupply < 100) calculatedSupply = 100;
 
   const finalSupplyCfm = zone.manualCfmOverride !== undefined

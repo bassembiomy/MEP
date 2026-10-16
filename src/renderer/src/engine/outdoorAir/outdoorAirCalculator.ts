@@ -2,6 +2,9 @@ import { StandardsProfile, ASHRAE_PROFILE } from '../standards/designStandards';
 import { calculateBreathingZoneVentilation } from '../standards/ventilationRules';
 import { SPACE_TYPE_BY_ID } from '../knowledgeBase';
 
+/** ASHRAE 62.1 Table 6-4: cooling with ceiling supply of cool air => Ez = 1.0. Single shared default (loadCalc uses it too). */
+export const DEFAULT_EZ_COOLING_CEILING = 1.0;
+
 export interface OutdoorAirCalcInput {
   roomName: string;
   occupancyCount: number;
@@ -25,7 +28,7 @@ export function calculateRoomOutdoorAir(input: OutdoorAirCalcInput): OutdoorAirC
     occupancyCount,
     areaSqFt,
     spaceCategory = 'conference-meeting',
-    ventilationEffectivenessEz = 0.8,
+    ventilationEffectivenessEz = DEFAULT_EZ_COOLING_CEILING,
     profile = ASHRAE_PROFILE
   } = input;
 
@@ -51,7 +54,7 @@ export interface Ashrae621Input {
   spaceTypeId?: string;
   /** People in the zone; default = table density (people / 1000 ft2) x area, never a fixed number. */
   occupancyCount?: number;
-  /** Zone air distribution effectiveness Ez (default 0.8). */
+  /** Zone air distribution effectiveness Ez (default 1.0, cooling with ceiling supply). */
   ventilationEffectivenessEz?: number;
 }
 
@@ -73,7 +76,7 @@ export interface Ashrae621Result {
 export function calculateAshrae621Ventilation(input: Ashrae621Input): Ashrae621Result {
   const area = Math.max(0, input.areaSqFt || 0);
   const st = SPACE_TYPE_BY_ID[input.spaceTypeId ?? 'office'] ?? SPACE_TYPE_BY_ID['office'];
-  const ez = input.ventilationEffectivenessEz && input.ventilationEffectivenessEz > 0 ? input.ventilationEffectivenessEz : 0.8;
+  const ez = input.ventilationEffectivenessEz && input.ventilationEffectivenessEz > 0 ? input.ventilationEffectivenessEz : DEFAULT_EZ_COOLING_CEILING;
   const derived = !(typeof input.occupancyCount === 'number' && input.occupancyCount > 0);
   const pz = derived ? Math.max(1, Math.round((st.density * area) / 1000)) : (input.occupancyCount as number);
   const vbz = st.rp * pz + st.ra * area;

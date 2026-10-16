@@ -26,6 +26,7 @@ import {
 import { BTUH_PER_TON, SQFT_PER_SQM, toBtuh, toCfm, toSqFt } from './units';
 import {
   sizeUnitQuantity,
+  deliveredCfmFor,
   ambientDerateFactor,
   SizingCheck,
   RATING_AMBIENT_F,
@@ -397,7 +398,7 @@ export function generateSystemCandidates(
     if (sNoise >= 85) tradeOffSummary += ' Ultra-quiet acoustics ideal for noise-sensitive occupants.';
 
     const installedCapacityBtu = ctx.indoorTotalCapacityBtu ?? qty * equip.totalCapacityBtuPerHour;
-    const deliveredCfm = qty * airEquip.nominalCfm;
+    const deliveredCfm = deliveredCfmFor(airEquip, qty, cfm);
 
     const systemArchitecture = generateSystemArchitecture(
       equip,
@@ -682,7 +683,7 @@ export function recommendSystemsForZone(
       estEfficiency,
       reference: cand.equipment.provenance.source,
       modelLabel: cand.indoorUnit ? `${cand.equipment.model} + ${cand.indoorUnit.model}` : cand.equipment.model,
-      cfm: cand.deliveredCfm ?? cand.quantity * airUnit.nominalCfm,
+      cfm: cand.deliveredCfm ?? deliveredCfmFor(airUnit, cand.quantity, toCfm(supplyCfm || 0, isImperial ? "imperial" : "metric")),
       esp: airUnit.capabilities.hasExternalStaticPressure ? `${airUnit.maxRatedEspInWg.toFixed(2)} in.wg` : undefined,
       sourceFile: cand.equipment.provenance.source
     };

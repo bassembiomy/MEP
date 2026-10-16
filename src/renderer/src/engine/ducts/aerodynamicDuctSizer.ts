@@ -4,7 +4,8 @@ import { getAcousticVelocityLimit } from '../standards/acousticRules';
 import { selectRectangularDuct, selectRoundDuct } from '../ductSizer';
 import { frictionRateExact, rectangularEquivalentDiameter, sectionLengthFt } from './ductPressureCalculator';
 import { applyJunctionFittings } from './fittingLossCalculator';
-import { HARD_MAX_ASPECT_RATIO } from './ductUnits';
+import { HARD_MAX_ASPECT_RATIO, METRIC_STEP_MM, METRIC_MIN_DIM_MM, MM_PER_IN } from './ductUnits';
+import { UnitSystem } from '../units';
 
 /** Preferred starting depths (in): trunks 10", branches / runouts 8" (raised as needed up to the ceiling depth). */
 const TRUNK_START_DEPTH_IN = 10;
@@ -39,8 +40,12 @@ function parentFirst(sections: SteppedDuctSection[]): SteppedDuctSection[] {
 export function sizeDuctNetwork(
   sections: SteppedDuctSection[],
   profile: StandardsProfile = ASHRAE_PROFILE,
-  maxAvailableCeilingDepthIn: number = 14
+  maxAvailableCeilingDepthIn: number = 14,
+  units: UnitSystem | string = 'imperial'
 ): SteppedDuctSection[] {
+  const metric = units === 'metric';
+  const stepIn = metric ? METRIC_STEP_MM / MM_PER_IN : undefined; // 50 mm grid in metric projects
+  const minDimIn = metric ? METRIC_MIN_DIM_MM / MM_PER_IN : undefined; // 150 mm minimum
   const ordered = parentFirst(sections);
   const sizedById = new Map<string, SteppedDuctSection>();
   const childMap = new Map<string, string[]>();
@@ -71,8 +76,8 @@ export function sizeDuctNetwork(
     let meets = true;
 
     if (cfm <= 0) {
-      widthIn = 6;
-      heightIn = Math.min(6, maxAvailableCeilingDepthIn);
+      widthIn = minDimIn ?? 6;
+      heightIn = Math.min(minDimIn ?? 6, maxAvailableCeilingDepthIn);
       eqDiameterIn = rectangularEquivalentDiameter(widthIn, heightIn);
       velocityFpm = 0;
       frictionRate = 0;
@@ -99,6 +104,8 @@ export function sizeDuctNetwork(
           maxVelocityFpm: allowableVelocity,
           startDepthIn: startDepth,
           maxDepthIn: maxDepth,
+          stepIn,
+          minDimIn,
           maxAspectRatio: aspect
         });
 

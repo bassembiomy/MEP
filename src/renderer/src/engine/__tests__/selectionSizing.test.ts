@@ -115,7 +115,7 @@ const EPS = 1e-9;
         : c.quantity * c.equipment.sensibleCapacityBtuPerHour;
       assert(sensCap >= load * 0.74 - 1e-6, `load ${load}: ${c.id} sensible ${sensCap} < ${load * 0.74}`);
       if (!c.indoorUnit) {
-        const af = (c.quantity * c.equipment.nominalCfm) / cfm;
+        const af = (c.deliveredCfm ?? c.quantity * c.equipment.nominalCfm) / cfm; // fan set to design CFM within its range
         assert(af >= 0.95 - EPS && af <= 1.25 + EPS, `load ${load}: ${c.id} airflow ratio ${af}`);
       }
     }
@@ -246,7 +246,7 @@ const EPS = 1e-9;
     assert(c.combinationRatio! >= 0.5 - EPS && c.combinationRatio! <= 1.3 + EPS, `combination ratio ${c.combinationRatio} within 50-130%`);
     const expected = (c.quantity * c.indoorUnit!.totalCapacityBtuPerHour) / c.equipment.totalCapacityBtuPerHour;
     assert(Math.abs(expected - c.combinationRatio!) < 1e-6, 'combination ratio = sum(indoor) / outdoor');
-    assert(c.deliveredCfm === c.quantity * c.indoorUnit!.nominalCfm, 'airflow comes from the indoor units, not the outdoor module');
+    assert(Math.abs(c.deliveredCfm! - Math.min(c.quantity * c.indoorUnit!.maxCfm, Math.max(c.quantity * c.indoorUnit!.minCfm, 1250))) < 1e-6, 'airflow comes from the indoor units (fan set to design CFM within qty x [minCfm,maxCfm]), not the outdoor module');
     assert(c.equipment.totalCapacityBtuPerHour * ambientDerateFactor(95) >= 35000, 'outdoor module covers the load');
     const step7 = c.algorithmTrace!.steps[6];
     assert(step7.passed === true, 'step 7 passes for compliant combination');
