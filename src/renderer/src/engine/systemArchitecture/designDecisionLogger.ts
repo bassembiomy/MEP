@@ -1,4 +1,5 @@
 import { MultiUnitCandidate } from './equipmentOptimizer';
+import { BTUH_PER_TON } from '../units';
 
 export interface DecisionLogInput {
   roomName: string;
@@ -45,9 +46,15 @@ export function generateDesignDecisionLog(input: DecisionLogInput): string {
   lines.push(`  Total Delivered Capacity: ${selectedOption.totalDeliveredCapacityBtu.toLocaleString()} Btu/h`);
   lines.push(`  Total Delivered Airflow: ${selectedOption.totalDeliveredCfm.toLocaleString()} CFM`);
   lines.push(`  Overall Optimization Score: ${selectedOption.totalScore} / 100`);
+  if (selectedOption.capacityRatio !== undefined) {
+    lines.push(`  Capacity Ratio (delivered / load): ${selectedOption.capacityRatio.toFixed(2)}`);
+  }
+  if (selectedOption.isValid === false) {
+    lines.push(`  WARNING - option violates sizing rules: ${(selectedOption.violations || []).join('; ')}`);
+  }
   lines.push('');
   lines.push(`Reason:`);
-  lines.push(`  - Airflow & Capacity: Sized for ${(selectedOption.totalDeliveredCfm / (selectedOption.totalDeliveredCapacityBtu / 12000)).toFixed(0)} CFM/ton.`);
+  lines.push(`  - Airflow & Capacity: Sized for ${(selectedOption.totalDeliveredCfm / (selectedOption.totalDeliveredCapacityBtu / BTUH_PER_TON)).toFixed(0)} CFM/ton.`);
   lines.push(`  - Ceiling Clearance: Equipment height ${selectedOption.equipmentHeightIn}" complies with ceiling depth constraint.`);
   lines.push(`  - Duct Length & ESP: Multi-unit configuration shortens critical path duct runs.`);
   lines.push(`  - Acoustical Comfort: Distributes airflow into ${selectedOption.unitCount} bays to maintain space NC <= 30.`);

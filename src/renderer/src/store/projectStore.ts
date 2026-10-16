@@ -259,7 +259,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       state.loadedCatalogs
     );
 
-    const bestCandidate = recommendations.candidates[0];
+    // Deploy the first candidate that passes every sizing rule; if none does, keep the
+    // closest one (its isValid=false flag and diagnostics travel with it).
+    const bestCandidate =
+      recommendations.candidates.find((c) => c.isValid) ?? recommendations.candidates[0];
     let newZone = draftZone;
 
     if (bestCandidate) {

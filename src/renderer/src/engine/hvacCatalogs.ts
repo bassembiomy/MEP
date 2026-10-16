@@ -28,17 +28,17 @@ export const STANDARD_EQUIPMENT_CATALOG: EquipmentCatalogItem[] = [
     totalCapacityBtuPerHour: 17470,
     sensibleCapacityBtuPerHour: 13200,
     heatingCapacityBtuPerHour: 19000,
-    nominalCfm: 444,
-    minCfm: 350,
-    maxCfm: 550,
+    nominalCfm: 580,
+    minCfm: 460,
+    maxCfm: 700,
     maxRatedEspInWg: 0.40,
     fanPerformance: {
       type: 'tabular',
       allowExtrapolation: false,
       table: [
-        { cfm: 350, espInWg: 0.38, powerKw: 0.12, soundDba: 38 },
-        { cfm: 444, espInWg: 0.30, powerKw: 0.15, soundDba: 41 },
-        { cfm: 550, espInWg: 0.16, powerKw: 0.19, soundDba: 45 }
+        { cfm: 460, espInWg: 0.38, powerKw: 0.12, soundDba: 38 },
+        { cfm: 580, espInWg: 0.30, powerKw: 0.15, soundDba: 41 },
+        { cfm: 700, espInWg: 0.16, powerKw: 0.19, soundDba: 45 }
       ]
     },
     electricalKw: 1.45,
@@ -72,17 +72,17 @@ export const STANDARD_EQUIPMENT_CATALOG: EquipmentCatalogItem[] = [
     totalCapacityBtuPerHour: 22355,
     sensibleCapacityBtuPerHour: 17100,
     heatingCapacityBtuPerHour: 24500,
-    nominalCfm: 614,
-    minCfm: 480,
-    maxCfm: 750,
+    nominalCfm: 740,
+    minCfm: 580,
+    maxCfm: 900,
     maxRatedEspInWg: 0.45,
     fanPerformance: {
       type: 'tabular',
       allowExtrapolation: false,
       table: [
-        { cfm: 480, espInWg: 0.42, powerKw: 0.18, soundDba: 40 },
-        { cfm: 614, espInWg: 0.32, powerKw: 0.22, soundDba: 43 },
-        { cfm: 750, espInWg: 0.18, powerKw: 0.28, soundDba: 48 }
+        { cfm: 580, espInWg: 0.42, powerKw: 0.18, soundDba: 40 },
+        { cfm: 740, espInWg: 0.32, powerKw: 0.22, soundDba: 43 },
+        { cfm: 900, espInWg: 0.18, powerKw: 0.28, soundDba: 48 }
       ]
     },
     electricalKw: 1.88,
@@ -144,9 +144,9 @@ export const STANDARD_EQUIPMENT_CATALOG: EquipmentCatalogItem[] = [
     provenance: { source: 'Carrier Ducted Product Guide', version: '2024.1', isUserImported: false, isDemonstrationOnly: false }
   },
   {
-    id: 'eq-ducted-60k',
+    id: 'eq-ducted-48k',
     manufacturer: 'Carrier',
-    model: '42QSS060-D',
+    model: '42QSS048-D',
     systemType: 'concealed',
     capabilities: {
       supportsDuctNetwork: true,
@@ -156,11 +156,11 @@ export const STANDARD_EQUIPMENT_CATALOG: EquipmentCatalogItem[] = [
       requiresIndoorUnitSelection: true,
       hasExternalStaticPressure: true
     },
-    nominalTons: 5.0,
+    nominalTons: 4.0,
     totalCapacityBtuPerHour: 47005,
     sensibleCapacityBtuPerHour: 36500,
-    heatingCapacityBtuPerHour: 52000,
-    nominalCfm: 1345,
+    heatingCapacityBtuPerHour: 51000,
+    nominalCfm: 1400,
     minCfm: 1100,
     maxCfm: 1800,
     maxRatedEspInWg: 0.75,
@@ -169,7 +169,7 @@ export const STANDARD_EQUIPMENT_CATALOG: EquipmentCatalogItem[] = [
       allowExtrapolation: false,
       table: [
         { cfm: 1100, espInWg: 0.72, powerKw: 0.45, soundDba: 46 },
-        { cfm: 1345, espInWg: 0.55, powerKw: 0.60, soundDba: 50 },
+        { cfm: 1400, espInWg: 0.55, powerKw: 0.60, soundDba: 50 },
         { cfm: 1800, espInWg: 0.35, powerKw: 0.78, soundDba: 56 }
       ]
     },
@@ -294,17 +294,17 @@ export const STANDARD_EQUIPMENT_CATALOG: EquipmentCatalogItem[] = [
     totalCapacityBtuPerHour: 12050,
     sensibleCapacityBtuPerHour: 9200,
     heatingCapacityBtuPerHour: 13000,
-    nominalCfm: 326,
-    minCfm: 220,
-    maxCfm: 380,
+    nominalCfm: 365,
+    minCfm: 260,
+    maxCfm: 420,
     maxRatedEspInWg: 0.0,
     fanPerformance: {
       type: 'multi-speed',
       allowExtrapolation: false,
       speeds: {
-        Low: [{ cfm: 220, espInWg: 0, soundDba: 28 }],
+        Low: [{ cfm: 260, espInWg: 0, soundDba: 28 }],
         Medium: [{ cfm: 280, espInWg: 0, soundDba: 34 }],
-        High: [{ cfm: 326, espInWg: 0, soundDba: 39 }]
+        High: [{ cfm: 365, espInWg: 0, soundDba: 39 }]
       }
     },
     electricalKw: 1.05,
@@ -338,17 +338,17 @@ export const STANDARD_EQUIPMENT_CATALOG: EquipmentCatalogItem[] = [
     totalCapacityBtuPerHour: 22800,
     sensibleCapacityBtuPerHour: 17200,
     heatingCapacityBtuPerHour: 24000,
-    nominalCfm: 633,
-    minCfm: 450,
-    maxCfm: 720,
+    nominalCfm: 690,
+    minCfm: 500,
+    maxCfm: 780,
     maxRatedEspInWg: 0.0,
     fanPerformance: {
       type: 'multi-speed',
       allowExtrapolation: false,
       speeds: {
-        Low: [{ cfm: 450, espInWg: 0, soundDba: 35 }],
+        Low: [{ cfm: 500, espInWg: 0, soundDba: 35 }],
         Medium: [{ cfm: 540, espInWg: 0, soundDba: 40 }],
-        High: [{ cfm: 633, espInWg: 0, soundDba: 46 }]
+        High: [{ cfm: 690, espInWg: 0, soundDba: 46 }]
       }
     },
     electricalKw: 1.95,
@@ -382,17 +382,17 @@ export const STANDARD_EQUIPMENT_CATALOG: EquipmentCatalogItem[] = [
     totalCapacityBtuPerHour: 29300,
     sensibleCapacityBtuPerHour: 22100,
     heatingCapacityBtuPerHour: 31000,
-    nominalCfm: 834,
-    minCfm: 600,
-    maxCfm: 920,
+    nominalCfm: 890,
+    minCfm: 640,
+    maxCfm: 980,
     maxRatedEspInWg: 0.0,
     fanPerformance: {
       type: 'multi-speed',
       allowExtrapolation: false,
       speeds: {
-        Low: [{ cfm: 600, espInWg: 0, soundDba: 38 }],
+        Low: [{ cfm: 640, espInWg: 0, soundDba: 38 }],
         Medium: [{ cfm: 720, espInWg: 0, soundDba: 44 }],
-        High: [{ cfm: 834, espInWg: 0, soundDba: 49 }]
+        High: [{ cfm: 890, espInWg: 0, soundDba: 49 }]
       }
     },
     electricalKw: 2.60,
@@ -469,20 +469,20 @@ export const STANDARD_EQUIPMENT_CATALOG: EquipmentCatalogItem[] = [
       hasExternalStaticPressure: false
     },
     nominalTons: 4.0,
-    totalCapacityBtuPerHour: 42500,
-    sensibleCapacityBtuPerHour: 32400,
+    totalCapacityBtuPerHour: 46000,
+    sensibleCapacityBtuPerHour: 35000,
     heatingCapacityBtuPerHour: 46000,
-    nominalCfm: 1298,
-    minCfm: 950,
-    maxCfm: 1450,
+    nominalCfm: 1500,
+    minCfm: 1100,
+    maxCfm: 1700,
     maxRatedEspInWg: 0.0,
     fanPerformance: {
       type: 'multi-speed',
       allowExtrapolation: false,
       speeds: {
-        Low: [{ cfm: 950, espInWg: 0, soundDba: 38 }],
-        Medium: [{ cfm: 1120, espInWg: 0, soundDba: 43 }],
-        High: [{ cfm: 1298, espInWg: 0, soundDba: 48 }]
+        Low: [{ cfm: 1100, espInWg: 0, soundDba: 38 }],
+        Medium: [{ cfm: 1300, espInWg: 0, soundDba: 43 }],
+        High: [{ cfm: 1500, espInWg: 0, soundDba: 48 }]
       }
     },
     electricalKw: 3.75,
@@ -1425,6 +1425,164 @@ export const STANDARD_EQUIPMENT_CATALOG: EquipmentCatalogItem[] = [
     provenance: { source: 'Carrier Fan Coil Catalog', version: '2024.1', isUserImported: false }
   }
 ];
+
+// ---------------------------------------------------------------------------
+// Catalog extensions (size granularity). Derived from base entries so that
+// capability flags / provenance stay consistent. All entries obey the catalog
+// integrity rules: capacity within +/-10% of nominalTons*12000, 350-450 CFM/ton,
+// sensible <= total.
+// ---------------------------------------------------------------------------
+const _catalogById = (id: string): EquipmentCatalogItem => {
+  const found = STANDARD_EQUIPMENT_CATALOG.find((e) => e.id === id);
+  if (!found) throw new Error(`Catalog base entry missing: ${id}`);
+  return found;
+};
+
+const _ducted18 = _catalogById('eq-ducted-18k');
+STANDARD_EQUIPMENT_CATALOG.splice(0, 0, {
+  ..._ducted18,
+  id: 'eq-ducted-12k',
+  model: '42QSS012-D',
+  nominalTons: 1.0,
+  totalCapacityBtuPerHour: 11800,
+  sensibleCapacityBtuPerHour: 9000,
+  heatingCapacityBtuPerHour: 13000,
+  nominalCfm: 400,
+  minCfm: 320,
+  maxCfm: 480,
+  maxRatedEspInWg: 0.35,
+  fanPerformance: {
+    type: 'tabular',
+    allowExtrapolation: false,
+    table: [
+      { cfm: 320, espInWg: 0.33, powerKw: 0.09, soundDba: 36 },
+      { cfm: 400, espInWg: 0.26, powerKw: 0.11, soundDba: 39 },
+      { cfm: 480, espInWg: 0.14, powerKw: 0.14, soundDba: 43 }
+    ]
+  },
+  electricalKw: 1.05,
+  dimensionsIn: { width: 35.4, depth: 25.6, height: 9.8 },
+  connectionSizes: { supplyDuct: '30"x7"', returnDuct: '34"x7"', liquidLine: '1/4"', gasLine: '1/2"' },
+  costIndex: 40
+});
+
+const _ducted36 = _catalogById('eq-ducted-36k');
+STANDARD_EQUIPMENT_CATALOG.push({
+  ..._ducted36,
+  id: 'eq-ducted-30k',
+  model: '42QSS030-D',
+  nominalTons: 2.5,
+  totalCapacityBtuPerHour: 28400,
+  sensibleCapacityBtuPerHour: 21700,
+  heatingCapacityBtuPerHour: 31000,
+  nominalCfm: 1000,
+  minCfm: 780,
+  maxCfm: 1200,
+  maxRatedEspInWg: 0.5,
+  fanPerformance: {
+    type: 'tabular',
+    allowExtrapolation: false,
+    table: [
+      { cfm: 780, espInWg: 0.48, powerKw: 0.25, soundDba: 42 },
+      { cfm: 1000, espInWg: 0.38, powerKw: 0.33, soundDba: 46 },
+      { cfm: 1200, espInWg: 0.22, powerKw: 0.42, soundDba: 50 }
+    ]
+  },
+  electricalKw: 2.45,
+  dimensionsIn: { width: 47.2, depth: 29.5, height: 10.8 },
+  connectionSizes: { supplyDuct: '40"x9"', returnDuct: '44"x9"', liquidLine: '3/8"', gasLine: '5/8"' },
+  costIndex: 62
+});
+
+const _hw12 = _catalogById('eq-hw-12k');
+STANDARD_EQUIPMENT_CATALOG.push(
+  {
+    ..._hw12,
+    id: 'eq-hw-15k',
+    model: 'Optimax 15K',
+    nominalTons: 1.25,
+    totalCapacityBtuPerHour: 14600,
+    sensibleCapacityBtuPerHour: 11100,
+    heatingCapacityBtuPerHour: 15800,
+    nominalCfm: 445,
+    minCfm: 320,
+    maxCfm: 510,
+    fanPerformance: {
+      type: 'multi-speed',
+      allowExtrapolation: false,
+      speeds: {
+        Low: [{ cfm: 320, espInWg: 0, soundDba: 29 }],
+        Medium: [{ cfm: 380, espInWg: 0, soundDba: 35 }],
+        High: [{ cfm: 445, espInWg: 0, soundDba: 40 }]
+      }
+    },
+    electricalKw: 1.3,
+    dimensionsIn: { width: 33.5, depth: 8.7, height: 11.6 },
+    costIndex: 30
+  },
+  {
+    ..._hw12,
+    id: 'eq-hw-18k',
+    model: 'Optimax 18K',
+    nominalTons: 1.5,
+    totalCapacityBtuPerHour: 17600,
+    sensibleCapacityBtuPerHour: 13400,
+    heatingCapacityBtuPerHour: 19000,
+    nominalCfm: 545,
+    minCfm: 390,
+    maxCfm: 620,
+    fanPerformance: {
+      type: 'multi-speed',
+      allowExtrapolation: false,
+      speeds: {
+        Low: [{ cfm: 390, espInWg: 0, soundDba: 31 }],
+        Medium: [{ cfm: 470, espInWg: 0, soundDba: 37 }],
+        High: [{ cfm: 545, espInWg: 0, soundDba: 42 }]
+      }
+    },
+    electricalKw: 1.6,
+    dimensionsIn: { width: 38.0, depth: 9.1, height: 12.0 },
+    costIndex: 38
+  }
+);
+
+/**
+ * VRF outdoor-unit family. These entries are OUTDOOR modules only: their capacity
+ * is the connected-indoor-capacity base used for combination-ratio checks, and
+ * `nominalCfm` is the aggregate rated indoor airflow reference (400 CFM/ton),
+ * never the airflow the outdoor unit moves. Indoor units are selected separately
+ * (cassette / ducted / wall classes) in systemDesigner.
+ */
+const _vrf10 = _catalogById('eq-vrf-10t');
+[4, 6, 8, 12, 16, 20].forEach((tons) => {
+  const k = tons / 10;
+  STANDARD_EQUIPMENT_CATALOG.push({
+    ..._vrf10,
+    id: `eq-vrf-${tons}t`,
+    model: `VRV IV-X REYQ${tons * 12}X`,
+    nominalTons: tons,
+    totalCapacityBtuPerHour: tons * 12000,
+    sensibleCapacityBtuPerHour: Math.round(tons * 12000 * 0.7667),
+    heatingCapacityBtuPerHour: Math.round(tons * 13500),
+    nominalCfm: tons * 400,
+    minCfm: Math.round(1200 * k),
+    maxCfm: Math.round(5200 * k),
+    fanPerformance: {
+      type: 'tabular',
+      allowExtrapolation: false,
+      table: [
+        { cfm: Math.round(2000 * k), espInWg: 0.55, powerKw: Math.round(0.6 * k * 100) / 100, soundDba: 42 },
+        { cfm: Math.round(4000 * k), espInWg: 0.45, powerKw: Math.round(1.3 * k * 100) / 100, soundDba: 48 },
+        { cfm: Math.round(5200 * k), espInWg: 0.30, powerKw: Math.round(1.9 * k * 100) / 100, soundDba: 54 }
+      ]
+    },
+    electricalKw: Math.round(8.4 * k * 10) / 10,
+    soundDba: 52 + Math.round(6 * k),
+    dimensionsIn: { ..._vrf10.dimensionsIn, width: tons > 10 ? 69.0 : 49.0 },
+    connectionSizes: { liquidLine: tons <= 6 ? '3/8"' : tons <= 12 ? '1/2"' : '5/8"', gasLine: tons <= 6 ? '3/4"' : tons <= 12 ? '1-1/8"' : '1-3/8"' },
+    costIndex: Math.min(100, 50 + Math.round(tons * 4.2))
+  });
+});
 
 /**
  * Standard Diffuser & Terminal Catalog with Performance Tables

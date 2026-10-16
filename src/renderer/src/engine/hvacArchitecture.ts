@@ -7,9 +7,53 @@ import {
   CriticalPathResult,
   FanOperatingPointResult
 } from './types';
+import { BTUH_PER_TON, W_PER_BTUH, SQFT_PER_SQM } from './units';
+import {
+  AIRFLOW_RATIO_MIN,
+  AIRFLOW_RATIO_MAX,
+  CAPACITY_RATIO_MIN,
+  VRF_COMBINATION_MIN,
+  VRF_COMBINATION_MAX,
+  VRF_COMBINATION_TARGET_MIN,
+  VRF_COMBINATION_TARGET_MAX,
+  VRF_MAX_EQUIVALENT_PIPE_LENGTH_M,
+  VRF_MAX_HEIGHT_DIFFERENCE_M,
+  ambientDerateFactor,
+  isInverterDriven,
+  maxCapacityRatioFor
+} from './systemArchitecture/equipmentSelector';
+
+/** Single-split refrigerant line limits (m). */
+const SPLIT_MAX_EQUIVALENT_PIPE_LENGTH_M = 50;
+const SPLIT_MAX_HEIGHT_DIFFERENCE_M = 30;
+
+/** in² per ft² (duct area: W[in] x H[in] / 144 = A[ft²]). */
+const IN2_PER_FT2 = 144;
+/** Design velocity for main supply trunks (FPM). */
+const MAIN_TRUNK_VELOCITY_FPM = 1000;
+/** Fixed trunk depth (in) governed by ceiling void. */
+const MAIN_TRUNK_DEPTH_IN = 10;
+
+/** Zero-padded tag range: 'ACU-01' for one, 'ACU-01…ACU-10' for ten. */
+export function tagRange(prefix: string, count: number): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return count > 1 ? `${prefix}-01…${prefix}-${pad(count)}` : `${prefix}-01`;
+}
+
+/** Rectangular duct width (in, rounded up to even inch) for cfm at design velocity V and fixed depth H: W = cfm / V x 144 / H. */
+export function trunkWidthIn(cfm: number, velocityFpm: number, depthIn: number): number {
+  const w = (cfm / velocityFpm) * IN2_PER_FT2 / depthIn;
+  return Math.max(6, Math.ceil(w / 2) * 2);
+}
+
+export interface VrfArchitectureOptions {
+  /** Indoor unit model actually selected (cassette / ducted / wall class). */
+  indoorUnit?: EquipmentCatalogItem;
+}
 
 /**
- * Generates the categorized Bill of Components & Architecture blueprint for any HVAC system
+ * Generates the categorized Bill of Components & Architecture blueprint for any HVAC system.
+ * `quantity` is the number of installed units (for VRF: the number of indoor units on one outdoor module).
  */
 export function generateSystemArchitecture(
   equip: EquipmentCatalogItem,
@@ -19,15 +63,19 @@ export function generateSystemArchitecture(
   _totalLoadBtu: number,
   _isImperial: boolean = true,
   diffusers?: any,
-  _ductwork?: any
+  _ductwork?: any,
+  vrfOptions?: VrfArchitectureOptions
 ): SystemArchitectureBreakdown {
   const components: SystemComponentItem[] = [];
-  const nominalTons = equip.nominalTons * quantity;
-  const cfm = totalCfm || equip.nominalCfm * quantity;
+  const indoorUnit = equip.systemType === 'vrf' ? vrfOptions?.indoorUnit : undefined;
+  // Refrigerant lines are sized per refrigerant circuit (per unit), not on the aggregate tonnage.
+  const unitTons = indoorUnit ? indoorUnit.nominalTons : equip.nominalTons;
+  const cfm = totalCfm || (indoorUnit ? indoorUnit.nominalCfm : equip.systemType === 'vrf' ? 0 : equip.nominalCfm) * quantity;
+  const perUnitCfm = cfm / Math.max(1, quantity);
 
   // Sizing helpers
-  const liquidLine = equip.connectionSizes.liquidLine || (nominalTons <= 2 ? '1/4"' : nominalTons <= 4 ? '3/8"' : '1/2"');
-  const gasLine = equip.connectionSizes.gasLine || (nominalTons <= 1.5 ? '1/2"' : nominalTons <= 3 ? '5/8"' : nominalTons <= 5 ? '7/8"' : '1-1/8"');
+  const liquidLine = (indoorUnit ? indoorUnit.connectionSizes.liquidLine : equip.connectionSizes.liquidLine) || (unitTons <= 2 ? '1/4"' : unitTons <= 4 ? '3/8"' : '1/2"');
+  const gasLine = (indoorUnit ? indoorUnit.connectionSizes.gasLine : equip.connectionSizes.gasLine) || (unitTons <= 1.5 ? '1/2"' : unitTons <= 3 ? '5/8"' : unitTons <= 5 ? '7/8"' : '1-1/8"');
   const terminalCount = diffusers?.quantity || (equip.capabilities.supportsExternalDiffusers ? Math.max(1, Math.ceil(cfm / 300)) : quantity);
   const diffuserSize = diffusers?.diffuserRecord ? `${diffusers.diffuserRecord.faceSizeIn.width}"x${diffusers.diffuserRecord.faceSizeIn.height}"` : '12"x12" (8" Neck)';
 
@@ -37,7 +85,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-odu`,
         category: 'primary-equipment',
-        tag: quantity > 1 ? `ACU-01..0${quantity}` : 'ACU-01',
+        tag: tagRange('ACU', quantity),
         name: 'Outdoor Air-Cooled Condensing Unit (ACU)',
         modelOrType: `${equip.manufacturer} ${equip.model.replace('42QSS', '38QUS').replace('42CE', '38CE')}-ACU`,
         quantity,
@@ -49,7 +97,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-fcu`,
         category: 'primary-equipment',
-        tag: quantity > 1 ? `FCU-01..0${quantity}` : 'FCU-01',
+        tag: tagRange('FCU', quantity),
         name: 'Low-Profile Concealed Ceiling Fan Coil Unit',
         modelOrType: `${equip.manufacturer} ${equip.model}`,
         quantity,
@@ -60,8 +108,9 @@ export function generateSystemArchitecture(
       });
 
       // 2. Air Distribution & Ductwork
-      const trunkWidth = Math.round(Math.sqrt((cfm / 1000) * 144) * 1.3);
-      const trunkHeight = 10;
+      const trunkWidth = trunkWidthIn(perUnitCfm, MAIN_TRUNK_VELOCITY_FPM, MAIN_TRUNK_DEPTH_IN);
+      const trunkHeight = MAIN_TRUNK_DEPTH_IN;
+      const trunkVelocityFpm = Math.round(perUnitCfm / ((trunkWidth * trunkHeight) / IN2_PER_FT2));
       components.push({
         id: `comp-${equip.id}-duct-supply`,
         category: 'air-distribution',
@@ -69,7 +118,7 @@ export function generateSystemArchitecture(
         name: 'Galvanized Sheet Metal Supply Duct Trunk',
         modelOrType: 'SMACNA Rectangular Class 2',
         quantity: Math.max(1, Math.round(areaSqFt * 0.05)),
-        specification: `${trunkWidth}"x${trunkHeight}" Rectangular (Friction: 0.08 in.wg/100ft, 1050 FPM)`,
+        specification: `${trunkWidth}"x${trunkHeight}" Rectangular per unit (Friction: 0.08 in.wg/100ft, ${trunkVelocityFpm} FPM @ ${Math.round(perUnitCfm)} CFM)`,
         connectionSize: `${trunkWidth}"x${trunkHeight}"`,
         status: 'included',
         details: 'Fabricated per SMACNA HVAC Duct Construction Standards with 1" acoustic internal lining.'
@@ -103,7 +152,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-diffusers`,
         category: 'terminals',
-        tag: `SAD-01..0${terminalCount}`,
+        tag: tagRange('SAD', terminalCount),
         name: '4-Way Square Ceiling Supply Diffuser',
         modelOrType: 'Titus TMS 4-Way Modular Core',
         quantity: terminalCount,
@@ -129,10 +178,10 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-refrig-lines`,
         category: 'hydronics-refrigerant',
-        tag: 'REF-01',
+        tag: tagRange('REF', quantity),
         name: 'Refrigerant R-410A Copper Lineset',
         modelOrType: 'ASTM B280 Seamless ACR Copper Tube',
-        quantity: 1,
+        quantity,
         specification: `${liquidLine} Liquid / ${gasLine} Suction with 3/4" Armaflex closed-cell insulation`,
         connectionSize: `${liquidLine} / ${gasLine}`,
         status: 'included',
@@ -172,7 +221,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-odu`,
         category: 'primary-equipment',
-        tag: quantity > 1 ? `ODU-01..0${quantity}` : 'ODU-01',
+        tag: tagRange('ODU', quantity),
         name: 'Outdoor Inverter Condensing Unit',
         modelOrType: `${equip.manufacturer} ${equip.model}-ODU`,
         quantity,
@@ -184,7 +233,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-idu`,
         category: 'primary-equipment',
-        tag: quantity > 1 ? `CAS-01..0${quantity}` : 'CAS-01',
+        tag: tagRange('CAS', quantity),
         name: '4-Way Compact Ceiling Cassette Unit',
         modelOrType: `${equip.manufacturer} ${equip.model}`,
         quantity,
@@ -198,7 +247,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-panel`,
         category: 'terminals',
-        tag: `PNL-01..0${quantity}`,
+        tag: tagRange('PNL', quantity),
         name: 'Architectural 4-Way Air Discharge Panel',
         modelOrType: 'Carrier 360° Flow Decorative Fascia',
         quantity,
@@ -243,7 +292,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-odu`,
         category: 'primary-equipment',
-        tag: quantity > 1 ? `ODU-01..0${quantity}` : 'ODU-01',
+        tag: tagRange('ODU', quantity),
         name: 'Wall Split Outdoor Inverter Unit',
         modelOrType: `${equip.manufacturer} ${equip.model}-ODU`,
         quantity,
@@ -255,7 +304,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-idu`,
         category: 'primary-equipment',
-        tag: quantity > 1 ? `HW-01..0${quantity}` : 'HW-01',
+        tag: tagRange('HW', quantity),
         name: 'Decorative Wall-Mounted Indoor Unit',
         modelOrType: `${equip.manufacturer} ${equip.model}`,
         quantity,
@@ -304,20 +353,20 @@ export function generateSystemArchitecture(
         name: 'VRF Modular Heat Recovery Outdoor Unit',
         modelOrType: `${equip.manufacturer} ${equip.model}`,
         quantity: 1,
-        specification: `${equip.nominalTons} Nominal TR (${equip.totalCapacityBtuPerHour.toLocaleString()} Btu/h), IEER ${equip.efficiency.iplv || 24.0}`,
-        connectionSize: 'Liquid: 1/2", High-Pressure Gas: 7/8", Low-Pressure Gas: 1-1/8"',
+        specification: `${equip.nominalTons} Nominal TR outdoor module (${equip.totalCapacityBtuPerHour.toLocaleString()} Btu/h), connected indoor capacity ${((indoorUnit ? indoorUnit.totalCapacityBtuPerHour : equip.totalCapacityBtuPerHour) * quantity).toLocaleString()} Btu/h, IEER ${equip.efficiency.iplv || 24.0}`,
+        connectionSize: `Liquid: ${equip.connectionSizes.liquidLine || '1/2"'}, Gas: ${equip.connectionSizes.gasLine || '1-1/8"'} (main trunk)`,
         status: 'included',
         details: 'Simultaneous cooling and heating with inverter scroll compressors and subcooling circuit.'
       });
       components.push({
         id: `comp-${equip.id}-idu`,
         category: 'primary-equipment',
-        tag: quantity > 1 ? `VRF-IDU-01..0${quantity}` : 'VRF-IDU-01',
+        tag: tagRange('VRF-IDU', quantity),
         name: 'VRF Concealed Ducted / Cassette Indoor Units',
-        modelOrType: `${equip.manufacturer} VRV Indoor Unit`,
+        modelOrType: indoorUnit ? `${indoorUnit.manufacturer} ${indoorUnit.model} (VRV-class indoor)` : `${equip.manufacturer} VRV Indoor Unit`,
         quantity,
-        specification: `${Math.round(cfm / quantity)} CFM per unit, EEV electronic expansion valve`,
-        connectionSize: '3/8" Liq / 5/8" Gas',
+        specification: `${indoorUnit ? indoorUnit.totalCapacityBtuPerHour.toLocaleString() + ' Btu/h, ' : ''}${Math.round(perUnitCfm)} CFM per unit, EEV electronic expansion valve`,
+        connectionSize: `${liquidLine} Liq / ${gasLine} Gas`,
         status: 'included',
         details: 'Modulating electronic expansion valve (EEV) with 2000-step linear pulse motor.'
       });
@@ -352,7 +401,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-diffusers`,
         category: 'terminals',
-        tag: `SAD-01..0${terminalCount}`,
+        tag: tagRange('SAD', terminalCount),
         name: 'Linear Slot / 4-Way Supply Diffusers',
         modelOrType: 'Titus / Price Architectural Diffusers',
         quantity: terminalCount,
@@ -383,11 +432,11 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-rtu`,
         category: 'primary-equipment',
-        tag: 'RTU-01',
+        tag: tagRange('RTU', quantity),
         name: 'Packaged Single-Zone Rooftop Unit',
         modelOrType: `${equip.manufacturer} ${equip.model}`,
-        quantity: 1,
-        specification: `${equip.nominalTons} TR (${equip.totalCapacityBtuPerHour.toLocaleString()} Btu/h), Supply Air: ${cfm} CFM, Max ESP: ${equip.maxRatedEspInWg} in.wg`,
+        quantity,
+        specification: `${equip.nominalTons} TR (${equip.totalCapacityBtuPerHour.toLocaleString()} Btu/h), Supply Air: ${Math.round(perUnitCfm)} CFM per unit (${cfm} CFM total), Max ESP: ${equip.maxRatedEspInWg} in.wg`,
         connectionSize: `Supply: ${equip.connectionSizes.supplyDuct || '20"x20"'}, Return: ${equip.connectionSizes.returnDuct || '20"x20"'}`,
         status: 'included',
         details: 'Weatherproof heavy-gauge galvanized steel cabinet with R-4.2 foil-faced insulation and roof curb.'
@@ -397,10 +446,10 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-economizer`,
         category: 'air-distribution',
-        tag: 'ECON-01',
+        tag: tagRange('ECON', quantity),
         name: 'Integrated Ultra-Low-Leakage Air Economizer',
         modelOrType: 'Factory-Installed Modulating Economizer',
-        quantity: 1,
+        quantity,
         specification: 'Gear-driven airfoil blades, differential enthalpy sensor, 0-100% OA capability',
         connectionSize: 'Integrated in RTU cabinet',
         status: 'included',
@@ -409,10 +458,10 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-roof-curb`,
         category: 'air-distribution',
-        tag: 'CURB-01',
+        tag: tagRange('CURB', quantity),
         name: 'Full-Perimeter Insulated Roof Curb',
         modelOrType: 'SMACNA Heavy Gauge 14-Ga Roof Curb',
-        quantity: 1,
+        quantity,
         specification: '14" Height with thick rubber vibration isolation gasket & wood nailer',
         connectionSize: 'Full RTU Footprint',
         status: 'included',
@@ -425,8 +474,8 @@ export function generateSystemArchitecture(
         name: 'Insulated Rooftop Drop & Main Supply Trunk',
         modelOrType: 'Galvanized Sheet Metal with 2" External Foil-Faced Wrap',
         quantity: Math.max(1, Math.round(areaSqFt * 0.06)),
-        specification: '24"x16" Rectangular Trunk @ 1150 FPM, Friction: 0.09 in.wg/100ft',
-        connectionSize: '24"x16"',
+        specification: `${trunkWidthIn(perUnitCfm, 1150, 16)}"x16" Rectangular Trunk per unit @ 1150 FPM design velocity (${Math.round(perUnitCfm)} CFM), Friction: 0.09 in.wg/100ft`,
+        connectionSize: `${trunkWidthIn(perUnitCfm, 1150, 16)}"x16"`,
         status: 'included',
         details: 'Reinforced with transverse duct flanges and internal corner stiffeners.'
       });
@@ -435,7 +484,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-diffusers`,
         category: 'terminals',
-        tag: `SAD-01..0${terminalCount}`,
+        tag: tagRange('SAD', terminalCount),
         name: 'High-Volume Square Architectural Diffusers',
         modelOrType: 'Titus TMS 18"x18" Diffusers',
         quantity: terminalCount,
@@ -466,11 +515,11 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-ahu`,
         category: 'primary-equipment',
-        tag: 'AHU-01',
+        tag: tagRange('AHU', quantity),
         name: 'Modular Double-Wall Central Air Handling Unit',
         modelOrType: `${equip.manufacturer} ${equip.model}`,
-        quantity: 1,
-        specification: `${equip.nominalTons} TR Cooling Coil, Supply Air: ${cfm} CFM, Total Available ESP: ${equip.maxRatedEspInWg} in.wg`,
+        quantity,
+        specification: `${equip.nominalTons} TR Cooling Coil, Supply Air: ${Math.round(perUnitCfm)} CFM per unit (${cfm} CFM total), Total Available ESP: ${equip.maxRatedEspInWg} in.wg`,
         connectionSize: `Supply: ${equip.connectionSizes.supplyDuct || '36"x24"'}, Chilled Water: 2-1/2" Flanged`,
         status: 'included',
         details: '2" thermal-break double-skin polyurethane injected casing with EC plenum plug fan.'
@@ -478,11 +527,11 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-chw-valve`,
         category: 'hydronics-refrigerant',
-        tag: 'TCV-01',
+        tag: tagRange('TCV', quantity),
         name: 'Chilled Water 2-Way Modulating Pressure-Independent Control Valve (PICV)',
         modelOrType: 'Belimo Energy Valve PICV',
-        quantity: 1,
-        specification: `Flow: ${Math.round(nominalTons * 2.4)} GPM @ 44°F/54°F Water, 0-10V Modulating Actuator`,
+        quantity,
+        specification: `Flow: ${Math.round(equip.nominalTons * 2.4)} GPM per unit @ 44°F/54°F Water, 0-10V Modulating Actuator`,
         connectionSize: 'Ø 2-1/2" ANSI 150# Flanged',
         status: 'included',
         details: 'Built-in ultrasonic BTU flow meter and dynamic Delta-T manager preventing low Delta-T syndrome.'
@@ -492,10 +541,10 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-filter`,
         category: 'air-distribution',
-        tag: 'FLT-01',
+        tag: tagRange('FLT', quantity),
         name: 'Two-Stage Filtration Bank (MERV 8 + MERV 13)',
         modelOrType: 'Camfil Farr CleanSeal Filter Housing',
-        quantity: 1,
+        quantity,
         specification: 'Stage 1: 2" Pleated Pre-filter, Stage 2: 12" High Efficiency Compact MERV 13',
         connectionSize: 'Full AHU Cross-Section',
         status: 'included',
@@ -504,7 +553,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-vav-boxes`,
         category: 'air-distribution',
-        tag: 'VAV-01..04',
+        tag: tagRange('VAV', Math.max(1, Math.ceil(cfm / 1000))),
         name: 'Pressure-Independent Single-Duct VAV Terminal Units',
         modelOrType: 'Price Industries SDV Terminal Box with Electric/Hot Water Reheat',
         quantity: Math.max(1, Math.ceil(cfm / 1000)),
@@ -518,7 +567,7 @@ export function generateSystemArchitecture(
       components.push({
         id: `comp-${equip.id}-diffusers`,
         category: 'terminals',
-        tag: `SAD-01..0${terminalCount}`,
+        tag: tagRange('SAD', terminalCount),
         name: 'Linear Slot / Swirl High Induction Diffusers',
         modelOrType: 'Price Linear Slot 2-Slot Diffusers',
         quantity: terminalCount,
@@ -591,8 +640,21 @@ export function generateSystemArchitecture(
   };
 }
 
+export interface TraceOptions {
+  /** Design outdoor dry-bulb (F). Capacity is derated above the 95F rating condition. */
+  designAmbientF?: number;
+  /** VRF: sum of the selected indoor units' rated capacity (Btu/h) for the combination-ratio check. */
+  indoorTotalCapacityBtu?: number;
+  /** Refrigerant line equivalent length (m); checked against the system limit when provided. */
+  equivalentPipeLengthM?: number;
+  /** Outdoor/indoor height difference (m); checked against the system limit when provided. */
+  heightDifferenceM?: number;
+}
+
 /**
- * Generates the deterministic 7-step selection algorithm trace for any candidate
+ * Generates the deterministic 7-step selection algorithm trace for any candidate.
+ * Units contract: `supplyCfm` is CFM, `areaSqFt` is ft², `totalLoadBtu` / `sensibleLoadBtu` are Btu/h
+ * (callers convert metric inputs ONCE at entry). `isImperial` only selects display units.
  */
 export function generateSelectionAlgorithmTrace(
   equip: EquipmentCatalogItem,
@@ -604,15 +666,22 @@ export function generateSelectionAlgorithmTrace(
   spaceNcLimit: number = 35,
   criticalPath?: CriticalPathResult,
   fanResult?: FanOperatingPointResult,
-  isImperial: boolean = true
+  isImperial: boolean = true,
+  options: TraceOptions = {}
 ): SelectionAlgorithmTrace {
   const steps: SelectionAlgorithmStep[] = [];
+  const isVrf = equip.systemType === 'vrf';
 
-  const loadBtu = isImperial ? totalLoadBtu : totalLoadBtu * 3.412;
-  const sensBtu = isImperial ? sensibleLoadBtu : sensibleLoadBtu * 3.412;
+  const loadBtu = totalLoadBtu;
+  const sensBtu = sensibleLoadBtu;
   const qLatent = Math.max(0, loadBtu - sensBtu);
   const shr = loadBtu > 0 ? sensBtu / loadBtu : 0.78;
   const cfm = supplyCfm > 0 ? supplyCfm : (sensBtu / (1.08 * 20));
+
+  // Display helpers (engine values stay in Btu/h, ft²)
+  const dispLoad = (btu: number) => Math.round(isImperial ? btu : btu * W_PER_BTUH).toLocaleString();
+  const loadUnit = isImperial ? 'Btu/h' : 'W';
+  const dispArea = isImperial ? areaSqFt : Math.round((areaSqFt / SQFT_PER_SQM) * 10) / 10;
 
   // STEP 1: Thermal Load & Sensible Heat Ratio (SHR)
   const step1Passed = shr >= 0.65 && shr <= 0.95;
@@ -621,10 +690,10 @@ export function generateSelectionAlgorithmTrace(
     stepName: 'Thermal Load Breakdown & Sensible Heat Ratio (SHR)',
     formula: 'SHR = Q_sensible / Q_total',
     inputs: [
-      { label: 'Space Area', value: areaSqFt, unit: isImperial ? 'sq.ft' : 'm²' },
-      { label: 'Total Cooling Load (Q_tot)', value: Math.round(loadBtu).toLocaleString(), unit: isImperial ? 'Btu/h' : 'W' },
-      { label: 'Sensible Load (Q_sens)', value: Math.round(sensBtu).toLocaleString(), unit: isImperial ? 'Btu/h' : 'W' },
-      { label: 'Latent Load (Q_lat)', value: Math.round(qLatent).toLocaleString(), unit: isImperial ? 'Btu/h' : 'W' }
+      { label: 'Space Area', value: dispArea, unit: isImperial ? 'sq.ft' : 'm²' },
+      { label: 'Total Cooling Load (Q_tot)', value: dispLoad(loadBtu), unit: loadUnit },
+      { label: 'Sensible Load (Q_sens)', value: dispLoad(sensBtu), unit: loadUnit },
+      { label: 'Latent Load (Q_lat)', value: dispLoad(qLatent), unit: loadUnit }
     ],
     calculatedValue: shr.toFixed(2),
     criteria: '0.65 <= SHR <= 0.95 (Typical Comfort Range)',
@@ -634,11 +703,16 @@ export function generateSelectionAlgorithmTrace(
       : 'Unusually high latent or sensible load requiring specialized coil selection.'
   });
 
+  // Delivered-airflow window (indoor units for VRF are selected separately, outdoor CFM is not airflow)
+  const deliveredCfm = isVrf ? cfm : equip.nominalCfm * quantity;
+  const airflowRatio = cfm > 0 ? deliveredCfm / cfm : 1;
+  const airflowOk = airflowRatio >= AIRFLOW_RATIO_MIN - 1e-9 && airflowRatio <= AIRFLOW_RATIO_MAX + 1e-9;
+
   // STEP 2: Required Airflow Sizing (CFM) & Temperature Difference
   const deltaT = 20; // 75°F room - 55°F supply
   const thermalCfm = Math.round(sensBtu / (1.08 * deltaT));
-  const cfmPerTon = Math.round(cfm / ((loadBtu || 12000) / 12000));
-  const step2Passed = cfmPerTon >= 300 && cfmPerTon <= 500;
+  const cfmPerTon = Math.round(cfm / ((loadBtu || BTUH_PER_TON) / BTUH_PER_TON));
+  const step2Passed = cfmPerTon >= 300 && cfmPerTon <= 500 && airflowOk;
   steps.push({
     stepNumber: 2,
     stepName: 'Design Airflow Sizing (CFM) & Supply Delta-T',
@@ -647,39 +721,54 @@ export function generateSelectionAlgorithmTrace(
       { label: 'Room Design Temp (T_room)', value: 75, unit: '°F' },
       { label: 'Coil Leaving Temp (T_supply)', value: 55, unit: '°F' },
       { label: 'Design Delta-T (ΔT)', value: deltaT, unit: '°F' },
-      { label: 'Calculated Thermal Flow', value: thermalCfm.toLocaleString(), unit: 'CFM' }
+      { label: 'Calculated Thermal Flow', value: thermalCfm.toLocaleString(), unit: 'CFM' },
+      { label: 'Delivered / Required Airflow', value: isVrf ? 'n/a (indoor units)' : airflowRatio.toFixed(2) }
     ],
     calculatedValue: `${cfm.toLocaleString()} CFM (${cfmPerTon} CFM/ton)`,
-    criteria: '300 <= CFM/ton <= 500 (Standard Commercial Range)',
+    criteria: `300 <= CFM/ton <= 500 (Standard Commercial Range); ${AIRFLOW_RATIO_MIN} <= Delivered/Required CFM <= ${AIRFLOW_RATIO_MAX}`,
     passed: step2Passed,
-    notes: `Selected ${cfm.toLocaleString()} CFM matches thermal sensible requirement and ASHRAE 62.1 minimum ventilation.`
+    notes: airflowOk
+      ? `Selected ${cfm.toLocaleString()} CFM matches thermal sensible requirement and ASHRAE 62.1 minimum ventilation.`
+      : `Delivered airflow ${Math.round(deliveredCfm).toLocaleString()} CFM is outside ${AIRFLOW_RATIO_MIN}-${AIRFLOW_RATIO_MAX}x of the required ${cfm.toLocaleString()} CFM.`
   });
 
   // STEP 3: Equipment Selection & Capacity De-rating
-  const installedCap = equip.totalCapacityBtuPerHour * quantity;
-  const deratingFactor = 0.95; // 95°F ambient de-rating
+  // VRF: capacity delivered to the room is the indoor-unit sum; the outdoor module must still cover the load.
+  const indoorTotal = options.indoorTotalCapacityBtu;
+  const installedCap = isVrf && indoorTotal ? indoorTotal : equip.totalCapacityBtuPerHour * quantity;
+  const deratingFactor = ambientDerateFactor(options.designAmbientF);
+  const maxRatio = maxCapacityRatioFor(equip);
   const deratedCapacity = Math.round(installedCap * deratingFactor);
   const nominalRatio = installedCap / (loadBtu || 1);
   const deratedRatio = deratedCapacity / (loadBtu || 1);
-  const step3Passed = nominalRatio >= 0.98;
+  const installedSens = (isVrf ? installedCap * (equip.sensibleCapacityBtuPerHour / equip.totalCapacityBtuPerHour) : equip.sensibleCapacityBtuPerHour * quantity) * deratingFactor;
+  const sensOk = sensBtu <= 0 || installedSens >= sensBtu - 1e-6;
+  const outdoorCovers = !isVrf || equip.totalCapacityBtuPerHour * deratingFactor >= loadBtu - 1e-6;
+  const step3Passed =
+    deratedRatio >= CAPACITY_RATIO_MIN - 1e-9 && nominalRatio <= maxRatio + 1e-9 && sensOk && outdoorCovers;
   steps.push({
     stepNumber: 3,
     stepName: 'Equipment Tonnage Selection & Environmental De-rating',
-    formula: 'Derated Capacity = Nominal Capacity × F_ambient × F_piping; N_units = ⌈Q_load / Derated_Cap⌉',
+    formula: 'Derated Capacity = Nominal Capacity × F_ambient; 1.00 <= Derated_Cap / Q_load and Nominal_Cap / Q_load <= max oversize',
     inputs: [
       { label: 'Catalog Model', value: equip.model },
       { label: 'Unit Quantity', value: quantity },
       { label: 'Nominal Total Capacity', value: installedCap.toLocaleString(), unit: 'Btu/h' },
-      { label: 'Ambient De-rating Factor (F_amb)', value: deratingFactor.toFixed(2) }
+      { label: 'Ambient De-rating Factor (F_amb)', value: deratingFactor.toFixed(2) },
+      { label: 'Installed Sensible Capacity (derated)', value: Math.round(installedSens).toLocaleString(), unit: 'Btu/h' }
     ],
-    calculatedValue: `${deratedCapacity.toLocaleString()} Btu/h (${(deratedCapacity / 12000).toFixed(1)} TR) [${Math.round(nominalRatio * 100)}% Nominal / ${Math.round(deratedRatio * 100)}% Derated]`,
-    criteria: 'Nominal Capacity >= 98% of Peak Load',
+    calculatedValue: `${deratedCapacity.toLocaleString()} Btu/h (${(deratedCapacity / BTUH_PER_TON).toFixed(1)} TR) [${Math.round(nominalRatio * 100)}% Nominal / ${Math.round(deratedRatio * 100)}% Derated]`,
+    criteria: `Derated Capacity >= 100% of Peak Load, Nominal <= ${Math.round(maxRatio * 100)}% (${isInverterDriven(equip) ? 'inverter' : 'fixed-speed'}), Sensible >= Room Sensible`,
     passed: step3Passed,
-    notes: step3Passed
-      ? nominalRatio > 1.30
-        ? 'Installed capacity covers peak load; variable-speed inverter compressor will modulate down during partial loads.'
-        : `Installed capacity with ${quantity} unit(s) covers design load with optimal safety margin.`
-      : 'Capacity deficit: Installed capacity is below peak room load.'
+    notes: !sensOk
+      ? 'Sensible capacity deficit: coil cannot meet the room sensible load.'
+      : !outdoorCovers
+      ? 'Outdoor module capacity (derated) is below the design load.'
+      : deratedRatio < CAPACITY_RATIO_MIN - 1e-9
+      ? 'Capacity deficit: derated installed capacity is below peak room load.'
+      : nominalRatio > maxRatio + 1e-9
+      ? `Oversized: installed capacity exceeds ${Math.round(maxRatio * 100)}% of load (short-cycling / humidity risk).`
+      : `Installed capacity with ${quantity} unit(s) covers design load within the ${Math.round(maxRatio * 100)}% oversize limit.`
   });
 
   // STEP 4: Air Distribution & Terminal Noise Criterion (NC)
@@ -764,19 +853,53 @@ export function generateSelectionAlgorithmTrace(
     ? 'Wall-mounted 7-day programmable digital thermostat'
     : 'Infrared wireless remote controller with I-Feel sensor';
 
+  // Checks are evaluated only against inputs that exist; a limit that is exceeded FAILS the step.
+  const maxPipeLenM = isVrf ? VRF_MAX_EQUIVALENT_PIPE_LENGTH_M : SPLIT_MAX_EQUIVALENT_PIPE_LENGTH_M;
+  const maxLiftM = isVrf ? VRF_MAX_HEIGHT_DIFFERENCE_M : SPLIT_MAX_HEIGHT_DIFFERENCE_M;
+  const isRefrigerant = equip.systemType !== 'ahu' && equip.systemType !== 'fcu' && equip.systemType !== 'packaged';
+  const step7Findings: string[] = [];
+  const step7Inputs: Array<{ label: string; value: string | number; unit?: string }> = [
+    { label: 'Liquid / Gas Line Size', value: `${equip.connectionSizes.liquidLine || '3/8"'} / ${equip.connectionSizes.gasLine || '5/8"'}` },
+    { label: 'Condensate Drain Size', value: 'Ø 1" UPVC with P-Trap' },
+    { label: 'Control Protocol', value: controlsDesc }
+  ];
+  let comboRatio: number | undefined;
+  if (isVrf && indoorTotal && equip.totalCapacityBtuPerHour > 0) {
+    comboRatio = indoorTotal / equip.totalCapacityBtuPerHour;
+    step7Inputs.push({ label: 'Indoor / Outdoor Combination Ratio', value: `${(comboRatio * 100).toFixed(0)}%` });
+    if (comboRatio < VRF_COMBINATION_MIN - 1e-9 || comboRatio > VRF_COMBINATION_MAX + 1e-9) {
+      step7Findings.push(`combination ratio ${(comboRatio * 100).toFixed(0)}% outside ${VRF_COMBINATION_MIN * 100}-${VRF_COMBINATION_MAX * 100}%`);
+    }
+  }
+  if (isRefrigerant && options.equivalentPipeLengthM !== undefined) {
+    step7Inputs.push({ label: 'Equivalent Pipe Length', value: options.equivalentPipeLengthM, unit: 'm' });
+    if (options.equivalentPipeLengthM > maxPipeLenM) {
+      step7Findings.push(`equivalent length ${options.equivalentPipeLengthM} m > ${maxPipeLenM} m`);
+    }
+  }
+  if (isRefrigerant && options.heightDifferenceM !== undefined) {
+    step7Inputs.push({ label: 'Height Difference', value: options.heightDifferenceM, unit: 'm' });
+    if (options.heightDifferenceM > maxLiftM) {
+      step7Findings.push(`height difference ${options.heightDifferenceM} m > ${maxLiftM} m`);
+    }
+  }
+  const step7Passed = step7Findings.length === 0;
+
   steps.push({
     stepNumber: 7,
     stepName: 'Piping Circuitry, Equivalent Length & Controls Architecture',
-    formula: 'Refrigerant/Water Flow Sizing; Line Equivalent Length <= 164 ft (50m); Vertical Lift <= 98 ft (30m)',
-    inputs: [
-      { label: 'Liquid / Gas Line Size', value: `${equip.connectionSizes.liquidLine || '3/8"'} / ${equip.connectionSizes.gasLine || '5/8"'}` },
-      { label: 'Condensate Drain Size', value: 'Ø 1" UPVC with P-Trap' },
-      { label: 'Control Protocol', value: controlsDesc }
-    ],
-    calculatedValue: `Compliant (${controlsDesc.split(' ')[0]} Control)`,
-    criteria: 'Standard MEP Piping & Control Limits Met',
-    passed: true,
-    notes: 'Piping velocities, refrigerant oil return velocity, and controls protocol satisfy ASHRAE 15 & 90.1.'
+    formula: isVrf
+      ? `Combination Ratio = ΣIndoor_cap / Outdoor_cap in ${VRF_COMBINATION_MIN * 100}-${VRF_COMBINATION_MAX * 100}% (target ${VRF_COMBINATION_TARGET_MIN * 100}-${VRF_COMBINATION_TARGET_MAX * 100}%); Equivalent Length <= ${maxPipeLenM} m; Height Difference <= ${maxLiftM} m`
+      : `Refrigerant/Water Flow Sizing; Line Equivalent Length <= ${maxPipeLenM} m; Vertical Lift <= ${maxLiftM} m`,
+    inputs: step7Inputs,
+    calculatedValue: step7Passed
+      ? `Compliant (${controlsDesc.split(' ')[0]} Control${comboRatio !== undefined ? `, combination ${(comboRatio * 100).toFixed(0)}%` : ''})`
+      : `Non-compliant: ${step7Findings.join('; ')}`,
+    criteria: 'Combination ratio, equivalent piping length and height difference within manufacturer limits',
+    passed: step7Passed,
+    notes: step7Passed
+      ? 'Evaluated piping/combination limits are satisfied (limits not supplied as inputs are not assumed); controls protocol satisfies ASHRAE 15 & 90.1.'
+      : `Piping/combination limit exceeded: ${step7Findings.join('; ')}.`
   });
 
   const overallPassed = steps.every(s => s.passed);

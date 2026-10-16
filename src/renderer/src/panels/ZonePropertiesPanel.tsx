@@ -91,7 +91,11 @@ export const ZonePropertiesPanel: React.FC = () => {
       selectedZone.systemType,
       loadResult.totalLoad,
       loadResult.supplyCfm,
-      loadedCatalogs
+      loadedCatalogs,
+      isImperial,
+      loadResult.area,
+      selectedZone.spaceTypeId,
+      loadResult.sensibleLoad
     );
 
     const optIu = selectedZone.systemType === 'cassette'
@@ -195,7 +199,11 @@ export const ZonePropertiesPanel: React.FC = () => {
       updatedZone.systemType,
       newLoads.totalLoad,
       newLoads.supplyCfm,
-      loadedCatalogs
+      loadedCatalogs,
+      isImperial,
+      newLoads.area,
+      updatedZone.spaceTypeId,
+      newLoads.sensibleLoad
     );
 
     const isSystemDucted =
