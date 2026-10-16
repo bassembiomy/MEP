@@ -8,6 +8,7 @@ import {
 } from '../engine/staticPressureCalc';
 import {
   STANDARD_EQUIPMENT_CATALOG,
+  modelDisplayName,
   STANDARD_DIFFUSER_CATALOG,
   STANDARD_DUCT_TYPES
 } from '../engine/hvacCatalogs';
@@ -287,7 +288,7 @@ export const StaticPressurePanel: React.FC = () => {
               </div>
             </div>
             <span className="text-[10px] font-mono font-bold uppercase px-2.5 py-1 rounded bg-neutral-950/80 border border-neutral-800">
-              {matchingEquip.model}
+              {modelDisplayName(matchingEquip.model)}
             </span>
           </div>
 

@@ -6,7 +6,7 @@ import {
   EquipmentCatalogItem
 } from './types';
 import {
-  STANDARD_EQUIPMENT_CATALOG,
+  getEquipmentCatalog,
   STANDARD_DIFFUSER_CATALOG,
   STANDARD_DUCT_TYPES
 } from './hvacCatalogs';
@@ -98,7 +98,7 @@ export interface SystemDesignOptions {
   /** VRF/split refrigerant piping inputs; limits are enforced only when provided. */
   equivalentPipeLengthM?: number;
   heightDifferenceM?: number;
-  /** Equipment catalog override (defaults to STANDARD_EQUIPMENT_CATALOG). */
+  /** Equipment catalog override (defaults to the active catalog via getEquipmentCatalog()). */
   catalog?: EquipmentCatalogItem[];
 }
 
@@ -229,7 +229,7 @@ export function generateSystemCandidates(
   if (spaceTypeId === 'office') spaceNcLimit = 32;
   if (spaceTypeId === 'lobby' || spaceTypeId === 'retail') spaceNcLimit = 40;
 
-  const catalog = options.catalog || STANDARD_EQUIPMENT_CATALOG;
+  const catalog = options.catalog || getEquipmentCatalog();
   const defaultTypes = ['concealed', 'cassette', 'high-wall', 'vrf', 'packaged', 'ahu'];
   if (options.chilledWaterAvailable) defaultTypes.push('fcu');
   const typesToTest = selectedSystemTypes || defaultTypes;

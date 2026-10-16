@@ -1,3 +1,4 @@
+import { modelDisplayName } from '../engine/hvacCatalogs';
 import React, { useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoad } from '../engine/loadCalc';
@@ -298,7 +299,7 @@ export const AirDistributionSchedulePanel: React.FC = () => {
               {schedules.equipmentSchedule.map((eq, idx) => (
                 <tr key={idx} className="hover:bg-neutral-850/40 text-[11px]">
                   <td className="py-2.5 px-3 font-semibold text-neutral-100 font-mono">{eq.unitTag}</td>
-                  <td className="py-2.5 px-3 text-neutral-200 font-semibold">{eq.model}</td>
+                  <td className="py-2.5 px-3 text-neutral-200 font-semibold">{modelDisplayName(eq.model)}</td>
                   <td className="py-2.5 px-3 text-neutral-400">{eq.systemType}</td>
                   <td className="py-2.5 px-3 text-blue-400 font-bold">{eq.capacityBtu.toLocaleString()} Btu/h</td>
                   <td className="py-2.5 px-3 text-emerald-400 font-bold">{eq.supplyCfm} CFM</td>

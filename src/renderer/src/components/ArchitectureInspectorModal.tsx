@@ -1,3 +1,4 @@
+import { modelDisplayName } from '../engine/hvacCatalogs';
 import React, { useState } from 'react';
 import { SystemDesignCandidate } from '../engine/types';
 import {
@@ -152,7 +153,7 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
                   <span className="text-[9px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
                     <Wind size={12} /> Thermal Coil & Blower
                   </span>
-                  <strong className="text-neutral-200 block text-[11px] mt-1">{candidate.equipment.model}</strong>
+                  <strong className="text-neutral-200 block text-[11px] mt-1">{modelDisplayName(candidate.equipment.model)}</strong>
                   <p className="text-[10px] text-neutral-400 mt-1">
                     Delivers {candidate.quantity * candidate.equipment.nominalCfm} CFM at {candidate.equipment.maxRatedEspInWg.toFixed(2)} in.wg available static pressure.
                   </p>

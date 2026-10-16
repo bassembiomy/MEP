@@ -136,4 +136,19 @@ near(SPACE_TYPE_BY_ID['computer-lab'].equipmentDensity, 4, 1e-9, 'computer lab W
   console.log('10 ok');
 }
 
+// 11. *Btuh always Btu/h, *W always W (metric vs imperial same room)
+{
+  const met: ProjectMetadata = { name: 't', location: 'x', scale: 20, units: 'metric', outdoorDb: 35, indoorDb: 23.8889 } as ProjectMetadata;
+  const zi = mk({ spaceTypeId: 'office' }, rect(30, 30, 10));
+  const zm = mk({ spaceTypeId: 'office', ceilingHeight: 3.048 }, rect(30, 30, 10).map(v => v * 2 * 0.3048)); // same room at 20 px/m
+  const I = calculateZoneLoad(zi, imp);
+  const M = calculateZoneLoad(zm, met);
+  near(M.roomSensibleBtuh!, I.roomSensibleBtuh!, I.roomSensibleBtuh! * 0.01, 'metric roomSensibleBtuh is Btu/h');
+  near(M.coilTotalBtuh!, I.coilTotalBtuh!, I.coilTotalBtuh! * 0.01, 'metric coilTotalBtuh is Btu/h');
+  near(M.roomSensibleW!, M.roomSensibleBtuh! / 3.41214, 2, 'W twin');
+  near(M.totalLoad, M.coilTotalW!, 2, 'legacy totalLoad stays in project units (W)');
+  near(I.coilTotalW!, I.coilTotalBtuh! / 3.41214, 2, 'imperial W twin');
+  console.log('11 ok');
+}
+
 console.log('=== Loads & Ventilation tests passed ===');
