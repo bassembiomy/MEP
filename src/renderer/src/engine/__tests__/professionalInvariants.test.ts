@@ -1,3 +1,4 @@
+import type { DuctSegment } from '../../store/projectStore';
 /**
  * Professional HVAC design invariants: a deterministic property matrix over the real entry points the UI uses
  * (calculateZoneLoad -> generateSystemCandidates -> executeAirDistributionDesign -> convertDesignResultToZonePayload
@@ -120,7 +121,7 @@ function deepDiff(a: unknown, b: unknown, path = '$'): string | null {
   const kb = Object.keys(b as object).filter((k) => k !== 'timestamp');
   if (ka.length !== kb.length) return `${path}: key count ${ka.length} vs ${kb.length}`;
   for (const k of ka) {
-    const r = deepDiff((a as any)[k], (b as any)[k], `${path}.${k}`);
+    const r = deepDiff((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], `${path}.${k}`);
     if (r) return r;
   }
   return null;
@@ -610,7 +611,7 @@ for (let ri = 0; ri < rooms.length; ri++) {
         const again = routeDucts(pxPoly, payload.diffusers.map((d) => ({ ...d })), uc.units, zone.id, payload.unitPos, 'concealed', payload.outdoorUnitPos, { targetNc: 32 }, k);
         const dd = deepDiff(routed, again);
         check('determinism.routeDucts', !dd, () => dd!);
-        const segs: NetSeg[] = (routed.ducts as Array<any>).map((d) => ({
+        const segs: NetSeg[] = (routed.ducts as Array<DuctSegment & { parentDuctId?: string }>).map((d) => ({
           id: d.id, a: { x: d.points[0], y: d.points[1] }, b: { x: d.points[2], y: d.points[3] }, cfm: d.cfm, w: d.widthIn, h: d.heightIn,
           parent: d.parentDuctId, trunk: d.type === 'trunk', // return sections carry no trunk/branch role in DuctSegment
           flagged: d.acousticVerification ? d.acousticVerification.complianceStatus !== 'PASS' : false,

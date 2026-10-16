@@ -5,7 +5,7 @@ import { validateOutdoorAirVentilation } from '../outdoorAir/ventilationValidato
 import { EquipmentServiceZone } from '../zoning/zonePartitioner';
 import { getStandardsProfile } from '../standards/designStandards';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
 

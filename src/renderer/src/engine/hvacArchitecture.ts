@@ -1,5 +1,6 @@
 import {
   EquipmentCatalogItem,
+  SystemDesignCandidate,
   SystemArchitectureBreakdown,
   SystemComponentItem,
   SelectionAlgorithmTrace,
@@ -63,8 +64,8 @@ export function generateSystemArchitecture(
   areaSqFt: number,
   _totalLoadBtu: number,
   _isImperial: boolean = true,
-  diffusers?: any,
-  _ductwork?: any,
+  diffusers?: Partial<SystemDesignCandidate['diffusers']>,
+  _ductwork?: SystemDesignCandidate['ductwork'],
   vrfOptions?: VrfArchitectureOptions
 ): SystemArchitectureBreakdown {
   const components: SystemComponentItem[] = [];

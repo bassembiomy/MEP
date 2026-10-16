@@ -3,7 +3,8 @@ import {
   OptimizationWeights,
   DiagnosticItem,
   CriticalPathResult,
-  EquipmentCatalogItem
+  EquipmentCatalogItem,
+  BranchBalancingItem
 } from './types';
 import {
   getEquipmentCatalog,
@@ -195,8 +196,8 @@ export function generateSystemCandidates(
   userWeights: Partial<OptimizationWeights> = {},
   selectedSystemTypes?: string[],
   _loadedCatalogs?: {
-    decorative: { highWall: any[]; cassette: any[] } | null;
-    ducted: any[] | null;
+    decorative: CatalogDecorativeSet | null;
+    ducted: CatalogDuctedUnit[] | null;
   } | null,
   ductSegments: DuctSegment[] = [],
   diffusers: DiffuserPos[] = [],
@@ -289,7 +290,7 @@ export function generateSystemCandidates(
       marginInWg: 0,
       espRequiredInWg: 0
     };
-    let balancingDampers: any[] = [];
+    let balancingDampers: BranchBalancingItem[] = [];
     let fanResult = {
       isValid: true,
       operatingCfm: cfm,
@@ -654,7 +655,7 @@ export function recommendSystemsForZone(
   spaceTypeId: string,
   isImperial: boolean,
   supplyCfm?: number,
-  loadedCatalogs?: any,
+  loadedCatalogs?: { decorative: CatalogDecorativeSet | null; ducted: CatalogDuctedUnit[] | null; errors?: string[] } | null,
   sensibleLoad?: number
 ): LegacySystemRecommendation[] {
   const result = generateSystemCandidates(
@@ -715,7 +716,7 @@ export function getCatalogSizingForZone(
   systemType: string | undefined,
   loadBtu: number,
   supplyCfm: number,
-  loadedCatalogs?: any,
+  loadedCatalogs?: { decorative: CatalogDecorativeSet | null; ducted: CatalogDuctedUnit[] | null; errors?: string[] } | null,
   isImperial: boolean = true,
   area?: number,
   spaceTypeId: string = 'office',

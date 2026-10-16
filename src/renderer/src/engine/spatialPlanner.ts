@@ -1,6 +1,7 @@
 import { isPointInPolygon, getPolygonCentroid } from './geometry';
 import { routeDucts } from './ductRouter';
 import { selectBestDiffuserFromCatalog } from './diffuserPlacer';
+import type { DiffuserCatalogItem } from './types';
 import { STANDARD_DIFFUSER_CATALOG } from './hvacCatalogs';
 import {
   ConnectionPort,
@@ -8,7 +9,7 @@ import {
   SpatialFootprint,
   DeploymentDiagnostic
 } from './deploymentTypes';
-import { Diffuser, DuctSegment } from '../store/projectStore';
+import { Diffuser, DuctSegment, Zone, BoundingBox } from '../store/projectStore';
 
 /**
  * Validates that an entire rectangular component footprint is strictly inside a polygon
@@ -59,8 +60,8 @@ export function getPolygonBoundingBox(points: number[]): { minX: number; maxX: n
  */
 export function planOutdoorUnitPlacement(
   points: number[],
-  allZones: any[],
-  dxfBoundingBox: any,
+  allZones: Zone[],
+  dxfBoundingBox: BoundingBox | null,
   systemId: string,
   model: string,
   totalTons: number
@@ -510,7 +511,7 @@ export function planDuctedAirDistribution(
     quantity: number;
     cfmPerUnit?: number;
     flowPerDiffuser?: number;
-    diffuserRecord: any;
+    diffuserRecord: DiffuserCatalogItem;
     actualNc: number;
     throwT50Ft: number;
     deltaPInWg: number;

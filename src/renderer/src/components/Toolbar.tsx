@@ -69,8 +69,8 @@ export const Toolbar: React.FC = () => {
           applyParsedCad(parseDxfText(text));
           setIsLoading(false);
         }
-      } catch (err: any) {
-        alert(`Error parsing file: ${err.message}`);
+      } catch (err: unknown) {
+        alert(`Error parsing file: ${err instanceof Error ? err.message : String(err)}`);
         setIsLoading(false);
       }
     };

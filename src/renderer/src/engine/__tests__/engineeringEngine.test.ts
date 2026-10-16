@@ -6,7 +6,7 @@ import { selectBestDiffuserFromCatalog } from '../diffuserPlacer';
 import { STANDARD_EQUIPMENT_CATALOG, STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES } from '../hvacCatalogs';
 import { Zone, ProjectMetadata } from '../../store/projectStore';
 
-function assert(condition: boolean, message: string) {
+function assert(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(`Assertion Failed: ${message}`);
   }

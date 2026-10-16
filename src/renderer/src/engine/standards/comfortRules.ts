@@ -15,7 +15,7 @@ export function getComfortVelocityEnvelope(
   mode: 'cooling' | 'heating' = 'cooling',
   _profile: StandardsProfile = ASHRAE_PROFILE
 ): ComfortVelocityEnvelope {
-  let minV = 20;
+  const minV = 20;
   let maxV = 50;
   let targetV = 40;
 

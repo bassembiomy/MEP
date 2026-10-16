@@ -1,3 +1,4 @@
+import type { Zone, BoundingBox } from '../store/projectStore';
 // Helper geometry functions for polyline/polygon zones and diffuser/duct routing
 //
 // COORDINATE CONVENTION: canvas/engine Y grows DOWN. "north" = minY (top of the
@@ -594,7 +595,7 @@ export interface OutdoorUnitPlacement {
   wall: { x1: number; y1: number; x2: number; y2: number };
 }
 
-function envelopeOf(points: number[], allZones: any[] | undefined, dxfBoundingBox: any): { minX: number; maxX: number; minY: number; maxY: number; width: number; height: number; } {
+function envelopeOf(points: number[], allZones: Zone[] | undefined, dxfBoundingBox: BoundingBox | null): { minX: number; maxX: number; minY: number; maxY: number; width: number; height: number; } {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   if (dxfBoundingBox) {
     ({ minX, maxX, minY, maxY } = dxfBoundingBox);
@@ -618,8 +619,8 @@ function envelopeOf(points: number[], allZones: any[] | undefined, dxfBoundingBo
  */
 export function calculateOutdoorUnitPlacement(
   points: number[],
-  allZones: any[] = [],
-  dxfBoundingBox: any = null,
+  allZones: Zone[] = [],
+  dxfBoundingBox: BoundingBox | null = null,
   unitPerFt: number = 1,
   opts: { side?: WallSide; unitDepthFt?: number; clearanceFt?: number } = {}
 ): OutdoorUnitPlacement {
@@ -677,8 +678,8 @@ export function calculateOutdoorUnitPlacement(
  */
 export function calculateOptimalOutdoorUnitPos(
   points: number[],
-  allZones: any[],
-  dxfBoundingBox: any,
+  allZones: Zone[],
+  dxfBoundingBox: BoundingBox | null,
   unitPerFt: number = 1
 ): { x: number; y: number } {
   const p = calculateOutdoorUnitPlacement(points, allZones, dxfBoundingBox, unitPerFt);

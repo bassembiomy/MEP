@@ -33,10 +33,14 @@ interface DuctedUnit {
   source: string
 }
 
-function parseDecorativeFile(filePath: string) {
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function parseDecorativeFile(filePath: string): { highWall: DecorativeUnit[]; cassette: DecorativeUnit[] } {
   const workbook = XLSX.readFile(filePath)
   const sheet = workbook.Sheets[workbook.SheetNames[0]]
-  const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 })
+  const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 })
   
   const highWall: DecorativeUnit[] = []
   const cassette: DecorativeUnit[] = []
@@ -101,7 +105,7 @@ function parseDecorativeFile(filePath: string) {
 function parseDuctedFile(filePath: string): DuctedUnit[] {
   const workbook = XLSX.readFile(filePath)
   const sheet = workbook.Sheets[workbook.SheetNames[0]]
-  const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 })
+  const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 })
   
   const catalog: DuctedUnit[] = []
 
@@ -201,16 +205,16 @@ app.whenReady().then(() => {
     const ductPath = 'G:\\MEP\\hva\\Lecture 06\\Office building cairo\\Ducted unit Selection.xlsx'
 
     const result = {
-      decorative: null as any,
-      ducted: null as any,
+      decorative: null as { highWall: DecorativeUnit[]; cassette: DecorativeUnit[] } | null,
+      ducted: null as DuctedUnit[] | null,
       errors: [] as string[]
     }
 
     if (fs.existsSync(decPath)) {
       try {
         result.decorative = parseDecorativeFile(decPath)
-      } catch (err: any) {
-        result.errors.push(`Error parsing decorative catalog: ${err.message}`)
+      } catch (err: unknown) {
+        result.errors.push(`Error parsing decorative catalog: ${errMessage(err)}`)
       }
     } else {
       result.errors.push('Default Decorative catalog not found at ' + decPath)
@@ -219,8 +223,8 @@ app.whenReady().then(() => {
     if (fs.existsSync(ductPath)) {
       try {
         result.ducted = parseDuctedFile(ductPath)
-      } catch (err: any) {
-        result.errors.push(`Error parsing ducted catalog: ${err.message}`)
+      } catch (err: unknown) {
+        result.errors.push(`Error parsing ducted catalog: ${errMessage(err)}`)
       }
     } else {
       result.errors.push('Default Ducted catalog not found at ' + ductPath)
@@ -252,8 +256,8 @@ app.whenReady().then(() => {
         const parsed = parseDuctedFile(filePath)
         return { data: parsed, filePath, name: join(filePath).split(/[\\/]/).pop() }
       }
-    } catch (err: any) {
-      return { error: err.message }
+    } catch (err: unknown) {
+      return { error: errMessage(err) }
     }
   })
 

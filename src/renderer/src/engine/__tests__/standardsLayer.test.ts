@@ -7,7 +7,7 @@ import { getDiffuserThrowCriteria } from '../standards/diffuserRules';
 import { getComfortVelocityEnvelope, evaluateOccupiedZoneVelocity } from '../standards/comfortRules';
 import { getDuctSizingConstraints, getStandardRectangularSizes } from '../standards/ductSizingRules';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
 

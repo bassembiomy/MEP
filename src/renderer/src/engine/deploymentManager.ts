@@ -13,7 +13,7 @@ import {
 } from './spatialPlanner';
 import { solveDirectedNetworkStaticPressure } from './staticPressureCalc';
 import { STANDARD_DIFFUSER_CATALOG, STANDARD_DUCT_TYPES } from './hvacCatalogs';
-import { Zone, ProjectMetadata, Diffuser, DuctSegment } from '../store/projectStore';
+import { Zone, ProjectMetadata, Diffuser, DuctSegment, DxfEntity, BoundingBox } from '../store/projectStore';
 
 /**
  * Builds the complete deployment manifest for a candidate design without mutating workspace
@@ -23,8 +23,8 @@ export function buildDeploymentManifest(
   zone: Zone,
   allZones: Zone[],
   project: ProjectMetadata,
-  _dxfEntities: any[] = [],
-  dxfBoundingBox: any = null
+  _dxfEntities: DxfEntity[] = [],
+  dxfBoundingBox: BoundingBox | null = null
 ): DeploymentManifest {
   const diagnostics: DeploymentDiagnostic[] = [];
   const systemId = `sys-${zone.id}-${candidate.equipment.id}`;
@@ -213,8 +213,8 @@ export function createDeploymentPreview(
   zone: Zone,
   allZones: Zone[],
   project: ProjectMetadata,
-  dxfEntities: any[] = [],
-  dxfBoundingBox: any = null
+  dxfEntities: DxfEntity[] = [],
+  dxfBoundingBox: BoundingBox | null = null
 ): DeploymentPreview {
   const manifest = buildDeploymentManifest(
     candidate,
@@ -296,7 +296,7 @@ export function executeDeploymentTransaction(
   // Assemble committed zone
   const updatedZone: Zone = {
     ...targetZone,
-    systemType: manifest.systemType as any,
+    systemType: manifest.systemType as Zone['systemType'],
     diffusers: finalDiffusers,
     ducts: finalDucts,
     unitPos: finalUnitPos,

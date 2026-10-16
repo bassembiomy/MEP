@@ -375,8 +375,8 @@ for (const d of roundMetric.ducts) {
 const retRound = round.ducts.find((d) => d.type === 'return')!;
 assert(near(retRound.areaSqFt || 0, (Math.PI * (retRound.diameterIn || 0) ** 2) / 4 / 144, 0.002), 'round return area = pi d^2/4');
 // scale awareness: same px geometry at 20 px/ft is half the length => lower friction, never larger duct
-const a = routeDucts(roomPx, difs, 'imperial', 'z1', { x: 300, y: 180 }, 'concealed', undefined, {}, 10).ducts as any[];
-const b = routeDucts(roomPx, difs, 'imperial', 'z1', { x: 300, y: 180 }, 'concealed', undefined, {}, 20).ducts as any[];
+const a = routeDucts(roomPx, difs, 'imperial', 'z1', { x: 300, y: 180 }, 'concealed', undefined, {}, 10).ducts as Array<DuctSegment & { lengthFt: number }>;
+const b = routeDucts(roomPx, difs, 'imperial', 'z1', { x: 300, y: 180 }, 'concealed', undefined, {}, 20).ducts as Array<DuctSegment & { lengthFt: number }>;
 assert(near(a[0].lengthFt, 2 * b[0].lengthFt, 0.02), 'pxPerFt scales lengths (ft = px / pxPerFt)');
 console.log('✔ 8. Canvas router: orthogonal, conserved, standard imperial/metric sizes, pxPerFt-aware, returns routed');
 

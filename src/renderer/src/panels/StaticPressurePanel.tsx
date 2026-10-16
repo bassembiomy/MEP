@@ -173,7 +173,7 @@ export const StaticPressurePanel: React.FC = () => {
                 Duct Section Acoustic Noise & Velocity Schedule
               </span>
               <p className="text-[10px] text-neutral-500 mt-0.5">
-                Evaluated against ASHRAE noise guidance for location "{locationCategory.replace(/-/g, ' ')}" @ NC {targetNc}
+                Evaluated against ASHRAE noise guidance for location &quot;{locationCategory.replace(/-/g, ' ')}&quot; @ NC {targetNc}
               </p>
             </div>
             <div className="text-[10px] font-mono text-neutral-400 bg-neutral-950 px-2.5 py-1 rounded border border-neutral-850">

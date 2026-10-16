@@ -350,9 +350,9 @@ export function verifyDuctSectionAcoustics(
   );
 
   // Step 5 & 6 & 7: Area & Velocity calculation
-  let widthIn = duct.widthIn || 6;
-  let heightIn = duct.heightIn || 10;
-  let diameterIn = duct.diameterIn;
+  const widthIn = duct.widthIn || 6;
+  const heightIn = duct.heightIn || 10;
+  const diameterIn = duct.diameterIn;
   let areaSqFt = 0;
   let dimsLabel = '';
 

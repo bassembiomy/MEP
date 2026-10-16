@@ -2,9 +2,10 @@ import {
   generateSystemArchitecture,
   generateSelectionAlgorithmTrace
 } from '../hvacArchitecture';
+import type { CriticalPathResult, FanOperatingPointResult } from '../types';
 import { STANDARD_EQUIPMENT_CATALOG } from '../hvacCatalogs';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
 
@@ -31,8 +32,8 @@ console.log('=== Running HVAC Architecture & Selection Algorithm Engine Tests ==
     21000,
     16500,
     32,
-    { espRequiredInWg: 0.32, totalLossInWg: 0.28 } as any,
-    { isValid: true, operatingEspInWg: 0.32, fanMarginInWg: 0.13, powerKwEstimate: 0.22 } as any,
+    { espRequiredInWg: 0.32, totalLossInWg: 0.28 } as unknown as CriticalPathResult,
+    { isValid: true, operatingEspInWg: 0.32, fanMarginInWg: 0.13, powerKwEstimate: 0.22 } as unknown as FanOperatingPointResult,
     true
   );
 
@@ -65,8 +66,8 @@ console.log('=== Running HVAC Architecture & Selection Algorithm Engine Tests ==
       equip.totalCapacityBtuPerHour * 2 * 0.9,
       equip.totalCapacityBtuPerHour * 2 * 0.7,
       35,
-      { espRequiredInWg: 0.35, totalLossInWg: 0.30 } as any,
-      { isValid: true, operatingEspInWg: 0.35, fanMarginInWg: 0.15, powerKwEstimate: 0.5 } as any,
+      { espRequiredInWg: 0.35, totalLossInWg: 0.30 } as unknown as CriticalPathResult,
+      { isValid: true, operatingEspInWg: 0.35, fanMarginInWg: 0.15, powerKwEstimate: 0.5 } as unknown as FanOperatingPointResult,
       true
     );
     assert(trace.steps.length === 7, `Trace for ${sys} must have 7 steps`);

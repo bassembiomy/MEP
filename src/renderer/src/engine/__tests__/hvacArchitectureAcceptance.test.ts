@@ -1,6 +1,6 @@
 import { generateSystemCandidates } from '../systemDesigner';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Acceptance Assertion Failed: ${msg}`);
 }
 

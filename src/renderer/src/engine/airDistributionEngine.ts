@@ -441,10 +441,46 @@ export function recalculateScopedOverride(
   };
 }
 
+export interface ZonePayloadDiffuser {
+  id: string;
+  x: number;
+  y: number;
+  cfm: number;
+  size: string;
+  type: 'supply' | 'return';
+  throwT50Ft: number;
+  actualNc: number;
+  deltaPInWg: number;
+}
+
+export interface ZonePayloadDuct {
+  id: string;
+  type: 'trunk' | 'branch' | 'return';
+  points: number[];
+  widthIn: number;
+  heightIn: number;
+  cfm: number;
+  sizeLabel: string;
+  velocityFpm: number;
+}
+
+export interface ZonePayload {
+  diffusers: ZonePayloadDiffuser[];
+  ducts: ZonePayloadDuct[];
+  unitPos: { x: number; y: number };
+  unitPositions: { x: number; y: number }[];
+  outdoorUnitPos: { x: number; y: number };
+  outdoorUnitPositions: { x: number; y: number }[];
+  serviceZonePolygons: number[][];
+  catalogQty: number;
+  catalogModel: string;
+  catalogEsp: string;
+}
+
 /**
  * Converts the (feet) design result to the store payload in canvas px (design.pxPerFt px per ft).
  */
-export function convertDesignResultToZonePayload(design: AirDistributionDesignResult) {
+export function convertDesignResultToZonePayload(design: AirDistributionDesignResult): ZonePayload {
   const k = design.pxPerFt && design.pxPerFt > 0 ? design.pxPerFt : 1;
   const px = (v: number): number => v * k; // exact: px === ft x k (no geometry rounding)
   const ductLabel = (w: number, h: number): string => {

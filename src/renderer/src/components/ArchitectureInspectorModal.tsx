@@ -11,7 +11,8 @@ import {
   Copy,
   Check,
   Sliders,
-  Sparkles
+  Sparkles,
+  type LucideIcon
 } from 'lucide-react';
 
 interface ArchitectureInspectorModalProps {
@@ -36,7 +37,7 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
     );
   }
 
-  const categoryIcons: Record<string, any> = {
+  const categoryIcons: Record<string, LucideIcon> = {
     'primary-equipment': Cpu,
     'air-distribution': Wind,
     terminals: Boxes,
@@ -49,7 +50,7 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
     ? arch.components
     : arch.components.filter((c) => c.category === selectedCategory);
 
-  const handleCopySchedule = () => {
+  const handleCopySchedule = (): void => {
     const text = arch.components
       .map(
         (c) =>

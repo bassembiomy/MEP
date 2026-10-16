@@ -33,7 +33,7 @@ export const SystemComparisonTable: React.FC = () => {
   }, [loadedCatalogs, setLoadedCatalogs]);
 
   // Handle custom catalog loading
-  const handleLoadCustom = async (type: 'decorative' | 'ducted') => {
+  const handleLoadCustom = async (type: 'decorative' | 'ducted'): Promise<void> => {
     try {
       const result = await window.api.selectCustomCatalog(type);
       if (result) {
@@ -47,18 +47,18 @@ export const SystemComparisonTable: React.FC = () => {
 
         if (type === 'decorative') {
           setLoadedCatalogs({
-            decorative: result.data,
+            decorative: result.data as CatalogDecorativeSet,
             ducted: currentDucted
           });
         } else {
           setLoadedCatalogs({
             decorative: currentDecorative,
-            ducted: result.data
+            ducted: result.data as CatalogDuctedUnit[]
           });
         }
       }
-    } catch (err: any) {
-      alert(`Failed to load custom catalog: ${err.message}`);
+    } catch (err: unknown) {
+      alert(`Failed to load custom catalog: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -114,7 +114,7 @@ export const SystemComparisonTable: React.FC = () => {
   ];
 
   // Toggle a system type visibility
-  const toggleSystemType = (id: string) => {
+  const toggleSystemType = (id: string): void => {
     if (selectedSystemTypes.includes(id)) {
       // Keep at least one selected
       if (selectedSystemTypes.length > 1) {

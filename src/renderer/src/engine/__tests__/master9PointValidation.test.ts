@@ -5,7 +5,7 @@ import { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
 import { SteppedDuctSection } from '../ducts/steppedDuctRouter';
 import { OutdoorAirSystem } from '../outdoorAir/freshAirRouter';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
 

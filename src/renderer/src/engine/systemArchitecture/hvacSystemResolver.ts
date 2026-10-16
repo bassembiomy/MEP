@@ -27,8 +27,8 @@ export function resolveSystemCategory(
                              equipmentType === 'fcu' ||
                              equipmentType === 'concealed-split';
 
-  let deltaT = 20; // default 20°F delta T (55°F supply vs 75°F room)
-  let supplyTemp = 55;
+  const deltaT = 20; // default 20°F delta T (55°F supply vs 75°F room)
+  const supplyTemp = 55;
   let typicalEsp = 0.35;
 
   if (equipmentType === 'ahu' || equipmentType === 'rtu') {

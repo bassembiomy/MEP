@@ -1,3 +1,4 @@
+import type { DxfEntity } from '../store/projectStore';
 import { isPointInPolygon, layoutTerminalGrid } from './geometry';
 import { DiffuserCatalogItem } from './types';
 import { STANDARD_DIFFUSER_CATALOG } from './hvacCatalogs';
@@ -59,7 +60,7 @@ export function selectBestDiffuserFromCatalog(
  */
 export function findCadTerminalPositions(
   zonePoints: number[],
-  dxfEntities: any[],
+  dxfEntities: DxfEntity[],
   systemType: 'concealed' | 'packaged' | 'cassette' | 'high-wall' | 'vrf' | 'ahu' | 'fcu',
   maxAllowedTerminals: number = 8
 ): { x: number; y: number; label?: string }[] {
@@ -85,21 +86,24 @@ export function findCadTerminalPositions(
     return [];
   }
 
-  const textsInZone = hvacEntities.filter(ent =>
+  type PositionedEntity = DxfEntity & { x: number; y: number };
+  type PolylineEntity = DxfEntity & { points: number[] };
+
+  const textsInZone = hvacEntities.filter((ent): ent is PositionedEntity =>
     (ent.type === 'TEXT' || ent.type === 'MTEXT') &&
     typeof ent.x === 'number' && typeof ent.y === 'number' &&
     isPointInPolygon(ent.x, ent.y, zonePoints)
   );
 
-  const circlesInZone = hvacEntities.filter(ent =>
+  const circlesInZone = hvacEntities.filter((ent): ent is PositionedEntity =>
     ent.type === 'CIRCLE' &&
     typeof ent.x === 'number' && typeof ent.y === 'number' &&
     isPointInPolygon(ent.x, ent.y, zonePoints)
   );
 
-  const polylinesInZone = hvacEntities.filter(ent =>
+  const polylinesInZone = hvacEntities.filter((ent): ent is PolylineEntity =>
     (ent.type === 'LWPOLYLINE' || ent.type === 'POLYLINE') &&
-    ent.points && ent.points.length >= 8 &&
+    !!ent.points && ent.points.length >= 8 &&
     isPointInPolygon(ent.points[0], ent.points[1], zonePoints)
   );
 
@@ -217,7 +221,7 @@ export function placeDiffusers(
   isImperial: boolean = true,
   _spacingFt: number = 10,
   _scale: number = 10,
-  dxfEntities: any[] = [],
+  dxfEntities: DxfEntity[] = [],
   systemType: 'concealed' | 'packaged' | 'cassette' | 'high-wall' | 'vrf' | 'ahu' | 'fcu' = 'concealed',
   totalLoadBtu?: number,
   catalogQty?: number,

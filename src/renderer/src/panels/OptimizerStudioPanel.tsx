@@ -56,7 +56,7 @@ export const OptimizerStudioPanel: React.FC = () => {
     return cardTabs[candId] || 'overview';
   };
 
-  const setCardTab = (candId: string, tab: 'overview' | 'components' | 'algorithm') => {
+  const setCardTab = (candId: string, tab: 'overview' | 'components' | 'algorithm'): void => {
     setCardTabs((prev) => ({ ...prev, [candId]: tab }));
   };
 
@@ -89,7 +89,7 @@ export const OptimizerStudioPanel: React.FC = () => {
     selectedZone.diffusers
   );
 
-  const handlePreviewCandidate = (candidate: any) => {
+  const handlePreviewCandidate = (candidate: SystemDesignCandidate): void => {
     const preview = createDeploymentPreview(
       candidate,
       selectedZone,
@@ -101,7 +101,7 @@ export const OptimizerStudioPanel: React.FC = () => {
     setPreview(preview);
   };
 
-  const handleApplyCandidate = (candidate: any) => {
+  const handleApplyCandidate = (candidate: SystemDesignCandidate): void => {
     const result = applyCandidateTransaction(candidate);
     if (result.success) {
       setDeploymentFeedback({
@@ -493,7 +493,7 @@ export const OptimizerStudioPanel: React.FC = () => {
                       <div className="flex justify-between">
                         <span>Diffuser Configuration:</span>
                         <strong className="text-teal-400 font-mono">
-                          {cand.diffusers.quantity} × {cand.diffusers.diffuserRecord.faceSizeIn.width}"x{cand.diffusers.diffuserRecord.faceSizeIn.height}" (NC {cand.diffusers.actualNc})
+                          {cand.diffusers.quantity} × {cand.diffusers.diffuserRecord.faceSizeIn.width}&quot;x{cand.diffusers.diffuserRecord.faceSizeIn.height}&quot; (NC {cand.diffusers.actualNc})
                         </strong>
                       </div>
                     </div>

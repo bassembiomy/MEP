@@ -232,7 +232,7 @@ export function stripMtext(input: string): string {
   s = s.replace(/\\[fFcCHhQqWwTtAa][^;]*;/g, '');
   s = s.replace(/\\[LlOoKk]/g, '');
   s = s.replace(/[{}]/g, '');
-  s = s.replace(/\u0001/g, '\\').replace(/\u0002/g, '{').replace(/\u0003/g, '}');
+  s = s.split('\u0001').join('\\').split('\u0002').join('{').split('\u0003').join('}');
   return s;
 }
 
@@ -330,7 +330,12 @@ export function transformEntityByInsert(ent: CadEntity, t: InsertXf): CadEntity 
     const raw = ent.type === 'ARC'
       ? arcPoints(cx, cy, r, ent.startAngle ?? 0, ent.endAngle ?? 360)
       : arcPoints(cx, cy, r, 0, 360);
-    const { x: _x, y: _y, radius: _r, startAngle: _s, endAngle: _e, ...rest } = ent;
+    const rest: CadEntity = { ...ent };
+    delete rest.x;
+    delete rest.y;
+    delete rest.radius;
+    delete rest.startAngle;
+    delete rest.endAngle;
     return { ...rest, type: 'LWPOLYLINE', points: mapPoints(raw, t) };
   }
   if (ent.type === 'TEXT' || ent.type === 'MTEXT') {

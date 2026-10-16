@@ -8,9 +8,11 @@ import { generateMasterSchedules } from '../engine/export/exportSchedules';
 import { exportFullEngineeringDesignReport } from '../engine/export/exportDesignReport';
 import { FileSpreadsheet, Download, Layers, Check } from 'lucide-react';
 
+type SubTabId = 'air-distribution' | 'ducts' | 'diffusers' | 'equipment' | 'outdoor-air' | 'validation' | 'decision-log';
+
 export const AirDistributionSchedulePanel: React.FC = () => {
   const { project, zones, selectedZoneId, updateZone } = useProjectStore();
-  const [activeSubTab, setActiveSubTab] = useState<'air-distribution' | 'ducts' | 'diffusers' | 'equipment' | 'outdoor-air' | 'validation' | 'decision-log'>('air-distribution');
+  const [activeSubTab, setActiveSubTab] = useState<SubTabId>('air-distribution');
   const [appliedToCad, setAppliedToCad] = useState<boolean>(false);
 
   const currentZone = zones.find((z) => z.id === selectedZoneId) || zones[0];
@@ -125,7 +127,7 @@ export const AirDistributionSchedulePanel: React.FC = () => {
 
       {/* Sub-tab Navigation */}
       <div className="flex flex-wrap gap-2 border-b border-neutral-800 pb-3">
-        {[
+        {([
           { id: 'air-distribution', label: 'Air Distribution' },
           { id: 'ducts', label: 'Duct Schedule' },
           { id: 'diffusers', label: 'Diffuser Schedule' },
@@ -133,10 +135,10 @@ export const AirDistributionSchedulePanel: React.FC = () => {
           { id: 'outdoor-air', label: 'Outdoor Air Schedule' },
           { id: 'validation', label: '9-Point Validation' },
           { id: 'decision-log', label: 'Design Decision Log' }
-        ].map((tab) => (
+        ] as { id: SubTabId; label: string }[]).map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveSubTab(tab.id as any)}
+            onClick={() => setActiveSubTab(tab.id)}
             className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
               activeSubTab === tab.id
                 ? 'bg-neutral-800 text-blue-400 border border-blue-500/30'

@@ -287,7 +287,7 @@ function makeZone(poly: number[], cfm: number): EquipmentServiceZone {
   };
 }
 
-function partitionInput(poly: number[], unitCount: number, side: 'north' | 'south' | 'east' | 'west') {
+function partitionInput(poly: number[], unitCount: number, side: 'north' | 'south' | 'east' | 'west'): Parameters<typeof partitionRoomIntoServiceZones>[0] {
   return {
     roomName: 'R',
     roomPolygon: poly,

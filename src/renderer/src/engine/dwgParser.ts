@@ -5,9 +5,9 @@ import {
 } from './dxfParser';
 import wasmUrl from '../../../../node_modules/@mlightcad/libredwg-web/wasm/libredwg-web.wasm?url';
 
-let libredwgInstance: any = null;
+let libredwgInstance: LibreDwg | null = null;
 
-async function getLibreDwgInstance() {
+async function getLibreDwgInstance(): Promise<LibreDwg> {
   if (!libredwgInstance) {
     // Let Vite manage the WASM binary URL dynamically in both dev and production
     const wasmInstance = await createModule({
@@ -21,9 +21,16 @@ async function getLibreDwgInstance() {
 const RAD2DEG = 180 / Math.PI;
 const MAX_BLOCK_DEPTH = 8;
 
-const isNum = (n: any): n is number => typeof n === 'number' && isFinite(n);
+// libredwg's converted database / entity records are loosely-typed external data whose shape
+// varies per DWG entity type; they are narrowed field-by-field below via isNum / Array.isArray.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped libredwg output
+type RawDwgEntity = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped libredwg output
+type RawDwgDb = any;
 
-function parseRawEntity(ent: any): CadEntity | null {
+const isNum = (n: unknown): n is number => typeof n === 'number' && isFinite(n);
+
+function parseRawEntity(ent: RawDwgEntity): CadEntity | null {
   const layer = ent.layer || '0';
   if (ent.type === 'LINE' && ent.startPoint && ent.endPoint) {
     return {
@@ -35,13 +42,13 @@ function parseRawEntity(ent: any): CadEntity | null {
     };
   }
   if (ent.type === 'LWPOLYLINE' && Array.isArray(ent.vertices)) {
-    const verts = ent.vertices.filter((v: any) => v && isNum(v.x) && isNum(v.y));
+    const verts = ent.vertices.filter((v: RawDwgEntity) => v && isNum(v.x) && isNum(v.y));
     if (verts.length < 2) return null;
     const closed = ((ent.flag ?? 0) & 1) === 1;
     return { type: 'LWPOLYLINE', points: buildBulgePolyline(verts, closed), layer };
   }
   if ((ent.type === 'POLYLINE2D' || ent.type === 'POLYLINE3D' || ent.type === 'POLYLINE') && Array.isArray(ent.vertices)) {
-    const verts = ent.vertices.filter((v: any) => v && isNum(v.x) && isNum(v.y));
+    const verts = ent.vertices.filter((v: RawDwgEntity) => v && isNum(v.x) && isNum(v.y));
     if (verts.length < 2) return null;
     const closed = ((ent.flag ?? 0) & 1) === 1;
     return { type: 'LWPOLYLINE', points: buildBulgePolyline(verts, closed), layer };
@@ -63,8 +70,8 @@ function parseRawEntity(ent: any): CadEntity | null {
     return { type: 'LWPOLYLINE', points, layer };
   }
   if (ent.type === 'SPLINE') {
-    const fit: any[] = Array.isArray(ent.fitPoints) ? ent.fitPoints : [];
-    const ctrlRaw: any[] = Array.isArray(ent.controlPoints) ? ent.controlPoints : [];
+    const fit: RawDwgEntity[] = Array.isArray(ent.fitPoints) ? ent.fitPoints : [];
+    const ctrlRaw: RawDwgEntity[] = Array.isArray(ent.controlPoints) ? ent.controlPoints : [];
     let points: number[] = [];
     if (fit.length >= 2) {
       for (const p of fit) if (p && isNum(p.x) && isNum(p.y)) points.push(p.x, p.y);
@@ -123,7 +130,7 @@ function parseRawEntity(ent: any): CadEntity | null {
 
 interface Ctx { layer: string; color?: string }
 
-function colorOf(ent: any, effLayer: string, ctx: Ctx | null, layerColors: Record<string, string>): string | undefined {
+function colorOf(ent: RawDwgEntity, effLayer: string, ctx: Ctx | null, layerColors: Record<string, string>): string | undefined {
   const ci = ent.colorIndex;
   if (isNum(ci) && ci !== 256 && ci !== 0) return aciToHexColor(Math.abs(ci));
   if (ci === 0 && ctx?.color) return ctx.color; // BYBLOCK
@@ -131,8 +138,8 @@ function colorOf(ent: any, effLayer: string, ctx: Ctx | null, layerColors: Recor
 }
 
 function extractEntities(
-  db: any,
-  rawEntities: any[],
+  db: RawDwgDb,
+  rawEntities: RawDwgEntity[],
   ctx: Ctx | null,
   layerColors: Record<string, string>,
   depth: number,
@@ -157,7 +164,7 @@ function extractEntities(
         warnings.push(`Block nesting deeper than ${MAX_BLOCK_DEPTH} levels skipped at "${blockName}".`);
         continue;
       }
-      const blockRecord = db.tables?.BLOCK_RECORD?.entries?.find((entry: any) => entry.name === blockName);
+      const blockRecord = db.tables?.BLOCK_RECORD?.entries?.find((entry: RawDwgEntity) => entry.name === blockName);
       if (!blockRecord || !Array.isArray(blockRecord.entities)) continue;
 
       const nextVisited = new Set(visitedBlocks);
@@ -196,7 +203,7 @@ function extractEntities(
 export async function parseDwgBuffer(uint8Array: Uint8Array): Promise<ParsedDxf> {
   const libredwg = await getLibreDwgInstance();
 
-  const dwgData = libredwg.dwg_read_data(uint8Array, Dwg_File_Type.DWG);
+  const dwgData = libredwg.dwg_read_data(uint8Array as unknown as ArrayBuffer, Dwg_File_Type.DWG);
   if (!dwgData) {
     throw new Error('Failed to parse DWG binary data.');
   }
@@ -206,7 +213,7 @@ export async function parseDwgBuffer(uint8Array: Uint8Array): Promise<ParsedDxf>
     const rawEntities = db.entities && Array.isArray(db.entities) ? db.entities : [];
 
     const layerColors: Record<string, string> = {};
-    const layerEntries: any[] = db.tables?.LAYER?.entries ?? [];
+    const layerEntries: RawDwgEntity[] = db.tables?.LAYER?.entries ?? [];
     for (const l of layerEntries) {
       if (l && l.name && isNum(l.colorIndex)) layerColors[l.name] = aciToHexColor(Math.abs(l.colorIndex));
     }

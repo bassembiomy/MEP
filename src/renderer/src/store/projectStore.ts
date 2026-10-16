@@ -204,8 +204,8 @@ interface ProjectState {
   cadCalibration: CadCalibrationState | null;
   annotationVisibility: AnnotationVisibility;
   loadedCatalogs: {
-    decorative: { highWall: any[]; cassette: any[] } | null;
-    ducted: any[] | null;
+    decorative: CatalogDecorativeSet | null;
+    ducted: CatalogDuctedUnit[] | null;
     errors?: string[];
   } | null;
   selectedSystemTypes: string[];
@@ -236,7 +236,7 @@ interface ProjectState {
   setAnnotationVisibility: (key: keyof AnnotationVisibility, visible: boolean) => void;
   toggleAllAnnotations: (visible: boolean) => void;
   loadDemoSystems: () => void;
-  setLoadedCatalogs: (catalogs: { decorative: { highWall: any[]; cassette: any[] } | null; ducted: any[] | null; errors?: string[] } | null) => void;
+  setLoadedCatalogs: (catalogs: { decorative: CatalogDecorativeSet | null; ducted: CatalogDuctedUnit[] | null; errors?: string[] } | null) => void;
   setSelectedSystemTypes: (types: string[]) => void;
   setOptimizationWeights: (weights: Partial<OptimizationWeights>) => void;
   setActiveTab: (tab: 'comparison' | 'optimizer' | 'static-pressure' | 'schedule' | 'air-distribution') => void;

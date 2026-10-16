@@ -1,5 +1,5 @@
 import React from 'react';
-import { useProjectStore, Zone, DuctSegment } from '../store/projectStore';
+import { useProjectStore, Zone, DuctSegment, Diffuser } from '../store/projectStore';
 import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
 import { calculateZoneLoad } from '../engine/loadCalc';
 import { placeDiffusers } from '../engine/diffuserPlacer';
@@ -27,7 +27,7 @@ import {
 import { DuctLocationCategory } from '../engine/types';
 
 export const ZonePropertiesPanel: React.FC = () => {
-  const { selectedZoneId, zones, updateZone, project, dxfEntities, loadedCatalogs } = useProjectStore();
+  const { selectedZoneId, zones, updateZone, project, dxfEntities, dxfBoundingBox, loadedCatalogs } = useProjectStore();
 
   const selectedZone = zones.find((z) => z.id === selectedZoneId);
 
@@ -87,7 +87,7 @@ export const ZonePropertiesPanel: React.FC = () => {
   );
 
   const handleOptimizePlacement = (): void => {
-    const optOdu = calculateOptimalOutdoorUnitPos(selectedZone.points, zones, dxfEntities);
+    const optOdu = calculateOptimalOutdoorUnitPos(selectedZone.points, zones, dxfBoundingBox);
 
     const sizing = getCatalogSizingForZone(
       selectedZone.systemType,
@@ -105,7 +105,7 @@ export const ZonePropertiesPanel: React.FC = () => {
       : calculateOptimalIndoorUnitPos(selectedZone.points, optOdu);
     const spacing = isImperial ? 10 : 3;
 
-    let diffusers: any[] = [];
+    let diffusers: Diffuser[] = [];
     if (selectedZone.systemType === 'high-wall') {
       diffusers = [];
     } else if (selectedZone.systemType === 'cassette') {
@@ -178,8 +178,8 @@ export const ZonePropertiesPanel: React.FC = () => {
     });
   };
 
-  const handleUpdate = (field: keyof Zone, value: any): void => {
-    let updatedZone: Zone = {
+  const handleUpdate = (field: keyof Zone, value: Zone[keyof Zone]): void => {
+    const updatedZone: Zone = {
       ...selectedZone,
       [field]: value
     };
@@ -218,11 +218,11 @@ export const ZonePropertiesPanel: React.FC = () => {
 
     let finalOutdoorUnitPos = updatedZone.outdoorUnitPos;
     if (!finalOutdoorUnitPos) {
-      finalOutdoorUnitPos = calculateOptimalOutdoorUnitPos(selectedZone.points, zones, dxfEntities);
+      finalOutdoorUnitPos = calculateOptimalOutdoorUnitPos(selectedZone.points, zones, dxfBoundingBox);
     }
 
     const spacing = isImperial ? 10 : 3;
-    let diffusers: any[] = [];
+    let diffusers: Diffuser[] = [];
     if (updatedZone.systemType === 'high-wall') {
       diffusers = [];
     } else if (updatedZone.systemType === 'cassette') {

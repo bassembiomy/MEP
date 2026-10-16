@@ -62,7 +62,7 @@ export interface MechanicalComponent {
   footprint: SpatialFootprint;
   ports: ConnectionPort[];
   isLocked: boolean;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface DeploymentManifest {
@@ -113,7 +113,7 @@ export interface DeploymentDiagnostic {
   componentId?: string;
   message: string;
   remediation?: string;
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
 }
 
 export interface DeploymentPreview {

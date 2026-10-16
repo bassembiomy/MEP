@@ -47,7 +47,7 @@ const EPS = 1e-9;
 {
   const imp = { load: 34000, sens: 26000, cfm: 1250, area: 400 };
   for (const types of [['concealed'], ['cassette'], ['high-wall'], ['packaged'], ['ahu'], ['vrf'], undefined]) {
-    const a = generateSystemCandidates(imp.load, imp.sens, imp.cfm, 'office', imp.area, true, {}, types as any);
+    const a = generateSystemCandidates(imp.load, imp.sens, imp.cfm, 'office', imp.area, true, {}, types);
     const b = generateSystemCandidates(
       imp.load * W_PER_BTUH,
       imp.sens * W_PER_BTUH,
@@ -56,7 +56,7 @@ const EPS = 1e-9;
       imp.area / SQFT_PER_SQM,
       false,
       {},
-      types as any
+      types
     );
     const ids = (r: typeof a): string => r.candidates.map((c) => `${c.equipment.id}x${c.quantity}:${c.isValid}`).join(',');
     assert(ids(a) === ids(b), `parity ${types?.join('/') || 'all'}: imperial [${ids(a)}] vs metric [${ids(b)}]`);

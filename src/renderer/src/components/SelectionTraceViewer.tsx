@@ -17,14 +17,14 @@ export const SelectionTraceViewer: React.FC<SelectionTraceViewerProps> = ({ trac
     );
   }
 
-  const toggleStep = (stepNum: number) => {
+  const toggleStep = (stepNum: number): void => {
     setExpandedSteps((prev) =>
       prev.includes(stepNum) ? prev.filter((s) => s !== stepNum) : [...prev, stepNum]
     );
   };
 
-  const expandAll = () => setExpandedSteps([1, 2, 3, 4, 5, 6, 7]);
-  const collapseAll = () => setExpandedSteps([]);
+  const expandAll = (): void => setExpandedSteps([1, 2, 3, 4, 5, 6, 7]);
+  const collapseAll = (): void => setExpandedSteps([]);
 
   return (
     <div className="flex flex-col gap-3 text-xs">

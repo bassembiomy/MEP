@@ -2,7 +2,7 @@ import { partitionRoomIntoServiceZones, EquipmentServiceZoneInput } from '../zon
 import { calculateSolarLoadWeights } from '../zoning/solarLoadWeighting';
 import { distributeLoadsAcrossZones } from '../zoning/loadDistribution';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: boolean, msg: string): void {
   if (!condition) throw new Error(`Assertion failed: ${msg}`);
 }
 

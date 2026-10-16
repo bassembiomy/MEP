@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { Stage, Layer, Line, Circle, Text, Group, Shape, Rect } from 'react-konva';
 import { useProjectStore, DuctSegment, DxfEntity, Zone, Diffuser } from '../store/projectStore';
 import { getPolygonCentroid, clampPointInsidePolygon, isPointInsideWithClearance } from '../engine/geometry';
@@ -125,21 +125,14 @@ export const FloorPlanCanvas: React.FC = () => {
   const [calibDist, setCalibDist] = useState<string>('');
   const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
   const calibRef = useRef(calib);
-  calibRef.current = calib;
-  const zoneLineRefs = useRef<Map<string, Konva.Line>>(new Map());
+  // Stable, mutable registry of zone line nodes (populated from Konva ref callbacks, read in event handlers).
+  const [zoneLineNodes] = useState<Map<string, Konva.Line>>(() => new Map());
 
   const lastPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const panningRef = useRef<boolean>(false);
   const stageScaleRef = useRef<number>(1);
-  stageScaleRef.current = stageScale;
-  const snapEnabledRef = useRef<boolean>(true);
-  snapEnabledRef.current = snapEnabled;
-  const dxfLayersRef = useRef(dxfLayers);
-  dxfLayersRef.current = dxfLayers;
   const tempPointsRef = useRef<number[]>(tempPoints);
-  tempPointsRef.current = tempPoints;
   const drawModeRef = useRef(drawMode);
-  drawModeRef.current = drawMode;
 
   // Cursor / rubber band live on their own layer and are driven imperatively (no React re-render per mousemove).
   const cursorLayerRef = useRef<Konva.Layer>(null);
@@ -206,21 +199,29 @@ export const FloorPlanCanvas: React.FC = () => {
       : 1000;
     return buildSnapIndex(dxfEntities, Math.max(span / 256, 1e-3));
   }, [dxfEntities, dxfBoundingBox]);
-  const snapIndexRef = useRef(snapIndex);
-  snapIndexRef.current = snapIndex;
-  const gridStepRef = useRef(gridStep);
-  gridStepRef.current = gridStep;
+
+  // Keep the latest values in refs for imperative (event-handler) code; synced after every commit,
+  // before any passive effect or user event can read them.
+  useLayoutEffect(() => {
+    calibRef.current = calib;
+    stageScaleRef.current = stageScale;
+    tempPointsRef.current = tempPoints;
+    drawModeRef.current = drawMode;
+  });
 
   // ───────── Snapping ─────────
-  const snapAt = useCallback((x: number, y: number): SnapResult => {
-    return resolveSnap(x, y, {
-      enabled: snapEnabledRef.current,
-      gridStep: gridStepRef.current,
-      index: snapIndexRef.current,
-      radius: 10 / stageScaleRef.current,
-      accept: (layer) => dxfLayersRef.current[layer || '0']?.visible !== false
-    });
-  }, []);
+  const snapAt = useCallback(
+    (x: number, y: number): SnapResult => {
+      return resolveSnap(x, y, {
+        enabled: snapEnabled,
+        gridStep,
+        index: snapIndex,
+        radius: 10 / stageScale,
+        accept: (layer) => dxfLayers[layer || '0']?.visible !== false
+      });
+    },
+    [snapEnabled, gridStep, snapIndex, stageScale, dxfLayers]
+  );
 
   const showMessage = useCallback((msg: string) => {
     setDrawMessage(msg);
@@ -487,10 +488,13 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   // ───────── Drag commit handlers (heavy routing only at dragEnd) ─────────
-  const snapNodeDuringDrag = (node: Konva.Node): void => {
-    const s = snapAt(node.x(), node.y());
-    if (s.kind !== 'none') node.position({ x: s.x, y: s.y });
-  };
+  const snapNodeDuringDrag = useCallback(
+    (node: Konva.Node): void => {
+      const s = snapAt(node.x(), node.y());
+      if (s.kind !== 'none') node.position({ x: s.x, y: s.y });
+    },
+    [snapAt]
+  );
 
   const isDuctedSystem = (zone: Zone): boolean =>
     zone.systemType === 'concealed' ||
@@ -939,8 +943,8 @@ export const FloorPlanCanvas: React.FC = () => {
           stroke={isSelected ? '#3b82f6' : '#525252'}
           strokeWidth={getStrokeWidth(isSelected ? 2.5 : 1.2, isSelected ? 2.5 : 1.5)}
           ref={(n) => {
-            if (n) zoneLineRefs.current.set(zone.id, n);
-            else zoneLineRefs.current.delete(zone.id);
+            if (n) zoneLineNodes.set(zone.id, n);
+            else zoneLineNodes.delete(zone.id);
           }}
           onClick={() => selectZone(zone.id)}
           onTap={() => selectZone(zone.id)}
@@ -1292,7 +1296,7 @@ export const FloorPlanCanvas: React.FC = () => {
               onDragMove={(e) => {
                 // Local preview only (no store write per move); the commit + relayout happens at dragEnd.
                 snapNodeDuringDrag(e.target);
-                const line = zoneLineRefs.current.get(zone.id);
+                const line = zoneLineNodes.get(zone.id);
                 if (line) {
                   const pts = zone.points.slice();
                   pts[idx * 2] = e.target.x();

@@ -6,7 +6,7 @@ import {
 import { routeDucts } from '../ductRouter';
 import { DiffuserPos } from '../diffuserPlacer';
 
-function assert(condition: boolean, message: string) {
+function assert(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(`Assertion Failed: ${message}`);
   }
