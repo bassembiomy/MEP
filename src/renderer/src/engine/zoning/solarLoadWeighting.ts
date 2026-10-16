@@ -22,10 +22,21 @@ export function calculateSolarLoadWeights(input: SolarWeightingInput): number[] 
       rawWeights[0] *= factor;
     } else if (wall.side === 'west') {
       rawWeights[unitCount - 1] *= factor;
+    } else if (wall.side === 'north') {
+      // North glazing sees only diffuse sky radiation: apply 25% of the bonus to the middle bay.
+      rawWeights[Math.floor(unitCount / 2)] *= 1 + (factor - 1) * 0.25;
     }
   }
 
-  // Normalize so sum equals 1.0
+  // Normalize so sum equals exactly 1.0: round bays 0..n-2 to 3 dp, last bay takes the remainder.
   const sum = rawWeights.reduce((a, b) => a + b, 0);
-  return rawWeights.map((w) => parseFloat((w / sum).toFixed(3)));
+  const out: number[] = [];
+  let acc = 0;
+  for (let i = 0; i < unitCount - 1; i++) {
+    const w = Math.round((rawWeights[i] / sum) * 1000) / 1000;
+    out.push(w);
+    acc += w;
+  }
+  out.push(Math.max(0, Math.round((1 - acc) * 1e9) / 1e9));
+  return out;
 }

@@ -1,5 +1,6 @@
 import { Zone, ProjectMetadata } from '../store/projectStore';
-import { ASHRAE_SPACE_TYPES, DEFAULT_U_VALUES } from './knowledgeBase';
+import { ASHRAE_SPACE_TYPES, DEFAULT_U_VALUES, DEFAULT_GLASS } from './knowledgeBase';
+import { isImperial as isImp, pxPerFt, SQFT_PER_SQM, M_PER_FT, LPS_PER_CFM, CFM_PER_LPS, BTUH_PER_W, BTUH_PER_TON } from './units';
 import { calculatePolygonArea, calculatePolygonPerimeter } from './geometry';
 
 export interface LoadResult {
@@ -19,155 +20,164 @@ export interface LoadResult {
   oaCfm: number; // Outdoor air CFM or L/s
   exhaustCfm: number; // Exhaust CFM or L/s
   returnCfm: number; // Return CFM or L/s
+  // --- Room vs. coil load split (ASHRAE: OA is a coil/system load, not a room load) ---
+  roomSensibleBtuh?: number; // Btu/h or W (units follow project): envelope + internal, NO outdoor air
+  roomLatentBtuh?: number;
+  oaSensibleBtuh?: number; // outdoor-air sensible (coil load)
+  oaLatentBtuh?: number; // outdoor-air latent (coil load)
+  coilTotalBtuh?: number; // room + OA total; equals totalLoad
+  /** Data-quality / fallback notes (unknown space type, bad scale, ...). */
+  warnings?: string[];
+}
+
+/**
+ * Optional zone fields understood by the load calc but not part of the stored Zone interface.
+ * All are read via optional chaining so existing zones keep working.
+ */
+interface ZoneLoadExtras {
+  glassAreaSqFt?: number; // window area on exterior walls (ft²)
+  glassShgc?: number;
+  glassSolarFactorBtuhFt2?: number;
+  exteriorWallLengthFt?: number; // length of exterior wall (ft); default = 50% of perimeter
+  hasRoof?: boolean; // false => interior floor, no roof load. Default true (conservative top-floor).
+  isTopFloor?: boolean; // alias of hasRoof
+  fixtureCount?: number; // toilet fixtures for exhaust sizing
 }
 
 /**
  * Calculates cooling loads and authoritative airflow per ASHRAE Fundamentals and ASHRAE 62.1-2019.
+ *
+ * Internals are IMPERIAL (ft, ft², CFM, Btu/h) and converted to project units at the end.
+ * Outdoor air is a COIL load: supply CFM is sized from the ROOM sensible load only.
  */
 export function calculateZoneLoad(zone: Zone, project: ProjectMetadata): LoadResult {
-  const spaceType = ASHRAE_SPACE_TYPES.find(t => t.id === zone.spaceTypeId) || ASHRAE_SPACE_TYPES[0];
-  const isImperial = project.units === 'imperial';
+  const warnings: string[] = [];
+  const imperial = isImp(project.units);
+  const extras = zone as unknown as ZoneLoadExtras;
 
-  // 1. Calculate Area & Perimeter
-  const areaPx = calculatePolygonArea(zone.points);
-  const perimeterPx = calculatePolygonPerimeter(zone.points);
-  
-  // Area conversion: scale is pixels/foot (imperial) or pixels/meter (metric)
-  const area = areaPx / (project.scale * project.scale);
-  const perimeter = perimeterPx / project.scale;
-
-  // 2. Occupants calculation (density is per 1000 sqft or 1000 sqm)
-  const densityMultiplier = isImperial ? 1000 : 92.9; // 1000 ft² or ~92.9 m²
-  const calculatedOccupants = Math.ceil((area * spaceType.density) / densityMultiplier);
-  const occupants = zone.occupants || calculatedOccupants || 1;
-
-  // Design temperature difference (Outdoor DB - Indoor DB)
-  const deltaT = Math.max(0, project.outdoorDb - project.indoorDb);
-
-  // 3. Conduction Loads (Walls & Roofs)
-  const uWall = isImperial ? DEFAULT_U_VALUES.wall : DEFAULT_U_VALUES.wall * 5.678; // W/(m²·K)
-  const uRoof = isImperial ? DEFAULT_U_VALUES.roof : DEFAULT_U_VALUES.roof * 5.678;
-
-  // Assume 50% wall exposure for general commercial building space
-  const exposedWallArea = perimeter * zone.ceilingHeight * 0.5;
-  const wallSensible = uWall * exposedWallArea * deltaT;
-  const roofSensible = uRoof * area * deltaT;
-
-  // 4. Internal Loads (People, Lights, Equipment)
-  let peopleSensible = 0;
-  let peopleLatent = 0;
-  let lightingSensible = 0;
-  let equipmentSensible = 0;
-
-  if (isImperial) {
-    // People: sensibleGain and latentGain in Btu/h per person
-    peopleSensible = occupants * spaceType.sensibleGain;
-    peopleLatent = occupants * spaceType.latentGain;
-
-    // Lights: spaceType.lightingDensity in W/ft². Q = 3.412 * Watts
-    const lightingWatts = area * (zone.lightingOverride !== undefined ? zone.lightingOverride : spaceType.lightingDensity);
-    lightingSensible = 3.412 * lightingWatts;
-
-    // Equipment: spaceType.equipmentDensity in W/ft²
-    const equipmentWatts = area * (zone.equipmentOverride !== undefined ? zone.equipmentOverride : spaceType.equipmentDensity);
-    equipmentSensible = 3.412 * equipmentWatts;
-  } else {
-    // Metric (Watts)
-    peopleSensible = occupants * spaceType.sensibleGain * 0.293;
-    peopleLatent = occupants * spaceType.latentGain * 0.293;
-
-    const densityWsqm = (zone.lightingOverride !== undefined ? zone.lightingOverride : spaceType.lightingDensity) * 10.76;
-    lightingSensible = area * densityWsqm;
-
-    const equipWsqm = (zone.equipmentOverride !== undefined ? zone.equipmentOverride : spaceType.equipmentDensity) * 10.76;
-    equipmentSensible = area * equipWsqm;
+  let spaceType = ASHRAE_SPACE_TYPES.find(t => t.id === zone.spaceTypeId);
+  if (!spaceType) {
+    spaceType = ASHRAE_SPACE_TYPES[0];
+    warnings.push(`Unknown space type "${zone.spaceTypeId}": fell back to "${spaceType.id}" ventilation and internal-gain defaults.`);
   }
 
-  // 5. ASHRAE 62.1-2019 Ventilation Outdoor Air Calculations
-  // Vbz = Rp * Pz + Ra * Az
-  let vbzFlow = 0;
-  if (isImperial) {
-    vbzFlow = (spaceType.rp * occupants) + (spaceType.ra * area);
-  } else {
-    // Metric: spaceType.rp (L/s/person), spaceType.ra (L/s/m²)
-    vbzFlow = (spaceType.rp * occupants) + (spaceType.ra * 5.08 * area);
+  // 1. Area & perimeter in ft (units.pxPerFt defends against scale 0 / NaN)
+  if (!(Number.isFinite(project.scale) && project.scale > 0)) {
+    warnings.push(`Invalid drawing scale (${project.scale}); assumed 10 px per unit.`);
   }
+  const ppf = pxPerFt(project.scale, project.units);
+  const areaFt2 = calculatePolygonArea(zone.points) / (ppf * ppf);
+  const perimeterFt = calculatePolygonPerimeter(zone.points) / ppf;
 
-  // Zone air distribution effectiveness Ez (1.0 for ceiling supply of cool air)
-  const ez = 1.0;
-  const vozFlow = vbzFlow / ez;
+  // 2. Occupants: explicit user value only if > 0, else ASHRAE density x area
+  const calculatedOccupants = spaceType.density > 0
+    ? Math.max(1, Math.ceil((areaFt2 * spaceType.density) / 1000))
+    : 0;
+  const occupants = zone.occupants != null && zone.occupants > 0 ? zone.occupants : calculatedOccupants;
 
-  let oaSensible = 0;
-  let oaLatent = 0;
+  // Design temperature difference in deg F (metric inputs are deg C)
+  const dtRaw = Math.max(0, project.outdoorDb - project.indoorDb);
+  const deltaT = imperial ? dtRaw : dtRaw * 1.8;
 
-  if (isImperial) {
-    oaSensible = 1.08 * vozFlow * deltaT;
-    oaLatent = 4840 * vozFlow * 0.005; // 0.005 humidity ratio delta (lb/lb)
-  } else {
-    oaSensible = 1.20 * vozFlow * deltaT;
-    oaLatent = 3000 * vozFlow * 0.005; // 0.005 kg/kg delta
-  }
+  // 3. Envelope conduction
+  const hasRoof = extras.hasRoof ?? extras.isTopFloor ?? true; // legacy behaviour: roof load always applied
+  const glassArea = Math.max(0, extras.glassAreaSqFt ?? 0);
+  const wallLen = extras.exteriorWallLengthFt ?? perimeterFt * 0.5; // legacy: 50% of perimeter exposed
+  const grossWall = wallLen * zone.ceilingHeight;
+  const netWall = Math.max(0, grossWall - glassArea);
+  const wallSensible = DEFAULT_U_VALUES.wall * netWall * deltaT;
+  const roofSensible = hasRoof ? DEFAULT_U_VALUES.roof * areaFt2 * deltaT : 0;
+  const glassConduction = DEFAULT_U_VALUES.glass * glassArea * deltaT;
+  const glassSolar = (extras.glassShgc ?? DEFAULT_GLASS.shgc) * glassArea
+    * (extras.glassSolarFactorBtuhFt2 ?? DEFAULT_GLASS.solarFactorBtuhFt2);
 
-  // 6. Summarize Space Loads
-  let sensibleLoad = wallSensible + roofSensible + peopleSensible + lightingSensible + equipmentSensible + oaSensible;
-  let latentLoad = peopleLatent + oaLatent;
+  // 4. Internal loads (Btu/h)
+  const peopleSensible = occupants * spaceType.sensibleGain;
+  const peopleLatent = occupants * spaceType.latentGain;
+  // Overrides are expressed in W/ft² (imperial) or W/m² (metric)
+  const wPerFt2 = (override: number | undefined, def: number) =>
+    override !== undefined ? (imperial ? override : override / SQFT_PER_SQM) : def;
+  const lightingSensible = BTUH_PER_W * areaFt2 * wPerFt2(zone.lightingOverride, spaceType.lightingDensity);
+  const equipmentSensible = BTUH_PER_W * areaFt2 * wPerFt2(zone.equipmentOverride, spaceType.equipmentDensity);
 
-  // Manual Overrides if specified
+  // 5. ASHRAE 62.1-2019: Vbz = Rp*Pz + Ra*Az, computed in CFM then converted to project units
+  const vbzCfm = spaceType.rp * occupants + spaceType.ra * areaFt2;
+  const ez = 1.0; // ceiling supply of cool air
+  const vozCfm = vbzCfm / ez;
+
+  const oaSensible = 1.08 * vozCfm * deltaT;
+  const oaLatent = 4840 * vozCfm * 0.005; // 0.005 lb/lb humidity-ratio delta
+
+  // 6. Room vs coil loads
+  let roomSensible = wallSensible + roofSensible + glassConduction + glassSolar + peopleSensible + lightingSensible + equipmentSensible;
+  let roomLatent = peopleLatent;
+  let coilSensible = roomSensible + oaSensible;
+  let coilLatent = roomLatent + oaLatent;
+
   if (zone.manualCoolingOverride !== undefined) {
-    sensibleLoad = zone.manualCoolingOverride * 0.75;
-    latentLoad = zone.manualCoolingOverride * 0.25;
+    // Manual override is the total coil load (legacy semantics), split 75/25 sensible/latent.
+    const ovr = imperial ? zone.manualCoolingOverride : zone.manualCoolingOverride * BTUH_PER_W;
+    coilSensible = ovr * 0.75;
+    coilLatent = ovr * 0.25;
+    roomSensible = Math.max(0, coilSensible - oaSensible);
+    roomLatent = Math.max(0, coilLatent - oaLatent);
   }
 
-  const totalLoad = sensibleLoad + latentLoad;
-  const shr = totalLoad > 0 ? sensibleLoad / totalLoad : 1.0;
-  const totalTons = isImperial ? totalLoad / 12000 : totalLoad / 3517;
+  const coilTotal = coilSensible + coilLatent;
+  const shr = coilTotal > 0 ? coilSensible / coilTotal : 1.0;
+  const totalTons = coilTotal / BTUH_PER_TON;
 
-  // 7. Deterministic Supply Airflow Determination
-  // Sensible thermal airflow: Q_thermal = Qs / (1.08 * deltaT_coil), deltaT_coil = 20°F (11.1°C)
-  const coilDeltaT = isImperial ? 20.0 : 11.1;
-  const thermalCfm = isImperial
-    ? (sensibleLoad > 0 ? sensibleLoad / (1.08 * coilDeltaT) : 0)
-    : (sensibleLoad > 0 ? sensibleLoad / (1.20 * coilDeltaT) : 0);
+  // 7. Supply airflow from ROOM sensible only: Q = Qs_room / (1.08 * dT_supply), dT_supply = 20 F
+  const supplyDeltaT = 20.0;
+  const thermalCfm = roomSensible > 0 ? roomSensible / (1.08 * supplyDeltaT) : 0;
 
-  // Supply airflow is the maximum of thermal airflow and outdoor air intake requirement
-  let calculatedSupply = Math.max(thermalCfm, vozFlow);
+  let calculatedSupply = Math.max(thermalCfm, vozCfm);
+  if (coilTotal > 0 && calculatedSupply < 100) calculatedSupply = 100;
 
-  // Apply reasonable minimum baseline if zone has load
-  if (totalLoad > 0 && calculatedSupply < (isImperial ? 100 : 50)) {
-    calculatedSupply = isImperial ? 100 : 50;
-  }
+  const finalSupplyCfm = zone.manualCfmOverride !== undefined
+    ? (imperial ? zone.manualCfmOverride : zone.manualCfmOverride * CFM_PER_LPS)
+    : calculatedSupply;
+  const oaFraction = finalSupplyCfm > 0 ? Math.min(1.0, vozCfm / finalSupplyCfm) : 0;
 
-  // User manual CFM override
-  const finalSupplyCfm = zone.manualCfmOverride !== undefined ? zone.manualCfmOverride : calculatedSupply;
-  const oaFraction = finalSupplyCfm > 0 ? Math.min(1.0, vozFlow / finalSupplyCfm) : 0;
-
-  // 8. Exhaust Airflow
+  // 8. Exhaust (62.1 Table 6-4 style: per fixture, else per ft² with a minimum)
   let exhaustCfm = 0;
-  if (zone.spaceTypeId === 'toilet-public') {
-    exhaustCfm = isImperial ? 50 : 25;
-  } else if (zone.spaceTypeId === 'toilet-private') {
-    exhaustCfm = isImperial ? 25 : 12;
+  if (spaceType.exhaustCfmPerFixture !== undefined || spaceType.exhaustCfmPerSqFt !== undefined) {
+    const byFixture = extras.fixtureCount && spaceType.exhaustCfmPerFixture
+      ? extras.fixtureCount * spaceType.exhaustCfmPerFixture : 0;
+    const byArea = (spaceType.exhaustCfmPerSqFt ?? 0) * areaFt2;
+    exhaustCfm = Math.max(byFixture, byArea, spaceType.exhaustMinCfm ?? 0);
   }
-
-  // Return Airflow = Supply CFM - Exhaust CFM
   const returnCfm = Math.max(0, finalSupplyCfm - exhaustCfm);
 
+  // 9. Convert to project units
+  const L = imperial ? 1 : 1 / BTUH_PER_W; // Btu/h -> project load
+  const A = imperial ? 1 : LPS_PER_CFM; // CFM -> project airflow
+  const r1 = (v: number) => Math.round(v * 10) / 10;
+  const out = (v: number) => Math.round(v * L);
+  const flow = (v: number) => (imperial ? Math.round(v) : Math.round(v * A * 10) / 10); // L/s keeps 0.1 resolution
+
   return {
-    area: Math.round(area * 10) / 10,
-    perimeter: Math.round(perimeter * 10) / 10,
+    area: r1(imperial ? areaFt2 : areaFt2 / SQFT_PER_SQM),
+    perimeter: r1(imperial ? perimeterFt : perimeterFt * M_PER_FT),
     occupants,
-    sensibleLoad: Math.round(sensibleLoad),
-    latentLoad: Math.round(latentLoad),
-    totalLoad: Math.round(totalLoad),
+    sensibleLoad: out(coilSensible),
+    latentLoad: out(coilLatent),
+    totalLoad: out(coilTotal),
     sensibleHeatRatio: Math.round(shr * 100) / 100,
-    totalTons: Math.round(totalTons * 10) / 10,
-    supplyCfm: Math.round(finalSupplyCfm),
-    thermalCfm: Math.round(thermalCfm),
-    vbzCfm: Math.round(vbzFlow),
-    vozCfm: Math.round(vozFlow),
+    totalTons: r1(totalTons),
+    supplyCfm: flow(finalSupplyCfm),
+    thermalCfm: flow(thermalCfm),
+    vbzCfm: flow(vbzCfm),
+    vozCfm: flow(vozCfm),
     oaFraction: Math.round(oaFraction * 1000) / 1000,
-    oaCfm: Math.round(vozFlow),
-    exhaustCfm: Math.round(exhaustCfm),
-    returnCfm: Math.round(returnCfm)
+    oaCfm: flow(vozCfm),
+    exhaustCfm: flow(exhaustCfm),
+    returnCfm: flow(returnCfm),
+    roomSensibleBtuh: out(roomSensible),
+    roomLatentBtuh: out(roomLatent),
+    oaSensibleBtuh: out(oaSensible),
+    oaLatentBtuh: out(oaLatent),
+    coilTotalBtuh: out(coilTotal),
+    warnings: warnings.length ? warnings : undefined
   };
 }
