@@ -28,6 +28,9 @@ export interface Diffuser {
   actualNc?: number;
   throwT50Ft?: number;
   deltaPInWg?: number;
+  /** Physical face size in inches (derived from `size` when absent). */
+  faceWidthIn?: number;
+  faceHeightIn?: number;
 }
 
 export interface DuctSegment {
@@ -55,6 +58,13 @@ export interface DxfEntity {
   text?: string;
   color?: string;
   layer?: string;
+  /** ARC: degrees, canvas orientation (clockwise, Y down) - draw directly with arc(). */
+  startAngle?: number;
+  endAngle?: number;
+  /** TEXT/MTEXT: text height (canvas px), rotation (degrees, canvas), horizontal anchor of (x, y). */
+  height?: number;
+  rotation?: number;
+  align?: 'left' | 'center' | 'right';
 }
 
 export interface BoundingBox {

@@ -54,7 +54,7 @@ export const CadLayerManagerModal: React.FC<CadLayerManagerProps> = ({ isOpen, o
     { key: 'refrigerantPiping', label: 'Copper Refrigerant Piping', description: 'Dual orange line-sets & (P) / (R) isolation valves', icon: <Flame size={13} className="text-orange-400" /> },
     { key: 'leaderCallout', label: 'Master Engineering Leader Tag', description: 'Top-right complete system breakdown callout box', icon: <Type size={13} className="text-yellow-400" /> },
     { key: 'zoneLabels', label: 'Zone Room Names & Total CFM', description: 'Room centroid title labels and design cooling loads', icon: <Type size={13} className="text-emerald-400" /> },
-    { key: 'grid', label: 'CAD Background Grid Lines', description: '10ft / Metric coordinate background snaps', icon: <Grid size={13} className="text-neutral-400" /> },
+    { key: 'grid', label: 'CAD Background Grid Lines', description: '1 ft (imperial) / 0.25 m (metric) background grid and snap step', icon: <Grid size={13} className="text-neutral-400" /> },
     { key: 'dxfText', label: 'DXF Native Text Entities', description: 'Text imported directly from the underlying CAD file', icon: <Type size={13} className="text-purple-400" /> },
   ];
 
