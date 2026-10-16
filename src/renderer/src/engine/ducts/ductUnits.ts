@@ -3,13 +3,9 @@
  * (Engine duct functions operate in feet / inches / cfm; canvas px are converted by callers.)
  */
 
-export const MM_PER_IN = 25.4;
-/** 1 L/s = 2.11888 CFM */
-export const CFM_PER_LPS = 2.11888;
+export { MM_PER_IN, CFM_PER_LPS, INWG100FT_PER_PA_PER_M } from '../units';
 /** 1 m/s = 196.85 fpm */
 export const FPM_PER_MPS = 196.85;
-/** in.wg per 100 ft  =  Pa/m x 0.1224 */
-export const INWG100FT_PER_PA_PER_M = 0.1224;
 export const DEFAULT_PX_PER_FT = 10;
 
 /** Standard imperial rectangular / round duct increment (in) and minimum dimension (in) */
