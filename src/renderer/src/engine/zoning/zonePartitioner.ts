@@ -1,6 +1,19 @@
 import { calculateSolarLoadWeights, ExteriorWallInfo } from './solarLoadWeighting';
 import { distributeLoadsAcrossZones } from './loadDistribution';
-import { getPolygonScanlineSpan, getPolygonVerticalSpan } from '../geometry';
+import {
+  getPolygonScanlineSpan,
+  getPolygonVerticalSpan,
+  getPolygonBounds,
+  clipPolygonToRect,
+  isPointInPolygon,
+  isPointInsideWithClearance,
+  clampPointInsidePolygon,
+  getPolygonCentroid,
+  UNIT_SERVICE_CLEARANCE_FT
+} from '../geometry';
+
+// COORDINATE CONVENTION: canvas/engine Y grows DOWN. north = minY (top), south = maxY (bottom),
+// east = maxX, west = minX. Polygons are in feet (the engine boundary converts px -> ft).
 
 export type DesignControlMode = 'ai' | 'user-modified' | 'user-locked';
 
@@ -74,18 +87,7 @@ export interface EquipmentServiceZoneInput {
   exteriorWalls?: ExteriorWallInfo[];
 }
 
-function getPolygonBoundingBox(points: number[]) {
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (let i = 0; i < points.length; i += 2) {
-    const x = points[i];
-    const y = points[i + 1];
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
-  return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
-}
+const getPolygonBoundingBox = getPolygonBounds;
 
 export function partitionRoomIntoServiceZones(input: EquipmentServiceZoneInput): EquipmentServiceZone[] {
   const {
@@ -128,46 +130,44 @@ export function partitionRoomIntoServiceZones(input: EquipmentServiceZoneInput):
 
   for (let i = 0; i < unitCount; i++) {
     const slice = loadSlices[i];
-    const baySpan = totalSpan * weights[i];
-    const nextOffset = currentOffset + baySpan;
+    // The last bay always closes exactly on the room boundary (weights may sum to 0.999)
+    const rangeEnd = isVerticalSlicing ? bbox.maxX : bbox.maxY;
+    const nextOffset = i === unitCount - 1 ? rangeEnd : currentOffset + totalSpan * weights[i];
+    const baySpan = nextOffset - currentOffset;
 
-    // Construct bay sub-polygon adhering to actual room boundaries
+    // Construct the bay as (room polygon) INTERSECT (slab), so bays never leave the room (L/U shapes)
     let bayPoly: number[] = [];
     let equipX = 0;
     let equipY = 0;
     let rotation = 0;
+    const clr = UNIT_SERVICE_CLEARANCE_FT;
+
+    const slab = isVerticalSlicing
+      ? { minX: currentOffset, maxX: nextOffset, minY: bbox.minY - 1, maxY: bbox.maxY + 1 }
+      : { minX: bbox.minX - 1, maxX: bbox.maxX + 1, minY: currentOffset, maxY: nextOffset };
+    bayPoly = clipPolygonToRect(roomPolygon, slab);
+    if (bayPoly.length < 6) bayPoly = roomPolygon.slice(); // slab falls in a void: degrade to whole room
 
     if (isVerticalSlicing) {
       const bayMidX = currentOffset + baySpan / 2;
       const span = getPolygonVerticalSpan(bayMidX, roomPolygon) || { minY: bbox.minY, maxY: bbox.maxY };
-      const leftSpan = getPolygonVerticalSpan(currentOffset + 0.5, roomPolygon) || span;
-      const rightSpan = getPolygonVerticalSpan(nextOffset - 0.5, roomPolygon) || span;
-
-      bayPoly = [
-        currentOffset, leftSpan.minY,
-        nextOffset, rightSpan.minY,
-        nextOffset, rightSpan.maxY,
-        currentOffset, leftSpan.maxY
-      ];
       equipX = bayMidX;
-      equipY = mountingWallSide === 'north' ? span.maxY - 2 : span.minY + 2;
+      // north = minY (top of canvas, y grows down), south = maxY
+      equipY = mountingWallSide === 'north' ? span.minY + clr : span.maxY - clr;
       rotation = mountingWallSide === 'north' ? 180 : 0;
     } else {
       // Sliced along Y axis (bays stacked vertically, equipment on east or west wall)
       const bayMidY = currentOffset + baySpan / 2;
       const span = getPolygonScanlineSpan(bayMidY, roomPolygon) || { minX: bbox.minX, maxX: bbox.maxX };
-      const topSpan = getPolygonScanlineSpan(currentOffset + 0.5, roomPolygon) || span;
-      const botSpan = getPolygonScanlineSpan(nextOffset - 0.5, roomPolygon) || span;
-
-      bayPoly = [
-        topSpan.minX, currentOffset,
-        topSpan.maxX, currentOffset,
-        botSpan.maxX, nextOffset,
-        botSpan.minX, nextOffset
-      ];
-      equipX = mountingWallSide === 'east' ? span.maxX - 2 : span.minX + 2;
+      equipX = mountingWallSide === 'east' ? span.maxX - clr : span.minX + clr;
       equipY = bayMidY;
       rotation = mountingWallSide === 'east' ? 270 : 90;
+    }
+    // Equipment must be inside its own bay (concave rooms): pull it in if the scanline hit a void
+    if (!isPointInsideWithClearance(equipX, equipY, bayPoly, Math.min(clr, 0.5)) ) {
+      const c = clampPointInsidePolygon(equipX, equipY, bayPoly, clr);
+      equipX = isPointInPolygon(c.x, c.y, bayPoly) ? c.x : getPolygonCentroid(bayPoly).x;
+      equipY = isPointInPolygon(c.x, c.y, bayPoly) ? c.y : getPolygonCentroid(bayPoly).y;
     }
 
     currentOffset = nextOffset;

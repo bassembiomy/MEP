@@ -1,6 +1,6 @@
 import { EquipmentServiceZone, DesignControlMode } from '../zoning/zonePartitioner';
 import { selectBestDiffuserFromCatalog } from './diffuserSelector';
-import { getPolygonScanlineSpan, clampPointInsidePolygon } from '../geometry';
+import { layoutTerminalGrid, THROW_RATIO_MIN, THROW_RATIO_MAX } from '../geometry';
 
 export interface CoordinatedAirTerminal {
   id: string;
@@ -22,132 +22,63 @@ export interface CoordinatedAirTerminal {
   status: 'pass' | 'warning' | 'fail';
 }
 
-function getPolygonBoundingBox(points: number[]) {
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (let i = 0; i < points.length; i += 2) {
-    const x = points[i];
-    const y = points[i + 1];
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
-  return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
-}
-
+/**
+ * Places supply diffusers on a professional cell-centred grid inside the zone polygon (feet).
+ * Every position is inside the polygon, unique, and at least half a grid spacing from the walls.
+ * `throwRatio` = T50 / L with L = half the governing spacing (0.75 - 1.25 passes).
+ */
 export function placeSupplyDiffusersForZone(
   zone: EquipmentServiceZone,
-  options: { targetCfmPerDiffuser?: number } = {}
+  options: { targetCfmPerDiffuser?: number; unitPerFt?: number } = {}
 ): CoordinatedAirTerminal[] {
-  const { targetCfmPerDiffuser = 350 } = options;
+  const { targetCfmPerDiffuser = 350, unitPerFt = 1 } = options;
   const zoneCfm = zone.supplyCfm;
-  const numDiffusers = Math.max(1, Math.round(zoneCfm / targetCfmPerDiffuser));
-  const cfmPerDiffuser = Math.round(zoneCfm / numDiffusers);
+  if (!(zoneCfm > 0) || zone.serviceAreaPolygon.length < 6) return [];
 
-  const selected = selectBestDiffuserFromCatalog(cfmPerDiffuser, zone.targetNc);
-  const bbox = getPolygonBoundingBox(zone.serviceAreaPolygon);
+  let numDiffusers = Math.max(1, Math.round(zoneCfm / targetCfmPerDiffuser));
+  let selected = selectBestDiffuserFromCatalog(Math.round(zoneCfm / numDiffusers), zone.targetNc);
+  // If nothing fits (neck velocity / catalog range), add diffusers rather than overloading one
+  for (let guard = 0; guard < 4 && selected.requiredCount > 1; guard++) {
+    numDiffusers *= selected.requiredCount;
+    selected = selectBestDiffuserFromCatalog(Math.round(zoneCfm / numDiffusers), zone.targetNc);
+  }
+
+  const grid = layoutTerminalGrid(zone.serviceAreaPolygon, numDiffusers, { unitPerFt });
+  if (grid.points.length === 0) return [];
+  numDiffusers = grid.points.length; // the room may hold fewer than requested; never stack terminals
+
+  const cfmPerDiffuser = Math.round(zoneCfm / numDiffusers);
+  selected = selectBestDiffuserFromCatalog(cfmPerDiffuser, zone.targetNc);
+  const throwRatio = parseFloat((selected.throwT50Ft / Math.max(grid.throwLengthFt, 1e-6)).toFixed(2));
+  const status: CoordinatedAirTerminal['status'] =
+    throwRatio >= THROW_RATIO_MIN && throwRatio <= THROW_RATIO_MAX && selected.withinLimits ? 'pass' : 'warning';
 
   const terminals: CoordinatedAirTerminal[] = [];
   let remainingCfm = zoneCfm;
-
-  if (bbox.width > bbox.height * 1.3 && numDiffusers >= 2) {
-    // Symmetrical 2-row alternating grid (Top/Bottom branch distribution)
-    const cols = numDiffusers >= 4 ? 4 : numDiffusers;
-    const yTop = bbox.minY + bbox.height * 0.25;
-    const yBottom = bbox.minY + bbox.height * 0.75;
-
-    // Place supply diffusers in alternating/balanced positions across the 4 columns
-    const slotPositions = [
-      { col: 1, y: yBottom },
-      { col: 2, y: yTop },
-      { col: 3, y: yBottom },
-      { col: 4, y: yTop }
-    ];
-
-    for (let i = 0; i < numDiffusers; i++) {
-      const isLast = i === numDiffusers - 1;
-      const thisCfm = isLast ? remainingCfm : cfmPerDiffuser;
-      remainingCfm -= thisCfm;
-
-      const slot = slotPositions[i % slotPositions.length];
-      const span = getPolygonScanlineSpan(slot.y, zone.serviceAreaPolygon) || { minX: bbox.minX, maxX: bbox.maxX };
-      const bayW = span.maxX - span.minX;
-      const colStep = bayW / (cols + 1);
-      const rawX = span.minX + slot.col * colStep;
-      const clamped = clampPointInsidePolygon(rawX, slot.y, zone.serviceAreaPolygon, 2.0);
-
-      const characteristicLength = Math.max(10, bayW / cols);
-      const throwRatio = parseFloat((selected.throwT50Ft / characteristicLength).toFixed(2));
-
-      terminals.push({
-        id: `SAD-${zone.unitTag}-${i + 1}`,
-        unitId: zone.id,
-        designControlMode: 'ai',
-        type: 'supply',
-        subtype: '4-way-ceiling',
-        position: { x: parseFloat(clamped.x.toFixed(2)), y: parseFloat(clamped.y.toFixed(2)) },
-        cfm: thisCfm,
-        catalogModel: selected.model,
-        neckDimension: selected.neckDimension,
-        faceDimension: selected.faceDimension,
-        throwT50Ft: selected.throwT50Ft,
-        throwRatio,
-        adjacentOverlapRatio: 0.85,
-        occupiedZoneVelocityFpm: 40,
-        ncRating: selected.actualNc,
-        deltaPInWg: selected.deltaPInWg,
-        status: throwRatio >= 0.70 && throwRatio <= 1.30 ? 'pass' : 'warning'
-      });
-    }
-  } else {
-    // Standard orthogonal centroid grid for square or compact bays
-    const isWider = bbox.width >= bbox.height;
-    const cols = isWider ? numDiffusers : 1;
-    const rows = isWider ? 1 : numDiffusers;
-
-    const colStep = bbox.width / (cols + 1);
-    const rowStep = bbox.height / (rows + 1);
-
-    let terminalIndex = 1;
-    for (let r = 1; r <= rows; r++) {
-      for (let c = 1; c <= cols; c++) {
-        const isLast = terminalIndex === numDiffusers;
-        const thisCfm = isLast ? remainingCfm : cfmPerDiffuser;
-        remainingCfm -= thisCfm;
-
-        const posX = bbox.minX + c * colStep;
-        const posY = bbox.minY + r * rowStep;
-
-        const moduleWidth = bbox.width / cols;
-        const moduleHeight = bbox.height / rows;
-        const characteristicLength = Math.max(6, Math.sqrt(moduleWidth * moduleHeight));
-        const throwRatio = parseFloat((selected.throwT50Ft / characteristicLength).toFixed(2));
-
-        terminals.push({
-          id: `SAD-${zone.unitTag}-${terminalIndex}`,
-          unitId: zone.id,
-          designControlMode: 'ai',
-          type: 'supply',
-          subtype: '4-way-ceiling',
-          position: { x: parseFloat(posX.toFixed(2)), y: parseFloat(posY.toFixed(2)) },
-          cfm: thisCfm,
-          catalogModel: selected.model,
-          neckDimension: selected.neckDimension,
-          faceDimension: selected.faceDimension,
-          throwT50Ft: selected.throwT50Ft,
-          throwRatio,
-          adjacentOverlapRatio: 0.85,
-          occupiedZoneVelocityFpm: 40,
-          ncRating: selected.actualNc,
-          deltaPInWg: selected.deltaPInWg,
-          status: throwRatio >= 0.70 && throwRatio <= 1.30 ? 'pass' : 'warning'
-        });
-
-        terminalIndex++;
-        if (terminalIndex > numDiffusers) break;
-      }
-    }
-  }
+  grid.points.forEach((p, i) => {
+    const isLast = i === numDiffusers - 1;
+    const thisCfm = isLast ? remainingCfm : cfmPerDiffuser;
+    remainingCfm -= thisCfm;
+    terminals.push({
+      id: `SAD-${zone.unitTag}-${i + 1}`,
+      unitId: zone.id,
+      designControlMode: 'ai',
+      type: 'supply',
+      subtype: '4-way-ceiling',
+      position: { x: parseFloat(p.x.toFixed(2)), y: parseFloat(p.y.toFixed(2)) },
+      cfm: thisCfm,
+      catalogModel: selected.model,
+      neckDimension: selected.neckDimension,
+      faceDimension: selected.faceDimension,
+      throwT50Ft: selected.throwT50Ft,
+      throwRatio,
+      adjacentOverlapRatio: 0.85,
+      occupiedZoneVelocityFpm: 40,
+      ncRating: selected.actualNc,
+      deltaPInWg: selected.deltaPInWg,
+      status
+    });
+  });
 
   return terminals;
 }

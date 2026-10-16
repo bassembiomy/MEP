@@ -1,6 +1,13 @@
-import { getPolygonCentroid, isPointInPolygon } from './geometry';
+import { isPointInPolygon, layoutTerminalGrid } from './geometry';
 import { DiffuserCatalogItem } from './types';
 import { STANDARD_DIFFUSER_CATALOG } from './hvacCatalogs';
+import {
+  selectBestDiffuserFromCatalog as selectSupplyDiffuser,
+  maxCfmPerDiffuser,
+  CASSETTE_NOMINAL_BTU,
+  HIGH_WALL_NOMINAL_BTU
+} from './terminals/diffuserSelector';
+import { selectReturnPositions, computeReturnCfm } from './terminals/returnPlacer';
 
 export interface DiffuserPos {
   id: string;
@@ -15,51 +22,34 @@ export interface DiffuserPos {
 }
 
 /**
- * Selects the best matching diffuser record from catalog based on CFM and space NC limit
+ * Selects the smallest catalog diffuser whose neck velocity (<= ~700 fpm) and CFM range fit.
+ * When nothing fits the largest size is returned with `requiredCount` > 1 and `withinLimits` false.
  */
 export function selectBestDiffuserFromCatalog(
   cfmPerTerminal: number,
   spaceNcLimit: number = 30,
   catalog: DiffuserCatalogItem[] = STANDARD_DIFFUSER_CATALOG
-): { diffuser: DiffuserCatalogItem; actualNc: number; throwT50Ft: number; deltaPInWg: number } {
-  // Filter candidate supply diffusers
-  const supplyDiffusers = catalog.filter(
+): {
+  diffuser: DiffuserCatalogItem;
+  actualNc: number;
+  throwT50Ft: number;
+  deltaPInWg: number;
+  neckVelocityFpm: number;
+  withinLimits: boolean;
+  requiredCount: number;
+} {
+  const supply = catalog.filter(
     d => d.terminalType === 'square-ceiling' || d.terminalType === 'round-ceiling' || d.terminalType === 'linear-slot'
   );
-
-  let bestMatch = supplyDiffusers[0];
-  let minDiff = Infinity;
-  let bestNc = 25;
-  let bestThrow = 10;
-  let bestDeltaP = 0.035;
-
-  for (const item of supplyDiffusers) {
-    if (item.performanceTable && item.performanceTable.length > 0) {
-      // Check if CFM is within operating range
-      if (cfmPerTerminal >= item.minCfm * 0.8 && cfmPerTerminal <= item.maxCfm * 1.2) {
-        // Find closest point in performance table
-        const sorted = [...item.performanceTable].sort((a, b) => Math.abs(a.cfm - cfmPerTerminal) - Math.abs(b.cfm - cfmPerTerminal));
-        const point = sorted[0];
-
-        if (point.ncRating <= spaceNcLimit + 2) {
-          const diff = Math.abs(point.cfm - cfmPerTerminal);
-          if (diff < minDiff) {
-            minDiff = diff;
-            bestMatch = item;
-            bestNc = point.ncRating;
-            bestThrow = point.throwFt.t50;
-            bestDeltaP = point.deltaPInWg;
-          }
-        }
-      }
-    }
-  }
-
+  const r = selectSupplyDiffuser(cfmPerTerminal, spaceNcLimit, 'square-ceiling', supply.length ? supply : catalog);
   return {
-    diffuser: bestMatch,
-    actualNc: bestNc,
-    throwT50Ft: bestThrow,
-    deltaPInWg: bestDeltaP
+    diffuser: r.catalogItem,
+    actualNc: r.actualNc,
+    throwT50Ft: r.throwT50Ft,
+    deltaPInWg: r.deltaPInWg,
+    neckVelocityFpm: r.neckVelocityFpm,
+    withinLimits: r.withinLimits,
+    requiredCount: r.requiredCount
   };
 }
 
@@ -198,9 +188,28 @@ export function findCadTerminalPositions(
   return mergedPoints;
 }
 
+/** Extra, optional inputs for placeDiffusers (all backward compatible). */
+export interface PlaceDiffusersOptions {
+  /** Prefix for deterministic ids, e.g. the zone id: `${prefix}-SD-01`, `${prefix}-RG-01`. */
+  idPrefix?: string;
+  /** Exhaust airflow (CFM) leaving the room; return = supply - (exhaust + exfiltration). */
+  exhaustCfm?: number;
+  /** Exfiltration airflow (CFM); default return = supply * 0.9 when neither is given. */
+  exfiltrationCfm?: number;
+  /** Indoor-unit position (plenum-return side): first return grille is placed nearest to it. */
+  unitPos?: { x: number; y: number };
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
 /**
  * Places diffusers and terminals inside a zone polygon.
+ * `_scale` is drawing units per foot (px callers pass project scale; feet callers pass 1).
  * Supports CAD matching, throw intervals ($0.75L \le T_{50} \le 1.25L$), and product catalog data.
+ *
+ * Counts: cassette / high-wall = number of indoor units (catalogQty or load/nominal);
+ * ducted = ceil(cfm / max CFM per diffuser) with neck velocity <= 700 fpm and NC respected.
+ * All terminals are inside the polygon (point-in-polygon verified), unique, and cell-centred.
  */
 export function placeDiffusers(
   points: number[],
@@ -213,162 +222,101 @@ export function placeDiffusers(
   totalLoadBtu?: number,
   catalogQty?: number,
   catalogModel?: string,
-  spaceNcLimit: number = 30
+  spaceNcLimit: number = 30,
+  options: PlaceDiffusersOptions = {}
 ): DiffuserPos[] {
-  if (points.length < 6 || totalFlow <= 0) return [];
+  if (points.length < 6 || !(totalFlow > 0)) return [];
+  const u = _scale > 0 ? _scale : 1;
+  const prefix = options.idPrefix ?? 'terminal';
 
   const cfm = isImperial ? totalFlow : totalFlow * 2.119;
   const loadBtu = totalLoadBtu || (cfm * (isImperial ? 30 : 8.8));
+  const isIndoorUnitTerminal = systemType === 'cassette' || systemType === 'high-wall';
+  const termType: DiffuserPos['type'] = systemType === 'cassette' ? 'cassette' : systemType === 'high-wall' ? 'high-wall' : 'supply';
 
   // Determine number of terminals
   let numTerminals = 1;
-  if (catalogQty !== undefined && catalogQty > 0) {
-    numTerminals = catalogQty;
-  } else if (systemType === 'cassette') {
-    numTerminals = Math.max(1, Math.ceil(loadBtu / 38000));
-  } else if (systemType === 'high-wall') {
-    numTerminals = Math.max(1, Math.ceil(loadBtu / 24000));
+  if (isIndoorUnitTerminal) {
+    if (catalogQty !== undefined && catalogQty > 0) numTerminals = Math.floor(catalogQty);
+    else numTerminals = Math.max(1, Math.ceil(loadBtu / (systemType === 'cassette' ? CASSETTE_NOMINAL_BTU : HIGH_WALL_NOMINAL_BTU)));
   } else {
-    // 1 diffuser per 250-350 CFM for quiet, uniform air distribution
-    numTerminals = Math.max(1, Math.ceil(cfm / 300));
+    // Ducted: catalogQty is the number of INDOOR UNITS, not diffusers. Size by neck velocity / NC.
+    const maxPer = maxCfmPerDiffuser(spaceNcLimit);
+    numTerminals = Math.max(1, Math.ceil(cfm / maxPer));
+  }
+  numTerminals = Math.max(1, numTerminals);
+
+  // Re-select once the count is known; add diffusers if even the largest size is overloaded
+  let selection = selectBestDiffuserFromCatalog(Math.round(cfm / numTerminals), spaceNcLimit);
+  if (!isIndoorUnitTerminal) {
+    for (let g = 0; g < 4 && selection.requiredCount > 1; g++) {
+      numTerminals *= selection.requiredCount;
+      selection = selectBestDiffuserFromCatalog(Math.round(cfm / numTerminals), spaceNcLimit);
+    }
   }
 
-  // Calculate flow per terminal
-  const flowPerTerminal = Math.round(totalFlow / numTerminals);
-  const cfmPerTerminal = Math.round(cfm / numTerminals);
+  const ceilFt = (v: number) => (u >= 5 ? Math.round(v) : parseFloat(v.toFixed(2)));
+  // Round for the canvas, but never leave the polygon because of rounding
+  const settle = (x: number, y: number) => {
+    const rx = ceilFt(x), ry = ceilFt(y);
+    return isPointInPolygon(rx, ry, points) ? { x: rx, y: ry } : { x: parseFloat(x.toFixed(3)), y: parseFloat(y.toFixed(3)) };
+  };
 
-  // Look up product-specific diffuser from catalog
-  const selection = selectBestDiffuserFromCatalog(cfmPerTerminal, spaceNcLimit);
-  let sizeLabel = `${selection.diffuser.faceSizeIn.width}"x${selection.diffuser.faceSizeIn.height}"`;
-
-  if (systemType === 'cassette') {
-    sizeLabel = catalogModel || '36K';
-  } else if (systemType === 'high-wall') {
-    sizeLabel = catalogModel || '24K';
-  } else if (!isImperial) {
-    sizeLabel = `${Math.round(selection.diffuser.faceSizeIn.width * 25.4)}x${Math.round(selection.diffuser.faceSizeIn.height * 25.4)}`;
-  }
+  const sizeLabelFor = () => {
+    if (systemType === 'cassette') return catalogModel || '36K';
+    if (systemType === 'high-wall') return catalogModel || '24K';
+    const f = selection.diffuser.faceSizeIn;
+    return isImperial ? `${f.width}"x${f.height}"` : `${Math.round(f.width * 25.4)}x${Math.round(f.height * 25.4)}`;
+  };
 
   // Try snapping to CAD positions if valid mechanical terminals exist matching required count
-  const cadPositions = findCadTerminalPositions(points, dxfEntities, systemType, numTerminals);
+  const cadPositions = findCadTerminalPositions(points, dxfEntities, systemType, numTerminals)
+    .filter(p => isPointInPolygon(p.x, p.y, points));
   if (cadPositions.length > 0 && Math.abs(cadPositions.length - numTerminals) <= 1) {
     const cadFlow = Math.round(totalFlow / cadPositions.length);
     return cadPositions.map((pos, idx) => ({
-      id: `terminal-${Date.now()}-${idx}`,
-      x: Math.round(pos.x),
-      y: Math.round(pos.y),
+      id: `${prefix}-SD-${pad2(idx + 1)}`,
+      ...settle(pos.x, pos.y),
       cfm: cadFlow,
-      size: sizeLabel,
-      type: systemType === 'cassette' ? 'cassette' : systemType === 'high-wall' ? 'high-wall' : 'supply',
+      size: sizeLabelFor(),
+      type: termType,
       actualNc: selection.actualNc,
       throwT50Ft: selection.throwT50Ft,
       deltaPInWg: selection.deltaPInWg
     }));
   }
 
-  // Standard Geometric Grid Distribution
-  const terminals: DiffuserPos[] = [];
+  const grid = layoutTerminalGrid(points, numTerminals, { unitPerFt: u });
+  const count = grid.points.length;
+  if (count === 0) return [];
+  const flowPerTerminal = Math.round(totalFlow / count);
+  const sizeLabel = sizeLabelFor();
 
-  // Bounding box of zone polygon
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  const numPoints = points.length / 2;
-  for (let i = 0; i < numPoints; i++) {
-    const x = points[2 * i];
-    const y = points[2 * i + 1];
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
+  const terminals: DiffuserPos[] = grid.points.map((p, i) => ({
+    id: `${prefix}-SD-${pad2(i + 1)}`,
+    ...settle(p.x, p.y),
+    cfm: flowPerTerminal,
+    size: sizeLabel,
+    type: termType,
+    actualNc: selection.actualNc,
+    throwT50Ft: selection.throwT50Ft,
+    deltaPInWg: selection.deltaPInWg
+  }));
 
-  const width = maxX - minX;
-  const height = maxY - minY;
-
-  // Single terminal: Centroid
-  if (numTerminals === 1) {
-    const centroid = getPolygonCentroid(points);
-    return [{
-      id: `terminal-${Date.now()}-0`,
-      x: Math.round(centroid.x),
-      y: Math.round(centroid.y),
-      cfm: flowPerTerminal,
-      size: sizeLabel,
-      type: systemType === 'cassette' ? 'cassette' : systemType === 'high-wall' ? 'high-wall' : 'supply',
-      actualNc: selection.actualNc,
-      throwT50Ft: selection.throwT50Ft,
-      deltaPInWg: selection.deltaPInWg
-    }];
-  }
-
-  // Multiple terminals: Uniform Grid
-  const ar = width / height;
-  let rows = Math.round(Math.sqrt(numTerminals / ar));
-  rows = Math.max(1, rows);
-  let cols = Math.ceil(numTerminals / rows);
-  cols = Math.max(1, cols);
-
-  const colWidth = width / cols;
-  const rowHeight = height / rows;
-
-  let count = 0;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      let gx = minX + (c + 0.5) * colWidth;
-      let gy = minY + (r + 0.5) * rowHeight;
-
-      if (!isPointInPolygon(gx, gy, points)) {
-        const centroid = getPolygonCentroid(points);
-        gx = (gx + centroid.x) / 2;
-        gy = (gy + centroid.y) / 2;
-        if (!isPointInPolygon(gx, gy, points)) {
-          gx = centroid.x;
-          gy = centroid.y;
-        }
-      }
-
-      terminals.push({
-        id: `terminal-${Date.now()}-${count++}`,
-        x: Math.round(gx),
-        y: Math.round(gy),
-        cfm: flowPerTerminal,
-        size: sizeLabel,
-        type: systemType === 'cassette' ? 'cassette' : systemType === 'high-wall' ? 'high-wall' : 'supply',
-        actualNc: selection.actualNc,
-        throwT50Ft: selection.throwT50Ft,
-        deltaPInWg: selection.deltaPInWg
-      });
-
-      if (terminals.length >= numTerminals) break;
-    }
-    if (terminals.length >= numTerminals) break;
-  }
-
-  // Generate Return Air Grilles / Diffusers for Ducted Systems
+  // Generate Return Air Grilles for ducted systems
   const isDuctedSystem = systemType === 'concealed' || systemType === 'packaged' || systemType === 'vrf' || systemType === 'ahu';
   if (isDuctedSystem && terminals.length > 0) {
     const numReturns = Math.max(1, Math.ceil(cfm / 800));
-    const returnCfmPerGrille = Math.round((cfm * 0.9) / numReturns);
+    const returnCfm = computeReturnCfm(cfm, options);
+    const returnCfmPerGrille = Math.round(returnCfm / numReturns);
+    const retPos = selectReturnPositions(points, terminals, numReturns, { unitPerFt: u, anchor: options.unitPos });
 
-    // Place return diffusers along the perimeter opposite to supply centroid or near return corner
-    for (let rIdx = 0; rIdx < numReturns; rIdx++) {
-      // Offset return position towards boundary/corners away from supply terminals
-      const rx = numReturns === 1
-        ? Math.round(minX + width * 0.15)
-        : Math.round(minX + width * (0.15 + (rIdx * 0.7) / (numReturns - 1)));
-      const ry = Math.round(minY + height * 0.85);
 
-      let snapRx = rx;
-      let snapRy = ry;
-      if (!isPointInPolygon(snapRx, snapRy, points)) {
-        const centroid = getPolygonCentroid(points);
-        snapRx = Math.round((snapRx + centroid.x) / 2);
-        snapRy = Math.round((snapRy + centroid.y) / 2);
-      }
 
+    retPos.forEach((rp, rIdx) => {
       terminals.push({
-        id: `ret-grille-${Date.now()}-${rIdx}`,
-        x: snapRx,
-        y: snapRy,
+        id: `${prefix}-RG-${pad2(rIdx + 1)}`,
+        ...settle(rp.x, rp.y),
         cfm: returnCfmPerGrille,
         size: returnCfmPerGrille > 400 ? '24"x24"' : '18"x18"',
         type: 'return',
@@ -376,7 +324,7 @@ export function placeDiffusers(
         throwT50Ft: 0,
         deltaPInWg: 0.025
       });
-    }
+    });
   }
 
   return terminals;
