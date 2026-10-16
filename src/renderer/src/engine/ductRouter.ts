@@ -3,6 +3,8 @@ import { DiffuserPos } from './diffuserPlacer';
 import { getPolygonCentroid, calculateOptimalIndoorUnitPos } from './geometry';
 import { DuctSegment } from '../store/projectStore';
 import { DuctLocationCategory, AcousticSensitivity, DuctSectionCategory } from './types';
+import { buildOrthogonalTree, pickAxis, TopoSegment, TopoTerminal } from './ducts/orthogonalTopology';
+import { DEFAULT_PX_PER_FT, MM_PER_IN, METRIC_STEP_MM } from './ducts/ductUnits';
 
 export interface RouteDuctAcousticOptions {
   targetNc?: number;
@@ -11,8 +13,51 @@ export interface RouteDuctAcousticOptions {
   enhancedPerformance?: boolean;
   zoneName?: string;
   ductShape?: 'rectangular' | 'round';
+  /** Maximum available duct depth (ceiling plenum), in. Default 24. */
+  maxDepthIn?: number;
+  /** Equal-friction design rate (in.wg/100ft). Default 0.10 supply, 0.08 return. */
+  frictionRateTarget?: number;
 }
 
+/** DuctSegment plus the topology link used for static-pressure path walking. */
+export type RoutedDuctSegment = DuctSegment & { parentDuctId?: string; lengthFt?: number };
+
+/** Lateral offset between the supply trunk line and the return collar (ft). */
+const RETURN_COLLAR_OFFSET_FT = 3;
+const ON_LINE_TOL_FT = 0.5;
+const STATION_SNAP_FT = 0.1;
+const MIN_PIECE_FT = 1.0;
+
+function polygonBounds(points: number[]) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i + 1 < points.length; i += 2) {
+    minX = Math.min(minX, points[i]);
+    maxX = Math.max(maxX, points[i]);
+    minY = Math.min(minY, points[i + 1]);
+    maxY = Math.max(maxY, points[i + 1]);
+  }
+  return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
+}
+
+interface SizedGeometry {
+  widthVal: number;
+  heightVal: number;
+  diameterVal: number;
+  areaSqFt: number;
+  velocityFpm: number;
+  sizeLabel: string;
+}
+
+/**
+ * Routes ducts as an ORTHOGONAL (Manhattan) tree.
+ *
+ * - `pxPerFt` converts canvas px to feet (default 10 px/ft) so lengths, friction and verification use feet.
+ * - Supply trunk runs along the dominant room axis through the unit; each diffuser is projected onto
+ *   it and fed by a straight perpendicular branch. Trunk pieces end at the last takeoff.
+ * - Return grilles are connected to the unit return collar with the same orthogonal rules.
+ * - Sizes: standard 2" (imperial) / 50 mm (metric) increments, friction <= target AND acoustic velocity
+ *   limit, aspect <= 4:1, depth <= maxDepthIn, trunk depth constant and width never increasing downstream.
+ */
 export function routeDucts(
   points: number[],
   diffusers: DiffuserPos[],
@@ -21,7 +66,8 @@ export function routeDucts(
   customUnitPos?: { x: number; y: number },
   systemType: string = 'concealed',
   outdoorUnitPos?: { x: number; y: number },
-  acousticOptions: RouteDuctAcousticOptions = {}
+  acousticOptions: RouteDuctAcousticOptions = {},
+  pxPerFt: number = DEFAULT_PX_PER_FT
 ): { ducts: DuctSegment[]; unitPos: { x: number; y: number } } {
   // Non-ducted systems (High Wall, standard Cassette) do not use supply duct networks
   if (systemType === 'high-wall' || systemType === 'cassette') {
@@ -35,12 +81,15 @@ export function routeDucts(
     return { ducts: [], unitPos: { x: 0, y: 0 } };
   }
 
+  const ppf = pxPerFt > 0 ? pxPerFt : DEFAULT_PX_PER_FT;
   const {
     targetNc = 32,
     locationCategory = 'above-suspended-ceiling',
     enhancedPerformance = false,
     zoneName = 'Zone',
-    ductShape = 'rectangular'
+    ductShape = 'rectangular',
+    maxDepthIn = 24,
+    frictionRateTarget
   } = acousticOptions;
 
   // 1. Determine Indoor Unit Position (FCU / AHU / RTU Entry)
@@ -50,336 +99,220 @@ export function routeDucts(
   }
 
   const centroid = getPolygonCentroid(points);
+  const box = polygonBounds(points);
+  const axis = pickAxis(box);
+  const horizontal = axis === 'h';
 
-  // 2. Find the furthest supply diffuser from the Indoor Unit to orient the main trunk
-  let maxDist = -1;
-  let furthestDif = supplyDiffusers[0] || diffusers[0];
-  for (const dif of supplyDiffusers) {
-    const dist = Math.pow(dif.x - unitPos.x, 2) + Math.pow(dif.y - unitPos.y, 2);
-    if (dist > maxDist) {
-      maxDist = dist;
-      furthestDif = dif;
-    }
-  }
+  const fixedHeight = units === 'imperial' ? 10 : 200 / MM_PER_IN;
+  const toMm = (inches: number) => Math.round((inches * MM_PER_IN) / METRIC_STEP_MM) * METRIC_STEP_MM;
 
-  // Define trunk line vector from unitPos (A) towards furthest diffuser or zone axis (B)
-  const A = { x: unitPos.x, y: unitPos.y };
-  const B = { x: furthestDif.x, y: furthestDif.y };
+  const ducts: RoutedDuctSegment[] = [];
 
-  const vx = B.x - A.x;
-  const vy = B.y - A.y;
-  const lenSq = vx * vx + vy * vy || 1;
-
-  // 3. Project each supply diffuser orthogonally onto the trunk line AB
-  const projectedDiffusers = supplyDiffusers.map((dif) => {
-    const ux = dif.x - A.x;
-    const uy = dif.y - A.y;
-    let t = (ux * vx + uy * vy) / lenSq;
-    t = Math.max(0.05, Math.min(1.0, t));
-    return {
-      diffuser: dif,
-      projX: Math.round(A.x + t * vx),
-      projY: Math.round(A.y + t * vy),
-      t: t
-    };
-  });
-
-  // Sort projections along the trunk from unit outwards
-  projectedDiffusers.sort((a, b) => a.t - b.t);
-
-  const ducts: DuctSegment[] = [];
-  const fixedHeight = units === 'imperial' ? 10 : 8;
-
-  // 4. Build Trunk Segments
-  let currentStart = { x: unitPos.x, y: unitPos.y };
-
-  for (let i = 0; i < projectedDiffusers.length; i++) {
-    const segmentEnd = {
-      x: projectedDiffusers[i].projX,
-      y: projectedDiffusers[i].projY
-    };
-
-    // Flow rate in this trunk segment is the sum of flows of all downstream diffusers
-    let downstreamFlow = 0;
-    for (let j = i; j < projectedDiffusers.length; j++) {
-      downstreamFlow += projectedDiffusers[j].diffuser.cfm;
-    }
-
-    const acousticSizing = sizeDuctAcoustically(downstreamFlow, {
+  const sizeFor = (
+    ductId: string,
+    cfm: number,
+    category: DuctSectionCategory,
+    verifyType: 'trunk' | 'branch' | 'return',
+    lengthFt: number,
+    lock?: { heightIn: number; widthIn: number },
+    friction?: number
+  ) => {
+    const sizing = sizeDuctAcoustically(cfm, {
       locationCategory,
       targetNc,
-      sectionCategory: 'trunk',
+      sectionCategory: category,
       shape: ductShape,
-      fixedHeightIn: fixedHeight,
-      enhancedPerformance
+      fixedHeightIn: lock ? lock.heightIn : fixedHeight,
+      maxDepthIn: lock ? lock.heightIn : maxDepthIn,
+      enhancedPerformance,
+      frictionRateTarget: friction ?? frictionRateTarget,
+      units
     });
 
-    let sizeLabel = '';
-    let widthVal = acousticSizing.widthIn;
-    let heightVal = acousticSizing.heightIn;
-    const diameterVal = acousticSizing.diameterIn;
+    let widthVal = sizing.widthIn;
+    let heightVal = sizing.heightIn;
+    let diameterVal = sizing.diameterIn;
+    if (lock && ductShape !== 'round' && widthVal > lock.widthIn) {
+      widthVal = lock.widthIn; // trunk never grows downstream
+      heightVal = lock.heightIn;
+    }
 
+    let sizeLabel: string;
     if (ductShape === 'round') {
-      sizeLabel = `Ø${diameterVal}"`;
+      if (units === 'metric') {
+        const dMm = toMm(diameterVal);
+        diameterVal = dMm / MM_PER_IN;
+        widthVal = heightVal = diameterVal;
+        sizeLabel = `Ø${dMm}`;
+      } else {
+        sizeLabel = `Ø${diameterVal}"`;
+      }
     } else if (units === 'imperial') {
       sizeLabel = `${widthVal}"x${heightVal}"`;
     } else {
-      const wMm = Math.round((widthVal * 25.4) / 25) * 25;
-      const hMm = Math.round((heightVal * 25.4) / 25) * 25;
+      const wMm = toMm(widthVal);
+      const hMm = toMm(heightVal);
       sizeLabel = `${wMm}x${hMm}`;
-      widthVal = wMm / 25.4;
-      heightVal = hMm / 25.4;
+      widthVal = wMm / MM_PER_IN;
+      heightVal = hMm / MM_PER_IN;
     }
 
     const areaSqFt = ductShape === 'round'
       ? (Math.PI * Math.pow(diameterVal / 2, 2)) / 144
       : (widthVal * heightVal) / 144;
-    const velocityFpm = Math.round(downstreamFlow / Math.max(0.1, areaSqFt));
+    const velocityFpm = Math.round(cfm / Math.max(0.1, areaSqFt));
 
-    const ductId = `duct-trunk-${zoneId}-${i}`;
     const verification = verifyDuctSectionAcoustics(
       {
         id: ductId,
-        type: 'trunk',
+        type: verifyType,
         widthIn: widthVal,
         heightIn: heightVal,
         diameterIn: ductShape === 'round' ? diameterVal : undefined,
         shape: ductShape,
-        cfm: downstreamFlow,
+        cfm,
         velocityFpm,
-        sectionCategory: 'trunk'
+        sectionCategory: category,
+        lengthFt
       },
-      {
-        zoneName,
-        targetNc,
-        locationCategory,
-        enhancedPerformance
-      }
+      { zoneName, targetNc, locationCategory, enhancedPerformance }
     );
 
-    ducts.push({
-      id: ductId,
-      type: 'trunk',
-      points: [currentStart.x, currentStart.y, segmentEnd.x, segmentEnd.y],
-      widthIn: widthVal,
-      heightIn: heightVal,
-      diameterIn: ductShape === 'round' ? diameterVal : undefined,
-      shape: ductShape,
-      areaSqFt: Math.round(areaSqFt * 1000) / 1000,
-      cfm: downstreamFlow,
-      velocityFpm,
-      sizeLabel,
-      sectionCategory: 'trunk',
-      acousticVerification: verification
-    });
+    const geom: SizedGeometry = { widthVal, heightVal, diameterVal, areaSqFt, velocityFpm, sizeLabel };
+    return { geom, verification };
+  };
 
-    currentStart = segmentEnd;
+  const emitTree = (
+    segs: TopoSegment[],
+    network: 'supply' | 'return',
+    rootParentId: string | undefined,
+    idOf: (seg: TopoSegment, trunkIdx: number, branchIdx: number) => string
+  ) => {
+    const idsByIndex: string[] = [];
+    let trunkCount = 0;
+    let branchCount = 0;
+    segs.forEach((seg) => {
+      const trunkLike = seg.kind === 'trunk';
+      const id = idOf(seg, trunkCount, branchCount);
+      if (trunkLike) trunkCount++;
+      else branchCount++;
+      idsByIndex.push(id);
+
+      const parentId = seg.parent >= 0 ? idsByIndex[seg.parent] : rootParentId;
+      const parentDuct = parentId ? ducts.find((d) => d.id === parentId) : undefined;
+      const lengthFt = Math.hypot(seg.end.x - seg.start.x, seg.end.y - seg.start.y) / ppf;
+
+      let category: DuctSectionCategory;
+      if (network === 'return') category = 'return';
+      else category = trunkLike ? 'trunk' : seg.kind === 'branch' ? 'branch' : 'runout';
+
+      const lock =
+        trunkLike && parentDuct && (network === 'return' ? parentDuct.type === 'return' : parentDuct.type === 'trunk')
+          ? { heightIn: parentDuct.heightIn, widthIn: parentDuct.widthIn }
+          : undefined;
+
+      const { geom, verification } = sizeFor(
+        id,
+        seg.flow,
+        category,
+        network === 'return' ? 'return' : trunkLike ? 'trunk' : 'branch',
+        lengthFt,
+        lock,
+        network === 'return' ? (frictionRateTarget ?? 0.08) : undefined
+      );
+
+      ducts.push({
+        id,
+        type: network === 'return' ? 'return' : trunkLike ? 'trunk' : 'branch',
+        points: [seg.start.x, seg.start.y, seg.end.x, seg.end.y],
+        widthIn: geom.widthVal,
+        heightIn: geom.heightVal,
+        diameterIn: ductShape === 'round' ? geom.diameterVal : undefined,
+        shape: ductShape,
+        areaSqFt: Math.round(geom.areaSqFt * 1000) / 1000,
+        cfm: seg.flow,
+        velocityFpm: geom.velocityFpm,
+        sizeLabel: network === 'return' ? `${geom.sizeLabel} (R)` : geom.sizeLabel,
+        sectionCategory: category,
+        acousticVerification: verification,
+        parentDuctId: parentId,
+        lengthFt: Math.round(lengthFt * 100) / 100
+      });
+    });
+  };
+
+  const treeOpts = {
+    axis,
+    snapTol: STATION_SNAP_FT * ppf,
+    onLineTol: ON_LINE_TOL_FT * ppf,
+    minLen: MIN_PIECE_FT * ppf
+  };
+
+  // 2. Supply: orthogonal trunk + perpendicular branches
+  if (supplyDiffusers.length > 0) {
+    const terminals: TopoTerminal[] = supplyDiffusers.map((d) => ({ id: d.id, x: d.x, y: d.y, cfm: d.cfm }));
+    const segs = buildOrthogonalTree({ x: unitPos.x, y: unitPos.y }, terminals, treeOpts);
+    emitTree(segs, 'supply', undefined, (seg, t, b) =>
+      seg.kind === 'trunk' ? `duct-trunk-${zoneId}-${t}` : `duct-branch-${zoneId}-${b}`
+    );
   }
 
-  // 5. Build Orthogonal Branch Segments to Diffusers
-  projectedDiffusers.forEach((pd, idx) => {
-    const dif = pd.diffuser;
-    const branchStart = { x: pd.projX, y: pd.projY };
-    const branchEnd = { x: dif.x, y: dif.y };
-
-    // If diffuser is directly on the trunk, avoid creating a 0-length line
-    const branchDist = Math.hypot(branchEnd.x - branchStart.x, branchEnd.y - branchStart.y);
-    if (branchDist > 4) {
-      const sectionCat: DuctSectionCategory = 'runout';
-      const acousticSizing = sizeDuctAcoustically(dif.cfm, {
-        locationCategory,
-        targetNc,
-        sectionCategory: sectionCat,
-        shape: ductShape,
-        fixedHeightIn: fixedHeight,
-        enhancedPerformance
-      });
-
-      let sizeLabel = '';
-      let widthVal = acousticSizing.widthIn;
-      let heightVal = acousticSizing.heightIn;
-      const diameterVal = acousticSizing.diameterIn;
-
-      if (ductShape === 'round') {
-        sizeLabel = `Ø${diameterVal}"`;
-      } else if (units === 'imperial') {
-        sizeLabel = `${widthVal}"x${heightVal}"`;
-      } else {
-        const wMm = Math.round((widthVal * 25.4) / 25) * 25;
-        const hMm = Math.round((heightVal * 25.4) / 25) * 25;
-        sizeLabel = `${wMm}x${hMm}`;
-        widthVal = wMm / 25.4;
-        heightVal = hMm / 25.4;
-      }
-
-      const areaSqFt = ductShape === 'round'
-        ? (Math.PI * Math.pow(diameterVal / 2, 2)) / 144
-        : (widthVal * heightVal) / 144;
-      const velocityFpm = Math.round(dif.cfm / Math.max(0.1, areaSqFt));
-
-      const ductId = `duct-branch-${zoneId}-${idx}`;
-      const verification = verifyDuctSectionAcoustics(
-        {
-          id: ductId,
-          type: 'branch',
-          widthIn: widthVal,
-          heightIn: heightVal,
-          diameterIn: ductShape === 'round' ? diameterVal : undefined,
-          shape: ductShape,
-          cfm: dif.cfm,
-          velocityFpm,
-          sectionCategory: sectionCat
-        },
-        {
-          zoneName,
-          targetNc,
-          locationCategory,
-          enhancedPerformance
-        }
-      );
-
-      ducts.push({
-        id: ductId,
-        type: 'branch',
-        points: [branchStart.x, branchStart.y, branchEnd.x, branchEnd.y],
-        widthIn: widthVal,
-        heightIn: heightVal,
-        diameterIn: ductShape === 'round' ? diameterVal : undefined,
-        shape: ductShape,
-        areaSqFt: Math.round(areaSqFt * 1000) / 1000,
-        cfm: dif.cfm,
-        velocityFpm,
-        sizeLabel,
-        sectionCategory: sectionCat,
-        acousticVerification: verification
-      });
-    }
-  });
-
-  // 6. For Ducted Systems (Concealed, Packaged, AHU, VRF), add dedicated Return Air ductwork
+  // 3. For Ducted Systems (Concealed, Packaged, AHU, VRF), add orthogonal return ductwork
   const isDuctedSystem = systemType === 'concealed' || systemType === 'packaged' || systemType === 'ahu' || systemType === 'vrf';
   if (isDuctedSystem) {
-    if (returnDiffusers.length > 0) {
-      returnDiffusers.forEach((rd, rIdx) => {
-        const returnSizing = sizeDuctAcoustically(rd.cfm, {
-          locationCategory,
-          targetNc,
-          sectionCategory: 'return',
-          shape: ductShape,
-          fixedHeightIn: fixedHeight,
-          enhancedPerformance,
-          frictionRateTarget: 0.08
-        });
+    const centreV = horizontal ? (box.minY + box.maxY) / 2 : (box.minX + box.maxX) / 2;
+    const unitV = horizontal ? unitPos.y : unitPos.x;
+    const sign = centreV - unitV >= 0 ? 1 : -1;
+    const off = RETURN_COLLAR_OFFSET_FT * ppf;
+    const collar = horizontal
+      ? { x: unitPos.x, y: unitPos.y + sign * off }
+      : { x: unitPos.x + sign * off, y: unitPos.y };
 
-        const retLabel = ductShape === 'round'
-          ? `Ø${returnSizing.diameterIn}" (R)`
-          : units === 'imperial'
-          ? `${returnSizing.widthIn}"x${returnSizing.heightIn}" (R)`
-          : `${Math.round(returnSizing.widthIn * 25.4)}x${Math.round(returnSizing.heightIn * 25.4)} (R)`;
+    const totalFlow = supplyDiffusers.reduce((sum, d) => sum + d.cfm, 0);
+    const returnFlow = returnDiffusers.length > 0
+      ? returnDiffusers.reduce((s, d) => s + d.cfm, 0)
+      : Math.round(totalFlow * 0.9);
 
-        const ductId = `duct-return-${zoneId}-${rIdx}`;
-        const retAreaSqFt = (returnSizing.widthIn * returnSizing.heightIn) / 144;
-        const retVelocity = Math.round(rd.cfm / Math.max(0.1, retAreaSqFt));
+    if (returnFlow > 0) {
+      const stubId = `duct-return-${zoneId}-stub`;
+      const stubSeg: TopoSegment = {
+        key: -1,
+        kind: 'trunk',
+        start: { x: unitPos.x, y: unitPos.y },
+        end: collar,
+        flow: returnFlow,
+        parent: -1,
+        direct: [],
+        downstream: returnDiffusers.map((d) => d.id),
+        orientation: horizontal ? 'v' : 'h',
+        isTakeoff: false,
+        onTrunk: false
+      };
+      emitTree([stubSeg], 'return', undefined, () => stubId);
 
-        const retVerification = verifyDuctSectionAcoustics(
-          {
-            id: ductId,
-            type: 'return',
-            widthIn: returnSizing.widthIn,
-            heightIn: returnSizing.heightIn,
-            diameterIn: ductShape === 'round' ? returnSizing.diameterIn : undefined,
-            shape: ductShape,
-            cfm: rd.cfm,
-            velocityFpm: retVelocity,
-            sectionCategory: 'return'
-          },
-          {
-            zoneName,
-            targetNc,
-            locationCategory,
-            enhancedPerformance
-          }
-        );
-
-        ducts.push({
-          id: ductId,
-          type: 'return',
-          points: [unitPos.x, unitPos.y, rd.x, rd.y],
-          widthIn: returnSizing.widthIn,
-          heightIn: returnSizing.heightIn,
-          diameterIn: ductShape === 'round' ? returnSizing.diameterIn : undefined,
-          shape: ductShape,
-          areaSqFt: Math.round(retAreaSqFt * 1000) / 1000,
-          cfm: rd.cfm,
-          velocityFpm: retVelocity,
-          sizeLabel: retLabel,
-          sectionCategory: 'return',
-          acousticVerification: retVerification
-        });
-      });
-    } else {
-      const totalFlow = supplyDiffusers.reduce((sum, d) => sum + d.cfm, 0);
-      const returnFlow = Math.round(totalFlow * 0.9);
-
-      const returnSizing = sizeDuctAcoustically(returnFlow, {
-        locationCategory,
-        targetNc,
-        sectionCategory: 'return',
-        shape: ductShape,
-        fixedHeightIn: fixedHeight,
-        enhancedPerformance,
-        frictionRateTarget: 0.08
-      });
-
-      const retLabel = ductShape === 'round'
-        ? `Ø${returnSizing.diameterIn}" (R)`
-        : units === 'imperial'
-        ? `${returnSizing.widthIn}"x${returnSizing.heightIn}" (R)`
-        : `${Math.round(returnSizing.widthIn * 25.4)}x${Math.round(returnSizing.heightIn * 25.4)} (R)`;
-
-      // Place return intake near the unit entry point inside the room
-      const retEndX = Math.round(unitPos.x + (centroid.x - unitPos.x) * 0.35);
-      const retEndY = Math.round(unitPos.y + (centroid.y - unitPos.y) * 0.35);
-
-      const ductId = `duct-return-${zoneId}`;
-      const retAreaSqFt = (returnSizing.widthIn * returnSizing.heightIn) / 144;
-      const retVelocity = Math.round(returnFlow / Math.max(0.1, retAreaSqFt));
-
-      const retVerification = verifyDuctSectionAcoustics(
-        {
-          id: ductId,
-          type: 'return',
-          widthIn: returnSizing.widthIn,
-          heightIn: returnSizing.heightIn,
-          diameterIn: ductShape === 'round' ? returnSizing.diameterIn : undefined,
-          shape: ductShape,
-          cfm: returnFlow,
-          velocityFpm: retVelocity,
-          sectionCategory: 'return'
-        },
-        {
-          zoneName,
-          targetNc,
-          locationCategory,
-          enhancedPerformance
-        }
-      );
-
-      ducts.push({
-        id: ductId,
-        type: 'return',
-        points: [unitPos.x, unitPos.y + 15, retEndX, retEndY],
-        widthIn: returnSizing.widthIn,
-        heightIn: returnSizing.heightIn,
-        diameterIn: ductShape === 'round' ? returnSizing.diameterIn : undefined,
-        shape: ductShape,
-        areaSqFt: Math.round(retAreaSqFt * 1000) / 1000,
-        cfm: returnFlow,
-        velocityFpm: retVelocity,
-        sizeLabel: retLabel,
-        sectionCategory: 'return',
-        acousticVerification: retVerification
-      });
+      if (returnDiffusers.length > 0) {
+        const terminals: TopoTerminal[] = returnDiffusers.map((d) => ({ id: d.id, x: d.x, y: d.y, cfm: d.cfm }));
+        const segs = buildOrthogonalTree(collar, terminals, treeOpts);
+        let n = 0;
+        emitTree(segs, 'return', stubId, () => `duct-return-${zoneId}-${n++}`);
+      } else {
+        // Plenum return: short orthogonal intake run from the collar toward the room centre
+        const centreU = horizontal ? centroid.x : centroid.y;
+        const unitU = horizontal ? unitPos.x : unitPos.y;
+        const dir = centreU - unitU >= 0 ? 1 : -1;
+        const len = Math.max(3 * ppf, Math.min(6 * ppf, Math.abs(centreU - unitU) || 6 * ppf));
+        const end = horizontal
+          ? { x: collar.x + dir * len, y: collar.y }
+          : { x: collar.x, y: collar.y + dir * len };
+        const runSeg: TopoSegment = {
+          ...stubSeg,
+          start: collar,
+          end,
+          parent: -1,
+          orientation: horizontal ? 'h' : 'v'
+        };
+        emitTree([runSeg], 'return', stubId, () => `duct-return-${zoneId}`);
+      }
     }
   }
 

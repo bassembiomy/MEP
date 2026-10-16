@@ -1,5 +1,5 @@
 import { isPointInPolygon, getPolygonCentroid } from './geometry';
-import { sizeDuct } from './ductSizer';
+import { routeDucts } from './ductRouter';
 import { selectBestDiffuserFromCatalog } from './diffuserPlacer';
 import { STANDARD_DIFFUSER_CATALOG } from './hvacCatalogs';
 import {
@@ -505,7 +505,7 @@ export function planDuctedAirDistribution(
   systemType: string,
   spaceNcLimit: number = 32,
   units: 'imperial' | 'metric' = 'imperial',
-  _scale: number = 10,
+  scale: number = 10,
   candidateDiffusers?: {
     quantity: number;
     cfmPerUnit?: number;
@@ -611,118 +611,20 @@ export function planDuctedAirDistribution(
     });
   }
 
-  const supplyDiffusers = diffusers.filter((d) => d.type === 'supply' || !d.type);
-
-  // Route ducts from unit outlet port to supply diffusers
-  const unitPos = indoorUnitComp.position;
-  let furthestDif = supplyDiffusers[0] || diffusers[0];
-  let maxDist = -1;
-  for (const dif of supplyDiffusers) {
-    const dist = Math.pow(dif.x - unitPos.x, 2) + Math.pow(dif.y - unitPos.y, 2);
-    if (dist > maxDist) {
-      maxDist = dist;
-      furthestDif = dif;
-    }
-  }
-
-  const A = { x: unitPos.x, y: unitPos.y };
-  const B = { x: furthestDif.x, y: furthestDif.y };
-  const vx = B.x - A.x;
-  const vy = B.y - A.y;
-  const lenSq = vx * vx + vy * vy || 1;
-
-  const projectedDiffusers = supplyDiffusers.map((dif) => {
-    const ux = dif.x - A.x;
-    const uy = dif.y - A.y;
-    let t = (ux * vx + uy * vy) / lenSq;
-    t = Math.max(0.05, Math.min(1.0, t));
-    return {
-      diffuser: dif,
-      projX: Math.round(A.x + t * vx),
-      projY: Math.round(A.y + t * vy),
-      t
-    };
-  });
-
-  projectedDiffusers.sort((a, b) => a.t - b.t);
-
-  const ducts: DuctSegment[] = [];
-  const fixedHeight = units === 'imperial' ? 10 : 8;
-  let currentStart = { x: unitPos.x, y: unitPos.y };
-
-  // Trunk segments
-  for (let i = 0; i < projectedDiffusers.length; i++) {
-    const segmentEnd = {
-      x: projectedDiffusers[i].projX,
-      y: projectedDiffusers[i].projY
-    };
-
-    let downstreamFlow = 0;
-    for (let j = i; j < projectedDiffusers.length; j++) {
-      downstreamFlow += projectedDiffusers[j].diffuser.cfm;
-    }
-
-    const size = sizeDuct(downstreamFlow, 0.10, fixedHeight);
-    const velocityFpm = Math.round(downstreamFlow / Math.max(0.1, (size.widthIn * size.heightIn) / 144));
-    const sizeLabel = `${size.widthIn}"x${size.heightIn}"`;
-
-    ducts.push({
-      id: `duct-trunk-${zoneId}-${i}`,
-      type: 'trunk',
-      points: [currentStart.x, currentStart.y, segmentEnd.x, segmentEnd.y],
-      widthIn: size.widthIn,
-      heightIn: size.heightIn,
-      cfm: downstreamFlow,
-      velocityFpm,
-      sizeLabel
-    });
-
-    currentStart = segmentEnd;
-  }
-
-  // Branch segments
-  projectedDiffusers.forEach((pd, idx) => {
-    const dif = pd.diffuser;
-    const branchStart = { x: pd.projX, y: pd.projY };
-    const branchEnd = { x: dif.x, y: dif.y };
-
-    const branchDist = Math.hypot(branchEnd.x - branchStart.x, branchEnd.y - branchStart.y);
-    if (branchDist > 4) {
-      const size = sizeDuct(dif.cfm, 0.10, fixedHeight);
-      const velocityFpm = Math.round(dif.cfm / Math.max(0.1, (size.widthIn * size.heightIn) / 144));
-
-      ducts.push({
-        id: `duct-branch-${zoneId}-${idx}`,
-        type: 'branch',
-        points: [branchStart.x, branchStart.y, branchEnd.x, branchEnd.y],
-        widthIn: size.widthIn,
-        heightIn: size.heightIn,
-        cfm: dif.cfm,
-        velocityFpm,
-        sizeLabel: `${size.widthIn}"x${size.heightIn}"`
-      });
-    }
-  });
-
-  // Return duct for Packaged RTU or AHU
-  if (systemType === 'packaged' || systemType === 'ahu') {
-    const totalFlow = diffusers.reduce((sum, d) => sum + d.cfm, 0);
-    const returnSize = sizeDuct(totalFlow * 0.9, 0.08, fixedHeight);
-    const centroid = getPolygonCentroid(points);
-    const retEndX = Math.round(unitPos.x + (centroid.x - unitPos.x) * 0.35);
-    const retEndY = Math.round(unitPos.y + (centroid.y - unitPos.y) * 0.35);
-
-    ducts.push({
-      id: `duct-return-${zoneId}`,
-      type: 'return',
-      points: [unitPos.x, unitPos.y + 15, retEndX, retEndY],
-      widthIn: returnSize.widthIn,
-      heightIn: returnSize.heightIn,
-      cfm: Math.round(totalFlow * 0.9),
-      velocityFpm: Math.round((totalFlow * 0.9) / Math.max(0.1, (returnSize.widthIn * returnSize.heightIn) / 144)),
-      sizeLabel: `${returnSize.widthIn}"x${returnSize.heightIn}" (R)`
-    });
-  }
+  // Route ORTHOGONAL (Manhattan) supply trunk + perpendicular branches and return ducts from the unit.
+  // Lengths are computed in feet via the project scale (px per ft); sizing is friction + acoustic-velocity driven.
+  const routed = routeDucts(
+    points,
+    diffusers,
+    units,
+    zoneId,
+    { x: indoorUnitComp.position.x, y: indoorUnitComp.position.y },
+    systemType,
+    undefined,
+    { targetNc: spaceNcLimit },
+    scale
+  );
+  const ducts: DuctSegment[] = routed.ducts;
 
   return { diffusers, ducts, diagnostics };
 }

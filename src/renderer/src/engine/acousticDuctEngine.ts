@@ -11,6 +11,17 @@ import {
   DuctAcousticVerification
 } from './types';
 import { SMACNA_GAUGE_TABLE } from './knowledgeBase';
+import { selectRectangularDuct, selectRoundDuct } from './ductSizer';
+import { frictionRateExact, rectangularEquivalentDiameter } from './ducts/ductPressureCalculator';
+import {
+  IMPERIAL_STEP_IN,
+  IMPERIAL_MIN_DIM_IN,
+  METRIC_STEP_MM,
+  METRIC_MIN_DIM_MM,
+  MM_PER_IN,
+  HARD_MAX_ASPECT_RATIO,
+  DEFAULT_FRICTION_RATE_INWG_100FT
+} from './ducts/ductUnits';
 
 /**
  * Standard ASHRAE Acoustic Maximum Air Velocity Limits (FPM) for Main Trunks.
@@ -157,7 +168,12 @@ export function sizeDuctAcoustically(
     fixedHeightIn?: number;
     maxAspectRatio?: number;
     enhancedPerformance?: boolean;
+    /** Equal-friction ceiling, in.wg/100ft (default 0.10). Sizing satisfies BOTH this and the acoustic velocity limit. */
     frictionRateTarget?: number;
+    /** Maximum available duct depth (ceiling space), in. Default 24. */
+    maxDepthIn?: number;
+    /** 'metric' uses 50 mm size increments; default 'imperial' uses 2 in. */
+    units?: 'imperial' | 'metric';
   } = {}
 ): AcousticSizingResult {
   const {
@@ -166,9 +182,14 @@ export function sizeDuctAcoustically(
     sectionCategory = 'trunk',
     shape = 'rectangular',
     fixedHeightIn = 10,
-    maxAspectRatio = 3.5,
-    enhancedPerformance = false
+    maxAspectRatio = HARD_MAX_ASPECT_RATIO,
+    enhancedPerformance = false,
+    frictionRateTarget = DEFAULT_FRICTION_RATE_INWG_100FT,
+    maxDepthIn = 24,
+    units = 'imperial'
   } = options;
+  const stepIn = units === 'metric' ? METRIC_STEP_MM / MM_PER_IN : IMPERIAL_STEP_IN;
+  const minDimIn = units === 'metric' ? METRIC_MIN_DIM_MM / MM_PER_IN : IMPERIAL_MIN_DIM_IN;
 
   const allowableVelocity = calculateAllowableAcousticVelocity(
     locationCategory,
@@ -199,27 +220,18 @@ export function sizeDuctAcoustically(
     };
   }
 
-  // 1. Minimum required duct area based on allowable acoustic velocity
-  const reqAreaSqFt = cfm / allowableVelocity;
-  const reqAreaSqIn = reqAreaSqFt * 144;
-
   if (shape === 'round') {
-    // Round duct sizing: Diameter = sqrt(4 * Area / PI) in 2-inch increments
-    const idealDiameter = Math.sqrt((4 * reqAreaSqIn) / Math.PI);
-    let diameterIn = Math.max(6, Math.ceil(idealDiameter / 2) * 2);
-
-    let areaSqFt = (Math.PI * Math.pow(diameterIn / 2, 2)) / 144;
-    let actualVelocityFpm = Math.round(cfm / areaSqFt);
-
-    // Verify velocity limit
-    while (actualVelocityFpm > allowableVelocity && diameterIn < 60) {
-      diameterIn += 2;
-      areaSqFt = (Math.PI * Math.pow(diameterIn / 2, 2)) / 144;
-      actualVelocityFpm = Math.round(cfm / areaSqFt);
-    }
-
-    const frictionRate = Math.pow(0.63 / diameterIn, 5) * Math.pow(cfm, 1.85);
+    // Round duct: smallest standard diameter satisfying BOTH friction target and acoustic velocity limit
+    const sel = selectRoundDuct(cfm, frictionRateTarget, allowableVelocity, stepIn, minDimIn);
+    const diameterIn = sel.diameterIn;
+    const areaSqFt = (Math.PI * Math.pow(diameterIn / 2, 2)) / 144;
     const gaugeInfo = SMACNA_GAUGE_TABLE.find((g) => diameterIn <= g.maxDimension) || SMACNA_GAUGE_TABLE[SMACNA_GAUGE_TABLE.length - 1];
+    if (!sel.meetsVelocity) {
+      warnings.push(`Velocity (${sel.velocityFpm} FPM) exceeds acoustic limit (${allowableVelocity} FPM)`);
+    }
+    if (!sel.meetsFriction) {
+      warnings.push(`Friction (${sel.frictionRateInWgPer100Ft.toFixed(3)} in.wg/100ft) exceeds target (${frictionRateTarget})`);
+    }
 
     return {
       shape: 'round',
@@ -228,50 +240,49 @@ export function sizeDuctAcoustically(
       diameterIn,
       equivalentRoundIn: diameterIn,
       areaSqFt: Math.round(areaSqFt * 1000) / 1000,
-      actualVelocityFpm,
+      actualVelocityFpm: sel.velocityFpm,
       allowableAcousticVelocityFpm: allowableVelocity,
-      frictionRateInWgPer100Ft: Math.round(frictionRate * 1000) / 1000,
+      frictionRateInWgPer100Ft: Math.round(sel.frictionRateInWgPer100Ft * 1000) / 1000,
       aspectRatio: 1.0,
       gauge: gaugeInfo.gauge,
       thicknessMm: gaugeInfo.thicknessMm,
-      isCompliant: actualVelocityFpm <= allowableVelocity,
+      isCompliant: sel.meetsVelocity,
       warnings
     };
   }
 
-  // 2. Rectangular duct sizing
-  let H = fixedHeightIn;
-  // Calculate initial width in 2-inch increments
-  let W = Math.max(6, Math.ceil(reqAreaSqIn / H / 2) * 2);
-
-  // Adjust for aspect ratio limit
-  let ar = Math.max(W, H) / Math.min(W, H);
-  while (ar > maxAspectRatio && H < 36) {
-    H += 2;
-    W = Math.max(6, Math.ceil(reqAreaSqIn / H / 2) * 2);
-    ar = Math.max(W, H) / Math.min(W, H);
-  }
-
-  // Ensure actual velocity satisfies acoustic limit
-  let actualAreaSqFt = (W * H) / 144;
-  let actualVelocityFpm = Math.round(cfm / actualAreaSqFt);
-
-  while (actualVelocityFpm > allowableVelocity && W < 200) {
-    W += 2;
-    actualAreaSqFt = (W * H) / 144;
-    actualVelocityFpm = Math.round(cfm / actualAreaSqFt);
-  }
-
-  // Back-calculate equivalent round diameter (Huebscher)
-  const De = 1.30 * Math.pow(W * H, 0.625) / Math.pow(W + H, 0.25);
-  const frictionRate = Math.pow(0.63 / De, 5) * Math.pow(cfm, 1.85);
+  // Rectangular duct: the LARGER of the friction-driven and velocity-driven sizes, aspect <= limit,
+  // depth <= maxDepthIn (aspect relaxed, and flagged, only if the depth cannot accommodate it).
+  const sel = selectRectangularDuct({
+    cfm,
+    maxFrictionInWgPer100Ft: frictionRateTarget,
+    maxVelocityFpm: allowableVelocity,
+    startDepthIn: fixedHeightIn,
+    maxDepthIn: Math.max(maxDepthIn, fixedHeightIn),
+    stepIn,
+    minDimIn,
+    maxAspectRatio
+  });
+  const W = sel.widthIn;
+  const H = sel.heightIn;
+  const actualAreaSqFt = (W * H) / 144;
+  const actualVelocityFpm = sel.velocityFpm;
+  const De = sel.equivalentRoundIn;
+  const frictionRate = sel.frictionRateInWgPer100Ft;
+  const ar = sel.aspectRatio;
 
   const maxDim = Math.max(W, H);
   const gaugeInfo = SMACNA_GAUGE_TABLE.find((g) => maxDim <= g.maxDimension) || SMACNA_GAUGE_TABLE[SMACNA_GAUGE_TABLE.length - 1];
 
-  const isCompliant = actualVelocityFpm <= allowableVelocity;
-  if (!isCompliant) {
+  const isCompliant = sel.meetsVelocity;
+  if (!sel.meetsVelocity) {
     warnings.push(`Velocity (${actualVelocityFpm} FPM) exceeds acoustic limit (${allowableVelocity} FPM)`);
+  }
+  if (!sel.meetsFriction) {
+    warnings.push(`Friction (${frictionRate.toFixed(3)} in.wg/100ft) exceeds target (${frictionRateTarget}); duct depth is limited to ${maxDepthIn}"`);
+  }
+  if (!sel.meetsAspect) {
+    warnings.push(`Aspect ratio ${ar}:1 exceeds ${maxAspectRatio}:1 (limited by ${maxDepthIn}" available depth)`);
   }
   if (actualVelocityFpm > allowableVelocity * 0.90 && isCompliant) {
     warnings.push(`Velocity is within 10% of allowable acoustic limit; ensure smooth transitions and radius elbows`);
@@ -287,7 +298,7 @@ export function sizeDuctAcoustically(
     actualVelocityFpm,
     allowableAcousticVelocityFpm: allowableVelocity,
     frictionRateInWgPer100Ft: Math.round(frictionRate * 1000) / 1000,
-    aspectRatio: Math.round(ar * 10) / 10,
+    aspectRatio: ar,
     gauge: gaugeInfo.gauge,
     thicknessMm: gaugeInfo.thicknessMm,
     isCompliant,
@@ -309,6 +320,8 @@ export function verifyDuctSectionAcoustics(
     shape?: 'rectangular' | 'round' | 'oval' | 'flex';
     diameterIn?: number;
     sectionCategory?: DuctSectionCategory;
+    /** Actual section length (ft). Defaults to a 12 ft estimate. */
+    lengthFt?: number;
   },
   zoneContext: {
     zoneName: string;
@@ -357,11 +370,11 @@ export function verifyDuctSectionAcoustics(
   const velocityCompliant = actualVelocityFpm <= allowableVelocity;
 
   // Step 9: Pressure loss calculation
-  let de = shape === 'round' && diameterIn ? diameterIn : (1.30 * Math.pow(widthIn * heightIn, 0.625)) / Math.pow(widthIn + heightIn, 0.25);
+  let de = shape === 'round' && diameterIn ? diameterIn : rectangularEquivalentDiameter(widthIn, heightIn);
   de = Math.max(4, de);
-  const frictionRate100Ft = Math.pow(0.63 / de, 5) * Math.pow(cfm, 1.85);
-  // Estimate average section length 12 ft
-  const estimatedDeltaP = (frictionRate100Ft * 12) / 100;
+  const frictionRate100Ft = frictionRateExact(cfm, de);
+  const sectionLengthFt = duct.lengthFt && duct.lengthFt > 0 ? duct.lengthFt : 12;
+  const estimatedDeltaP = (frictionRate100Ft * sectionLengthFt) / 100;
 
   const warnings: string[] = [];
   let complianceStatus: AcousticComplianceStatus = 'PASS';
