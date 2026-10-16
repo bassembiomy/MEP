@@ -1,6 +1,8 @@
 import { LibreDwg, Dwg_File_Type, createModule } from '@mlightcad/libredwg-web';
-import { DxfEntity, BoundingBox } from '../store/projectStore';
-import { ParsedDxf } from './dxfParser';
+import {
+  CadEntity, ParsedDxf, aciToHexColor, buildBulgePolyline, dwgInsertToXf, ellipsePoints,
+  entitiesBbox, makeArcAngles, splinePoints, stripMtext, transformEntityByInsert, InsertXf, SplineCtrl,
+} from './dxfParser';
 import wasmUrl from '../../../../node_modules/@mlightcad/libredwg-web/wasm/libredwg-web.wasm?url';
 
 let libredwgInstance: any = null;
@@ -16,243 +18,174 @@ async function getLibreDwgInstance() {
   return libredwgInstance;
 }
 
-interface Transform {
-  basePoint: { x: number; y: number };
-  insertionPoint: { x: number; y: number };
-  xScale: number;
-  yScale: number;
-  rotation: number;
-}
+const RAD2DEG = 180 / Math.PI;
+const MAX_BLOCK_DEPTH = 8;
 
-function transformPoint(x: number, y: number, t: Transform): { x: number; y: number } {
-  // 1. Shift by basePoint
-  const dx = x - t.basePoint.x;
-  const dy = y - t.basePoint.y;
-  
-  // 2. Scale
-  const sx = dx * t.xScale;
-  const sy = dy * t.yScale;
-  
-  // 3. Rotate (rotation in degrees, counter-clockwise)
-  const rad = (t.rotation * Math.PI) / 180;
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-  const rx = sx * cos - sy * sin;
-  const ry = sx * sin + sy * cos;
-  
-  // 4. Translate by insertionPoint
-  return {
-    x: rx + t.insertionPoint.x,
-    y: ry + t.insertionPoint.y
-  };
-}
+const isNum = (n: any): n is number => typeof n === 'number' && isFinite(n);
 
-function transformEntity(ent: DxfEntity, t: Transform): DxfEntity {
-  if (ent.type === 'LINE') {
-    const p1 = transformPoint(ent.x || 0, ent.y || 0, t);
-    const p2 = transformPoint(ent.points?.[0] || 0, ent.points?.[1] || 0, t);
-    return {
-      ...ent,
-      x: p1.x,
-      y: p1.y,
-      points: [p2.x, p2.y]
-    };
-  } 
-  else if (ent.type === 'LWPOLYLINE' || ent.type === 'POLYLINE') {
-    const transformedPoints: number[] = [];
-    if (ent.points) {
-      for (let i = 0; i < ent.points.length; i += 2) {
-        const pt = transformPoint(ent.points[i], ent.points[i + 1], t);
-        transformedPoints.push(pt.x, pt.y);
-      }
-    }
-    return {
-      ...ent,
-      points: transformedPoints
-    };
-  }
-  else if (ent.type === 'CIRCLE' || ent.type === 'ARC') {
-    const center = transformPoint(ent.x || 0, ent.y || 0, t);
-    const scale = (Math.abs(t.xScale) + Math.abs(t.yScale)) / 2;
-    return {
-      ...ent,
-      x: center.x,
-      y: center.y,
-      radius: (ent.radius || 0) * scale
-    };
-  }
-  else if (ent.type === 'TEXT' || ent.type === 'MTEXT') {
-    const pt = transformPoint(ent.x || 0, ent.y || 0, t);
-    return {
-      ...ent,
-      x: pt.x,
-      y: pt.y
-    };
-  }
-  return ent;
-}
-
-function parseRawEntity(ent: any): DxfEntity | null {
+function parseRawEntity(ent: any): CadEntity | null {
+  const layer = ent.layer || '0';
   if (ent.type === 'LINE' && ent.startPoint && ent.endPoint) {
     return {
       type: 'LINE',
       x: ent.startPoint.x,
       y: ent.startPoint.y,
       points: [ent.endPoint.x, ent.endPoint.y],
-      layer: ent.layer || '0'
-    };
-  } 
-  else if (
-    (ent.type === 'LWPOLYLINE' || ent.type === 'POLYLINE' || ent.type === 'POLYLINE2D' || ent.type === 'POLYLINE3D') && 
-    ent.vertices && 
-    Array.isArray(ent.vertices)
-  ) {
-    if (ent.vertices.length < 2) return null;
-    const points: number[] = [];
-    for (const v of ent.vertices) {
-      if (v && typeof v.x === 'number' && typeof v.y === 'number') {
-        points.push(v.x, v.y);
-      }
-    }
-    if (points.length >= 4) {
-      return {
-        type: 'LWPOLYLINE',
-        points,
-        layer: ent.layer || '0'
-      };
-    }
-  }
-  else if ((ent.type === 'CIRCLE' || ent.type === 'ARC') && ent.center && typeof ent.radius === 'number') {
-    return {
-      type: ent.type,
-      x: ent.center.x,
-      y: ent.center.y,
-      radius: ent.radius,
-      layer: ent.layer || '0'
+      layer
     };
   }
-  else if (ent.type === 'ELLIPSE' && ent.center && ent.majorAxisEndPoint) {
-    const cx = ent.center.x;
-    const cy = ent.center.y;
-    const mx = ent.majorAxisEndPoint.x;
-    const my = ent.majorAxisEndPoint.y;
-    const majorLength = Math.sqrt(mx * mx + my * my);
-    const ratio = typeof ent.axisRatio === 'number' ? ent.axisRatio : 1;
-    const r = majorLength * (1 + ratio) / 2;
-    return {
-      type: 'CIRCLE',
-      x: cx,
-      y: cy,
-      radius: r,
-      layer: ent.layer || '0'
-    };
+  if (ent.type === 'LWPOLYLINE' && Array.isArray(ent.vertices)) {
+    const verts = ent.vertices.filter((v: any) => v && isNum(v.x) && isNum(v.y));
+    if (verts.length < 2) return null;
+    const closed = ((ent.flag ?? 0) & 1) === 1;
+    return { type: 'LWPOLYLINE', points: buildBulgePolyline(verts, closed), layer };
   }
-  else if (ent.type === 'SPLINE') {
-    const pts = (ent.fitPoints && ent.fitPoints.length > 0) ? ent.fitPoints : ent.controlPoints;
-    if (pts && pts.length >= 2) {
-      const points: number[] = [];
-      for (const pt of pts) {
-        if (pt && typeof pt.x === 'number' && typeof pt.y === 'number') {
-          points.push(pt.x, pt.y);
-        }
-      }
-      if (points.length >= 4) {
-        return {
-          type: 'LWPOLYLINE',
-          points,
-          layer: ent.layer || '0'
-        };
-      }
+  if ((ent.type === 'POLYLINE2D' || ent.type === 'POLYLINE3D' || ent.type === 'POLYLINE') && Array.isArray(ent.vertices)) {
+    const verts = ent.vertices.filter((v: any) => v && isNum(v.x) && isNum(v.y));
+    if (verts.length < 2) return null;
+    const closed = ((ent.flag ?? 0) & 1) === 1;
+    return { type: 'LWPOLYLINE', points: buildBulgePolyline(verts, closed), layer };
+  }
+  if (ent.type === 'CIRCLE' && ent.center && isNum(ent.radius)) {
+    return { type: 'CIRCLE', x: ent.center.x, y: ent.center.y, radius: ent.radius, layer };
+  }
+  if (ent.type === 'ARC' && ent.center && isNum(ent.radius)) {
+    // libredwg angles are RADIANS; stored on the entity in DEGREES
+    const a = makeArcAngles((ent.startAngle ?? 0) * RAD2DEG, (ent.endAngle ?? Math.PI * 2) * RAD2DEG);
+    return { type: 'ARC', x: ent.center.x, y: ent.center.y, radius: ent.radius, layer, ...a };
+  }
+  if (ent.type === 'ELLIPSE' && ent.center && ent.majorAxisEndPoint) {
+    const ratio = isNum(ent.axisRatio) ? ent.axisRatio : 1;
+    const points = ellipsePoints(
+      ent.center.x, ent.center.y, ent.majorAxisEndPoint.x, ent.majorAxisEndPoint.y, ratio,
+      isNum(ent.startAngle) ? ent.startAngle : 0, isNum(ent.endAngle) ? ent.endAngle : Math.PI * 2
+    );
+    return { type: 'LWPOLYLINE', points, layer };
+  }
+  if (ent.type === 'SPLINE') {
+    const fit: any[] = Array.isArray(ent.fitPoints) ? ent.fitPoints : [];
+    const ctrlRaw: any[] = Array.isArray(ent.controlPoints) ? ent.controlPoints : [];
+    let points: number[] = [];
+    if (fit.length >= 2) {
+      for (const p of fit) if (p && isNum(p.x) && isNum(p.y)) points.push(p.x, p.y);
+    } else if (ctrlRaw.length >= 2) {
+      const weights: number[] | undefined = Array.isArray(ent.weights) && ent.weights.length === ctrlRaw.length ? ent.weights : undefined;
+      const ctrl: SplineCtrl[] = ctrlRaw
+        .map((p, i) => ({ x: p?.x, y: p?.y, w: weights?.[i] ?? (isNum(p?.weight) ? p.weight : undefined) }))
+        .filter((p) => isNum(p.x) && isNum(p.y));
+      points = splinePoints(ctrl, isNum(ent.degree) ? ent.degree : 3, Array.isArray(ent.knots) ? ent.knots : undefined);
     }
+    if (points.length >= 4) return { type: 'LWPOLYLINE', points, layer };
+    return null;
   }
-  else if ((ent.type === 'SOLID' || ent.type === '3DFACE') && ent.corner1 && ent.corner2 && ent.corner3) {
+  if ((ent.type === 'SOLID' || ent.type === '3DFACE') && ent.corner1 && ent.corner2 && ent.corner3) {
     const points: number[] = [
       ent.corner1.x, ent.corner1.y,
       ent.corner2.x, ent.corner2.y,
       ent.corner3.x, ent.corner3.y
     ];
-    if (ent.corner4) {
-      points.push(ent.corner4.x, ent.corner4.y);
-    }
+    if (ent.corner4) points.push(ent.corner4.x, ent.corner4.y);
     points.push(ent.corner1.x, ent.corner1.y);
-    return {
-      type: 'LWPOLYLINE',
-      points,
-      layer: ent.layer || '0'
-    };
+    return { type: 'LWPOLYLINE', points, layer };
   }
-  else if ((ent.type === 'TEXT' || ent.type === 'MTEXT') && ent.text) {
-    const pt = ent.insertionPoint || ent.center || { x: 0, y: 0 };
-    return {
+  if ((ent.type === 'TEXT' || ent.type === 'MTEXT') && ent.text) {
+    const isM = ent.type === 'MTEXT';
+    const halign = isM ? 0 : (ent.halign ?? 0);
+    // TEXT: startPoint is the insertion point; endPoint is the alignment point when halign != 0
+    let pt = isM
+      ? (ent.insertionPoint || ent.center)
+      : (halign !== 0 && ent.endPoint ? ent.endPoint : (ent.startPoint || ent.insertionPoint || ent.center));
+    pt = pt || { x: 0, y: 0 };
+    const out: CadEntity = {
       type: 'TEXT',
       x: pt.x,
       y: pt.y,
-      text: ent.text,
-      layer: ent.layer || '0'
+      text: isM ? stripMtext(String(ent.text)) : String(ent.text),
+      layer
     };
+    const h = isM ? ent.textHeight : ent.textHeight ?? ent.height;
+    if (isNum(h) && h > 0) out.height = h;
+    let rotRad: number | undefined = isNum(ent.rotation) ? ent.rotation : undefined;
+    if (isM && ent.direction && isNum(ent.direction.x) && isNum(ent.direction.y) && (ent.direction.x !== 0 || ent.direction.y !== 0)) {
+      rotRad = Math.atan2(ent.direction.y, ent.direction.x);
+    }
+    if (rotRad) out.rotation = rotRad * RAD2DEG; // DWG: radians -> degrees
+    if (isM) {
+      const col = (((ent.attachmentPoint ?? 1) as number) - 1) % 3;
+      out.align = col === 1 ? 'center' : col === 2 ? 'right' : 'left';
+    } else {
+      out.align = halign === 1 || halign === 4 ? 'center' : halign === 2 ? 'right' : 'left';
+    }
+    return out;
   }
   return null;
+}
+
+interface Ctx { layer: string; color?: string }
+
+function colorOf(ent: any, effLayer: string, ctx: Ctx | null, layerColors: Record<string, string>): string | undefined {
+  const ci = ent.colorIndex;
+  if (isNum(ci) && ci !== 256 && ci !== 0) return aciToHexColor(Math.abs(ci));
+  if (ci === 0 && ctx?.color) return ctx.color; // BYBLOCK
+  return layerColors[effLayer]; // BYLAYER
 }
 
 function extractEntities(
   db: any,
   rawEntities: any[],
-  currentTransform: Transform | null,
-  visitedBlocks: Set<string> = new Set()
-): DxfEntity[] {
-  const result: DxfEntity[] = [];
+  ctx: Ctx | null,
+  layerColors: Record<string, string>,
+  depth: number,
+  visitedBlocks: Set<string>,
+  warnings: string[]
+): CadEntity[] {
+  const result: CadEntity[] = [];
 
   for (const ent of rawEntities) {
     if (!ent) continue;
+    const effLayer = ctx && (ent.layer || '0') === '0' ? ctx.layer : (ent.layer || '0');
+    const color = colorOf(ent, effLayer, ctx, layerColors);
 
     if (ent.type === 'INSERT') {
       const blockName = ent.name;
       if (!blockName) continue;
-      
       if (visitedBlocks.has(blockName)) {
-        console.warn(`Circular block reference detected for block: ${blockName}`);
+        warnings.push(`Circular block reference detected for block: ${blockName}`);
         continue;
       }
+      if (depth >= MAX_BLOCK_DEPTH) {
+        warnings.push(`Block nesting deeper than ${MAX_BLOCK_DEPTH} levels skipped at "${blockName}".`);
+        continue;
+      }
+      const blockRecord = db.tables?.BLOCK_RECORD?.entries?.find((entry: any) => entry.name === blockName);
+      if (!blockRecord || !Array.isArray(blockRecord.entities)) continue;
 
-      const blockRecord = db.tables?.BLOCK_RECORD?.entries?.find(
-        (entry: any) => entry.name === blockName
+      const nextVisited = new Set(visitedBlocks);
+      nextVisited.add(blockName);
+      const local = extractEntities(
+        db, blockRecord.entities, { layer: effLayer, color }, layerColors, depth + 1, nextVisited, warnings
       );
-
-      if (blockRecord && blockRecord.entities && Array.isArray(blockRecord.entities)) {
-        const nextVisited = new Set(visitedBlocks);
-        nextVisited.add(blockName);
-
-        const insertXScale = typeof ent.xScale === 'number' ? ent.xScale : 1;
-        const insertYScale = typeof ent.yScale === 'number' ? ent.yScale : 1;
-        const insertRotation = typeof ent.rotation === 'number' ? ent.rotation : 0;
-        const insertPoint = ent.insertionPoint || { x: 0, y: 0 };
-        const basePoint = blockRecord.basePoint || { x: 0, y: 0 };
-
-        const localTransform: Transform = {
-          basePoint: { x: basePoint.x, y: basePoint.y },
-          insertionPoint: { x: insertPoint.x, y: insertPoint.y },
-          xScale: insertXScale,
-          yScale: insertYScale,
-          rotation: insertRotation
-        };
-
-        const blockEntities = extractEntities(db, blockRecord.entities, localTransform, nextVisited);
-        if (currentTransform) {
-          for (const nestedEnt of blockEntities) {
-            result.push(transformEntity(nestedEnt, currentTransform));
-          }
-        } else {
-          result.push(...blockEntities);
+      const base = dwgInsertToXf(ent, blockRecord.basePoint);
+      const cols = Math.max(1, Math.round(ent.columnCount || 1));
+      const rows = Math.max(1, Math.round(ent.rowCount || 1));
+      const dx = ent.columnSpacing || 0;
+      const dy = ent.rowSpacing || 0;
+      const cr = Math.cos(base.rot);
+      const sr = Math.sin(base.rot);
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const ox = c * dx;
+          const oy = r * dy;
+          const xf: InsertXf = { ...base, insX: base.insX + ox * cr - oy * sr, insY: base.insY + ox * sr + oy * cr };
+          for (const e of local) result.push(transformEntityByInsert(e, xf));
         }
       }
     } else {
       const parsed = parseRawEntity(ent);
       if (parsed) {
-        if (currentTransform) {
-          result.push(transformEntity(parsed, currentTransform));
-        } else {
-          result.push(parsed);
-        }
+        parsed.layer = effLayer;
+        if (color) parsed.color = color;
+        result.push(parsed);
       }
     }
   }
@@ -262,62 +195,35 @@ function extractEntities(
 
 export async function parseDwgBuffer(uint8Array: Uint8Array): Promise<ParsedDxf> {
   const libredwg = await getLibreDwgInstance();
-  
+
   const dwgData = libredwg.dwg_read_data(uint8Array, Dwg_File_Type.DWG);
   if (!dwgData) {
     throw new Error('Failed to parse DWG binary data.');
   }
-  
+
   try {
     const db = libredwg.convert(dwgData);
     const rawEntities = db.entities && Array.isArray(db.entities) ? db.entities : [];
-    const entities = extractEntities(db, rawEntities, null);
-    
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
 
-    function updateBbox(x: number, y: number) {
-      if (isNaN(x) || isNaN(y)) return;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
+    const layerColors: Record<string, string> = {};
+    const layerEntries: any[] = db.tables?.LAYER?.entries ?? [];
+    for (const l of layerEntries) {
+      if (l && l.name && isNum(l.colorIndex)) layerColors[l.name] = aciToHexColor(Math.abs(l.colorIndex));
     }
 
-    for (const ent of entities) {
-      if (ent.type === 'LINE') {
-        updateBbox(ent.x || 0, ent.y || 0);
-        updateBbox(ent.points?.[0] || 0, ent.points?.[1] || 0);
-      } 
-      else if ((ent.type === 'LWPOLYLINE' || ent.type === 'POLYLINE') && ent.points) {
-        for (let i = 0; i < ent.points.length; i += 2) {
-          updateBbox(ent.points[i], ent.points[i + 1]);
-        }
-      }
-      else if ((ent.type === 'CIRCLE' || ent.type === 'ARC') && typeof ent.radius === 'number') {
-        const cx = ent.x || 0;
-        const cy = ent.y || 0;
-        const r = ent.radius;
-        updateBbox(cx - r, cy - r);
-        updateBbox(cx + r, cy + r);
-      }
-      else if ((ent.type === 'TEXT' || ent.type === 'MTEXT') && typeof ent.x === 'number' && typeof ent.y === 'number') {
-        updateBbox(ent.x, ent.y);
-      }
-    }
-
-    const finalBbox: BoundingBox = {
-      minX: isFinite(minX) ? minX : 0,
-      maxX: isFinite(maxX) ? maxX : 500,
-      minY: isFinite(minY) ? minY : 0,
-      maxY: isFinite(maxY) ? maxY : 500
-    };
+    const warnings: string[] = [];
+    const entities = extractEntities(db, rawEntities, null, layerColors, 0, new Set(), warnings).filter((e) => {
+      if (e.type === 'LWPOLYLINE') return !!e.points && e.points.length >= 4 && e.points.every(isFinite);
+      return true;
+    });
+    const insunitsRaw = db.header?.INSUNITS;
 
     return {
       entities,
-      bbox: finalBbox
+      bbox: entitiesBbox(entities),
+      layerColors,
+      insunits: isNum(insunitsRaw) ? insunitsRaw : undefined,
+      warnings
     };
   } finally {
     libredwg.dwg_free(dwgData);

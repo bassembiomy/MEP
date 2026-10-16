@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
-import { parseDxfText } from '../engine/dxfParser';
+import { parseDxfText, normalizeCadToCanvas, ParsedDxf } from '../engine/dxfParser';
+import { FT_PER_M } from '../engine/units';
 import { parseDwgBuffer } from '../engine/dwgParser';
 import { MousePointer, PenTool, Hand, RefreshCw, Trash2, ShieldAlert, Upload, X, CheckCircle, LayoutGrid } from 'lucide-react';
 
@@ -24,6 +25,18 @@ export const Toolbar: React.FC = () => {
   const [fileName, setFileName] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
+  // Single import path for DXF + DWG: normalise drawing units -> canvas px (scale + Y flip), then store.
+  const applyParsedCad = (parsed: ParsedDxf) => {
+    const norm = normalizeCadToCanvas(parsed.entities, {
+      insunits: parsed.insunits,
+      projectScale: project.scale,
+      projectUnits: project.units,
+    });
+    setDxfData(norm.entities, norm.bbox);
+    const notes = [...(norm.warning ? [norm.warning] : []), ...parsed.warnings];
+    if (notes.length > 0) alert(`CAD import notes:\n- ${notes.join('\n- ')}`);
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -40,7 +53,7 @@ export const Toolbar: React.FC = () => {
           const buffer = event.target?.result as ArrayBuffer;
           parseDwgBuffer(new Uint8Array(buffer))
             .then((parsed) => {
-              setDxfData(parsed.entities, parsed.bbox);
+              applyParsedCad(parsed);
             })
             .catch((err) => {
               alert(`Error parsing DWG: ${err.message}`);
@@ -50,8 +63,7 @@ export const Toolbar: React.FC = () => {
             });
         } else {
           const text = event.target?.result as string;
-          const parsed = parseDxfText(text);
-          setDxfData(parsed.entities, parsed.bbox);
+          applyParsedCad(parseDxfText(text));
           setIsLoading(false);
         }
       } catch (err: any) {
@@ -80,7 +92,7 @@ export const Toolbar: React.FC = () => {
       // Convert design outdoor/indoor dry-bulbs for convenience
       outdoorDb: isImperial ? Math.round((project.outdoorDb - 32) * 5 / 9) : Math.round((project.outdoorDb * 9 / 5) + 32),
       indoorDb: isImperial ? Math.round((project.indoorDb - 32) * 5 / 9) : Math.round((project.indoorDb * 9 / 5) + 32),
-      scale: isImperial ? 32.8 : 10, // Adjust scale default (32.8px/m vs 10px/ft)
+      scale: isImperial ? 10 * FT_PER_M : 10, // keep the same px-per-foot: 10 px/ft == 32.8084 px/m
     });
   };
 
