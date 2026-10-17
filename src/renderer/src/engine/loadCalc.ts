@@ -147,7 +147,7 @@ export function calculateZoneLoad(zone: Zone, project: ProjectMetadata): LoadRes
   // RULING: DX/refrigerant coils need >= ~350 CFM/ton across the coil (coil tons include OA load),
   // so design airflow = max(thermal, Voz, 350 x coil tons). Chilled-water systems size on thermal/OA only.
   const sysType = String(zone.systemType ?? '').toLowerCase();
-  const isDx = !['chilled-water', 'cwu', 'ahu'].includes(sysType);
+  const isDx = !['chilled-water', 'cwu', 'ahu', 'fcu'].includes(sysType);
   const coilMinCfm = isDx ? 350 * totalTons : 0;
   let calculatedSupply = Math.max(thermalCfm, vozCfm, coilMinCfm);
   if (coilTotal > 0 && calculatedSupply < 100) calculatedSupply = 100;
