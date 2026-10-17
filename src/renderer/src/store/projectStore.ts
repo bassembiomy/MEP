@@ -112,6 +112,10 @@ export interface Zone {
   systemType?: 'high-wall' | 'cassette' | 'concealed' | 'packaged' | 'vrf' | 'ahu' | 'fcu';
   /** Return path: 'plenum' (grilles open into the ceiling void, short return box at the unit) or 'ducted' (return mains). */
   returnStrategy?: 'plenum' | 'ducted';
+  /** Indoor unit tags in unitPositions order (e.g. FCU-01, FCU-02). */
+  unitTags?: string[];
+  /** Engine design warnings (coverage, manufacturer mix, clearance) surfaced to the user. */
+  designWarnings?: string[];
   /** 'plenum': returns open into the ceiling void (no association lines); 'ducted': return mains. */
   returnPath?: 'plenum' | 'ducted';
   /** How the indoor units are served: refrigerant (outdoor units), chilled-water (stubs) or self-contained. */
