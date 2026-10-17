@@ -1,4 +1,11 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, screen } from 'electron'
+import {
+  computeWindowPlan,
+  parseSavedWindowState,
+  WINDOW_MIN_WIDTH,
+  WINDOW_MIN_HEIGHT,
+  type SavedWindowState
+} from '../renderer/src/canvas/windowBounds'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -153,11 +160,43 @@ function parseDuctedFile(filePath: string): DuctedUnit[] {
   return catalog
 }
 
+function windowStatePath(): string {
+  return join(app.getPath('userData'), 'window-state.json')
+}
+
+function loadWindowState(): SavedWindowState | null {
+  try {
+    return parseSavedWindowState(fs.readFileSync(windowStatePath(), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function saveWindowState(win: BrowserWindow): void {
+  try {
+    if (win.isDestroyed()) return
+    const b = win.isMaximized() || win.isFullScreen() ? win.getNormalBounds() : win.getBounds()
+    const state: SavedWindowState = { x: b.x, y: b.y, width: b.width, height: b.height, maximized: win.isMaximized() }
+    fs.writeFileSync(windowStatePath(), JSON.stringify(state))
+  } catch {
+    // persisting window bounds is best-effort
+  }
+}
+
 function createWindow(): void {
-  // Create the browser window.
+  // Professional CAD default: 90% of the work area (min 1280x800), first run maximized, later runs restore the last bounds.
+  const plan = computeWindowPlan(
+    screen.getPrimaryDisplay().workArea,
+    loadWindowState(),
+    screen.getAllDisplays().map((d) => d.workArea)
+  )
   const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    x: plan.x,
+    y: plan.y,
+    width: plan.width,
+    height: plan.height,
+    minWidth: WINDOW_MIN_WIDTH,
+    minHeight: WINDOW_MIN_HEIGHT,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -165,6 +204,21 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
     }
+  })
+  if (plan.maximize) mainWindow.maximize()
+
+  let saveTimer: NodeJS.Timeout | null = null
+  const scheduleSave = (): void => {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => saveWindowState(mainWindow), 400)
+  }
+  mainWindow.on('resize', scheduleSave)
+  mainWindow.on('move', scheduleSave)
+  mainWindow.on('maximize', scheduleSave)
+  mainWindow.on('unmaximize', scheduleSave)
+  mainWindow.on('close', () => {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveWindowState(mainWindow)
   })
 
   mainWindow.on('ready-to-show', () => {

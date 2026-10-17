@@ -32,9 +32,32 @@ export interface LabelRequest {
   guaranteed?: boolean;
   /** Minimum empty gap (px) kept between this label and every other placed label (small bubbles use it so they never touch). */
   spacing?: number;
+  /** Callouts: every candidate is shifted into the stage rect (see `layoutLabels` opts.stage); a shifted one gets a leader. */
+  keepInside?: boolean;
 }
 
 /** Font scales tried (in order) by a `guaranteed` label. */
+/**
+ * Shift a rect (w x h centred on cx, cy) into `stage` with `margin` px to spare. A rect larger than the stage is aligned to
+ * the top-left. `moved` is true when it had to be shifted by more than 0.5 px (the caller then draws a leader).
+ */
+export function clampCentreIntoRect(
+  cx: number, cy: number, w: number, h: number, stage: Rect, margin = 4
+): { x: number; y: number; moved: boolean } {
+  const lo = (v: number, size: number, start: number, len: number): number => {
+    const min = start + margin + size / 2, max = start + len - margin - size / 2;
+    return max < min ? start + margin + size / 2 : Math.min(max, Math.max(min, v));
+  };
+  const x = lo(cx, w, stage.x, stage.w), y = lo(cy, h, stage.y, stage.h);
+  return { x, y, moved: Math.abs(x - cx) > 0.5 || Math.abs(y - cy) > 0.5 };
+}
+
+/** Candidate (unrotated label) shifted into the stage; moved candidates are tied to the symbol by a leader line. */
+export function clampCandidateToStage(c: LabelCandidate, size: { w: number; h: number }, stage: Rect, margin = 4): LabelCandidate {
+  const r = clampCentreIntoRect(c.x, c.y, size.w, size.h, stage, margin);
+  return r.moved ? { ...c, x: r.x, y: r.y, leader: true } : c;
+}
+
 export const FALLBACK_FONT_SCALES = [1, 0.85, 0.72];
 
 export interface PlacedLabel {
@@ -193,7 +216,7 @@ export function ductTagCandidates(
 export function layoutLabels(
   requests: LabelRequest[],
   obstacles: Obstacle[],
-  opts: { margin?: number } = {}
+  opts: { margin?: number; stage?: Rect; stageMargin?: number } = {}
 ): Map<string, PlacedLabel> {
   const margin = opts.margin ?? 1;
   const result = new Map<string, PlacedLabel>();
@@ -227,7 +250,8 @@ export function layoutLabels(
       let cands = req.candidates ?? compassCandidates(req.anchor, half, size, req.gap ?? 3);
       // the last (smallest) size may also use far, leader-line positions
       if (req.guaranteed && si === scales.length - 1) cands = cands.concat(leaderCandidates(req.anchor, half, size, req.gap ?? 3));
-      for (const c of cands) {
+      for (const c0 of cands) {
+        const c = req.keepInside && opts.stage ? clampCandidateToStage(c0, size, opts.stage, opts.stageMargin ?? 4) : c0;
         const rect = rotatedAabb(c.x, c.y, size.w, size.h, c.angleDeg ?? 0);
         if (!blocked(rect, req.ignoreTags, req.spacing ?? 0)) { chosen = { c, rect, size, fontPx }; break; }
         if (mandatory) {

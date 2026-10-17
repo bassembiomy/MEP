@@ -9,7 +9,7 @@ import { pxPerFt, toCfm, toBtuh } from '../engine/units';
 import { STANDARD_EQUIPMENT_CATALOG } from '../engine/hvacCatalogs';
 import { CadLayerManagerModal } from '../components/CadLayerManagerModal';
 import Konva from 'konva';
-import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Target, Layers, Magnet, Ruler, Download, X as XIcon } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Target, Layers, Magnet, Ruler, Download, X as XIcon, Droplets, Wrench, FileText, ListTree, ChevronDown, ChevronRight } from 'lucide-react';
 import {
   buildDuctOutline,
   DuctRunOutline,
@@ -63,6 +63,7 @@ import {
   Obstacle as LObstacle,
   Rect as LRect,
   overlayObstacles,
+  screenRectToLayout,
   routeLeader
 } from './labelLayout';
 import {
@@ -130,6 +131,7 @@ import {
   toggleDrainPoint
 } from './polishL2';
 import { CONDENSATE_TAG, pipeBubbleSpots, type FitLabel } from './polishM2';
+import { isCompactToolbar, noticeSummary, calloutFitLabel, twoPassFit, type CalloutSpec } from './polishN4';
 import { NO_DRAIN_TEXT, needsAccessPanel, zonesMissingDrainPoint, exportContentBounds } from './polishN1';
 
 // Duct outline geometry cache (keyed by the zone's duct array identity, then k).
@@ -281,6 +283,23 @@ const outdoorPositionsOf = (zone: Zone): { x: number; y: number; }[] =>
     ? [zone.outdoorUnitPos]
     : [];
 
+/** Overlay toolbar toggle: icon + label, icon only (label in the tooltip) when compact. */
+const HudToggle = ({ compact, on, onCls, onClick, title, icon, label, plainCls }: {
+  compact: boolean; on: boolean; onCls?: string; onClick: () => void; title: string; icon: React.ReactNode; label: string; plainCls?: string;
+}): React.JSX.Element => (
+  <button
+    onClick={onClick}
+    className={`flex items-center gap-1.5 ${compact ? 'px-2' : 'px-3'} py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border ${
+      plainCls ? `bg-neutral-900/90 border-neutral-750 ${plainCls}` : on ? onCls : 'bg-neutral-900/90 text-neutral-400 border-neutral-750'
+    }`}
+    title={compact ? `${label}: ${title}` : title}
+    aria-label={label}
+  >
+    {icon}
+    {!compact && <span>{label}</span>}
+  </button>
+);
+
 export const FloorPlanCanvas: React.FC = () => {
   const {
     zones,
@@ -320,6 +339,7 @@ export const FloorPlanCanvas: React.FC = () => {
   const [calibDist, setCalibDist] = useState<string>('');
   const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
   const [drainBannerDismissed, setDrainBannerDismissed] = useState<boolean>(false);
+  const [drainNoticeOpen, setDrainNoticeOpen] = useState<boolean>(false);
   // Detailed annotations: CFM / velocity on duct-section tags and NC on terminal tags (off = clean shop drawing).
   const [detailed, setDetailed] = useState<boolean>(() => loadStoredBool('detailed', false));
   // Shop-drawing layers (view options): accessories (dampers, flex, access panels, condensate) and the sheet (legend + title block).
@@ -373,6 +393,12 @@ export const FloorPlanCanvas: React.FC = () => {
   const cursorLayerRef = useRef<Konva.Layer>(null);
   // placed labels / callouts of the current layout (Fit All includes their boxes so none is cropped at the edge)
   const fitLabelsRef = useRef<FitLabel[]>([]);
+  // schedule callouts (world anchor + room + screen-px box) for the two-pass Fit All padding
+  const fitCalloutsRef = useRef<CalloutSpec[]>([]);
+  // bottom edge (container px) of the top HUD (toolbar + notices): Fit All padding and callouts keep clear of it
+  const hudTopBottomRef = useRef<number>(0);
+  const [hudBottom, setHudBottom] = useState<number>(0);
+  const [hudTick, setHudTick] = useState<number>(0);
   const rubberRef = useRef<Konva.Line>(null);
   const snapMarkerRef = useRef<Konva.Rect>(null);
   const cursorDotRef = useRef<Konva.Circle>(null);
@@ -400,6 +426,15 @@ export const FloorPlanCanvas: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The top HUD changes height when a notice appears / collapses: re-measure it then.
+  useEffect(() => {
+    const el = hudTopRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => setHudTick((t) => t + 1));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // Overlay toolbars (HUD) are label obstacles: measure their rects in container px.
   useLayoutEffect(() => {
     const root = containerRef.current;
@@ -410,10 +445,19 @@ export const FloorPlanCanvas: React.FC = () => {
       const r = el.getBoundingClientRect();
       if (r.width > 0 && r.height > 0) rects.push({ x: r.left - o.left, y: r.top - o.top, w: r.width, h: r.height });
     };
-    if (hudTopRef.current) Array.from(hudTopRef.current.children).forEach(add);
+    // every toolbar button / notice in the top HUD is an obstacle (rows are flex containers; measure their children)
+    if (hudTopRef.current) {
+      Array.from(hudTopRef.current.children).forEach((row) => {
+        if ((row as HTMLElement).dataset.hudRow !== undefined) Array.from(row.children).forEach(add);
+        else add(row);
+      });
+    }
     if (hudBottomRef.current) add(hudBottomRef.current);
+    const hb = hudTopRef.current ? Math.round(hudTopRef.current.getBoundingClientRect().bottom - o.top) : 0;
+    hudTopBottomRef.current = hb;
+    setHudBottom(hb);
     setOverlayRects((prev) => (JSON.stringify(prev) === JSON.stringify(rects) ? prev : rects));
-  }, [size.w, size.h, detailed, showAccessories, showSheet, exportDpi, project.units, dxfLayers, drawMode, calib, cadCalibration?.needsCalibration, bannerDismissed]);
+  }, [size.w, size.h, detailed, showAccessories, showSheet, exportDpi, project.units, dxfLayers, drawMode, calib, cadCalibration?.needsCalibration, bannerDismissed, drainBannerDismissed, drainNoticeOpen, size.w, hudTick]);
 
   // The view the label layout converts overlay rects with: settles shortly after pan / zoom ends (no relayout per frame).
   useEffect(() => {
@@ -528,9 +572,15 @@ export const FloorPlanCanvas: React.FC = () => {
       minY: b.minY - Math.max(0, (minSpan - (b.maxY - b.minY)) / 2),
       maxY: b.maxY + Math.max(0, (minSpan - (b.maxY - b.minY)) / 2)
     };
-    // World-space content only; label overhang is covered by a fixed screen-px margin (never by label boxes, which
-    // depend on the current zoom and would create a feedback loop).
-    const f = fitBounds(bb, size.w, size.h, 0.92, FIT_ALL_PADDING);
+    // Target scale first, then reserve the callout boxes (known screen-px size, placed outside the room) converted by that
+    // scale; two passes at most, computed from content + view size only (never from the previous view).
+    const specs = fitCalloutsRef.current;
+    const hudPad = { ...FIT_ALL_PADDING, top: Math.max(FIT_ALL_PADDING.top, Math.round(hudTopBottomRef.current) + 16) };
+    const f = twoPassFit(
+      bb,
+      (sc) => specs.map((c) => calloutFitLabel(c, bb, sc)).filter((l): l is NonNullable<typeof l> => l !== null),
+      size.w, size.h, 0.92, hudPad
+    );
     setStageScale(f.scale);
     setStagePos({ x: f.x, y: f.y });
   }, [allContentBounds, size.w, size.h, k]);
@@ -1264,6 +1314,25 @@ export const FloorPlanCanvas: React.FC = () => {
   }, [zones, k, project.units]);
   const sBucket = scaleBucket(stageScale);
   const fontFactor = (project.equipmentScale || 1.5) / 1.5;
+  useLayoutEffect(() => {
+    const out: CalloutSpec[] = [];
+    if (annotationVisibility.leaderCallout) {
+      for (const z of zones) {
+        const zUnits = unitPositionsOf(z);
+        if (!(zUnits.length > 0 || (hasRefrigerantPlant(z) && outdoorPositionsOf(z).length > 0)) || z.points.length < 6) continue;
+        const b = pointsBounds(z.points);
+        const origin = zUnits[0] || (b ? { x: b.maxX, y: b.minY } : { x: 0, y: 0 });
+        const fpz = unitFootprintPx(unitKindForSystem(z.systemType), k, catalogDimsFor(z.catalogModel));
+        out.push({
+          anchor: { x: origin.x - fpz.w / 2, y: origin.y - fpz.d / 2 },
+          poly: z.points,
+          size: measureLabel(calloutLinesFor(z), 10 * fontFactor)
+        });
+      }
+    }
+    fitCalloutsRef.current = out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zones, project, k, annotationVisibility.leaderCallout, fontFactor]);
   const labelItems = useMemo(() => {
     const s = bucketScale(sBucket);
     const tier = getLodTier(s);
@@ -1410,7 +1479,7 @@ export const FloorPlanCanvas: React.FC = () => {
         const anchor = { x: target.x * s, y: target.y * s };
         const id = `c:${z.id}`;
         reqs.push({
-          id, lines, fontPx, priority: LABEL_PRIORITY.callout, mandatory: true, guaranteed: true, anchor,
+          id, lines, fontPx, priority: LABEL_PRIORITY.callout, mandatory: true, guaranteed: true, keepInside: true, anchor,
           candidates: calloutCandidates(size, anchor, z.points.map((v) => v * s))
         });
         meta.set(id, {
@@ -1718,7 +1787,10 @@ export const FloorPlanCanvas: React.FC = () => {
       }
     }
 
-    const placed = layoutLabels(reqs, obstacles);
+    // Callouts stay inside the visible stage (screen-space clamp, converted to layout space with the settled view)
+    const hudB = hudBottom > 0 ? hudBottom + 6 : 0;
+    const stage = screenRectToLayout({ x: 0, y: hudB, w: size.w, h: Math.max(40, size.h - hudB) }, settledView, s);
+    const placed = layoutLabels(reqs, obstacles, { stage, stageMargin: 6 * s / Math.max(1e-9, settledView.scale) });
     const byZone = new Map<string, LabelItem[]>();
     placed.forEach((pl, id) => {
       const m = meta.get(id);
@@ -1729,7 +1801,7 @@ export const FloorPlanCanvas: React.FC = () => {
     });
     return byZone;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [zones, project, k, sBucket, annotationVisibility, detailed, fontFactor, textScale, selectedZoneId, shopPlans, noDrainIds, sheet, showSheet, showAccessories, hoverClr, dxfTexts, dxfLayers, overlayRects, settledView]);
+  }, [zones, project, k, sBucket, annotationVisibility, detailed, fontFactor, textScale, selectedZoneId, shopPlans, noDrainIds, sheet, showSheet, showAccessories, hoverClr, dxfTexts, dxfLayers, overlayRects, settledView, size.w, size.h, hudBottom]);
 
   useEffect(() => {
     const out: FitLabel[] = [];
@@ -2694,6 +2766,10 @@ export const FloorPlanCanvas: React.FC = () => {
   const isPanActive = drawMode === 'pan' || isSpacePressed;
   const cursor = isPanActive ? (isPanning ? 'grabbing' : 'grab') : (drawMode === 'polyline' || drainTool || (calib && calib.stage !== 'enter')) ? 'crosshair' : 'default';
 
+  // Overlay toolbar: icon-only secondary buttons (tooltip = full label) below 1200 px of canvas width.
+  const compactHud = isCompactToolbar(size.w);
+  const showCalibNotice = !!cadCalibration?.needsCalibration && !bannerDismissed && !calib;
+  const showDrainNotice = noDrainZones.length > 0 && !drainBannerDismissed;
   return (
     <div className="relative w-full h-[65vh] bg-[#0c0c0c] border border-neutral-800 rounded-3xl overflow-hidden shadow-inner flex flex-col">
       <div ref={containerRef} className="absolute inset-0">
@@ -2775,202 +2851,153 @@ export const FloorPlanCanvas: React.FC = () => {
         </Stage>
       </div>
 
-      {/* Top HUD Info Overlay */}
-      <div ref={hudTopRef} className="absolute top-4 left-4 flex items-center gap-2 flex-wrap max-w-[calc(100%-2rem)]">
-        <div className="bg-neutral-900/90 border border-neutral-800 px-3.5 py-1.5 rounded-xl text-[10px] text-neutral-400 font-medium backdrop-blur shadow flex items-center gap-2">
-          <span>Zoom: <strong className="text-blue-400 font-mono">{Math.round(stageScale * 100)}%</strong></span>
-          <span className="text-neutral-700">|</span>
-          <span>LOD: <strong className="text-emerald-400 font-mono">T{lodTier}</strong></span>
-          <span className="text-neutral-700">|</span>
-          <span>Mode: <strong className="text-blue-500 capitalize">{drawMode}</strong></span>
-          <span className="text-neutral-700">|</span>
-          <div className="flex items-center gap-1">
-            <span className="text-neutral-400">Text Size:</span>
-            {[0.75, 1.0, 1.5, 2.0, 3.0].map((sc) => (
-              <button
-                key={sc}
-                onClick={() => setProject({ equipmentScale: sc })}
-                className={`px-1.5 py-0.5 rounded text-[9px] font-bold transition-all cursor-pointer ${
-                  (project.equipmentScale || 1.5) === sc
-                    ? 'bg-blue-600 text-white shadow'
-                    : 'bg-neutral-800 text-neutral-400 hover:text-neutral-200'
-                }`}
-                title={`Set annotation text/tag size to ${sc}x (equipment is always drawn at true physical size)`}
-              >
-                {sc}x
-              </button>
-            ))}
+      {/* Top HUD: toolbar row, then a notices strip BELOW it (never over a control). Compact icon buttons below 1200 px. */}
+      <div ref={hudTopRef} className="absolute top-3 left-3 right-3 flex flex-col items-start gap-1.5 pointer-events-none">
+        <div data-hud-row className="pointer-events-auto flex items-center gap-1.5 flex-wrap max-w-full">
+          <div className="bg-neutral-900/90 border border-neutral-800 px-3 py-1.5 rounded-xl text-[10px] text-neutral-400 font-medium backdrop-blur shadow flex items-center gap-2">
+            <span>Zoom: <strong className="text-blue-400 font-mono">{Math.round(stageScale * 100)}%</strong></span>
+            {!compactHud && (
+              <>
+                <span className="text-neutral-700">|</span>
+                <span>LOD: <strong className="text-emerald-400 font-mono">T{lodTier}</strong></span>
+                <span className="text-neutral-700">|</span>
+                <span>Mode: <strong className="text-blue-500 capitalize">{drawMode}</strong></span>
+                <span className="text-neutral-700">|</span>
+                <div className="flex items-center gap-1">
+                  <span className="text-neutral-400">Text Size:</span>
+                  {[0.75, 1.0, 1.5, 2.0, 3.0].map((sc) => (
+                    <button
+                      key={sc}
+                      onClick={() => setProject({ equipmentScale: sc })}
+                      className={`px-1.5 py-0.5 rounded text-[9px] font-bold transition-all cursor-pointer ${
+                        (project.equipmentScale || 1.5) === sc
+                          ? 'bg-blue-600 text-white shadow'
+                          : 'bg-neutral-800 text-neutral-400 hover:text-neutral-200'
+                      }`}
+                      title={`Set annotation text/tag size to ${sc}x (equipment is always drawn at true physical size)`}
+                    >
+                      {sc}x
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
-        </div>
 
-        <button
-          onClick={() => setSnapEnabled((v) => !v)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border ${
-            snapEnabled
-              ? 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40'
-              : 'bg-neutral-900/90 text-neutral-400 border-neutral-750'
-          }`}
-          title="Toggle snap (F9 or S): CAD endpoints / midpoints / vertices, then 1 ft (0.25 m) grid"
-        >
-          <Magnet size={13} />
-          <span>Snap {snapEnabled ? 'ON' : 'OFF'}</span>
-        </button>
+          <HudToggle compact={compactHud} on={snapEnabled} onCls={'bg-yellow-500/20 text-yellow-300 border-yellow-500/40'} onClick={() => setSnapEnabled((v) => !v)} title={'Toggle snap (F9 or S): CAD endpoints / midpoints / vertices, then 1 ft (0.25 m) grid'} icon={<Magnet size={13} />} label={`Snap ${snapEnabled ? 'ON' : 'OFF'}`} />
+          <HudToggle compact={compactHud} on={detailed} onCls={'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'} onClick={() => setDetailed((v) => !v)} title={'Detailed annotations: duct CFM / velocity and terminal NC (off = clean size-only tags)'} icon={<ListTree size={13} />} label={`Detailed ${detailed ? 'ON' : 'OFF'}`} />
+          <HudToggle compact={compactHud} on={showAccessories} onCls={'bg-amber-500/20 text-amber-300 border-amber-500/40'} onClick={() => setShowAccessories((v) => !v)} title={'Accessories layer: volume dampers (VD), flexible connections, condensate drain pipes (CDP), access panels (AP)'} icon={<Wrench size={13} />} label={`Accessories ${showAccessories ? 'ON' : 'OFF'}`} />
+          <HudToggle compact={compactHud} on={drainTool} onCls={'bg-cyan-500/30 text-cyan-200 border-cyan-400/60'} onClick={() => setDrainTool((v) => !v)} title={'Drain point tool: click to place a floor drain (FD) for condensate; click an existing one to remove it. Condensate lines route to the nearest drain point (else the nearest exterior wall). Esc to leave the tool.'} icon={<Droplets size={13} />} label={`Drain point${drainPoints.length > 0 ? ` (${drainPoints.length})` : ''}`} />
+          <HudToggle compact={compactHud} on={showSheet} onCls={'bg-sky-500/20 text-sky-300 border-sky-500/40'} onClick={() => setShowSheet((v) => !v)} title={'Sheet layer: legend and title block (scale, units, date, M-101 HVAC LAYOUT)'} icon={<FileText size={13} />} label={`Sheet ${showSheet ? 'ON' : 'OFF'}`} />
 
-        <button
-          onClick={() => setDetailed((v) => !v)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border ${
-            detailed
-              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-              : 'bg-neutral-900/90 text-neutral-400 border-neutral-750'
-          }`}
-          title="Detailed annotations: duct CFM / velocity and terminal NC (off = clean size-only tags)"
-        >
-          <span>Detailed {detailed ? 'ON' : 'OFF'}</span>
-        </button>
-
-        <button
-          onClick={() => setShowAccessories((v) => !v)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border ${
-            showAccessories
-              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-              : 'bg-neutral-900/90 text-neutral-400 border-neutral-750'
-          }`}
-          title="Accessories layer: volume dampers (VD), flexible connections, condensate drain pipes (CDP), access panels (AP)"
-        >
-          <span>Accessories {showAccessories ? 'ON' : 'OFF'}</span>
-        </button>
-
-        <button
-          onClick={() => setDrainTool((v) => !v)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border ${
-            drainTool
-              ? 'bg-cyan-500/30 text-cyan-200 border-cyan-400/60'
-              : 'bg-neutral-900/90 text-neutral-400 border-neutral-750'
-          }`}
-          title="Drain point tool: click to place a floor drain (FD) for condensate; click an existing one to remove it. Condensate lines route to the nearest drain point (else the nearest exterior wall). Esc to leave the tool."
-        >
-          <span>Drain point{drainPoints.length > 0 ? ` (${drainPoints.length})` : ''}</span>
-        </button>
-
-        <button
-          onClick={() => setShowSheet((v) => !v)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border ${
-            showSheet
-              ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
-              : 'bg-neutral-900/90 text-neutral-400 border-neutral-750'
-          }`}
-          title="Sheet layer: legend and title block (scale, units, date, M-101 HVAC LAYOUT)"
-        >
-          <span>Sheet {showSheet ? 'ON' : 'OFF'}</span>
-        </button>
-
-        <button
-          onClick={exportPng}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border bg-neutral-900/90 hover:bg-neutral-800 text-neutral-200 border-neutral-750"
-          title="Export the sheet (A1 / ARCH D at the standard drawing scale) as a PNG at the chosen pixel density; without the sheet layer: the drawing at 2x"
-        >
-          <Download size={13} className="text-blue-400" />
-          <span>Export PNG</span>
-        </button>
-        <button
-          onClick={() => { void exportPdf(); }}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border bg-neutral-900/90 hover:bg-neutral-800 text-neutral-200 border-neutral-750"
-          title="Export the sheet as a PDF whose page is the sheet (A1 / ARCH D) with the drawing at true scale (needs the Sheet layer ON)"
-        >
-          <Download size={13} className="text-rose-400" />
-          <span>Export PDF</span>
-        </button>
-        <select
-          value={exportDpi}
-          onChange={(e) => setExportDpi(Number(e.target.value))}
-          className="px-1.5 py-1.5 rounded-xl text-[11px] font-bold shadow-lg backdrop-blur border bg-neutral-900/90 text-neutral-200 border-neutral-750 cursor-pointer"
-          title="Export pixel density (default 150 dpi)"
-        >
-          {[96, 150, 200, 300].map((d) => <option key={d} value={d}>{d} dpi</option>)}
-        </select>
-
-        <button
-          onClick={() => setIsLayerManagerOpen(!isLayerManagerOpen)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer ${
-            isLayerManagerOpen
-              ? 'bg-blue-600 text-white shadow-blue-500/25 border border-blue-400'
-              : 'bg-neutral-900/90 hover:bg-neutral-800 text-neutral-200 hover:text-white border border-neutral-750'
-          }`}
-          title="Toggle DXF Layers and MEP Drawing Annotations"
-        >
-          <Layers size={13} className={isLayerManagerOpen ? 'text-white' : 'text-blue-400'} />
-          <span>Layers & Annotations</span>
-          {Object.values(dxfLayers).length > 0 && (
-            <span className="bg-blue-500/20 text-blue-300 text-[9px] px-1.5 py-0.2 rounded-full font-mono border border-blue-400/30">
-              {Object.values(dxfLayers).filter((l) => l.visible).length}/{Object.values(dxfLayers).length}
-            </span>
-          )}
-        </button>
-      </div>
-
-      {cadCalibration?.needsCalibration && !bannerDismissed && !calib && (
-        <div className="absolute top-16 left-4 flex items-center gap-2 bg-amber-950/90 border border-amber-600/60 text-amber-200 text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow backdrop-blur">
-          <Ruler size={13} className="text-amber-400" />
-          <span>Drawing units unknown</span>
-          <span className="text-amber-500">&mdash;</span>
-          <button onClick={startCalibration} className="underline underline-offset-2 hover:text-white cursor-pointer">Calibrate</button>
+          <HudToggle compact={compactHud} on={false} onClick={exportPng} title={'Export the sheet (A1 / ARCH D at the standard drawing scale) as a PNG at the chosen pixel density; without the sheet layer: the drawing at 2x'} icon={<Download size={13} className="text-blue-400" />} label={'Export PNG'} plainCls={'hover:bg-neutral-800 text-neutral-200'} />
+          <HudToggle compact={compactHud} on={false} onClick={() => { void exportPdf(); }} title={'Export the sheet as a PDF whose page is the sheet (A1 / ARCH D) with the drawing at true scale (needs the Sheet layer ON)'} icon={<Download size={13} className="text-rose-400" />} label={'Export PDF'} plainCls={'hover:bg-neutral-800 text-neutral-200'} />
           <select
-            defaultValue=""
-            onChange={(e) => {
-              const v = e.target.value as DrawingUnit;
-              if (DRAWING_UNITS.includes(v)) calibrateCad(feetPerDrawingUnit(v));
-            }}
-            className="bg-amber-900/60 text-amber-100 rounded px-1 py-0.5 text-[10px] border border-amber-700/60"
-            title="Or pick the drawing units directly"
+            value={exportDpi}
+            onChange={(e) => setExportDpi(Number(e.target.value))}
+            className="px-1.5 py-1.5 rounded-xl text-[11px] font-bold shadow-lg backdrop-blur border bg-neutral-900/90 text-neutral-200 border-neutral-750 cursor-pointer"
+            title="Export pixel density (default 150 dpi)"
           >
-            <option value="" disabled>units...</option>
-            {DRAWING_UNITS.map((u) => (
-              <option key={u} value={u}>{u}</option>
-            ))}
+            {[96, 150, 200, 300].map((d) => <option key={d} value={d}>{d} dpi</option>)}
           </select>
-          <button onClick={() => setBannerDismissed(true)} className="text-amber-400 hover:text-white cursor-pointer" title="Dismiss">
-            <XIcon size={12} />
-          </button>
-        </div>
-      )}
 
-      {noDrainZones.length > 0 && !drainBannerDismissed && (
-        <div className={`absolute left-4 flex items-center gap-2 bg-amber-950/90 border border-amber-600/60 text-amber-200 text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow backdrop-blur ${cadCalibration?.needsCalibration && !bannerDismissed && !calib ? 'top-28' : 'top-16'}`}>
-          <span className="text-amber-400">!</span>
-          <span>{NO_DRAIN_TEXT}: {noDrainZones.map((n) => n.name).join(', ')}</span>
-          <button onClick={() => setDrainBannerDismissed(true)} className="text-amber-400 hover:text-white cursor-pointer" title="Dismiss">
-            <XIcon size={12} />
+          <button
+            onClick={() => setIsLayerManagerOpen(!isLayerManagerOpen)}
+            className={`flex items-center gap-1.5 ${compactHud ? 'px-2' : 'px-3'} py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer ${
+              isLayerManagerOpen
+                ? 'bg-blue-600 text-white shadow-blue-500/25 border border-blue-400'
+                : 'bg-neutral-900/90 hover:bg-neutral-800 text-neutral-200 hover:text-white border border-neutral-750'
+            }`}
+            title="Toggle DXF Layers and MEP Drawing Annotations"
+            aria-label="Layers & Annotations"
+          >
+            <Layers size={13} className={isLayerManagerOpen ? 'text-white' : 'text-blue-400'} />
+            {!compactHud && <span>Layers & Annotations</span>}
+            {Object.values(dxfLayers).length > 0 && (
+              <span className="bg-blue-500/20 text-blue-300 text-[9px] px-1.5 py-0.2 rounded-full font-mono border border-blue-400/30">
+                {Object.values(dxfLayers).filter((l) => l.visible).length}/{Object.values(dxfLayers).length}
+              </span>
+            )}
           </button>
         </div>
-      )}
 
-      {calib && (
-        <div className="absolute top-16 left-4 flex items-center gap-2 bg-neutral-900/95 border border-rose-500/60 text-neutral-100 text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow backdrop-blur">
-          <Ruler size={13} className="text-rose-400" />
-          {calib.stage === 'p1' && <span>Calibrate: click the first point on the drawing</span>}
-          {calib.stage === 'p2' && <span>Calibrate: click the second point</span>}
-          {calib.stage === 'enter' && (
-            <>
-              <span>Real distance</span>
-              <input
-                autoFocus
-                type="number"
-                min="0"
-                step="any"
-                value={calibDist}
-                onChange={(e) => setCalibDist(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') applyCalibration(); }}
-                className="w-24 bg-neutral-800 border border-neutral-600 rounded px-1.5 py-0.5 text-[11px] text-white"
-              />
-              <span className="text-neutral-400">{project.units === 'metric' ? 'm' : 'ft'}</span>
-              <button onClick={applyCalibration} className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white cursor-pointer">Apply</button>
-            </>
-          )}
-          <button onClick={() => setCalib(null)} className="text-neutral-400 hover:text-white cursor-pointer" title="Cancel (Esc)">
-            <XIcon size={12} />
-          </button>
-        </div>
-      )}
+        {(showCalibNotice || showDrainNotice || calib) && (
+          <div data-hud-row className="pointer-events-auto flex flex-col items-start gap-1.5 max-w-full">
+            {showCalibNotice && (
+              <div className="flex items-center gap-2 bg-amber-950/90 border border-amber-600/60 text-amber-200 text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow backdrop-blur max-w-full">
+                <Ruler size={13} className="text-amber-400 shrink-0" />
+                <span>Drawing units unknown</span>
+                <span className="text-amber-500">&mdash;</span>
+                <button onClick={startCalibration} className="underline underline-offset-2 hover:text-white cursor-pointer">Calibrate</button>
+                <select
+                  defaultValue=""
+                  onChange={(e) => {
+                    const v = e.target.value as DrawingUnit;
+                    if (DRAWING_UNITS.includes(v)) calibrateCad(feetPerDrawingUnit(v));
+                  }}
+                  className="bg-amber-900/60 text-amber-100 rounded px-1 py-0.5 text-[10px] border border-amber-700/60"
+                  title="Or pick the drawing units directly"
+                >
+                  <option value="" disabled>units...</option>
+                  {DRAWING_UNITS.map((u) => (
+                    <option key={u} value={u}>{u}</option>
+                  ))}
+                </select>
+                <button onClick={() => setBannerDismissed(true)} className="text-amber-400 hover:text-white cursor-pointer" title="Dismiss">
+                  <XIcon size={12} />
+                </button>
+              </div>
+            )}
+
+            {showDrainNotice && (
+              <div className="flex items-center gap-1.5 bg-amber-950/90 border border-amber-600/60 text-amber-200 text-[11px] font-semibold pl-2 pr-2.5 py-1 rounded-xl shadow backdrop-blur max-w-full">
+                <button
+                  onClick={() => setDrainNoticeOpen((v) => !v)}
+                  className="flex items-center gap-1 min-w-0 text-left cursor-pointer hover:text-white"
+                  title={`${NO_DRAIN_TEXT}. Click to ${drainNoticeOpen ? 'collapse' : 'expand'}.`}
+                  aria-expanded={drainNoticeOpen}
+                >
+                  {drainNoticeOpen ? <ChevronDown size={12} className="shrink-0 text-amber-400" /> : <ChevronRight size={12} className="shrink-0 text-amber-400" />}
+                  <span className={drainNoticeOpen ? 'whitespace-normal' : 'truncate'}>
+                    {noticeSummary(drainNoticeOpen ? NO_DRAIN_TEXT : 'No drain point', noDrainZones.map((n) => n.name), drainNoticeOpen)}
+                  </span>
+                </button>
+                <button onClick={() => setDrainBannerDismissed(true)} className="text-amber-400 hover:text-white cursor-pointer shrink-0" title="Dismiss">
+                  <XIcon size={12} />
+                </button>
+              </div>
+            )}
+
+            {calib && (
+              <div className="flex items-center gap-2 bg-neutral-900/95 border border-rose-500/60 text-neutral-100 text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow backdrop-blur">
+                <Ruler size={13} className="text-rose-400" />
+                {calib.stage === 'p1' && <span>Calibrate: click the first point on the drawing</span>}
+                {calib.stage === 'p2' && <span>Calibrate: click the second point</span>}
+                {calib.stage === 'enter' && (
+                  <>
+                    <span>Real distance</span>
+                    <input
+                      autoFocus
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={calibDist}
+                      onChange={(e) => setCalibDist(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') applyCalibration(); }}
+                      className="w-24 bg-neutral-800 border border-neutral-600 rounded px-1.5 py-0.5 text-[11px] text-white"
+                    />
+                    <span className="text-neutral-400">{project.units === 'metric' ? 'm' : 'ft'}</span>
+                    <button onClick={applyCalibration} className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white cursor-pointer">Apply</button>
+                  </>
+                )}
+                <button onClick={() => setCalib(null)} className="text-neutral-400 hover:text-white cursor-pointer" title="Cancel (Esc)">
+                  <XIcon size={12} />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {drawMessage && (
         <div className="absolute bottom-4 left-4 bg-red-900/90 border border-red-700 text-red-100 text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow">
