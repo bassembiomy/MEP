@@ -621,7 +621,10 @@ export function accessPanelPlacement(
 }
 
 /** True when the zone returns through the ceiling plenum (return grilles + transfer box, no return ducts). */
-export const isPlenumReturn = (zone: object): boolean => (zone as { returnStrategy?: string }).returnStrategy === 'plenum';
+export const isPlenumReturn = (zone: object): boolean => {
+  const z = zone as { returnStrategy?: string; diffusers?: Array<{ type?: string; returnPath?: string }> };
+  return z.returnStrategy === 'plenum' || !!z.diffusers?.some((d) => d.type === 'return' && d.returnPath === 'plenum');
+};
 
 /** Short transfer / plenum box on the return (left) side of an indoor unit, as deep as the unit. */
 export function plenumBox(unit: Pt, footprint: { w: number; d: number }, k: number): Rect {
