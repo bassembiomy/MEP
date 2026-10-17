@@ -1,3 +1,4 @@
+import { formatVelocity } from '../../format/units';
 import { diffuserCatalogFor } from '../hvacCatalogs';
 import { MAX_NECK_VELOCITY_FPM, neckAreaSqFt } from './diffuserSelector';
 import { MM_PER_IN } from '../units';
@@ -53,6 +54,6 @@ export function remapTerminalSize(faceWIn: number, faceHIn: number, cfm: number,
     faceWidthIn: best.w,
     faceHeightIn: best.h,
     neckVelocityFpm: vel,
-    warning: fit ? undefined : `Neck velocity ${vel} FPM exceeds ${MAX_NECK_VELOCITY_FPM} FPM at this CFM - add a terminal or enlarge the neck`
+    warning: fit ? undefined : `Neck velocity ${formatVelocity(vel, 'imperial')} exceeds ${formatVelocity(MAX_NECK_VELOCITY_FPM, 'imperial')} at this airflow - add a terminal or enlarge the neck`
   };
 }

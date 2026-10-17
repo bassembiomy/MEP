@@ -121,13 +121,50 @@ export function selectReturnPositions(
   return picked;
 }
 
+/** Maximum return-grille face velocity (fpm) for a plenum return (NC / draft limit). */
+export const MAX_RETURN_FACE_VELOCITY_FPM = 400;
+/** Largest single built-up plenum return grille face (ft2): beyond it a second grille is used. */
+const MAX_PLENUM_FACE_SQFT = 9;
+/** Plenum returns use one or two grilles per unit. */
+export const MAX_PLENUM_GRILLES_PER_UNIT = 2;
+
+/** Grille count and face for a plenum return of `cfm`: face velocity <= 400 fpm, 1 grille unless it would not fit one. */
+export function sizePlenumReturn(
+  cfm: number,
+  targetNc: number,
+  catalog?: DiffuserCatalogItem[],
+  metric = false
+): { count: number; cfmEach: number; faceDimension: string; neckDimension: string; faceAreaSqFt: number; model: string; ncRating: number } {
+  const areaOf = (it: DiffuserCatalogItem): number => (it.faceSizeIn.width * it.faceSizeIn.height) / 144;
+  const items = (catalog ?? []).filter((c) => c.terminalType === 'square-ceiling' || c.terminalType === 'return-grille');
+  const biggest = items.reduce((m, c) => Math.max(m, areaOf(c)), 0);
+  // one grille unless its face velocity (even on a built-up grille) or NC cannot meet the limits
+  let count = 1;
+  let sel = selectBestDiffuserFromCatalog(Math.max(1, cfm), targetNc, 'square-ceiling', catalog, { metric });
+  if (cfm / MAX_RETURN_FACE_VELOCITY_FPM > Math.max(biggest, MAX_PLENUM_FACE_SQFT) || sel.actualNc - 5 > targetNc || !sel.withinLimits) {
+    count = MAX_PLENUM_GRILLES_PER_UNIT;
+    sel = selectBestDiffuserFromCatalog(Math.round(cfm / count), targetNc, 'square-ceiling', catalog, { metric });
+  }
+  let faceArea = areaOf(sel.catalogItem);
+  const cfmEach = Math.round(cfm / count);
+  let face = sel.faceDimension;
+  if (cfmEach / faceArea > MAX_RETURN_FACE_VELOCITY_FPM) {
+    // custom (built-up) grille sized for the velocity limit, square, rounded up to 2 in
+    const sideIn = Math.ceil(Math.sqrt((cfmEach / MAX_RETURN_FACE_VELOCITY_FPM) * 144) / 2) * 2;
+    face = metric ? `${Math.round(sideIn * 25.4)}x${Math.round(sideIn * 25.4)}` : `${sideIn}"x${sideIn}"`;
+    faceArea = (sideIn * sideIn) / 144;
+  }
+  return { count, cfmEach, faceDimension: face, neckDimension: sel.neckDimension, faceAreaSqFt: faceArea, model: `${sel.catalogItem.manufacturer} Eggcrate Return ${face}`, ncRating: Math.max(15, sel.actualNc - 5) };
+}
+
 export function placeReturnGrillesForZone(
   zone: EquipmentServiceZone,
   supplyTerminals: CoordinatedAirTerminal[],
-  options: { unitPerFt?: number; exhaustCfm?: number; exfiltrationCfm?: number; keepOuts?: Rect[]; catalog?: DiffuserCatalogItem[]; metric?: boolean; /** Upper bound on the number of return grilles (fewer grilles = shorter return main, fewer crossings). */ maxCount?: number } = {}
+  options: { /** Ceiling-plenum return: 1-2 grilles sized for the unit return CFM (face velocity <= 400 fpm). */ plenum?: boolean; unitPerFt?: number; exhaustCfm?: number; exfiltrationCfm?: number; keepOuts?: Rect[]; catalog?: DiffuserCatalogItem[]; metric?: boolean; /** Upper bound on the number of return grilles (fewer grilles = shorter return main, fewer crossings). */ maxCount?: number } = {}
 ): CoordinatedAirTerminal[] {
   const unitPerFt = options.unitPerFt ?? 1;
   const returnCfm = zone.returnCfm || computeReturnCfm(zone.supplyCfm, options);
+  if (options.plenum) return placePlenumReturnGrilles(zone, supplyTerminals, returnCfm, options);
   const bounds = getPolygonBounds(zone.serviceAreaPolygon);
   const wide = bounds.width > bounds.height * 1.3 && supplyTerminals.length >= 2;
   const numReturns = wide
@@ -175,6 +212,45 @@ export function placeReturnGrillesForZone(
     adjacentOverlapRatio: 0,
     occupiedZoneVelocityFpm: 35,
     ncRating: Math.max(15, selected.actualNc - 5),
+    deltaPInWg: 0.025,
+    status: 'pass' as const
+  }));
+}
+
+
+/** Plenum return: the fewest grilles (1-2) that hold the face velocity, placed near the unit but off its footprint and away from every supply. */
+function placePlenumReturnGrilles(
+  zone: EquipmentServiceZone,
+  supplyTerminals: CoordinatedAirTerminal[],
+  returnCfm: number,
+  options: { unitPerFt?: number; keepOuts?: Rect[]; catalog?: DiffuserCatalogItem[]; metric?: boolean; maxCount?: number }
+): CoordinatedAirTerminal[] {
+  const unitPerFt = options.unitPerFt ?? 1;
+  const size = sizePlenumReturn(returnCfm, zone.targetNc, options.catalog, options.metric);
+  const want = Math.min(size.count, options.maxCount && options.maxCount >= 1 ? Math.floor(options.maxCount) : size.count);
+  const anchor = zone.equipmentPosition && zone.equipmentPosition.wallSide !== 'ceiling'
+    ? { x: zone.equipmentPosition.x, y: zone.equipmentPosition.y }
+    : undefined;
+  const supplyPts = supplyTerminals.map((t) => t.position);
+  const positions = selectReturnPositions(zone.serviceAreaPolygon, supplyPts, want, { unitPerFt, anchor, keepOuts: options.keepOuts });
+  if (!positions.length) return [];
+  const cfmEach = Math.round(returnCfm / positions.length);
+  return positions.map((p, i) => ({
+    id: `RAG-${zone.unitTag}-${i + 1}`,
+    unitId: zone.id,
+    designControlMode: 'ai' as const,
+    type: 'return' as const,
+    subtype: 'eggcrate' as const,
+    position: { x: parseFloat(p.x.toFixed(2)), y: parseFloat(p.y.toFixed(2)) },
+    cfm: cfmEach,
+    catalogModel: size.model,
+    neckDimension: size.neckDimension,
+    faceDimension: size.faceDimension,
+    throwT50Ft: 0,
+    throwRatio: 1.0,
+    adjacentOverlapRatio: 0,
+    occupiedZoneVelocityFpm: 35,
+    ncRating: size.ncRating,
     deltaPInWg: 0.025,
     status: 'pass' as const
   }));

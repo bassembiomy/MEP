@@ -25,6 +25,7 @@ import {
   generateSelectionAlgorithmTrace
 } from './hvacArchitecture';
 import { BTUH_PER_TON, SQFT_PER_SQM, toBtuh, toCfm, toSqFt } from './units';
+import { formatAirflow, formatLoad, formatPressure } from '../format/units';
 import {
   sizeUnitQuantity,
   deliveredCfmFor,
@@ -121,20 +122,23 @@ export interface LegacySystemRecommendation {
   sourceFile?: string;
 }
 
+/** Ratio as a whole-number percentage (no float noise: 1.1 -> '110%'). */
+const pctOf = (r: number): string => `${Math.round(r * 100)}%`;
+
 function clamp(val: number, min: number = 0, max: number = 100): number {
   return Math.min(max, Math.max(min, val));
 }
 
-function sizingDiagnostics(equip: EquipmentCatalogItem, s: SizingCheck, loadBtu: number, cfm: number, label: string = ''): DiagnosticItem[] {
+function sizingDiagnostics(equip: EquipmentCatalogItem, s: SizingCheck, loadBtu: number, cfm: number, label: string = '', units: 'imperial' | 'metric' = 'imperial'): DiagnosticItem[] {
   const out: DiagnosticItem[] = [];
-  const pct = (r: number): string => `${(r * 100).toFixed(0)}%`;
+  const pct = (r: number): string => pctOf(r);
   const prefix = label ? `${label}: ` : '';
   if (s.failures.includes('DEFICIT')) {
     out.push({
       code: 'ERR_CAPACITY_DEFICIT',
       severity: 'error',
       componentId: equip.id,
-      message: `${prefix}Derated installed capacity (${Math.round(s.installedCapacityBtu * s.derate).toLocaleString()} Btu/h) is less than design load (${Math.round(loadBtu).toLocaleString()} Btu/h).`,
+      message: `${prefix}Derated installed capacity (${formatLoad(s.installedCapacityBtu * s.derate, units)}) is less than design load (${formatLoad(loadBtu, units)}).`,
       remediation: `Increase unit quantity to ${s.qty + 1} or select a larger tonnage unit.`
     });
   }
@@ -161,7 +165,7 @@ function sizingDiagnostics(equip: EquipmentCatalogItem, s: SizingCheck, loadBtu:
       code: 'ERR_AIRFLOW_MISMATCH',
       severity: 'error',
       componentId: equip.id,
-      message: `${prefix}Delivered airflow is ${pct(s.airflowRatio)} of the required ${Math.round(cfm).toLocaleString()} CFM (allowed ${pct(AIRFLOW_RATIO_MIN)}-${pct(AIRFLOW_RATIO_MAX)}).`,
+      message: `${prefix}Delivered airflow is ${pct(s.airflowRatio)} of the required ${formatAirflow(cfm, units)} (allowed ${pct(AIRFLOW_RATIO_MIN)}-${pct(AIRFLOW_RATIO_MAX)}).`,
       remediation: 'Select a unit whose nominal airflow matches the room supply airflow.'
     });
   }
@@ -340,7 +344,7 @@ export function generateSystemCandidates(
           code: 'ERR_FAN_ESP_DEFICIT',
           severity: 'error',
           componentId: airEquip.id,
-          message: `Fan available external static pressure (${airEquip.maxRatedEspInWg} in.wg) is below required system ESP (${criticalPath.espRequiredInWg.toFixed(2)} in.wg).`,
+          message: `Fan available external static pressure (${formatPressure(airEquip.maxRatedEspInWg, unitSystem)}) is below required system ESP (${formatPressure(criticalPath.espRequiredInWg, unitSystem)}).`,
           remediation: 'Select high-static duct indoor model or upsize duct cross-sections to reduce aerodynamic friction.'
         });
       }
@@ -551,13 +555,13 @@ export function generateSystemCandidates(
         for (const io of indoorOptions) {
           const indoorTotal = io.sizing.installedCapacityBtu;
           const combo = indoorTotal / outdoor.totalCapacityBtuPerHour;
-          const diags: DiagnosticItem[] = sizingDiagnostics(io.unit, io.sizing, loadBtu, cfm, 'Indoor units');
+          const diags: DiagnosticItem[] = sizingDiagnostics(io.unit, io.sizing, loadBtu, cfm, 'Indoor units', unitSystem);
           if (combo < VRF_COMBINATION_MIN - 1e-9 || combo > VRF_COMBINATION_MAX + 1e-9) {
             diags.push({
               code: 'ERR_VRF_COMBINATION_RATIO',
               severity: 'error',
               componentId: outdoor.id,
-              message: `Indoor/outdoor combination ratio ${(combo * 100).toFixed(0)}% is outside ${VRF_COMBINATION_MIN * 100}-${VRF_COMBINATION_MAX * 100}% (target ${VRF_COMBINATION_TARGET_MIN * 100}-${VRF_COMBINATION_TARGET_MAX * 100}%).`,
+              message: `Indoor/outdoor combination ratio ${pctOf(combo)} is outside ${pctOf(VRF_COMBINATION_MIN)}-${pctOf(VRF_COMBINATION_MAX)} (target ${pctOf(VRF_COMBINATION_TARGET_MIN)}-${pctOf(VRF_COMBINATION_TARGET_MAX)}).`,
               remediation: 'Select an outdoor module whose capacity is close to the connected indoor capacity.'
             });
           }
@@ -566,7 +570,7 @@ export function generateSystemCandidates(
               code: 'ERR_CAPACITY_DEFICIT',
               severity: 'error',
               componentId: outdoor.id,
-              message: `Derated outdoor capacity (${Math.round(outdoor.totalCapacityBtuPerHour * derate).toLocaleString()} Btu/h) is below the design load (${Math.round(loadBtu).toLocaleString()} Btu/h).`,
+              message: `Derated outdoor capacity (${formatLoad(outdoor.totalCapacityBtuPerHour * derate, unitSystem)}) is below the design load (${formatLoad(loadBtu, unitSystem)}).`,
               remediation: 'Select a larger outdoor module.'
             });
           }
@@ -606,7 +610,7 @@ export function generateSystemCandidates(
 
     for (const equip of matchingEquip) {
       const sizing = sizeUnitQuantity(equip, loadBtu, sensBtu, cfm, designAmbientF);
-      buildCandidate(equip, sizing.qty, sizingDiagnostics(equip, sizing, loadBtu, cfm), { sizing });
+      buildCandidate(equip, sizing.qty, sizingDiagnostics(equip, sizing, loadBtu, cfm, '', unitSystem), { sizing });
     }
   }
 
@@ -686,9 +690,9 @@ export function recommendSystemsForZone(
       score: cand.subscores.totalScore,
       reason: cand.tradeOffSummary,
       pros: [
-        `Installed Capacity: ${installed.toLocaleString()} Btu/h`,
+        `Installed Capacity: ${formatLoad(installed, isImperial ? 'imperial' : 'metric')}`,
         airUnit.capabilities.hasExternalStaticPressure
-          ? `Rated ESP: ${airUnit.maxRatedEspInWg.toFixed(2)} in.wg`
+          ? `Rated ESP: ${formatPressure(airUnit.maxRatedEspInWg, isImperial ? 'imperial' : 'metric')}`
           : 'Direct quiet air distribution without duct resistance'
       ],
       cons: cand.isValid ? [] : ['Fails engineering validation constraints'],

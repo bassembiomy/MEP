@@ -1,3 +1,4 @@
+import { formatAirflow, formatVelocity } from '../../format/units';
 import { EquipmentServiceZone } from '../zoning/zonePartitioner';
 import { OutdoorAirSystem } from './freshAirRouter';
 
@@ -22,7 +23,7 @@ export function validateOutdoorAirVentilation(
   let louverStatus: 'pass' | 'warning' | 'fail' = 'pass';
   if (oaSystem.louver.freeAreaVelocityFpm > oaSystem.louver.maxAllowableFreeAreaVelocityFpm) {
     louverStatus = 'warning';
-    issues.push(`Louver free-area velocity ${oaSystem.louver.freeAreaVelocityFpm} FPM exceeds maximum ${oaSystem.louver.maxAllowableFreeAreaVelocityFpm} FPM (rain penetration risk)`);
+    issues.push(`Louver free-area velocity ${formatVelocity(oaSystem.louver.freeAreaVelocityFpm, 'imperial')} exceeds maximum ${formatVelocity(oaSystem.louver.maxAllowableFreeAreaVelocityFpm, 'imperial')} (rain penetration risk)`);
   }
 
   // 2. Equipment compatibility check
@@ -37,7 +38,7 @@ export function validateOutdoorAirVentilation(
   // 3. Air balance sum
   const totalZoneOa = zones.reduce((sum, z) => sum + z.outdoorAirCfm, 0);
   if (Math.abs(totalZoneOa - oaSystem.designOutdoorAirCfm) > 10) {
-    issues.push(`Outdoor air distribution mismatch: Louver design ${oaSystem.designOutdoorAirCfm} CFM vs Zone sum ${totalZoneOa} CFM`);
+    issues.push(`Outdoor air distribution mismatch: Louver design ${formatAirflow(oaSystem.designOutdoorAirCfm, 'imperial')} vs Zone sum ${formatAirflow(totalZoneOa, 'imperial')}`);
   }
 
   if (louverStatus === 'warning' || compatStatus === 'warning') {

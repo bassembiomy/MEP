@@ -134,6 +134,11 @@ export function zonePatchFromDesign(zone: Zone, payload0: ZonePayload): Partial<
 
   const patch: Partial<Zone> = {
     returnStrategy: payload.returnStrategy,
+    returnPath: payload.returnPath,
+    plantConnection: payload.plantConnection,
+    chwStubs: payload.chwStubs,
+    outdoorModel: payload.outdoorModel,
+    outdoorAirCfm: payload.outdoorAirCfm,
     diffusers: zone.isDiffusersLocked ? zone.diffusers : diffusers,
     ducts: zone.isDuctLocked ? zone.ducts : ducts,
     catalogQty: payload.catalogQty,
