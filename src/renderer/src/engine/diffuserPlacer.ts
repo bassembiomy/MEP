@@ -20,6 +20,8 @@ export interface DiffuserPos {
   actualNc?: number;
   throwT50Ft?: number;
   deltaPInWg?: number;
+  /** Return grille that opens into the ceiling plenum: no return duct is routed to it. */
+  plenumReturn?: boolean;
 }
 
 /**

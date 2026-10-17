@@ -65,7 +65,7 @@ export function designZone(
   zones: Zone[],
   project: ProjectMetadata,
   extent?: { minX: number; maxX: number; minY: number; maxY: number } | null,
-  overrides: { userOverrideUnitCount?: number } = {}
+  overrides: { userOverrideUnitCount?: number; returnStrategy?: 'plenum' | 'ducted' } = {}
 ): ZoneDesign {
   const units = project.units;
   const loads = calculateZoneLoad(zone, project);
@@ -91,7 +91,8 @@ export function designZone(
     mountingWallSide: chooseMountingSide(roomPolygon, others, extent),
     maxAvailableCeilingDepthIn: 14,
     targetNc,
-    userOverrideUnitCount: overrides.userOverrideUnitCount
+    userOverrideUnitCount: overrides.userOverrideUnitCount,
+    returnStrategy: overrides.returnStrategy
   });
   return { design, payload: convertDesignResultToZonePayload(design) };
 }
@@ -132,6 +133,7 @@ export function zonePatchFromDesign(zone: Zone, payload0: ZonePayload): Partial<
   else if (!ducted) ducts = [];
 
   const patch: Partial<Zone> = {
+    returnStrategy: payload.returnStrategy,
     diffusers: zone.isDiffusersLocked ? zone.diffusers : diffusers,
     ducts: zone.isDuctLocked ? zone.ducts : ducts,
     catalogQty: payload.catalogQty,

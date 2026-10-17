@@ -38,6 +38,7 @@ export type RoutedDuctSegment = DuctSegment & {
   crossoverWith?: string[];
   /** No clean layout exists in this room: the clearance rule this duct still breaks. */
   clearanceIssue?: string;
+  plenumBox?: boolean;
 };
 
 /** Lateral offset between the supply trunk line and the return collar (ft). */
@@ -322,6 +323,42 @@ export function routeDucts(
       ? returnDiffusers.reduce((sum, d) => sum + d.cfm, 0)
       : Math.round(totalFlow * 0.9);
     if (!(returnFlow > 0)) return;
+
+    // Ceiling-plenum return (grilles flagged `plenumReturn`): ONE short return box at the unit on the side opposite the
+    // supply trunk; no return main, so nothing runs alongside or over the supply network.
+    if (returnDiffusers.length > 0 && returnDiffusers.every((d) => d.plenumReturn)) {
+      const first = supplyAvoid.find((g) => Math.hypot(g.start.x - unitXY.x, g.start.y - unitXY.y) < 0.3 * ppf);
+      let sdx = 1, sdy = 0;
+      if (first) {
+        const dx = first.end.x - first.start.x, dy = first.end.y - first.start.y;
+        const L = Math.hypot(dx, dy);
+        if (L > 1e-9) { sdx = Math.round(dx / L); sdy = Math.round(dy / L); }
+      }
+      const len = 2 * ppf;
+      const dirs = [[-sdx, -sdy], [-sdy, sdx], [sdy, -sdx], [sdx, sdy]];
+      const distSeg = (q: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number => {
+        const vx = b.x - a.x, vy = b.y - a.y, L2 = vx * vx + vy * vy;
+        const t = L2 > 0 ? Math.max(0, Math.min(1, ((q.x - a.x) * vx + (q.y - a.y) * vy) / L2)) : 0;
+        return Math.hypot(q.x - (a.x + t * vx), q.y - (a.y + t * vy));
+      };
+      let bestEnd = { x: unitXY.x + dirs[0][0] * len, y: unitXY.y + dirs[0][1] * len };
+      let bestScore = -Infinity;
+      for (const [dx, dy] of dirs) {
+        const end = { x: unitXY.x + dx * len, y: unitXY.y + dy * len };
+        const inside = segmentInsidePolygon(unitXY, end, points, 1.0 * ppf, 0.5 * ppf, [unitXY]) ? 2 : segmentInsidePolygon(unitXY, end, points, 0.2 * ppf, 0.5 * ppf, [unitXY]) ? 1 : 0;
+        const clear = Math.min(3 * ppf, ...supplyAvoid.map((g) => distSeg(end, g.start, g.end)));
+        const score = inside * 1e6 + clear;
+        if (score > bestScore + 1e-9) { bestScore = score; bestEnd = end; }
+      }
+      const boxSeg: TopoSegment = {
+        key: -1, kind: 'trunk', start: unitXY, end: bestEnd, flow: returnFlow, parent: -1, direct: [], downstream: [],
+        orientation: Math.abs(bestEnd.y - unitXY.y) < 1e-9 ? 'h' : 'v', isTakeoff: false, onTrunk: false
+      };
+      emitTree([boxSeg], 'return', undefined, () => `duct-return-${zoneId}-plenum`);
+      const emitted = ducts[ducts.length - 1];
+      if (emitted) emitted.plenumBox = true;
+      return;
+    }
 
     if (returnDiffusers.length > 0) {
       // Return trunk on its own line off the unit (>= collar offset from the supply trunk), clear of the supply network

@@ -47,6 +47,8 @@ export interface SteppedDuctSection {
   crossoverWith?: string[];
   /** Set when no clean layout exists in this room: the rule this section still breaks (wall / terminal clearance). */
   clearanceIssue?: string;
+  /** Short return plenum box at the unit (ceiling-plenum return): carries the return air, no grille is ducted to it. */
+  plenumBox?: boolean;
 }
 
 /** Verifies the sized sections against the plan clearance rules and flags every section that still breaks one. */

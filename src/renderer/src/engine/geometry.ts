@@ -717,6 +717,12 @@ export interface OutdoorUnitOptions {
   placedFootprints?: Pt2[][];
   /** Slide the unit along its wall towards this point (e.g. its indoor unit). */
   preferNear?: Pt2;
+  /**
+   * With `preferNear`: choose the exterior wall NEAREST to that point (shortest refrigerant run) instead of the
+   * longest wall / `side`. Walls that cannot hold the unit (another zone, an earlier outdoor unit) are skipped in
+   * order of distance.
+   */
+  nearestWall?: boolean;
 }
 
 /**
@@ -752,14 +758,20 @@ export function calculateOutdoorUnitPlacement(
   };
 
   let pool = edges;
-  if (opts.side) {
+  if (opts.side && !opts.nearestWall) {
     const facing = edges.filter(e => e.side === opts.side);
     if (facing.length) pool = facing;
   }
   const exterior = pool.filter(onEnvelope);
   if (exterior.length) pool = exterior;
 
+  const nearPt = opts.nearestWall ? opts.preferNear : undefined;
   const rank = (list: WallEdge[]): WallEdge[] => list.slice().sort((a, b) => {
+    if (nearPt) {
+      const da = distanceToSegment(nearPt.x, nearPt.y, a.ax, a.ay, a.bx, a.by);
+      const db = distanceToSegment(nearPt.x, nearPt.y, b.ax, b.ay, b.bx, b.by);
+      if (Math.abs(da - db) > tol) return da - db;
+    }
     if (Math.abs(a.length - b.length) > tol) return b.length - a.length;
     // tie: wall closest to the zone centroid (shortest distribution run)
     return Math.hypot(a.mx - centroid.x, a.my - centroid.y) - Math.hypot(b.mx - centroid.x, b.my - centroid.y);

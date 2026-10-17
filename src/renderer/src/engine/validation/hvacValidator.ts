@@ -86,7 +86,7 @@ export function executeMasterHvacValidation(input: MasterValidationInput): Maste
   points.push(validateAcousticCompliance(zones, terminals, ducts, units));
 
   // Point 6: Throw and Thermal Comfort Check
-  points.push(validateThrowAndThermalComfort(terminals, profile));
+  points.push(validateThrowAndThermalComfort(terminals, profile, units));
 
   // Point 7: Static Pressure / ESP Check
   points.push(validateCriticalPathPressure(zones, ducts, profile, units));

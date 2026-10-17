@@ -1,3 +1,4 @@
+import { pointInRect, type Rect } from '../ducts/clearance';
 import {
   layoutTerminalGrid,
   isPointInPolygon,
@@ -177,6 +178,9 @@ export function layoutBayTerminalGrid(
   options: TerminalGridOptions & { /** Full room outline: terminals keep >= 1.2 ft off ITS walls (the bay may be a slab of the room). */ wallPolygon?: number[] } = {}
 ): TerminalGridResult {
   const wallPoly = options.wallPolygon && options.wallPolygon.length >= 6 ? options.wallPolygon : points;
+  const keepOuts: Rect[] = options.keepOuts ?? [];
+  // terminals never enter the indoor-unit footprint + service clearance (walking back from a wall must not push one in)
+  const inKeepOut = (q: P): boolean => keepOuts.some((k) => pointInRect(q, k));
   const bays = decomposeConvex(points);
   if (bays.length <= 1) {
     const g = layoutTerminalGrid(points, n, options);
@@ -189,7 +193,7 @@ export function layoutBayTerminalGrid(
         const dx = c1.x - q.x, dy = c1.y - q.y, len = Math.hypot(dx, dy);
         if (len < 1e-6) break;
         const nq = { x: q.x + (dx / len) * 0.1 * u1, y: q.y + (dy / len) * 0.1 * u1 };
-        if (!isPointInPolygon(nq.x, nq.y, points) || !isPointInPolygon(nq.x, nq.y, wallPoly)) break;
+        if (!isPointInPolygon(nq.x, nq.y, points) || !isPointInPolygon(nq.x, nq.y, wallPoly) || inKeepOut(nq)) break;
         q = nq;
       }
       return q;
@@ -211,7 +215,9 @@ export function layoutBayTerminalGrid(
       for (let k = 0; k < 60 && distanceToPolygonEdge(q.x, q.y, wallPoly) < minWall; k++) {
         const dx = bc.x - q.x, dy = bc.y - q.y, len = Math.hypot(dx, dy);
         if (len < 1e-6) break;
-        q = { x: q.x + (dx / len) * 0.1 * u0, y: q.y + (dy / len) * 0.1 * u0 };
+        const nq = { x: q.x + (dx / len) * 0.1 * u0, y: q.y + (dy / len) * 0.1 * u0 };
+        if (inKeepOut(nq)) break;
+        q = nq;
       }
       return q;
     });
@@ -225,7 +231,7 @@ export function layoutBayTerminalGrid(
   // arms share a cut line: drop a terminal that crowds an earlier one closer than the minimum spacing
   const u = options.unitPerFt && options.unitPerFt > 0 ? options.unitPerFt : 1;
   const kept: P[] = [];
-  for (const p of pts) if (kept.every((q) => Math.hypot(p.x - q.x, p.y - q.y) >= MIN_TERMINAL_SPACING_FT * u - 1e-6)) kept.push(p);
+  for (const p of pts.filter((q) => !inKeepOut(q))) if (kept.every((q) => Math.hypot(p.x - q.x, p.y - q.y) >= MIN_TERMINAL_SPACING_FT * u - 1e-6)) kept.push(p);
   // a sliver bay (thinner than 2 x the wall clearance) cannot hold a terminal 1.2 ft off its walls: its neighbours cover it
   const clear = kept.filter((p) => distanceToPolygonEdge(p.x, p.y, wallPoly) >= minWall - 1e-6);
   const final = clear.length ? clear : kept.length ? kept : pts;

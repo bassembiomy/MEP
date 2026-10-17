@@ -3,6 +3,8 @@ import { useProjectStore } from '../store/projectStore';
 import { parseDxfText, ParsedDxf } from '../engine/dxfParser';
 import { FT_PER_M, M_PER_FT, SQFT_PER_SQM, CFM_PER_LPS, LPS_PER_CFM, BTUH_PER_W, W_PER_BTUH } from '../engine/units';
 import { DRAWING_UNITS, DrawingUnit, feetPerDrawingUnit } from '../canvas/drawingGeometry';
+import { parseFaceIn } from '../engine/ducts/clearance';
+import { remapTerminalSize } from '../engine/terminals/terminalSizeMap';
 import { parseDwgBuffer } from '../engine/dwgParser';
 import { MousePointer, PenTool, Hand, RefreshCw, Trash2, ShieldAlert, Upload, X, CheckCircle, LayoutGrid } from 'lucide-react';
 
@@ -28,6 +30,7 @@ export const Toolbar: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState<string | null>(null);
+  const [unitWarnings, setUnitWarnings] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
   // Single import path for DXF + DWG: the store keeps the RAW parse and normalises it to canvas px (scale + Y flip).
@@ -103,6 +106,8 @@ export const Toolbar: React.FC = () => {
     // ceiling height (ft<->m), lighting/equipment overrides (W/ft2<->W/m2), manual airflow (CFM<->L/s)
     // and manual load (Btu/h<->W). Values keep FULL precision (a 10 ft -> 3.048 m -> 10 ft round trip is exact);
     // rounding is a display concern only.
+    const target = isImperial ? 'metric' : 'imperial';
+    const warnings: string[] = [];
     for (const z of zones) {
       const patch: Partial<typeof z> = {
         ceilingHeight: isImperial ? z.ceilingHeight * M_PER_FT : z.ceilingHeight * FT_PER_M
@@ -119,8 +124,20 @@ export const Toolbar: React.FC = () => {
       if (z.manualCoolingOverride !== undefined) {
         patch.manualCoolingOverride = isImperial ? z.manualCoolingOverride * W_PER_BTUH : z.manualCoolingOverride * BTUH_PER_W;
       }
+      // Terminal sizes follow the target system's modular sizes (CFM unchanged); the neck velocity is rechecked.
+      if (z.diffusers?.length) {
+        patch.diffusers = z.diffusers.map((d) => {
+          const parsed = parseFaceIn(d.size, !isImperial);
+          const fw = d.faceWidthIn ?? parsed.w, fh = d.faceHeightIn ?? parsed.h;
+          if (!(fw && fh) || d.type === 'cassette' || d.type === 'high-wall') return d;
+          const r = remapTerminalSize(fw, fh, d.cfm, target);
+          if (r.warning) warnings.push(`${z.name || z.id} ${d.id}: ${r.warning}`);
+          return { ...d, size: r.size, faceWidthIn: r.faceWidthIn, faceHeightIn: r.faceHeightIn, sizeWarning: r.warning };
+        });
+      }
       updateZone(z.id, patch);
     }
+    setUnitWarnings(warnings);
     setProject({
       units: isImperial ? 'metric' : 'imperial',
       // Convert design outdoor/indoor dry-bulbs for convenience
@@ -283,6 +300,11 @@ export const Toolbar: React.FC = () => {
           {project.units}
         </button>
       </div>
+      {unitWarnings.length > 0 && (
+        <p className="text-[10px] text-amber-400" title={unitWarnings.join('\n')}>
+          {unitWarnings.length} terminal(s) exceed the neck velocity limit after the unit change
+        </p>
+      )}
 
       {selectedZoneId && (
         <button

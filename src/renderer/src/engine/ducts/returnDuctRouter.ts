@@ -197,3 +197,79 @@ export function routeReturnDucts(
 
   return sizeDuctNetwork(sections, profile, zone.maxAvailableCeilingDepthIn ?? 14);
 }
+
+/** Length (ft) of the return plenum box that joins the unit's return opening to the ceiling plenum. */
+export const PLENUM_BOX_LENGTH_FT = 2;
+
+const distPointSeg = (p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number => {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const L2 = dx * dx + dy * dy;
+  const t = L2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2)) : 0;
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+};
+
+/**
+ * Ceiling-plenum return: the return grilles open into the ceiling void and the unit draws from it through ONE short
+ * return box at the unit's return opening. No return main is routed, so the return can never run alongside or over the
+ * supply trunk. The box leaves the unit on the side opposite the supply trunk (otherwise the first side that keeps clear
+ * of every supply duct and inside the room).
+ */
+export function routePlenumReturnBox(
+  zone: EquipmentServiceZone,
+  returnTerminals: CoordinatedAirTerminal[],
+  profile: StandardsProfile = ASHRAE_PROFILE,
+  /** Supply sections already routed (this unit's trunk decides the side; all of them are kept clear). */
+  supplySections: ReadonlyArray<{ unitId: string; startPoint: { x: number; y: number }; endPoint: { x: number; y: number }; widthIn: number }> = [],
+  units?: string
+): SteppedDuctSection[] {
+  const eq = zone.equipmentPosition;
+  const grilles = returnTerminals.filter((t) => t.cfm > 0);
+  const total = grilles.length > 0 ? grilles.reduce((s, t) => s + t.cfm, 0) : zone.returnCfm || Math.round(zone.supplyCfm * 0.88);
+  const { roomPoly } = zoneRoutingPolygons(zone);
+  const own = supplySections.find((s) => s.unitId === zone.id && Math.hypot(s.startPoint.x - eq.x, s.startPoint.y - eq.y) < 0.3);
+  let sd = { x: 1, y: 0 };
+  if (own) {
+    const dx = own.endPoint.x - own.startPoint.x, dy = own.endPoint.y - own.startPoint.y;
+    const L = Math.hypot(dx, dy);
+    if (L > 1e-6) sd = { x: Math.round(dx / L), y: Math.round(dy / L) };
+  }
+  const dirs = [{ x: -sd.x, y: -sd.y }, { x: -sd.y, y: sd.x }, { x: sd.y, y: -sd.x }, { x: sd.x, y: sd.y }];
+  const r2 = (n: number): number => parseFloat(n.toFixed(2));
+  let best: { end: { x: number; y: number }; score: number } | null = null;
+  for (const d of dirs) {
+    const end = { x: eq.x + d.x * PLENUM_BOX_LENGTH_FT, y: eq.y + d.y * PLENUM_BOX_LENGTH_FT };
+    const root = { x: eq.x, y: eq.y };
+    // the box edge keeps >= 0.5 ft off the walls: prefer an end point with 1 ft to the wall (centre line), then 0.2 ft
+    const inside = !roomPoly || segmentInsidePolygon(root, end, roomPoly, 1.0, 0.5, [root]) ? 2 : segmentInsidePolygon(root, end, roomPoly, 0.2, 0.5, [root]) ? 1 : 0;
+    // clearance of the box end to every supply duct (their centre line, less half width)
+    const clear = Math.min(Infinity, ...supplySections.map((s) => distPointSeg(end, s.startPoint, s.endPoint) - s.widthIn / 24));
+    const score = inside * 1000 + Math.min(clear, 3);
+    if (!best || score > best.score + 1e-9) best = { end, score };
+  }
+  const end = best ? best.end : { x: eq.x + dirs[0].x * PLENUM_BOX_LENGTH_FT, y: eq.y + dirs[0].y * PLENUM_BOX_LENGTH_FT };
+  const box: SteppedDuctSection = {
+    id: `RDS-${zone.unitTag}-1`,
+    unitId: zone.id,
+    designControlMode: 'ai',
+    systemType: 'return',
+    role: 'main-trunk',
+    startPoint: { x: r2(eq.x), y: r2(eq.y) },
+    endPoint: { x: r2(end.x), y: r2(end.y) },
+    airflowCfm: total,
+    shape: 'rectangular',
+    widthIn: 0,
+    heightIn: 0,
+    velocityFpm: 0,
+    allowableVelocityFpm: 0,
+    frictionLossPer100Ft: 0,
+    fittingLossInWg: 0,
+    totalSectionLossInWg: 0,
+    ncRating: zone.targetNc || 30,
+    connectedDiffuserCount: grilles.length,
+    connectedDiffusers: grilles.map((t) => t.id),
+    directDiffusers: [],
+    childDuctIds: [],
+    plenumBox: true
+  };
+  return sizeDuctNetwork([box], profile, zone.maxAvailableCeilingDepthIn ?? 14, units);
+}

@@ -1,10 +1,12 @@
 import { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
 import { ValidationPointResult } from './airflowValidator';
+import { isImperial } from '../units';
 import { StandardsProfile, ASHRAE_PROFILE } from '../standards/designStandards';
 
 export function validateThrowAndThermalComfort(
   terminals: CoordinatedAirTerminal[],
-  profile: StandardsProfile = ASHRAE_PROFILE
+  profile: StandardsProfile = ASHRAE_PROFILE,
+  units?: string
 ): ValidationPointResult {
   const supplyTerminals = terminals.filter((t) => t.type === 'supply');
   let minRatio = Infinity;
@@ -26,7 +28,7 @@ export function validateThrowAndThermalComfort(
     pointName: 'Throw & Thermal Comfort Check',
     status: passed ? 'PASS' : 'WARNING',
     metric: `Throw Ratios (T50/L): ${minRatio.toFixed(2)} min to ${maxRatio.toFixed(2)} max [Target Envelope: ${profile.diffuserThrow.minThrowRatio} - ${profile.diffuserThrow.maxThrowRatio}]`,
-    criteria: `${profile.diffuserThrow.minThrowRatio} <= T50 / L <= ${profile.diffuserThrow.maxThrowRatio}, Occupied Zone Velocity 30-50 FPM`,
+    criteria: `${profile.diffuserThrow.minThrowRatio} <= T50 / L <= ${profile.diffuserThrow.maxThrowRatio}, Occupied Zone Velocity ${isImperial(units) ? '30-50 FPM' : '0.15-0.25 m/s'}`,
     message: passed
       ? 'All diffuser throw patterns distribute air uniformly across the occupied zone without draft risk'
       : 'Diffuser throw warnings detected (potential air stagnation or excessive occupied-zone velocity)'

@@ -1812,6 +1812,43 @@ export const STANDARD_DIFFUSER_CATALOG: DiffuserCatalogItem[] = [
     provenance: { source: 'Titus Ceiling Diffuser Catalog', version: '2024.1' }
   },
   {
+    id: 'dif-pl-24x24-n10',
+    manufacturer: 'Titus',
+    model: 'PDR 24"x24" Perforated Plaque (10" Neck)',
+    terminalType: 'square-ceiling',
+    neckSizeIn: { width: 10, height: 10, diameter: 10 },
+    faceSizeIn: { width: 24, height: 24 },
+    minCfm: 100,
+    maxCfm: 350,
+    performanceTable: [
+      { cfm: 100, deltaPInWg: 0.018, ncRating: 14, throwFt: { t50: 3.0, t100: 2.0, t150: 1.3 } },
+      { cfm: 150, deltaPInWg: 0.040, ncRating: 19, throwFt: { t50: 4.5, t100: 3.0, t150: 2.0 } },
+      { cfm: 200, deltaPInWg: 0.070, ncRating: 26, throwFt: { t50: 6.0, t100: 4.0, t150: 2.8 } },
+      { cfm: 250, deltaPInWg: 0.110, ncRating: 32, throwFt: { t50: 7.5, t100: 5.0, t150: 3.5 } },
+      { cfm: 350, deltaPInWg: 0.200, ncRating: 40, throwFt: { t50: 10.5, t100: 7.0, t150: 5.0 } }
+    ],
+    costIndex: 55,
+    provenance: { source: 'Titus Ceiling Diffuser Catalog', version: '2024.1', isDemonstrationOnly: true }
+  },
+  {
+    id: 'dif-pl-24x24-n12',
+    manufacturer: 'Titus',
+    model: 'PDR 24"x24" Perforated Plaque (12" Neck)',
+    terminalType: 'square-ceiling',
+    neckSizeIn: { width: 12, height: 12, diameter: 12 },
+    faceSizeIn: { width: 24, height: 24 },
+    minCfm: 200,
+    maxCfm: 550,
+    performanceTable: [
+      { cfm: 200, deltaPInWg: 0.020, ncRating: 15, throwFt: { t50: 4.0, t100: 2.7, t150: 1.8 } },
+      { cfm: 300, deltaPInWg: 0.045, ncRating: 23, throwFt: { t50: 6.0, t100: 4.0, t150: 2.8 } },
+      { cfm: 400, deltaPInWg: 0.080, ncRating: 30, throwFt: { t50: 8.0, t100: 5.5, t150: 3.8 } },
+      { cfm: 550, deltaPInWg: 0.150, ncRating: 39, throwFt: { t50: 11.0, t100: 7.5, t150: 5.2 } }
+    ],
+    costIndex: 60,
+    provenance: { source: 'Titus Ceiling Diffuser Catalog', version: '2024.1', isDemonstrationOnly: true }
+  },
+  {
     id: 'dif-linear-2slot',
     manufacturer: 'Price',
     model: 'Linear Slot 2-Slot 48"',
@@ -1903,6 +1940,8 @@ export const METRIC_DIFFUSER_CATALOG: DiffuserCatalogItem[] = [
   metricDiffuser(byId('dif-sq-18x18'), 'dif-m-600x600-n300', { w: 600, h: 600 }, { d: 300 }),
   metricDiffuser(byId('dif-sq-18x18'), 'dif-m-600x600-n350', { w: 600, h: 600 }, { d: 350 }),
   metricDiffuser(byId('dif-sq-18x18'), 'dif-m-600x600-n400', { w: 600, h: 600 }, { d: 400 }),
+  metricDiffuser(byId('dif-pl-24x24-n10'), 'dif-m-600x600-pl-n250', { w: 600, h: 600 }, { d: 250 }),
+  metricDiffuser(byId('dif-pl-24x24-n12'), 'dif-m-600x600-pl-n300', { w: 600, h: 600 }, { d: 300 }),
   { ...byId('dif-linear-2slot'), id: 'dif-m-linear-2slot', model: 'Linear Slot 2-Slot 1200 mm' },
   { ...byId('grille-return-eggcrate'), id: 'grille-m-return-eggcrate', model: '50F Eggcrate Return 600x600 mm', neckSizeIn: { width: mmToIn(600), height: mmToIn(600) }, faceSizeIn: { width: mmToIn(600), height: mmToIn(600) } }
 ];
