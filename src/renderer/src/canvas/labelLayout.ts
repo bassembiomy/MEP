@@ -59,12 +59,21 @@ export const LABEL_CHAR_W = 0.6;
 export const LABEL_LINE_H = 1.25;
 export const LABEL_PAD = 3;
 
-export const measureText = (text: string, fontPx: number): number => text.length * LABEL_CHAR_W * fontPx;
+/** Em width of a glyph class: lower case / digits / punctuation 0.6, bold capitals 0.76 (M, W 0.9), so capital text never truncates. */
+const charEm = (c: string): number => (c === 'M' || c === 'W' ? 0.9 : c >= 'A' && c <= 'Z' ? 0.76 : LABEL_CHAR_W);
+
+export const textEm = (text: string): number => {
+  let w = 0;
+  for (let i = 0; i < text.length; i++) w += charEm(text[i]);
+  return w;
+};
+
+export const measureText = (text: string, fontPx: number): number => textEm(text) * fontPx;
 
 export function measureLabel(lines: string[], fontPx: number): { w: number; h: number } {
   let m = 0;
-  for (const l of lines) m = Math.max(m, l.length);
-  return { w: m * LABEL_CHAR_W * fontPx + 2 * LABEL_PAD, h: Math.max(1, lines.length) * fontPx * LABEL_LINE_H + 2 };
+  for (const l of lines) m = Math.max(m, textEm(l));
+  return { w: m * fontPx + 2 * LABEL_PAD, h: Math.max(1, lines.length) * fontPx * LABEL_LINE_H + 2 };
 }
 
 export function rectsOverlap(a: Rect, b: Rect, margin = 0): boolean {

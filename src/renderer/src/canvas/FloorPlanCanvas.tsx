@@ -48,7 +48,6 @@ import {
   offsetPolyline,
   labelSpotInPolygon,
   supplyCfmOf,
-  isSelfContainedSystem,
   uprightAngle
 } from './drawingGeometry';
 import { formatAirflow, formatLoad, formatDuctSize, formatTerminalSize, formatVelocity } from './displayFormat';
@@ -70,7 +69,6 @@ import {
   findBranchTakeoffs,
   damperSymbol,
   findFlexConnections,
-  condensateRoute,
   routeRefrigerant,
   refrigerantLineSizes,
   buildTitleBlock,
@@ -107,6 +105,29 @@ import {
   Takeoff,
   FlexConnection
 } from './shopDrawing';
+import {
+  hasRefrigerantPlant,
+  plantConnectionOf,
+  ZonePolishFields,
+  systemCalloutLines,
+  freshAirLine,
+  LABEL_PRIORITY,
+  labelLodFor,
+  medianNeighbourGap,
+  chwRoute,
+  ChwRoute,
+  valveSymbol,
+  CHW_SUPPLY_TEXT,
+  CHW_RETURN_TEXT,
+  condensatePlan,
+  trapSymbol,
+  CONDENSATE_SIZE_TEXT,
+  CONDENSATE_SLOPE_TEXT,
+  DrainPoint,
+  loadDrainPoints,
+  saveDrainPoints,
+  toggleDrainPoint
+} from './polishL2';
 
 // Duct outline geometry cache (keyed by the zone's duct array identity, then k).
 const ductGeomCache = new WeakMap<DuctSegment[], { k: number; runs: DuctRunOutline[] }>();
@@ -176,7 +197,9 @@ interface ZoneShopPlan {
   takeoffs: Takeoff[];
   flex: FlexConnection[];
   panels: Array<{ uIdx: number; rect: { x: number; y: number; w: number; h: number } }>;
-  drains: Array<{ uIdx: number; points: number[] }>;
+  drains: Array<{ uIdx: number; points: number[]; toDrain: boolean; trap: { x: number; y: number; ux: number; uy: number } }>;
+  /** Chilled-water supply / return stubs (chilled-water plants): one per indoor unit. */
+  chw: ChwRoute[];
   /** Return-plenum transfer boxes (zones with returnStrategy 'plenum'), one per indoor unit. */
   plenums: Array<{ uIdx: number; rect: { x: number; y: number; w: number; h: number } }>;
   /** Crossover detail: lower duct gap + rise/drop symbols + elevation text. */
@@ -306,6 +329,24 @@ export const FloorPlanCanvas: React.FC = () => {
   const hudTopRef = useRef<HTMLDivElement>(null);
   const hudBottomRef = useRef<HTMLDivElement>(null);
   const [hoverClr, setHoverClr] = useState<string | null>(null);
+  const [hoverTerminal, setHoverTerminal] = useState<{ zoneId: string; id: string } | null>(null);
+  // Condensate drain points: canvas-local, persisted per project (localStorage, guarded)
+  const drainKey = project.name || 'project';
+  const [drainPoints, setDrainPoints] = useState<DrainPoint[]>(() => loadDrainPoints(drainKey));
+  const [drainTool, setDrainTool] = useState<boolean>(false);
+  const drainToolRef = useRef(false);
+  const drainKeyRef = useRef(drainKey);
+  useEffect(() => {
+    if (drainKeyRef.current !== drainKey) {
+      drainKeyRef.current = drainKey;
+      setDrainPoints(loadDrainPoints(drainKey));
+    }
+  }, [drainKey]);
+  useEffect(() => { drainToolRef.current = drainTool; }, [drainTool]);
+  const commitDrainPoints = useCallback((next: DrainPoint[]) => {
+    setDrainPoints(next);
+    saveDrainPoints(drainKeyRef.current, next);
+  }, []);
   const [exporting, setExporting] = useState<boolean>(false);
   const calibRef = useRef(calib);
   // Stable, mutable registry of zone line nodes (populated from Konva ref callbacks, read in event handlers).
@@ -462,7 +503,7 @@ export const FloorPlanCanvas: React.FC = () => {
     const parts: Array<Bounds | null> = [dxfBoundingBox];
     for (const z of zones) {
       parts.push(pointsBounds(z.points));
-      for (const p of [...unitPositionsOf(z), ...(isSelfContainedSystem(z.systemType) ? [] : outdoorPositionsOf(z))]) {
+      for (const p of [...unitPositionsOf(z), ...(hasRefrigerantPlant(z) ? outdoorPositionsOf(z) : [])]) {
         parts.push({ minX: p.x, minY: p.y, maxX: p.x, maxY: p.y });
       }
     }
@@ -470,12 +511,9 @@ export const FloorPlanCanvas: React.FC = () => {
   }, [dxfBoundingBox, zones]);
 
   const handleFitDesign = useCallback(() => {
-    const b0 = allContentBounds();
-    if (!b0) return;
-    const sh = showSheet ? planSheet(b0, k, project.units) : null;
-    const b = sh
-      ? { minX: Math.min(b0.minX, sh.bounds.x), minY: b0.minY, maxX: Math.max(b0.maxX, sh.bounds.x + sh.bounds.w), maxY: sh.bounds.y + sh.bounds.h }
-      : b0;
+    // Fit All = zones + DXF only (the sheet frame has its own "Fit Sheet" button)
+    const b = allContentBounds();
+    if (!b) return;
     const minSpan = 10 * k;
     const bb: Bounds = {
       minX: b.minX - Math.max(0, (minSpan - (b.maxX - b.minX)) / 2),
@@ -486,7 +524,17 @@ export const FloorPlanCanvas: React.FC = () => {
     const f = fitBounds(bb, size.w, size.h, 0.92, FIT_PADDING);
     setStageScale(f.scale);
     setStagePos({ x: f.x, y: f.y });
-  }, [allContentBounds, size.w, size.h, k, showSheet, project.units]);
+  }, [allContentBounds, size.w, size.h, k]);
+
+  const handleFitSheet = useCallback(() => {
+    const b0 = allContentBounds();
+    if (!b0) return;
+    const sh = planSheet(b0, k, project.units);
+    const fr = sh.frame;
+    const f = fitBounds({ minX: fr.x, minY: fr.y, maxX: fr.x + fr.w, maxY: fr.y + fr.h }, size.w, size.h, 0.96, FIT_PADDING);
+    setStageScale(f.scale);
+    setStagePos({ x: f.x, y: f.y });
+  }, [allContentBounds, size.w, size.h, k, project.units]);
 
   const handleFitSelection = useCallback(() => {
     const z = zones.find((zz) => zz.id === selectedZoneId);
@@ -527,6 +575,7 @@ export const FloorPlanCanvas: React.FC = () => {
         setSnapEnabled((v) => !v);
       } else if (e.key === 'Escape') {
         if (calibRef.current) setCalib(null);
+        if (drainToolRef.current) setDrainTool(false);
         if (tempPointsRef.current.length > 0) clearTempPoints();
       }
     };
@@ -636,6 +685,15 @@ export const FloorPlanCanvas: React.FC = () => {
 
   const handleContentClick = (e: Konva.KonvaEventObject<MouseEvent>): void => {
     if (e.evt.button !== 0 || isSpacePressed || drawMode === 'pan') return;
+    if (drainToolRef.current) {
+      const st = stageRef.current;
+      const w = st ? pointerWorld(st) : null;
+      if (!w) return;
+      const sp = snapAt(w.x, w.y);
+      const cur = drainPoints;
+      commitDrainPoints(toggleDrainPoint(cur, { x: sp.x, y: sp.y }, 10 / stageScaleRef.current, `dp-${Date.now().toString(36)}-${cur.length}`));
+      return;
+    }
     const cs = calibRef.current;
     if (cs && cs.stage !== 'enter') {
       const st = stageRef.current;
@@ -1037,14 +1095,8 @@ export const FloorPlanCanvas: React.FC = () => {
     const cfmPerUnit = Math.round(
       (zone.diffusers.length > 0 ? supplyCfmOf(supplyDiffusers) : toCfm(load.supplyCfm, project.units)) / Math.max(1, qty)
     );
-    const freshAirCfm = Math.round(toCfm(load.supplyCfm, project.units) * 0.15);
-    const sysLabel =
-      zone.systemType === 'cassette' ? 'CASSETTE SPLIT'
-      : zone.systemType === 'high-wall' ? 'HIGH WALL SPLIT'
-      : zone.systemType === 'packaged' ? 'PACKAGE UNIT'
-      : zone.systemType === 'ahu' ? 'CENTRAL AHU'
-      : zone.systemType === 'fcu' ? 'DUCTED FCU'
-      : 'CONCEALED SPLIT';
+    const extra = zone as unknown as ZonePolishFields;
+    const faLine = freshAirLine(extra.outdoorAirCfm, (c) => formatAirflow(c, project.units));
     // Real terminal counts / sizes grouped by size label
     const termLines = (list: typeof zone.diffusers, tag: string): string[] => {
       const groups = new Map<string, { n: number; cfm: number }>();
@@ -1061,12 +1113,12 @@ export const FloorPlanCanvas: React.FC = () => {
       return out;
     };
     return [
-      `${qty}-${sysLabel}`,
+      ...systemCalloutLines(zone.systemType, qty, extra.outdoorModel),
       `${formatLoad(btuPerUnit, project.units)} EACH`,
       `${formatAirflow(cfmPerUnit, project.units)} EACH`,
       ...termLines(supplyDiffusers, 'S.C.D'),
       ...termLines(returnDiffusers, 'R.C.D'),
-      `FA ${formatAirflow(freshAirCfm, project.units)}`
+      ...(faLine ? [faLine] : [])
     ];
   };
 
@@ -1081,7 +1133,7 @@ export const FloorPlanCanvas: React.FC = () => {
       }
       const fp = unitFootprintPx(unitKindForSystem(z.systemType), k, catalogDimsFor(z.catalogModel));
       for (const u of unitPositionsOf(z)) boxes.push({ x: u.x - fp.w / 2, y: u.y - fp.d / 2, w: fp.w, h: fp.d });
-      if (!isSelfContainedSystem(z.systemType)) {
+      if (hasRefrigerantPlant(z)) {
         const ofp = unitFootprintPx('odu', k, outdoorDimsFor(z));
         for (const o of outdoorPositionsOf(z)) boxes.push({ x: o.x - ofp.w / 2, y: o.y - ofp.d / 2, w: ofp.w, h: ofp.d });
       }
@@ -1094,12 +1146,12 @@ export const FloorPlanCanvas: React.FC = () => {
       const units = unitPositionsOf(z);
       const fp = unitFootprintPx(unitKindForSystem(z.systemType), k, catalogDimsFor(z.catalogModel));
       const ducted = isDuctedSystem(z);
-      const outdoors = isSelfContainedSystem(z.systemType) ? [] : outdoorPositionsOf(z);
-      const plan: ZoneShopPlan = { piping: [], takeoffs: [], flex: [], panels: [], drains: [], plenums: [], crossovers: [] };
+      const outdoors = hasRefrigerantPlant(z) ? outdoorPositionsOf(z) : [];
+      const plan: ZoneShopPlan = { piping: [], takeoffs: [], flex: [], panels: [], drains: [], chw: [], plenums: [], crossovers: [] };
       const plenum = isPlenumReturn(z);
       // return ducts are not drawn for a plenum return: the shop plan ignores them too
       const zDucts = visibleDucts(z);
-      if (units.length > 0 && !isSelfContainedSystem(z.systemType)) {
+      if (units.length > 0 && hasRefrigerantPlant(z)) {
         const load = calculateZoneLoad(z, project);
         const qty = Math.max(1, z.catalogQty || units.length || 1);
         const sizes = refrigerantLineSizes(toBtuh(load.totalLoad, project.units) / qty, project.units);
@@ -1122,16 +1174,30 @@ export const FloorPlanCanvas: React.FC = () => {
       if (ducted && zDucts.length) plan.flex = findFlexConnections(units, fp, zDucts, k, z.id);
       const flexBoxes = plan.flex.map((f) => ({ x: f.x - 0.6 * k, y: f.y - 0.6 * k, w: 1.2 * k, h: 1.2 * k }));
       units.forEach((u, uIdx) => {
-        if (z.points.length >= 6) {
-          const cd = condensateRoute(u, z.points);
-          if (cd) plan.drains.push({ uIdx, points: cd.points });
+        const cd = condensatePlan(u, fp, k, z.points, drainPoints, boxes);
+        if (cd) plan.drains.push({ uIdx, points: cd.points, toDrain: cd.toDrain, trap: cd.trap });
+        if (plantConnectionOf(z) === 'chilled-water') {
+          const stub = (z as unknown as ZonePolishFields).chwStubs?.find((c) => c.unitIndex === uIdx);
+          const cr = chwRoute(u, fp, k, z.points, uIdx, stub);
+          if (cr) plan.chw.push(cr);
         }
         const pipe = plan.piping.find((pp) => pp.uIdx === uIdx);
         const drain = plan.drains.find((dd) => dd.uIdx === uIdx);
         const pts = [] as Array<{ x: number; y: number }>;
         if (pipe) pts.push(pointFromEnd(pipe.points, 2 * k));
         if (drain) pts.push({ x: drain.points[2], y: drain.points[3] });
-        const boxes2 = [...flexBoxes, ...plan.plenums.filter((pl) => pl.uIdx === uIdx).map((pl) => pl.rect)];
+        // the access panel tries all four sides of the unit and keeps clear of terminals, other units and tags
+        const termBoxes = z.diffusers.map((d) => {
+          const face = terminalFacePx(d, k, project.units);
+          const g = 0.3 * k;
+          return { x: d.x - face.w / 2 - g, y: d.y - face.h / 2 - g, w: face.w + 2 * g, h: face.h + 2 * g };
+        });
+        const otherUnits = units.filter((_, i) => i !== uIdx).map((o) => ({ x: o.x - fp.w / 2, y: o.y - fp.d / 2, w: fp.w, h: fp.d }));
+        const boxes2 = [
+          ...flexBoxes, ...plan.plenums.filter((pl) => pl.uIdx === uIdx).map((pl) => pl.rect),
+          ...termBoxes, ...otherUnits, ...units.map(unitTagRect),
+          ...(plan.chw.filter((c) => c.uIdx === uIdx).flatMap((c) => c.valves.map((v) => ({ x: v.x - 0.8 * k, y: v.y - 0.8 * k, w: 1.6 * k, h: 1.6 * k }))))
+        ];
         plan.panels.push({ uIdx, rect: accessPanelPlacement(u, fp, k, { pts, boxes: boxes2 }).rect });
       });
       const avoidRects = [...units.map(unitTagRect), ...plan.panels.map((p) => p.rect), ...flexBoxes, ...plan.plenums.map((p) => p.rect)];
@@ -1154,7 +1220,7 @@ export const FloorPlanCanvas: React.FC = () => {
       plans.set(z.id, plan);
     }
     return plans;
-  }, [zones, k, project, textScale]);
+  }, [zones, k, project, textScale, drainPoints]);
 
   const drawingExtents = useMemo(() => allContentBounds(), [allContentBounds]);
   const sheet: SheetPlan | null = useMemo(
@@ -1216,7 +1282,7 @@ export const FloorPlanCanvas: React.FC = () => {
     }
 
     for (const z of zones) {
-      const selfContained = isSelfContainedSystem(z.systemType);
+      const selfContained = !hasRefrigerantPlant(z);
       const avoid: Array<{ x: number; y: number; r: number }> = [];
       const plan = shopPlans.get(z.id);
       const zUnits = unitPositionsOf(z);
@@ -1229,12 +1295,20 @@ export const FloorPlanCanvas: React.FC = () => {
       }
       const kind = unitKindForSystem(z.systemType);
       const fp = unitFootprintPx(kind, k, catalogDimsFor(z.catalogModel));
+      const zb0 = pointsBounds(z.points);
+      const lod = labelLodFor({
+        scale: s,
+        medianGapWorld: medianNeighbourGap(z.diffusers),
+        zoneMaxDimWorld: zb0 ? Math.max(zb0.maxX - zb0.minX, zb0.maxY - zb0.minY) : 0,
+        selected: z.id === selectedZoneId
+      });
+      const detailLod = lod === 'detail';
       for (const u of zUnits) {
         addObstacle(u.x, u.y, fp.w * s, fp.d * s);
         // equipment tag below the unit (always kept): same size rule as the symbol label
         const fs = Math.max(9.5 * textScale, 10 / s) * s;
-        const tw = 7 * 0.6 * fs;
-        obstacles.push({ x: u.x * s - tw / 2, y: (u.y + fp.d / 2) * s + 2 * textScale * s, w: tw, h: fs * 1.25 });
+        const tw = 7.6 * 0.6 * fs;
+        obstacles.push({ x: u.x * s - tw / 2, y: (u.y + fp.d / 2) * s + 2 * textScale * s, w: tw, h: fs * 1.3 });
         avoid.push({ x: u.x, y: u.y, r: Math.hypot(fp.w, fp.d) / 2 + 8 / s });
       }
       if (!selfContained) {
@@ -1272,6 +1346,11 @@ export const FloorPlanCanvas: React.FC = () => {
           }
         }
         for (const pl of plan.plenums) addWorldRect(pl.rect, `plenum:${z.id}:${pl.uIdx}`);
+        for (const c of plan.chw) {
+          const pieces: number[][] = [];
+          for (let i = 0; i + 3 < c.points.length; i += 2) pieces.push(c.points.slice(i, i + 4));
+          for (const r of ductBodyRects(pieces, pieces.map(() => 4 / s))) addWorldRect(r, `chw:${z.id}:${c.uIdx}`);
+        }
         for (const xo of plan.crossovers) {
           const rr = 0.9 * k;
           for (const c of [xo.upperSym, xo.lowerSym]) addWorldRect({ x: c.x - rr, y: c.y - rr, w: 2 * rr, h: 2 * rr }, `xs:${xo.key}`);
@@ -1302,7 +1381,7 @@ export const FloorPlanCanvas: React.FC = () => {
         const anchor = { x: target.x * s, y: target.y * s };
         const id = `c:${z.id}`;
         reqs.push({
-          id, lines, fontPx, priority: 90, mandatory: true, guaranteed: true, anchor,
+          id, lines, fontPx, priority: LABEL_PRIORITY.callout, mandatory: true, guaranteed: true, anchor,
           candidates: calloutCandidates(size, anchor, z.points.map((v) => v * s))
         });
         meta.set(id, {
@@ -1358,7 +1437,7 @@ export const FloorPlanCanvas: React.FC = () => {
           : pl ? { x: pl.rect.x + pl.rect.w / 2, y: pl.rect.y + pl.rect.h / 2 } : null;
         if (c) {
           const id = `pr:${z.id}`;
-          reqs.push({ id, lines: ['PLENUM RETURN'], fontPx: 9 * ff, priority: 70, mandatory: true, guaranteed: true, anchor: { x: c.x * s, y: c.y * s }, anchorHalf: { w: 10, h: 10 } });
+          reqs.push({ id, lines: ['PLENUM RETURN'], fontPx: 9 * ff, priority: LABEL_PRIORITY.plenumNote, mandatory: true, guaranteed: true, anchor: { x: c.x * s, y: c.y * s }, anchorHalf: { w: 10, h: 10 } });
           meta.set(id, {
             id, zoneId: z.id, kind: 'warning', lines: [colorLine('PLENUM RETURN', '#d8b4fe')], fontPx: 9 * ff, anchorWorld: c,
             bg: 'rgba(12,12,12,0.8)', border: '#c084fc'
@@ -1399,7 +1478,7 @@ export const FloorPlanCanvas: React.FC = () => {
         const anchor = { x: spot.x * s, y: spot.y * s };
         const id = `z:${z.id}`;
         reqs.push({
-          id, lines: lines.map((l) => l.text), fontPx, priority: 10, mandatory: true, anchor,
+          id, lines: lines.map((l) => l.text), fontPx, priority: LABEL_PRIORITY.zone, mandatory: true, anchor,
           candidates: [
             { x: anchor.x, y: anchor.y },
             ...gridCandidatesInPolygon(z.points.map((v) => v * s), size, anchor, 40),
@@ -1410,7 +1489,7 @@ export const FloorPlanCanvas: React.FC = () => {
       }
 
       // ONE tag per terminal: "CD-1" / "18x18 . 162 CFM"
-      if ((tier >= 2 || z.id === selectedZoneId) && (av.diffuserTags || av.diffuserCfm)) {
+      if ((tier >= 2 || z.id === selectedZoneId) && detailLod && (av.diffuserTags || av.diffuserCfm)) {
         let nS = 0, nR = 0, nE = 0;
         for (const d of z.diffusers) {
           const code = d.type === 'return' ? 'RG' : d.type === 'exhaust' ? 'EG' : z.systemType === 'high-wall' ? 'HW' : 'CD';
@@ -1429,7 +1508,7 @@ export const FloorPlanCanvas: React.FC = () => {
           const id = `t:${z.id}:${d.id}`;
           const fontPx = 10 * ff;
           reqs.push({
-            id, lines: lines.map((l) => l.text), fontPx, priority: 30, guaranteed: true,
+            id, lines: lines.map((l) => l.text), fontPx, priority: LABEL_PRIORITY.terminal, guaranteed: true,
             anchor: { x: d.x * s, y: d.y * s }, anchorHalf: { w: (face.w * s) / 2, h: (face.h * s) / 2 }
           });
           meta.set(id, {
@@ -1441,7 +1520,7 @@ export const FloorPlanCanvas: React.FC = () => {
 
       // Duct size ONCE per section (size only; CFM / velocity only in Detailed mode)
       const ductTagOn = av.ductSizeBadges || av.dimensions || detailed;
-      if (tier >= 2 && ductTagOn && (av.ducts || av.ductCenterlines) && zDucts.length) {
+      if (tier >= 2 && detailLod && ductTagOn && (av.ducts || av.ductCenterlines) && zDucts.length) {
         const sections = buildDuctSections(zDucts, getDuctRuns(zDucts, k), units);
         const ceilIn = ceilingInches(z.ceilingHeight, units);
         for (const sec of sections) {
@@ -1476,7 +1555,7 @@ export const FloorPlanCanvas: React.FC = () => {
           const aw = { x: (lp[0] + lp[2]) / 2, y: (lp[1] + lp[3]) / 2 };
           const id = `d:${z.id}:${sec.id}`;
           reqs.push({
-            id, lines: lines.map((l) => l.text), fontPx, priority: 20, anchor: { x: aw.x * s, y: aw.y * s }, candidates: cands,
+            id, lines: lines.map((l) => l.text), fontPx, priority: LABEL_PRIORITY.ductBadge, anchor: { x: aw.x * s, y: aw.y * s }, candidates: cands,
             ignoreTags: sec.ductIds.map((i) => `duct:${i}`)
           });
           meta.set(id, {
@@ -1487,7 +1566,7 @@ export const FloorPlanCanvas: React.FC = () => {
       }
 
       // Refrigerant line sizes, condensate drain tag, volume dampers, access panels
-      if (plan && tier >= 2) {
+      if (plan && tier >= 2 && detailLod) {
         const alongCandidates = (pts: number[], size: { w: number; h: number }, off: number): ReturnType<typeof ductTagCandidates> => {
           const pieces: number[][] = [];
           for (let i = 0; i + 3 < pts.length; i += 2) pieces.push([pts[i] * s, pts[i + 1] * s, pts[i + 2] * s, pts[i + 3] * s]);
@@ -1509,20 +1588,33 @@ export const FloorPlanCanvas: React.FC = () => {
             if (!cands.length) continue;
             const aw = longest(p.points);
             const id = `rp:${z.id}:${p.uIdx}`;
-            reqs.push({ id, lines: [p.sizeText], fontPx, priority: 22, anchor: { x: aw.x * s, y: aw.y * s }, candidates: cands, ignoreTags: [`pipe:${p.id}`] });
+            reqs.push({ id, lines: [p.sizeText], fontPx, priority: LABEL_PRIORITY.pipe, anchor: { x: aw.x * s, y: aw.y * s }, candidates: cands, ignoreTags: [`pipe:${p.id}`] });
             meta.set(id, { id, zoneId: z.id, kind: 'pipe', lines: [colorLine(p.sizeText, '#fdba74')], fontPx, anchorWorld: aw, bg: 'rgba(12,12,12,0.72)' });
           }
+        }
+        for (const c of plan.chw) {
+          const fontPx = 8 * ff;
+          const lines = [CHW_SUPPLY_TEXT, CHW_RETURN_TEXT];
+          const size = measureLabel(lines, fontPx);
+          const cands = alongCandidates(c.points, size, 8);
+          if (!cands.length) continue;
+          const id = `chw:${z.id}:${c.uIdx}`;
+          reqs.push({ id, lines, fontPx, priority: LABEL_PRIORITY.chw, anchor: { x: c.labelAt.x * s, y: c.labelAt.y * s }, candidates: cands, ignoreTags: [`chw:${z.id}:${c.uIdx}`] });
+          meta.set(id, {
+            id, zoneId: z.id, kind: 'pipe', lines: [colorLine(CHW_SUPPLY_TEXT, '#38bdf8'), colorLine(CHW_RETURN_TEXT, '#f87171')],
+            fontPx, anchorWorld: c.labelAt, bg: 'rgba(12,12,12,0.72)'
+          });
         }
         if (showAccessories) {
           for (const dr of plan.drains) {
             const fontPx = 8 * ff;
-            const lines = ['CD', '1% SLOPE'];
+            const lines = [`CD ${CONDENSATE_SIZE_TEXT}`, CONDENSATE_SLOPE_TEXT];
             const size = measureLabel(lines, fontPx);
             const cands = alongCandidates(dr.points, size, 4);
             if (!cands.length) continue;
             const aw = longest(dr.points);
             const id = `cd:${z.id}:${dr.uIdx}`;
-            reqs.push({ id, lines, fontPx, priority: 21, anchor: { x: aw.x * s, y: aw.y * s }, candidates: cands, ignoreTags: [id] });
+            reqs.push({ id, lines, fontPx, priority: LABEL_PRIORITY.condensate, anchor: { x: aw.x * s, y: aw.y * s }, candidates: cands, ignoreTags: [id] });
             meta.set(id, { id, zoneId: z.id, kind: 'accessory', lines: lines.map((t) => colorLine(t, '#67e8f9')), fontPx, anchorWorld: aw, bg: 'rgba(12,12,12,0.72)' });
           }
           for (const t of plan.takeoffs) {
@@ -1530,7 +1622,7 @@ export const FloorPlanCanvas: React.FC = () => {
             const id = `vd:${z.id}:${t.id}`;
             const fontPx = 8 * ff;
             reqs.push({
-              id, lines: ['VD'], fontPx, priority: 15, anchor: { x: t.x * s, y: t.y * s }, anchorHalf: { w: hw * s, h: hw * s },
+              id, lines: ['VD'], fontPx, priority: LABEL_PRIORITY.damper, anchor: { x: t.x * s, y: t.y * s }, anchorHalf: { w: hw * s, h: hw * s },
               ignoreTags: [`vd:${t.id}`]
             });
             meta.set(id, { id, zoneId: z.id, kind: 'accessory', lines: [colorLine('VD', '#fbbf24')], fontPx, anchorWorld: { x: t.x, y: t.y }, bg: 'rgba(12,12,12,0.72)' });
@@ -1540,7 +1632,7 @@ export const FloorPlanCanvas: React.FC = () => {
             const fontPx = 8 * ff;
             const c = { x: p.rect.x + p.rect.w / 2, y: p.rect.y + p.rect.h / 2 };
             reqs.push({
-              id, lines: ['AP'], fontPx, priority: 14, anchor: { x: c.x * s, y: c.y * s },
+              id, lines: ['AP'], fontPx, priority: LABEL_PRIORITY.panel, anchor: { x: c.x * s, y: c.y * s },
               anchorHalf: { w: (p.rect.w * s) / 2, h: (p.rect.h * s) / 2 }, ignoreTags: [id]
             });
             meta.set(id, { id, zoneId: z.id, kind: 'accessory', lines: [colorLine('AP', '#94a3b8')], fontPx, anchorWorld: c, bg: 'rgba(12,12,12,0.72)' });
@@ -1992,7 +2084,7 @@ export const FloorPlanCanvas: React.FC = () => {
 
     const units = unitPositionsOf(zone);
     // Packaged RTUs are self-contained: no condensing unit symbol and no refrigerant lines.
-    const outdoors = isSelfContainedSystem(zone.systemType) ? [] : outdoorPositionsOf(zone);
+    const outdoors = hasRefrigerantPlant(zone) ? outdoorPositionsOf(zone) : [];
     const labels = labelItems.get(zone.id) ?? [];
     const zDucts = visibleDucts(zone);
     const ductRuns = annotationVisibility.ducts || annotationVisibility.ductCenterlines ? getDuctRuns(zDucts, k) : [];
@@ -2027,6 +2119,32 @@ export const FloorPlanCanvas: React.FC = () => {
                     <Text x={-3 * Math.min(1.8, ts)} y={-4 * Math.min(1.8, ts)} text="R" fontSize={6 * Math.min(1.8, ts)} fill="#000000" fontStyle="bold" />
                   </Group>
                 )}
+              </Group>
+            ))}
+          </Group>
+        )}
+
+        {/* Chilled-water supply / return stubs with isolation valves (chilled-water plants: no ODU / refrigerant) */}
+        {plan && plan.chw.length > 0 && (
+          <Group listening={false}>
+            {plan.chw.map((c) => (
+              <Group key={`chw-${zone.id}-${c.uIdx}`}>
+                <Line points={offsetPolyline(c.points, pairSep / 2)} stroke="#38bdf8" strokeWidth={getStrokeWidth(0.14 * k, 1.8)} lineCap="round" lineJoin="round" />
+                <Line points={offsetPolyline(c.points, -pairSep / 2)} stroke="#f87171" strokeWidth={getStrokeWidth(0.14 * k, 1.8)} lineCap="round" lineJoin="round" />
+                {c.valves.map((v, i) => (
+                  <Group key={i}>
+                    {[pairSep / 2, -pairSep / 2].map((off, j) => (
+                      <Line
+                        key={j}
+                        points={valveSymbol(v.x - v.uy * off, v.y + v.ux * off, v.ux, v.uy, Math.max(0.3 * k, 3 / stageScale))}
+                        closed
+                        fill={off > 0 ? '#0c4a6e' : '#7f1d1d'}
+                        stroke={off > 0 ? '#38bdf8' : '#f87171'}
+                        strokeWidth={getStrokeWidth(0.06 * k, 1)}
+                      />
+                    ))}
+                  </Group>
+                ))}
               </Group>
             ))}
           </Group>
@@ -2161,7 +2279,7 @@ export const FloorPlanCanvas: React.FC = () => {
           const cx = pl.rect.x + pl.rect.w / 2, cy = pl.rect.y + pl.rect.h / 2;
           return (
             <Group key={`plenum-${zone.id}-${pl.uIdx}`} listening={false}>
-              {zone.diffusers.filter((d) => d.type === 'return').map((d) => (
+              {zone.diffusers.filter((d) => d.type === 'return' && (isSelected || (hoverTerminal?.zoneId === zone.id && hoverTerminal.id === d.id))).map((d) => (
                 <Line key={d.id} points={[d.x, d.y, cx, cy]} stroke="#c084fc" opacity={0.55} strokeWidth={getStrokeWidth(0.4, 0.9)} dash={[2 / stageScale, 5 / stageScale]} />
               ))}
               <Rect x={pl.rect.x} y={pl.rect.y} width={pl.rect.w} height={pl.rect.h} fill="rgba(88, 28, 135, 0.28)" stroke="#c084fc" strokeWidth={getStrokeWidth(0.15 * k, 1.4)} />
@@ -2174,16 +2292,23 @@ export const FloorPlanCanvas: React.FC = () => {
         {/* Accessories layer: volume dampers at branch takeoffs, flexible connections, access panels, condensate drains */}
         {showAccessories && plan && (
           <Group listening={false}>
-            {plan.drains.map((dr) => (
-              <Line
-                key={`cd-${zone.id}-${dr.uIdx}`}
-                points={dr.points}
-                stroke="#67e8f9"
-                strokeWidth={getStrokeWidth(0.12 * k, 1.4)}
-                dash={[8 / stageScale, 5 / stageScale]}
-                lineJoin="round"
-              />
-            ))}
+            {plan.drains.map((dr) => {
+              const mid = polylineMidpoint(dr.points);
+              const ah = Math.max(0.5 * k, 6 / stageScale);
+              const tr = trapSymbol(dr.trap.x, dr.trap.y, dr.trap.ux, dr.trap.uy, Math.max(0.45 * k, 4 / stageScale));
+              return (
+                <Group key={`cd-${zone.id}-${dr.uIdx}`}>
+                  <Line points={dr.points} stroke="#67e8f9" strokeWidth={getStrokeWidth(0.12 * k, 1.4)} dash={[8 / stageScale, 5 / stageScale]} lineJoin="round" />
+                  {/* slope arrow (flow direction, toward the drain) */}
+                  <Line
+                    points={[mid.x - mid.ux * ah - mid.uy * ah * 0.5, mid.y - mid.uy * ah + mid.ux * ah * 0.5, mid.x, mid.y, mid.x - mid.ux * ah + mid.uy * ah * 0.5, mid.y - mid.uy * ah - mid.ux * ah * 0.5]}
+                    stroke="#67e8f9" strokeWidth={getStrokeWidth(0.1 * k, 1.3)} lineJoin="round"
+                  />
+                  {/* trap at the unit */}
+                  <Line points={tr} stroke="#67e8f9" strokeWidth={getStrokeWidth(0.12 * k, 1.5)} lineJoin="round" />
+                </Group>
+              );
+            })}
             {plan.takeoffs.map((t) => {
               const sym = damperSymbol(t);
               return (
@@ -2224,6 +2349,8 @@ export const FloorPlanCanvas: React.FC = () => {
               x={dif.x}
               y={dif.y}
               draggable={lodTier >= 2}
+              onMouseEnter={() => { if (dif.type === 'return') setHoverTerminal({ zoneId: zone.id, id: dif.id }); }}
+              onMouseLeave={() => setHoverTerminal((h) => (h && h.id === dif.id ? null : h))}
               onDragStart={() => setDraggingTerminal(`t:${zone.id}:${dif.id}`)}
               onDragMove={(e) => snapNodeDuringDrag(e.target)}
               onDragEnd={(e) => {
@@ -2447,7 +2574,7 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   const isPanActive = drawMode === 'pan' || isSpacePressed;
-  const cursor = isPanActive ? (isPanning ? 'grabbing' : 'grab') : (drawMode === 'polyline' || (calib && calib.stage !== 'enter')) ? 'crosshair' : 'default';
+  const cursor = isPanActive ? (isPanning ? 'grabbing' : 'grab') : (drawMode === 'polyline' || drainTool || (calib && calib.stage !== 'enter')) ? 'crosshair' : 'default';
 
   return (
     <div className="relative w-full h-[65vh] bg-[#0c0c0c] border border-neutral-800 rounded-3xl overflow-hidden shadow-inner flex flex-col">
@@ -2483,6 +2610,18 @@ export const FloorPlanCanvas: React.FC = () => {
           <Layer>
             {zones.map((z) => renderZone(z))}
             {renderPreview()}
+          </Layer>
+
+          {/* Condensate drain points (placed with the Drain point tool) */}
+          <Layer listening={false}>
+            {drainPoints.map((d) => (
+              <Group key={d.id} x={d.x} y={d.y}>
+                <Circle radius={7 / stageScale} fill="rgba(8,145,178,0.35)" stroke="#67e8f9" strokeWidth={1.6 / stageScale} />
+                <Line points={[-4 / stageScale, 0, 4 / stageScale, 0]} stroke="#67e8f9" strokeWidth={1.4 / stageScale} />
+                <Line points={[0, -4 / stageScale, 0, 4 / stageScale]} stroke="#67e8f9" strokeWidth={1.4 / stageScale} />
+                <Text x={9 / stageScale} y={-5 / stageScale} text="FD" fontSize={10 / stageScale} fontStyle="bold" fill="#67e8f9" />
+              </Group>
+            ))}
           </Layer>
 
           {/* Sheet layer: legend + title block (toggleable, included in Export PNG) */}
@@ -2585,6 +2724,18 @@ export const FloorPlanCanvas: React.FC = () => {
           title="Accessories layer: volume dampers (VD), flexible connections, condensate drains (CD), access panels (AP)"
         >
           <span>Accessories {showAccessories ? 'ON' : 'OFF'}</span>
+        </button>
+
+        <button
+          onClick={() => setDrainTool((v) => !v)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border ${
+            drainTool
+              ? 'bg-cyan-500/30 text-cyan-200 border-cyan-400/60'
+              : 'bg-neutral-900/90 text-neutral-400 border-neutral-750'
+          }`}
+          title="Drain point tool: click to place a floor drain (FD) for condensate; click an existing one to remove it. Condensate lines route to the nearest drain point (else the nearest exterior wall). Esc to leave the tool."
+        >
+          <span>Drain point{drainPoints.length > 0 ? ` (${drainPoints.length})` : ''}</span>
         </button>
 
         <button
@@ -2736,11 +2887,20 @@ export const FloorPlanCanvas: React.FC = () => {
         <div className="w-[1px] h-4 bg-neutral-700 mx-0.5" />
         <button
           onClick={handleFitDesign}
-          title="Fit Complete Design (CAD + all zones)"
+          title="Fit Complete Design (zones + CAD drawing, without the sheet frame)"
           className="flex items-center gap-1 px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white rounded-lg text-[10px] font-semibold transition-colors cursor-pointer"
         >
           <Maximize2 size={12} />
           Fit All
+        </button>
+        <button
+          onClick={handleFitSheet}
+          disabled={!showSheet}
+          title="Fit the sheet frame (paper, title block and legend)"
+          className="flex items-center gap-1 px-2 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-200 hover:text-white rounded-lg text-[10px] font-semibold transition-colors cursor-pointer"
+        >
+          <Maximize2 size={12} />
+          Fit Sheet
         </button>
         <button
           onClick={handleFitSelection}
