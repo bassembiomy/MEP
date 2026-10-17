@@ -13,12 +13,15 @@ import { toCfm } from './engine/units';
 import { formatAirflow } from './format/units';
 import Versions from './components/Versions';
 import { CatalogManagerModal } from './components/CatalogManagerModal';
-import { Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table, FileSpreadsheet, Database } from 'lucide-react';
+import { SectionViewModal } from './components/SectionViewModal';
+import { Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table, FileSpreadsheet, Database, Scissors } from 'lucide-react';
 
 function App(): React.JSX.Element {
-  const { project, zones, setProject, activeTab, setActiveTab } = useProjectStore();
+  const { project, zones, setProject, activeTab, setActiveTab, selectedZoneId } = useProjectStore();
   const totalCfm = zones.reduce((sum, z) => sum + toCfm(calculateZoneLoad(z, project).supplyCfm, project.units), 0);
   const [catalogOpen, setCatalogOpen] = useState(false);
+  const [sectionsOpen, setSectionsOpen] = useState(false);
+  const sectionZone = zones.find((z) => z.id === selectedZoneId) ?? zones[0];
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans selection:bg-blue-600/30 selection:text-blue-200">
@@ -44,6 +47,14 @@ function App(): React.JSX.Element {
         >
           <Database size={14} />
           Equipment Catalogs
+        </button>
+        <button
+          onClick={() => setSectionsOpen(true)}
+          disabled={!sectionZone}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-neutral-900 text-neutral-300 hover:text-white hover:bg-neutral-850 border border-neutral-800 cursor-pointer disabled:opacity-40"
+        >
+          <Scissors size={14} />
+          Sections
         </button>
         {/* Global Design Conditions */}
         <div className="flex flex-wrap gap-4 text-xs">
@@ -90,6 +101,7 @@ function App(): React.JSX.Element {
         </div>
       </header>
 
+      {sectionsOpen && sectionZone && <SectionViewModal zone={sectionZone} onClose={() => setSectionsOpen(false)} />}
       <CatalogManagerModal isOpen={catalogOpen} onClose={() => setCatalogOpen(false)} />
 
       {/* Main Workspace Layout */}
