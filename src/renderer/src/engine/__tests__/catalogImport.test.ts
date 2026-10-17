@@ -19,7 +19,7 @@ function book(rows: unknown[][]): ArrayBuffer {
 // 1. Generic flags
 {
   const generic = STANDARD_EQUIPMENT_CATALOG.filter((e) => e.isGeneric);
-  assert(generic.length === 17, `17 generic entries, got ${generic.length}`);
+  assert(generic.length === 18, `18 generic entries, got ${generic.length}`);
   assert(generic.every((e) => e.source === 'generic' && e.model.includes('-G')), 'generic flagged');
   assert(STANDARD_EQUIPMENT_CATALOG.filter((e) => !e.isGeneric).every((e) => e.source === 'built-in'), 'others built-in');
   assert(isGenericModel('40KMC012-G'), 'isGenericModel');

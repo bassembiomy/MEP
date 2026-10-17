@@ -1,3 +1,4 @@
+import { DEFAULT_VOID_IN, maxDuctDepthForVoid } from '../ceilingVoid';
 import { EquipmentServiceZone } from '../zoning/zonePartitioner';
 import { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
 import { ASHRAE_PROFILE, StandardsProfile } from '../standards/designStandards';
@@ -78,7 +79,7 @@ export function routeReturnDucts(
   // sizes the result and feeds the sized half widths back until routing and sizing agree.
   if (ctx.obstacles !== undefined && grilles.length > 0) {
     const terminals: TopoTerminal[] = grilles.map((t) => ({ id: t.id, x: t.position.x, y: t.position.y, cfm: t.cfm }));
-    const depth = zone.maxAvailableCeilingDepthIn ?? 14;
+    const depth = maxDuctDepthForVoid(zone.maxAvailableCeilingDepthIn ?? DEFAULT_VOID_IN);
     let hwT = 0.7, hwB = 0.4;
     let sized: SteppedDuctSection[] = [];
     for (let iter = 0; iter < 4; iter++) {
@@ -195,7 +196,7 @@ export function routeReturnDucts(
     sections = [stub, run];
   }
 
-  return sizeDuctNetwork(sections, profile, zone.maxAvailableCeilingDepthIn ?? 14);
+  return sizeDuctNetwork(sections, profile, maxDuctDepthForVoid(zone.maxAvailableCeilingDepthIn ?? DEFAULT_VOID_IN));
 }
 
 /** Length (ft) of the return plenum box that joins the unit's return opening to the ceiling plenum. */
@@ -271,5 +272,5 @@ export function routePlenumReturnBox(
     childDuctIds: [],
     plenumBox: true
   };
-  return sizeDuctNetwork([box], profile, zone.maxAvailableCeilingDepthIn ?? 14, units);
+  return sizeDuctNetwork([box], profile, maxDuctDepthForVoid(zone.maxAvailableCeilingDepthIn ?? DEFAULT_VOID_IN), units);
 }

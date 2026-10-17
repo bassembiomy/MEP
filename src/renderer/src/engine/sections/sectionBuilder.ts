@@ -3,12 +3,10 @@
 import type { Zone, DuctSegment, Diffuser } from '../../store/projectStore';
 import { pxPerFt, FT_PER_M, M_PER_FT, isImperial } from '../units';
 
-export const DEFAULT_VOID_IN = 14;
+import { DEFAULT_VOID_IN, NECK_ALLOWANCE_IN, SLAB_CLEARANCE_IN, HANGER_GAP_IN, neckAllowanceFor } from '../ceilingVoid';
+export { DEFAULT_VOID_IN, NECK_ALLOWANCE_IN, SLAB_CLEARANCE_IN, HANGER_GAP_IN };
 export const SLAB_THICKNESS_IN = 6;
 export const DEFAULT_UNIT_HEIGHT_IN = 10;
-export const NECK_ALLOWANCE_IN = 8;
-export const SLAB_CLEARANCE_IN = 1;
-export const HANGER_GAP_IN = 2;
 
 export type SectionKind = 'longitudinal' | 'transverse';
 export type SectionElementType = 'slab' | 'ceiling' | 'structure' | 'unit' | 'trunk' | 'branch' | 'crossing' | 'neck';
@@ -230,7 +228,7 @@ export function buildSectionForCut(zone: Zone, cut: SectionCutLine, opts: Sectio
   const k = pxPerFt(opts.scale, opts.units);
   const voidIn = zoneVoidDepthIn(zone, opts);
   const lv = sectionLevels(zoneCeilingFt(zone, opts.units), voidIn);
-  const neckIn = opts.neckAllowanceIn ?? NECK_ALLOWANCE_IN;
+  const neckIn = opts.neckAllowanceIn ?? neckAllowanceFor(voidIn);
   const a = { x: cut.a.x / k, y: cut.a.y / k };
   const b = { x: cut.b.x / k, y: cut.b.y / k };
   const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;

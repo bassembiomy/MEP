@@ -638,8 +638,21 @@ export function generateSystemCandidates(
   if (lowestCost) lowestCost.categoryRankings = { ...lowestCost.categoryRankings, isLowestCost: true };
   if (lowestNoise) lowestNoise.categoryRankings = { ...lowestNoise.categoryRankings, isLowestNoise: true };
 
+  // The shortlist keeps the best candidate of EVERY requested system type, even when a type's options all rank below the cut.
+  const shortlist = candidates.slice(0, 16);
+  for (const t of typesToTest) {
+    if (shortlist.some((c) => c.systemType === t)) continue;
+    const extra = candidates.find((c) => c.systemType === t);
+    if (!extra) continue;
+    for (let i = shortlist.length - 1; i >= 0; i--) {
+      if (shortlist.filter((c) => c.systemType === shortlist[i].systemType).length > 1) { shortlist.splice(i, 1); break; }
+    }
+    shortlist.push(extra);
+  }
+  shortlist.sort((a, b) => candidates.indexOf(a) - candidates.indexOf(b));
+
   return {
-    candidates: candidates.slice(0, 16),
+    candidates: shortlist,
     bestOverall,
     bestEnergy,
     lowestCost,

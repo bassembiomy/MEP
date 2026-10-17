@@ -22,7 +22,7 @@ const opts = { scale: 10, units: 'imperial' };
 let secs = buildSections(mkZone(), opts);
 const lg = secs.find((s) => s.kind === 'longitudinal')!;
 assert(!!lg && secs.some((s) => s.kind === 'transverse'), 'longitudinal + transverse');
-assert(near(lg.levels.ceiling, 9) && near(lg.levels.slabUnderside, 9 + 14 / 12) && near(lg.levels.slabTop, 9 + 20 / 12), 'levels');
+assert(near(lg.levels.ceiling, 9) && near(lg.levels.slabUnderside, 9 + 24 / 12) && near(lg.levels.slabTop, 9 + 30 / 12), 'levels');
 const trunk = lg.elements.find((e) => e.id === 't1')!;
 assert(near(trunk.z1, lg.levels.slabUnderside - 2 / 12) && near(trunk.z1 - trunk.z0, 8 / 12), 'trunk top/height');
 assert(trunk.z0 >= lg.levels.ceiling && trunk.z1 <= lg.levels.slabUnderside, 'trunk within void');

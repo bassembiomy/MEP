@@ -717,6 +717,8 @@ export interface OutdoorUnitOptions {
   placedFootprints?: Pt2[][];
   /** Slide the unit along its wall towards this point (e.g. its indoor unit). */
   preferNear?: Pt2;
+  /** Only walls touching this region (e.g. the leg / bay the indoor unit serves) are preferred, so the unit sits behind ITS OWN leg. */
+  region?: number[];
   /**
    * With `preferNear`: choose the exterior wall NEAREST to that point (shortest refrigerant run) instead of the
    * longest wall / `side`. Walls that cannot hold the unit (another zone, an earlier outdoor unit) are skipped in
@@ -764,6 +766,15 @@ export function calculateOutdoorUnitPlacement(
   }
   const exterior = pool.filter(onEnvelope);
   if (exterior.length) pool = exterior;
+  if (opts.region && opts.region.length >= 6) {
+    const region = opts.region;
+    const touches = (e: WallEdge): boolean => [0, 0.25, 0.5, 0.75, 1].some((f) => {
+      const x = e.ax + (e.bx - e.ax) * f, y = e.ay + (e.by - e.ay) * f;
+      return (isPointInPolygon(x, y, region) ? 0 : distanceToPolygonEdge(x, y, region)) <= 0.6 * u;
+    });
+    const mine = pool.filter(touches);
+    if (mine.length) pool = mine;
+  }
 
   const nearPt = opts.nearestWall ? opts.preferNear : undefined;
   const rank = (list: WallEdge[]): WallEdge[] => list.slice().sort((a, b) => {

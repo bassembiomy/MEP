@@ -1,3 +1,4 @@
+import { DEFAULT_VOID_IN } from '../ceilingVoid';
 import { StandardsProfile, ASHRAE_PROFILE } from '../standards/designStandards';
 import {
   catalogCandidatesForType,
@@ -55,9 +56,12 @@ export interface MultiUnitCandidate {
   requiredCeilingVoidIn?: number;
   /** VRF only: the shared outdoor module (the indoor model is `unitModel`). */
   outdoorModel?: string;
+  outdoorManufacturer?: string;
   outdoorCapacityBtu?: number;
   /** VRF only: sum of indoor rated capacity / outdoor capacity (allowed 0.5-1.3, target 1.0-1.1). */
   combinationRatio?: number;
+  /** Design-level compromises of this option (e.g. VRF indoor and outdoor units of different manufacturers). */
+  designWarnings?: string[];
 }
 
 /** VRF designs select ducted indoor units (the layout routes a duct network) and a separate outdoor module. */
@@ -65,12 +69,14 @@ export function eligibleItemsFor(systemType: string): EquipmentCatalogItem[] {
   return catalogCandidatesForType(systemType === 'vrf' ? 'concealed' : systemType);
 }
 
+const sameMaker = (a: string | undefined, b: string | undefined): boolean => (a ?? '').trim().toLowerCase() === (b ?? '').trim().toLowerCase();
+
 /**
  * Smallest-error outdoor module for `indoorBtu` of connected indoor capacity: combination ratio inside 0.5-1.3 (target
  * 1.0-1.1) and derated capacity covering the load. Null when no module fits.
  */
-export function selectVrfOutdoor(indoorBtu: number, loadBtu: number): { item: EquipmentCatalogItem; ratio: number } | null {
-  const outs = getEquipmentCatalog().filter((e) => e.systemType === 'vrf');
+export function selectVrfOutdoor(indoorBtu: number, loadBtu: number, manufacturer?: string): { item: EquipmentCatalogItem; ratio: number } | null {
+  const outs = getEquipmentCatalog().filter((e) => e.systemType === 'vrf' && (!manufacturer || sameMaker(e.manufacturer, manufacturer)));
   const derate = ambientDerateFactor();
   const mid = (VRF_COMBINATION_TARGET_MIN + VRF_COMBINATION_TARGET_MAX) / 2;
   let best: { item: EquipmentCatalogItem; ratio: number } | null = null;
@@ -147,12 +153,41 @@ export function evaluateUnitCountOption(
   input: OptimizationInput,
   eligibleItems?: ReturnType<typeof catalogCandidatesForType>
 ): MultiUnitCandidate | null {
+  if ((input.systemType ?? 'concealed') !== 'vrf') return evaluateCore(n, input, eligibleItems);
+  // VRF: prefer indoor units of the SAME manufacturer as the outdoor module; only when no such pairing sizes validly the
+  // mixed-manufacturer choice is kept, with a design warning.
+  const eligible = eligibleItems ?? eligibleItemsFor('vrf');
+  const makers = Array.from(new Set(getEquipmentCatalog().filter((e) => e.systemType === 'vrf').map((e) => e.manufacturer)));
+  let best: MultiUnitCandidate | null = null;
+  for (const m of makers) {
+    const family = eligible.filter((e) => sameMaker(e.manufacturer, m));
+    if (!family.length) continue;
+    const c = evaluateCore(n, input, family, m);
+    if (c && (!best || (c.isValid && !best.isValid) || (!!c.isValid === !!best.isValid && c.totalScore > best.totalScore))) best = c;
+  }
+  if (best?.isValid) return best;
+  const mixed = evaluateCore(n, input, eligible);
+  if (!mixed) return best;
+  if (best && !mixed.isValid) return best;
+  const indoorMaker = mixed.equipmentDetails.catalogItem.manufacturer;
+  if (mixed.outdoorModel && !sameMaker(indoorMaker, mixed.outdoorManufacturer)) {
+    mixed.designWarnings = [...(mixed.designWarnings ?? []), `VRF: ${indoorMaker} indoor units are paired with a ${mixed.outdoorModel} outdoor module (different manufacturers) - no same-manufacturer indoor/outdoor family in the catalog meets the sizing rules; verify compatibility with the manufacturer`];
+  }
+  return mixed;
+}
+
+function evaluateCore(
+  n: number,
+  input: OptimizationInput,
+  eligibleItems?: ReturnType<typeof catalogCandidatesForType>,
+  outdoorMaker?: string
+): MultiUnitCandidate | null {
   const {
     sensibleLoadBtu,
     totalLoadBtu,
     requiredCfm,
     roomAreaSqFt,
-    maxAvailableCeilingDepthIn = 14,
+    maxAvailableCeilingDepthIn = DEFAULT_VOID_IN,
     systemType = 'concealed',
     units = 'imperial'
   } = input;
@@ -195,7 +230,7 @@ export function evaluateUnitCountOption(
   }
   let outdoor: { item: EquipmentCatalogItem; ratio: number } | null = null;
   if (systemType === 'vrf') {
-    outdoor = selectVrfOutdoor(deliveredBtu, totalLoadBtu);
+    outdoor = selectVrfOutdoor(deliveredBtu, totalLoadBtu, outdoorMaker);
     if (!outdoor) violations.push(`no VRF outdoor module gives a ${Math.round(VRF_COMBINATION_MIN * 100)}-${Math.round(VRF_COMBINATION_MAX * 100)}% combination ratio for ${formatLoad(deliveredBtu, units)} of indoor capacity`);
   }
   const isValid = violations.length === 0;
@@ -287,7 +322,7 @@ export function evaluateUnitCountOption(
     warnings: [...sizing.warnings],
     capacityRatio: parseFloat(capRatio.toFixed(3)),
     requiredCeilingVoidIn: parseFloat(voidNeeded.toFixed(1)),
-    ...(outdoor ? { outdoorModel: `${outdoor.item.manufacturer} ${outdoor.item.model}`, outdoorCapacityBtu: outdoor.item.totalCapacityBtuPerHour, combinationRatio: parseFloat(outdoor.ratio.toFixed(3)) } : {})
+    ...(outdoor ? { outdoorModel: `${outdoor.item.manufacturer} ${outdoor.item.model}`, outdoorManufacturer: outdoor.item.manufacturer, outdoorCapacityBtu: outdoor.item.totalCapacityBtuPerHour, combinationRatio: parseFloat(outdoor.ratio.toFixed(3)) } : {})
   };
   return option;
 }

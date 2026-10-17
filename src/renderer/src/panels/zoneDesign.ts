@@ -9,6 +9,7 @@ import {
   type ZonePayload
 } from '../engine/airDistributionEngine';
 import { getPolygonBounds } from '../engine/geometry';
+import { zoneVoidDepthIn } from '../engine/sections/sectionBuilder';
 
 export type MountingSide = 'north' | 'south' | 'east' | 'west';
 
@@ -89,7 +90,7 @@ export function designZone(
     exhaustCfm: toCfm(loads.exhaustCfm || 0, units),
     systemType: zone.systemType || 'concealed',
     mountingWallSide: chooseMountingSide(roomPolygon, others, extent),
-    maxAvailableCeilingDepthIn: 14,
+    maxAvailableCeilingDepthIn: zoneVoidDepthIn(zone),
     targetNc,
     userOverrideUnitCount: overrides.userOverrideUnitCount,
     returnStrategy: overrides.returnStrategy
@@ -110,7 +111,13 @@ export function unitRefOf(zoneId: string, index: number): string {
   return index <= 0 ? zoneId : `${zoneId}-u${index}`;
 }
 
-export function zonePatchFromDesign(zone: Zone, payload0: ZonePayload): Partial<Zone> {
+/**
+ * Zone patch of a design. Beyond the store's Zone fields it carries `unitTags` (indoor unit tags in unitPositions order,
+ * e.g. ['FCU-01', 'FCU-02']) and `designWarnings` so the sections / inspector show tags and compromises instead of raw ids.
+ */
+export type ZoneDesignPatch = Partial<Zone> & { unitTags?: string[]; designWarnings?: string[] };
+
+export function zonePatchFromDesign(zone: Zone, payload0: ZonePayload): ZoneDesignPatch {
   // re-key engine service-zone ids (sz-N) to the canvas unit refs; terminal / duct / unitServiceZones ids follow unitPositions order
   const refOf = new Map(payload0.unitServiceZones.map((u, i) => [u.id, unitRefOf(zone.id, i)]));
   const re = <T extends { unitId?: string; serviceZoneId?: string }>(x: T): T => {
@@ -132,7 +139,9 @@ export function zonePatchFromDesign(zone: Zone, payload0: ZonePayload): Partial<
   else if (sys === 'cassette') { diffusers = diffusers.filter((d) => d.type !== 'return'); ducts = []; }
   else if (!ducted) ducts = [];
 
-  const patch: Partial<Zone> = {
+  const patch: ZoneDesignPatch = {
+    unitTags: [...payload.unitTags],
+    designWarnings: [...payload.designWarnings],
     returnStrategy: payload.returnStrategy,
     returnPath: payload.returnPath,
     plantConnection: payload.plantConnection,
