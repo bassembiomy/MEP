@@ -9,6 +9,7 @@ import { validateAcousticCompliance } from './acousticValidator';
 import { validateCriticalPathPressure } from './pressureValidator';
 import { validateThrowAndThermalComfort } from './comfortValidator';
 import { validateSpatialCoordination } from './spatialValidator';
+import { formatVelocity, formatLoad } from '../../format/units';
 
 export interface MasterValidationInput {
   roomName: string;
@@ -23,6 +24,8 @@ export interface MasterValidationInput {
   /** Room-level exhaust / exfiltration (CFM) for the mass balance. */
   exhaustCfm?: number;
   exfiltrationCfm?: number;
+  /** Project unit system for the validation text (values stay imperial internally). Default imperial. */
+  units?: string;
 }
 
 export interface MasterValidationReport {
@@ -44,19 +47,20 @@ export function executeMasterHvacValidation(input: MasterValidationInput): Maste
     outdoorAirSystem,
     profile = ASHRAE_PROFILE,
     exhaustCfm,
-    exfiltrationCfm
+    exfiltrationCfm,
+    units
   } = input;
 
   const points: ValidationPointResult[] = [];
 
   // Point 1: Supply Airflow Balance
-  points.push(validateSupplyAirflowBalance(zones, terminals, profile));
+  points.push(validateSupplyAirflowBalance(zones, terminals, profile, units));
 
   // Point 2: Room Airflow Verification
-  points.push(validateRoomAirflowVerification(requiredRoomCfm, terminals, profile));
+  points.push(validateRoomAirflowVerification(requiredRoomCfm, terminals, profile, units));
 
   // Point 3: System Air Mass Balance
-  points.push(validateSystemAirMassBalance(zones, outdoorAirSystem, { exhaustCfm, exfiltrationCfm }));
+  points.push(validateSystemAirMassBalance(zones, outdoorAirSystem, { exhaustCfm, exfiltrationCfm }, units));
 
   // Point 4: Velocity Compliance Check
   let maxV = 0;
@@ -73,19 +77,19 @@ export function executeMasterHvacValidation(input: MasterValidationInput): Maste
     pointIndex: 4,
     pointName: 'Velocity Compliance Check',
     status: hasVelocityViolation ? 'WARNING' : 'PASS',
-    metric: `Max Duct Velocity: ${maxV} FPM vs Allowable Limit: ${maxAllowableV} FPM`,
+    metric: `Max Duct Velocity: ${formatVelocity(maxV, units)} vs Allowable Limit: ${formatVelocity(maxAllowableV, units)}`,
     criteria: 'Actual Velocity <= Allowable Velocity per Standards Profile',
     message: hasVelocityViolation ? 'Duct velocity exceeds profile limit in one or more sections' : 'All duct velocities comply with allowable profile limits'
   });
 
   // Point 5: Acoustic Compliance Check
-  points.push(validateAcousticCompliance(zones, terminals, ducts));
+  points.push(validateAcousticCompliance(zones, terminals, ducts, units));
 
   // Point 6: Throw and Thermal Comfort Check
   points.push(validateThrowAndThermalComfort(terminals, profile));
 
   // Point 7: Static Pressure / ESP Check
-  points.push(validateCriticalPathPressure(zones, ducts, profile));
+  points.push(validateCriticalPathPressure(zones, ducts, profile, units));
 
   // Point 8: Equipment Capacity Check
   const totalDeliveredBtu = zones.reduce((sum, z) => sum + z.actualCapacityBtu, 0);
@@ -95,13 +99,13 @@ export function executeMasterHvacValidation(input: MasterValidationInput): Maste
     pointIndex: 8,
     pointName: 'Equipment Capacity & Load Match',
     status: isCapPassing ? 'PASS' : 'WARNING',
-    metric: `Selected Capacity: ${totalDeliveredBtu.toLocaleString()} Btu/h vs Design Load: ${designLoadBtu.toLocaleString()} Btu/h [Margin: +${capMargin.toLocaleString()} Btu/h]`,
+    metric: `Selected Capacity: ${formatLoad(totalDeliveredBtu, units)} vs Design Load: ${formatLoad(designLoadBtu, units)} [Margin: ${capMargin >= 0 ? '+' : ''}${formatLoad(capMargin, units)}]`,
     criteria: 'Derated Equipment Capacity >= Calculated Design Load',
     message: isCapPassing ? 'Equipment capacity fully covers calculated design sensible and latent loads' : 'Equipment capacity is insufficient for design cooling load'
   });
 
   // Point 9: Spatial Coordination & Clash Check
-  points.push(validateSpatialCoordination(zones, ducts, roomPolygon, terminals.filter((t) => t.type === 'supply' || t.type === 'return')));
+  points.push(validateSpatialCoordination(zones, ducts, roomPolygon, terminals.filter((t) => t.type === 'supply' || t.type === 'return'), undefined, units));
 
   // Determine overall status
   const hasFail = points.some((p) => p.status === 'FAIL');

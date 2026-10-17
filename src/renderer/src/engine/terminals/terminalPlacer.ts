@@ -1,5 +1,6 @@
 import { EquipmentServiceZone, DesignControlMode } from '../zoning/zonePartitioner';
-import { selectBestDiffuserFromCatalog, neckAreaSqFt, MAX_NECK_VELOCITY_FPM } from './diffuserSelector';
+import { selectBestDiffuserFromCatalog, neckAreaSqFt, terminalSizeLabels, MAX_NECK_VELOCITY_FPM } from './diffuserSelector';
+import { layoutBayTerminalGrid, decomposeConvex, maxDistanceToNearestTerminal } from './bayLayout';
 import { STANDARD_DIFFUSER_CATALOG } from '../hvacCatalogs';
 import { DiffuserCatalogItem } from '../types';
 import type { Rect } from '../ducts/clearance';
@@ -73,7 +74,16 @@ export interface ThrowSelection {
   nc: number;
   dp: number;
   grid: ReturnType<typeof layoutTerminalGrid>;
+  /** Largest distance (ft) from an occupied point to the nearest supply terminal. */
+  maxCoverageDistFt?: number;
 }
+
+/** Supply coverage rule: any occupied point lies within this many T50 throws of a supply terminal. */
+export const COVERAGE_T50_FACTOR = 1.5;
+/** Overshoot (x the 1.5 T50 limit) tolerated before the coverage cost starts - the rule is approximate (~1.5). */
+const COVERAGE_TOLERANCE = 1.05;
+/** Score cost per unit of coverage overshoot (a terminal out of the throw band costs 0.15). */
+const COVERAGE_PENALTY = 1.0;
 
 /**
  * Professional selection: for every candidate count n (grid layout) and catalog size, compute
@@ -87,6 +97,9 @@ export function selectDiffuserCountAndSize(
   targetNc: number,
   options: { catalog?: DiffuserCatalogItem[]; maxNeckVelocityFpm?: number; maxCount?: number; unitPerFt?: number; keepOuts?: Rect[] } = {}
 ): ThrowSelection | null {
+  const unitPerFt = options.unitPerFt ?? 1;
+  // Non-convex bays (L / T / U) are split into convex arms and each arm gets terminals in proportion to its area
+  const nMin = Math.min(decomposeConvex(polygonFt).length, 6);
   const catalog = options.catalog ?? STANDARD_DIFFUSER_CATALOG;
   const vLimit = options.maxNeckVelocityFpm ?? MAX_NECK_VELOCITY_FPM;
   const items = catalog.filter((d) => d.terminalType === 'square-ceiling' || d.terminalType === 'round-ceiling');
@@ -94,12 +107,23 @@ export function selectDiffuserCountAndSize(
   const minFlow = Math.min(...items.map((i) => i.minCfm * MIN_TURNDOWN));
   const nMax = Math.max(1, Math.min(options.maxCount ?? 48, Math.floor(zoneCfm / Math.max(minFlow, 1))));
 
+  const gridCache = new Map<number, { grid: ReturnType<typeof layoutTerminalGrid>; cover: number }>();
+  const gridFor = (n: number): { grid: ReturnType<typeof layoutTerminalGrid>; cover: number } => {
+    let g = gridCache.get(n);
+    if (!g) {
+      const grid = layoutBayTerminalGrid(polygonFt, n, { unitPerFt, keepOuts: options.keepOuts });
+      g = { grid, cover: maxDistanceToNearestTerminal(polygonFt, grid.points, { unitPerFt }) };
+      gridCache.set(n, g);
+    }
+    return g;
+  };
+
   const tryPass = (ncTol: number, minSpacing: number): ThrowSelection | null => {
     let best: ThrowSelection | null = null;
     let bestScore = Infinity;
     const seenCounts = new Set<number>();
-    for (let n = 1; n <= nMax; n++) {
-      const grid = layoutTerminalGrid(polygonFt, n, { unitPerFt: options.unitPerFt ?? 1, keepOuts: options.keepOuts });
+    for (let n = nMin; n <= Math.max(nMax, nMin); n++) {
+      const { grid, cover } = gridFor(n);
       const actual = grid.points.length;
       if (actual < 1 || seenCounts.has(actual)) continue;
       seenCounts.add(actual);
@@ -114,11 +138,15 @@ export function selectDiffuserCountAndSize(
         if (perf.nc > targetNc + ncTol) continue;
         const ratio = perf.t50 / L;
         const inBand = ratio >= THROW_RATIO_MIN && ratio <= THROW_RATIO_MAX;
+        // Coverage rule (any occupied point within ~1.5 x T50 of a supply): a shortfall is a soft cost that grows with the
+        // overshoot, so an L / T arm with no terminal near it is decisive but a marginal miss never buys a swarm of tiny ones.
+        const overshoot = Math.max(0, cover / (COVERAGE_T50_FACTOR * Math.max(perf.t50, 1e-6)) - COVERAGE_TOLERANCE);
+        const coverPenalty = Math.min(overshoot, 2) * COVERAGE_PENALTY;
         // Unreachable band: do not chase it with ever more terminals (strong count penalty)
-        const score = Math.abs(ratio - 1) + (inBand ? 0.02 : 0.15) * actual + 0.00001 * (item.costIndex ?? 0);
+        const score = Math.abs(ratio - 1) + (inBand ? 0.02 : 0.15) * actual + coverPenalty + 0.00001 * (item.costIndex ?? 0);
         if (score < bestScore - 1e-12) {
           bestScore = score;
-          best = { count: actual, item, cfmEach: q, t50: perf.t50, throwLengthFt: L, ratio, nc: perf.nc, dp: perf.dp, grid };
+          best = { count: actual, item, cfmEach: q, t50: perf.t50, throwLengthFt: L, ratio, nc: perf.nc, dp: perf.dp, grid, maxCoverageDistFt: cover };
         }
       }
     }
@@ -179,20 +207,17 @@ function emitTerminals(
  */
 export function placeSupplyDiffusersForZone(
   zone: EquipmentServiceZone,
-  options: { targetCfmPerDiffuser?: number; unitPerFt?: number; optimizeThrow?: boolean; keepOuts?: Rect[] } = {}
+  options: { targetCfmPerDiffuser?: number; unitPerFt?: number; optimizeThrow?: boolean; keepOuts?: Rect[]; catalog?: DiffuserCatalogItem[]; metric?: boolean } = {}
 ): CoordinatedAirTerminal[] {
-  const { targetCfmPerDiffuser = 350, unitPerFt = 1, optimizeThrow = false, keepOuts } = options;
+  const { targetCfmPerDiffuser = 350, unitPerFt = 1, optimizeThrow = false, keepOuts, catalog, metric = false } = options;
   const zoneCfm = zone.supplyCfm;
   if (!(zoneCfm > 0) || zone.serviceAreaPolygon.length < 6) return [];
 
   if (optimizeThrow) {
-    const sel = selectDiffuserCountAndSize(zone.serviceAreaPolygon, zoneCfm, zone.targetNc, { unitPerFt, keepOuts });
+    const sel = selectDiffuserCountAndSize(zone.serviceAreaPolygon, zoneCfm, zone.targetNc, { unitPerFt, keepOuts, catalog });
     if (sel) {
       const item = sel.item;
-      const face = item.faceSizeIn ? `${item.faceSizeIn.width}"x${item.faceSizeIn.height}"` : '24"x24"';
-      const neck = item.neckSizeIn
-        ? (item.neckSizeIn.diameter ? `${item.neckSizeIn.diameter}" dia` : `${item.neckSizeIn.width}"x${item.neckSizeIn.height}"`)
-        : '10"x10"';
+      const { face, neck } = terminalSizeLabels(item, metric);
       const ratio = parseFloat(sel.ratio.toFixed(2));
       const status: CoordinatedAirTerminal['status'] = ratio >= THROW_RATIO_MIN && ratio <= THROW_RATIO_MAX ? 'pass' : 'warning';
       return emitTerminals(zone, sel.grid.points, zoneCfm, {
@@ -203,19 +228,19 @@ export function placeSupplyDiffusersForZone(
   }
 
   let numDiffusers = Math.max(1, Math.round(zoneCfm / targetCfmPerDiffuser));
-  let selected = selectBestDiffuserFromCatalog(Math.round(zoneCfm / numDiffusers), zone.targetNc);
+  let selected = selectBestDiffuserFromCatalog(Math.round(zoneCfm / numDiffusers), zone.targetNc, 'square-ceiling', catalog, { metric });
   // If nothing fits (neck velocity / catalog range), add diffusers rather than overloading one
   for (let guard = 0; guard < 4 && selected.requiredCount > 1; guard++) {
     numDiffusers *= selected.requiredCount;
-    selected = selectBestDiffuserFromCatalog(Math.round(zoneCfm / numDiffusers), zone.targetNc);
+    selected = selectBestDiffuserFromCatalog(Math.round(zoneCfm / numDiffusers), zone.targetNc, 'square-ceiling', catalog, { metric });
   }
 
-  const grid = layoutTerminalGrid(zone.serviceAreaPolygon, numDiffusers, { unitPerFt, keepOuts });
+  const grid = layoutBayTerminalGrid(zone.serviceAreaPolygon, numDiffusers, { unitPerFt, keepOuts });
   if (grid.points.length === 0) return [];
   numDiffusers = grid.points.length; // the room may hold fewer than requested; never stack terminals
 
   const cfmPerDiffuser = Math.round(zoneCfm / numDiffusers);
-  selected = selectBestDiffuserFromCatalog(cfmPerDiffuser, zone.targetNc);
+  selected = selectBestDiffuserFromCatalog(cfmPerDiffuser, zone.targetNc, 'square-ceiling', catalog, { metric });
   const throwRatio = parseFloat((selected.throwT50Ft / Math.max(grid.throwLengthFt, 1e-6)).toFixed(2));
   const status: CoordinatedAirTerminal['status'] =
     throwRatio >= THROW_RATIO_MIN && throwRatio <= THROW_RATIO_MAX && selected.withinLimits ? 'pass' : 'warning';

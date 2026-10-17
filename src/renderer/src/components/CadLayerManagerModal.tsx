@@ -80,6 +80,7 @@ export const CadLayerManagerModal: React.FC<CadLayerManagerProps> = ({ isOpen, o
         </div>
         <button
           onClick={onClose}
+          aria-label="Close"
           className="p-1 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
         >
           <X size={14} />

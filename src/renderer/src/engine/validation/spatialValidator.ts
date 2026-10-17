@@ -2,6 +2,11 @@ import { SteppedDuctSection } from '../ducts/steppedDuctRouter';
 import { EquipmentServiceZone } from '../zoning/zonePartitioner';
 import { ValidationPointResult } from './airflowValidator';
 import { isPointInPolygon, MIN_TERMINAL_SPACING_FT } from '../geometry';
+import { formatLength } from '../../format/units';
+import { isImperial, MM_PER_IN } from '../units';
+
+/** Duct / ceiling dimension given in inches, shown as in. or mm. */
+const fmtIn = (inches: number, units?: string): string => (isImperial(units) ? `${Math.round(inches * 10) / 10} in.` : `${Math.round(inches * MM_PER_IN)} mm`);
 
 /** Maximum duct aspect ratio (W/H) allowed by the spatial check. */
 export const MAX_DUCT_ASPECT_RATIO = 4.0;
@@ -22,7 +27,8 @@ export function validateSpatialCoordination(
   ducts: SteppedDuctSection[],
   roomPolygon: number[],
   terminals: SpatialTerminal[] = [],
-  minSpacingFt: number = MIN_TERMINAL_SPACING_FT
+  minSpacingFt: number = MIN_TERMINAL_SPACING_FT,
+  units?: string
 ): ValidationPointResult {
   const maxCeilingDepth = zones[0]?.maxAvailableCeilingDepthIn || 14;
   let hasDepthViolation = false;
@@ -61,7 +67,7 @@ export function validateSpatialCoordination(
   for (let i = 0; i < pts.length; i++) {
     for (let j = i + 1; j < pts.length; j++) {
       const d = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y);
-      if (d < minSpacingFt - 1e-6) issues.push(`Terminals ${pts[i].id} and ${pts[j].id} are ${d.toFixed(1)} ft apart (minimum ${minSpacingFt} ft)`);
+      if (d < minSpacingFt - 1e-6) issues.push(`Terminals ${pts[i].id} and ${pts[j].id} are ${formatLength(d, units)} apart (minimum ${formatLength(minSpacingFt, units)})`);
     }
   }
   const hasPlacementViolation = issues.length > 0;
@@ -80,10 +86,10 @@ export function validateSpatialCoordination(
     pointIndex: 9,
     pointName: '3D Spatial Coordination & Clash Check',
     status: passed ? 'PASS' : 'WARNING',
-    metric: `Max Duct Height: ${maxDuctHeight} in. vs Available Depth: ${maxCeilingDepth} in., Aspect Ratios <= ${aspectLimit}, Terminals checked: ${pts.length}`,
-    criteria: `Duct Height <= ${maxCeilingDepth} in., Aspect Ratio <= ${aspectLimit}, Terminals/equipment inside room, Terminal spacing >= ${minSpacingFt} ft`,
+    metric: `Max Duct Height: ${fmtIn(maxDuctHeight, units)} vs Available Depth: ${fmtIn(maxCeilingDepth, units)}, Aspect Ratios <= ${aspectLimit}, Terminals checked: ${pts.length}`,
+    criteria: `Duct Height <= ${fmtIn(maxCeilingDepth, units)}, Aspect Ratio <= ${aspectLimit}, Terminals/equipment inside room, Terminal spacing >= ${formatLength(minSpacingFt, units)}`,
     message: passed
-      ? `All ductwork, equipment, and terminals comply with available ${maxCeilingDepth}" ceiling depth and architectural clearances`
+      ? `All ductwork, equipment, and terminals comply with available ${fmtIn(maxCeilingDepth, units)} ceiling depth and architectural clearances`
       : `Spatial coordination warning in ${reasons.join(' | ')}`
   };
 }

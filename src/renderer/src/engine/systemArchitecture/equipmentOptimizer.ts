@@ -194,8 +194,19 @@ export function evaluateUnitCountOption(
   // 7. Redundancy (0-10 pts)
   const redundancyScore = n >= 3 ? 10 : (n === 2 ? 8 : 2);
 
-  // 8. Unit count penalty (0 to -15 pts for complexity/cost)
-  const unitPenalty = (n - 1) * 3.5;
+  // 8. Unit count / per-unit cost penalty: every extra indoor unit adds an indoor unit, condensate drain, refrigerant or
+  // power run, controls and a service point; units beyond what a designer would normally specify (2-3) cost more still, and
+  // small non-standard sizes cost more per ton. So fewer, larger, standard-size units win whenever they are valid.
+  const STANDARD_TONS = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 7.5, 8.5, 10];
+  const isStandardSize = STANDARD_TONS.some((t) => Math.abs(t - selection.nominalTons) < 0.05);
+  const unitPenalty =
+    (n - 1) * 3.5 +
+    2.5 * Math.max(0, n - 2) +
+    3 * Math.max(0, n - 4) +
+    (isStandardSize ? 0 : 2) * Math.min(n, 3) / 3 +
+    (selection.nominalTons < 1.5 ? 1.5 * Math.min(n, 4) : 0) +
+    // the opposite pressure: too few units for the floor means long duct runs and throws (>~1,500 ft2 per indoor unit)
+    Math.max(0, (roomAreaSqFt / n - 1500) / 100);
 
   const totalScore = parseFloat(
     (capScore + distScore + acousticScore + espScore + ductScore + ceilingScore + redundancyScore - unitPenalty).toFixed(1)

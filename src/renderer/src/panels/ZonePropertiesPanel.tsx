@@ -1,13 +1,10 @@
 import React from 'react';
-import { useProjectStore, Zone, DuctSegment, Diffuser } from '../store/projectStore';
+import { useProjectStore, Zone } from '../store/projectStore';
 import { ASHRAE_SPACE_TYPES } from '../engine/knowledgeBase';
 import { calculateZoneLoad } from '../engine/loadCalc';
-import { placeDiffusers } from '../engine/diffuserPlacer';
-import { routeDucts } from '../engine/ductRouter';
-import { pxPerFt, toCfm } from '../engine/units';
+import { toCfm } from '../engine/units';
 import { formatAirflow, formatVelocity } from '../format/units';
-import { calculateOutdoorUnitPlacement, calculateOptimalIndoorUnitPos, calculateWallMountedUnitPos, getPolygonCentroid } from '../engine/geometry';
-import { getCatalogSizingForZone } from '../engine/systemDesigner';
+import { designZone, zonePatchFromDesign } from './zoneDesign';
 import { STANDARD_DUCT_TYPES } from '../engine/hvacCatalogs';
 import {
   DEFAULT_SPACE_NC_TARGETS,
@@ -27,76 +24,18 @@ import {
 } from 'lucide-react';
 import { DuctLocationCategory } from '../engine/types';
 
-type Pt = { x: number; y: number };
+/** Zone fields that change the loads / equipment, so the engine layout must be re-run when they are edited. */
+const LAYOUT_FIELDS: ReadonlyArray<keyof Zone> = [
+  'spaceTypeId', 'systemType', 'occupants', 'lightingOverride', 'equipmentOverride',
+  'manualCfmOverride', 'manualCoolingOverride', 'ceilingHeight', 'targetNc'
+];
 
-const unitPositionsOf = (z: Zone): Pt[] =>
-  z.unitPositions && z.unitPositions.length > 0 ? z.unitPositions : z.unitPos ? [z.unitPos] : [];
-
-/** Midpoint of the longest interior interval of the polygon along the scanline coordinate `c` (axis 'x': x=c). */
-function scanlineMid(points: number[], axis: 'x' | 'y', c: number): number | null {
-  const n = points.length / 2;
-  const hits: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const a = { x: points[2 * i], y: points[2 * i + 1] };
-    const b = { x: points[2 * ((i + 1) % n)], y: points[2 * ((i + 1) % n) + 1] };
-    const a1 = axis === 'x' ? a.x : a.y;
-    const b1 = axis === 'x' ? b.x : b.y;
-    if ((a1 <= c && b1 > c) || (b1 <= c && a1 > c)) {
-      const t = (c - a1) / (b1 - a1);
-      hits.push(axis === 'x' ? a.y + t * (b.y - a.y) : a.x + t * (b.x - a.x));
-    }
-  }
-  hits.sort((p, q) => p - q);
-  let best: number | null = null;
-  let bestLen = -1;
-  for (let i = 0; i + 1 < hits.length; i += 2) {
-    const len = hits[i + 1] - hits[i];
-    if (len > bestLen) {
-      bestLen = len;
-      best = (hits[i] + hits[i + 1]) / 2;
-    }
-  }
-  return best;
-}
-
-/**
- * Places `qty` indoor units: one per equal strip along the room's long axis (so each unit serves its own
- * share of the floor). A single unit uses the engine's optimal wall/ceiling position.
- */
-function layoutIndoorUnits(points: number[], qty: number, odu: Pt, unitPerFt: number, onWall: boolean): Pt[] {
-  if (qty <= 1) {
-    return [onWall
-      ? calculateWallMountedUnitPos(points, unitPerFt, { outdoorUnitPos: odu })
-      : calculateOptimalIndoorUnitPos(points, odu, unitPerFt)];
-  }
-  const xs = points.filter((_, i) => i % 2 === 0);
-  const ys = points.filter((_, i) => i % 2 === 1);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const alongX = maxX - minX >= maxY - minY;
-  const centroid = getPolygonCentroid(points);
-  const out: Pt[] = [];
-  for (let i = 0; i < qty; i++) {
-    const t = (i + 0.5) / qty;
-    let p: Pt;
-    if (alongX) {
-      const x = minX + t * (maxX - minX);
-      const y = scanlineMid(points, 'x', x);
-      p = { x, y: y ?? centroid.y };
-    } else {
-      const y = minY + t * (maxY - minY);
-      const x = scanlineMid(points, 'y', y);
-      p = { x: x ?? centroid.x, y };
-    }
-    out.push(onWall ? calculateWallMountedUnitPos(points, unitPerFt, { outdoorUnitPos: odu, near: p }) : p);
-  }
-  return out;
-}
+/** Display rounding only: stored values keep full precision. */
+const display = (v: number | undefined, digits = 2): number | '' =>
+  v === undefined || !Number.isFinite(v) ? '' : Math.round(v * 10 ** digits) / 10 ** digits;
 
 export const ZonePropertiesPanel: React.FC = () => {
-  const { selectedZoneId, zones, updateZone, project, dxfEntities, dxfBoundingBox, loadedCatalogs } = useProjectStore();
+  const { selectedZoneId, zones, updateZone, project, dxfBoundingBox } = useProjectStore();
 
   const selectedZone = zones.find((z) => z.id === selectedZoneId);
 
@@ -155,117 +94,20 @@ export const ZonePropertiesPanel: React.FC = () => {
     isEnhanced
   );
 
-  const upf = pxPerFt(project.scale, project.units);
-
   /**
-   * Builds the full placement/routing patch for a zone. `force` (Auto-Layout) recomputes every
-   * position; otherwise existing equipment positions are kept where they are still valid.
-   * All geometry calls get the real px-per-foot so clearances are physical (not 1/10 scale).
+   * Auto-Layout = executeAirDistributionDesign (the ONE air-distribution pipeline, same call as the Schedule panel's
+   * "Apply AI") stored through convertDesignResultToZonePayload: units, one outdoor unit per split indoor unit,
+   * per-unit terminals (terminal.unitId / serviceZoneId), ducts. Locked parts are kept.
    */
-  const buildLayout = (base: Zone, force: boolean): Partial<Zone> => {
-    const loads = calculateZoneLoad(base, project);
-    const nc = base.targetNc ?? (DEFAULT_SPACE_NC_TARGETS[base.spaceTypeId]?.nc || 32);
-    const loc: DuctLocationCategory = base.ductLocationCategory || 'above-suspended-ceiling';
-    const enhanced = base.enhancedAcousticPerformance || false;
-    const sys = base.systemType;
-    const ducted = sys === 'concealed' || sys === 'packaged' || sys === 'ahu' || sys === 'vrf' || sys === 'fcu';
-
-    const sizing = getCatalogSizingForZone(
-      sys,
-      loads.totalLoad,
-      loads.supplyCfm,
-      loadedCatalogs,
-      isImperial,
-      loads.area,
-      base.spaceTypeId,
-      loads.sensibleLoad
-    );
-
-    const odu = force || !base.outdoorUnitPos
-      ? calculateOutdoorUnitPlacement(base.points, zones, dxfBoundingBox, upf, {
-          // px polygons of every OTHER zone (same space as base.points; upf = px per ft)
-          otherZonePolygons: zones.filter((z) => z.id !== base.id && z.points && z.points.length >= 6).map((z) => z.points)
-        })
-      : base.outdoorUnitPos;
-
-    const spacing = isImperial ? 10 : 3;
-    let diffusers: Diffuser[] = base.diffusers;
-    if (sys === 'high-wall') {
-      diffusers = [];
-    } else if ((sys === 'cassette' || ducted) && !base.isDiffusersLocked) {
-      diffusers = placeDiffusers(
-        base.points,
-        loads.supplyCfm,
-        isImperial,
-        spacing,
-        upf,
-        dxfEntities,
-        sys === 'cassette' ? 'cassette' : sys || 'concealed',
-        loads.totalLoad,
-        sizing.qty,
-        sizing.model,
-        nc
-      );
-    }
-
-    // Indoor units: ALL units of the schedule are placed (unitPositions) and unitPos is the first one.
-    const existing = unitPositionsOf(base);
-    const wantUnits = force ? sys !== 'cassette' : ducted || sys === 'high-wall';
-    const qty = Math.max(1, Math.min(8, Math.round(sizing.qty || 1)));
-    let positions: Pt[] = [];
-    if (wantUnits) {
-      const recompute = force || sys === 'high-wall' || existing.length !== qty;
-      positions = recompute ? layoutIndoorUnits(base.points, qty, odu, upf, sys === 'high-wall') : existing;
-    }
-
-    let ducts: DuctSegment[] = ducted ? base.ducts : [];
-    if (ducted && positions.length > 0 && !base.isDuctLocked) {
-      const acoustic = { targetNc: nc, locationCategory: loc, enhancedPerformance: enhanced, zoneName: base.name };
-      if (positions.length === 1) {
-        const routed = routeDucts(base.points, diffusers, project.units, base.id, positions[0], sys || 'concealed', odu, acoustic, upf);
-        ducts = routed.ducts;
-        positions = [routed.unitPos];
-      } else {
-        const groups: Diffuser[][] = positions.map(() => []);
-        for (const d of diffusers) {
-          let best = 0;
-          let bd = Infinity;
-          positions.forEach((p, i) => {
-            const dd = Math.hypot(d.x - p.x, d.y - p.y);
-            if (dd < bd) { bd = dd; best = i; }
-          });
-          groups[best].push(d);
-        }
-        ducts = [];
-        positions.forEach((p, i) => {
-          if (groups[i].length === 0) return;
-          const r = routeDucts(base.points, groups[i], project.units, i === 0 ? base.id : `${base.id}-u${i}`, p, sys || 'concealed', odu, acoustic, upf);
-          ducts.push(...r.ducts);
-        });
-      }
-    }
-
-    const patch: Partial<Zone> = {
-      diffusers,
-      ducts,
-      unitPos: positions[0],
-      unitPositions: positions.length > 0 ? positions : undefined,
-      outdoorUnitPos: odu,
-      catalogQty: sizing.qty,
-      catalogModel: sizing.model,
-      catalogEsp: sizing.esp
-    };
-    if (force) patch.outdoorUnitPositions = undefined;
-    return patch;
+  const runAutoLayout = (base: Zone): Partial<Zone> => {
+    const { payload } = designZone(base, zones, project, dxfBoundingBox);
+    return zonePatchFromDesign(base, payload);
   };
 
   const handleOptimizePlacement = (): void => {
     const nc = selectedZone.targetNc ?? defaultSpaceTarget.nc;
-    updateZone(selectedZone.id, {
-      ...buildLayout(selectedZone, true),
-      targetNc: nc,
-      ductLocationCategory: currentLocCategory
-    });
+    const base: Zone = { ...selectedZone, targetNc: nc, ductLocationCategory: currentLocCategory };
+    updateZone(selectedZone.id, { targetNc: nc, ductLocationCategory: currentLocCategory, ...runAutoLayout(base) });
   };
 
   const handleUpdate = (field: keyof Zone, value: Zone[keyof Zone]): void => {
@@ -283,7 +125,10 @@ export const ZonePropertiesPanel: React.FC = () => {
       }
     }
 
-    updateZone(selectedZone.id, { ...updatedZone, ...buildLayout(updatedZone, false) });
+    // Re-run the single engine pipeline only when the edit changes loads/equipment of an already laid-out zone
+    const hasLayout = selectedZone.diffusers.length > 0 || selectedZone.ducts.length > 0 || (selectedZone.unitPositions?.length ?? 0) > 0;
+    const relayout = hasLayout && LAYOUT_FIELDS.includes(field);
+    updateZone(selectedZone.id, relayout ? { ...updatedZone, ...runAutoLayout(updatedZone) } : updatedZone);
   };
 
   return (
@@ -518,7 +363,7 @@ export const ZonePropertiesPanel: React.FC = () => {
           <input
             type="number"
             step="0.5"
-            value={selectedZone.ceilingHeight}
+            value={display(selectedZone.ceilingHeight, 2)}
             onChange={(e) => handleUpdate('ceilingHeight', parseFloat(e.target.value) || 0)}
             className="bg-neutral-950 border border-neutral-800 text-neutral-200 text-xs px-3 py-2 rounded-xl focus:border-blue-600 focus:outline-none"
           />
@@ -547,7 +392,7 @@ export const ZonePropertiesPanel: React.FC = () => {
           <label className="text-[9px] text-neutral-500">Manual CFM ({isImperial ? 'CFM' : 'L/s'})</label>
           <input
             type="number"
-            value={selectedZone.manualCfmOverride || ''}
+            value={display(selectedZone.manualCfmOverride, 0) || ''}
             placeholder={`${loadResult.supplyCfm} (Calculated)`}
             onChange={(e) => handleUpdate('manualCfmOverride', parseFloat(e.target.value) || undefined)}
             className="bg-neutral-900 border border-neutral-800 text-neutral-200 text-xs px-2.5 py-1.5 rounded-lg"
@@ -558,7 +403,7 @@ export const ZonePropertiesPanel: React.FC = () => {
           <label className="text-[9px] text-neutral-500">Manual Load ({isImperial ? 'Btu/h' : 'Watts'})</label>
           <input
             type="number"
-            value={selectedZone.manualCoolingOverride || ''}
+            value={display(selectedZone.manualCoolingOverride, 0) || ''}
             placeholder={`${loadResult.totalLoad} (Calculated)`}
             onChange={(e) => handleUpdate('manualCoolingOverride', parseFloat(e.target.value) || undefined)}
             className="bg-neutral-900 border border-neutral-800 text-neutral-200 text-xs px-2.5 py-1.5 rounded-lg"

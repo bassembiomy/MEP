@@ -2,13 +2,16 @@ import { EquipmentServiceZone } from '../zoning/zonePartitioner';
 import { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
 import { SteppedDuctSection } from '../ducts/steppedDuctRouter';
 import { ValidationPointResult } from './airflowValidator';
+import { formatVelocity } from '../../format/units';
 
 export function validateAcousticCompliance(
   zones: EquipmentServiceZone[],
   terminals: CoordinatedAirTerminal[],
-  ducts: SteppedDuctSection[]
+  ducts: SteppedDuctSection[],
+  units?: string
 ): ValidationPointResult {
-  const targetNc = zones[0]?.targetNc || 30;
+  // NC target comes from the zone (space type / user), not a constant
+  const targetNc = zones[0]?.targetNc ?? 30;
 
   // 1. Check terminals NC
   let maxTerminalNc = 0;
@@ -36,10 +39,10 @@ export function validateAcousticCompliance(
     pointIndex: 5,
     pointName: 'Acoustic Compliance',
     status: passed ? 'PASS' : 'WARNING',
-    metric: `Max Terminal NC: ${maxTerminalNc} vs Target NC ${targetNc}, Max Duct Velocity: ${maxDuctV} FPM`,
+    metric: `Max Terminal NC: ${maxTerminalNc} vs Target NC ${targetNc}, Max Duct Velocity: ${formatVelocity(maxDuctV, units)}`,
     criteria: `Terminal NC <= NC ${targetNc} and Duct Velocity within quiet envelope`,
     message: passed
       ? `All air terminals and duct sections satisfy room acoustic target NC ${targetNc}`
-      : `Acoustic warning: ${violatingTerminal ? `Terminal ${violatingTerminal.id} NC ${violatingTerminal.ncRating} exceeds target` : `Duct ${violatingDuct?.id} velocity ${violatingDuct?.velocityFpm} FPM exceeds allowable limit`}`
+      : `Acoustic warning: ${violatingTerminal ? `Terminal ${violatingTerminal.id} NC ${violatingTerminal.ncRating} exceeds target` : `Duct ${violatingDuct?.id} velocity ${formatVelocity(violatingDuct?.velocityFpm ?? 0, units)} exceeds allowable limit`}`
   };
 }

@@ -4,6 +4,7 @@ import { ValidationPointResult } from './airflowValidator';
 import { StandardsProfile, ASHRAE_PROFILE } from '../standards/designStandards';
 import { calculateTerminalPathLosses } from '../ducts/ductPressureCalculator';
 import { terminalConnectionLoss } from '../ducts/fittingLossCalculator';
+import { formatPressure } from '../../format/units';
 
 /** Default terminal (diffuser) and return grille pressure drops (in. wg) used when path data lacks them */
 export const DEFAULT_TERMINAL_DROP_IN_WG = 0.04;
@@ -53,7 +54,8 @@ export function criticalPathLossForUnit(
 export function validateCriticalPathPressure(
   zones: EquipmentServiceZone[],
   ducts: SteppedDuctSection[],
-  profile: StandardsProfile = ASHRAE_PROFILE
+  profile: StandardsProfile = ASHRAE_PROFILE,
+  units?: string
 ): ValidationPointResult {
   const marginPercent = profile.tolerances.staticPressureSafetyMarginPercent || 15.0;
 
@@ -82,10 +84,10 @@ export function validateCriticalPathPressure(
     pointIndex: 7,
     pointName: 'Static Pressure & ESP Margin',
     status: passed ? 'PASS' : 'WARNING',
-    metric: `Critical Path Total: ${totalWithSafetyMargin.toFixed(3)} in. wg (incl ${marginPercent}% margin) vs Available Fan ESP: ${availableEsp.toFixed(2)} in. wg`,
+    metric: `Critical Path Total: ${formatPressure(totalWithSafetyMargin, units)} (incl ${marginPercent}% margin) vs Available Fan ESP: ${formatPressure(availableEsp, units)}`,
     criteria: 'Total Critical Path Loss + Safety Margin <= Equipment Rated ESP',
     message: passed
-      ? `Equipment fan ESP (${availableEsp} in. wg) provides ${(availableEsp - totalWithSafetyMargin).toFixed(3)} in. wg excess static pressure margin`
-      : `Critical path pressure loss ${totalWithSafetyMargin} in. wg exceeds fan ESP ${availableEsp} in. wg (upsize ducts or select high-static unit)`
+      ? `Equipment fan ESP (${formatPressure(availableEsp, units)}) provides ${formatPressure(availableEsp - totalWithSafetyMargin, units)} excess static pressure margin`
+      : `Critical path pressure loss ${formatPressure(totalWithSafetyMargin, units)} exceeds fan ESP ${formatPressure(availableEsp, units)} (upsize ducts or select high-static unit)`
   };
 }

@@ -34,6 +34,10 @@ export interface Diffuser {
   /** Physical face size in inches (derived from `size` when absent). */
   faceWidthIn?: number;
   faceHeightIn?: number;
+  /** Indoor unit (service zone) this terminal is assigned to; a unit's supply terminals sum to that unit's CFM. */
+  unitId?: string;
+  serviceZoneId?: string;
+  unitTag?: string;
 }
 
 export interface DuctSegment {
@@ -55,6 +59,9 @@ export interface DuctSegment {
   crossoverWith?: string[];
   /** Clearance problem text from the router. */
   clearanceIssue?: string;
+  /** Indoor unit (service zone) whose duct network this segment belongs to. */
+  unitId?: string;
+  serviceZoneId?: string;
 }
 
 export interface DxfEntity {
@@ -114,6 +121,23 @@ export interface Zone {
   catalogQty?: number;
   catalogModel?: string;
   catalogEsp?: string;
+  /** Per indoor unit: CFM, service polygon (px), terminal ids, serving outdoor unit. Written by the air-distribution engine. */
+  unitServiceZones?: {
+    id: string;
+    engineId?: string;
+    unitTag: string;
+    supplyCfm: number;
+    returnCfm: number;
+    capacityBtu: number;
+    polygon: number[];
+    unitPos: { x: number; y: number };
+    outdoorUnitIndex: number;
+    footprintIn?: { lengthIn: number; widthIn: number };
+    supplyTerminalIds: string[];
+    returnTerminalIds: string[];
+  }[];
+  serviceZonePolygons?: number[][];
+  outdoorUnitDetails?: { x: number; y: number; angleDeg: number; lengthPx: number; depthPx: number; wallSide: string; serves: string[] }[];
 }
 
 export interface DxfLayerInfo {

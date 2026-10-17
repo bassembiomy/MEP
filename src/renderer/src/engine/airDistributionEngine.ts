@@ -7,7 +7,7 @@ import { placeSupplyDiffusersForZone, CoordinatedAirTerminal } from './terminals
 import { placeReturnGrillesForZone } from './terminals/returnPlacer';
 import { routeSteppedSupplyDucts, ductSegments, flagCrossovers, SteppedDuctSection } from './ducts/steppedDuctRouter';
 import type { Seg2, TopoObstacle } from './ducts/orthogonalTopology';
-import { Rect, inflateRect, ductBodyRect, terminalFaceRectFt, unitFootprintFt, unitKeepOutFt, DEFAULT_IDU_LENGTH_IN, DEFAULT_IDU_WIDTH_IN, DUCT_TERMINAL_CLEARANCE_FT } from './ducts/clearance';
+import { Rect, parseFaceIn, inflateRect, ductBodyRect, terminalFaceRectFt, unitFootprintFt, unitKeepOutFt, DEFAULT_IDU_LENGTH_IN, DEFAULT_IDU_WIDTH_IN, DUCT_TERMINAL_CLEARANCE_FT } from './ducts/clearance';
 import { routeReturnDucts } from './ducts/returnDuctRouter';
 import { sizeDuctNetwork } from './ducts/aerodynamicDuctSizer';
 import { routeFreshAirDucts, OutdoorAirSystem } from './outdoorAir/freshAirRouter';
@@ -15,6 +15,8 @@ import { calculateAshrae621Ventilation, Ashrae621Result } from './outdoorAir/out
 import { polygonPxToFt, pxPerFt, UnitSystem, MM_PER_IN } from './units';
 import { calculateOutdoorUnitPlacement, MIN_TERMINAL_SPACING_FT, Pt2 } from './geometry';
 import { executeMasterHvacValidation, MasterValidationReport } from './validation/hvacValidator';
+import { diffuserCatalogFor } from './hvacCatalogs';
+import { DEFAULT_SPACE_NC_TARGETS } from './acousticDuctEngine';
 
 export interface AirDistributionDesignInput {
   roomName: string;
@@ -49,6 +51,8 @@ export interface AirDistributionDesignInput {
    * given, else ft). Outdoor units are never placed inside / overlapping them.
    */
   otherZonePolygons?: number[][];
+  /** Space NC target (zone `targetNc`). Default: the space type's NC from DEFAULT_SPACE_NC_TARGETS, else 30. */
+  targetNc?: number;
 }
 
 export interface DesignMassBalance {
@@ -91,7 +95,7 @@ export interface AirDistributionDesignResult {
    * Outdoor unit per service zone, in FEET, outside the room on an exterior wall. `angleDeg` is the footprint's long
    * axis (along the wall), `lengthFt` x `depthFt` the footprint (default 34 x 13 in).
    */
-  outdoorUnitPositions: Array<{ x: number; y: number; wallSide: string; angleDeg?: number; lengthFt?: number; depthFt?: number }>;
+  outdoorUnitPositions: Array<{ x: number; y: number; wallSide: string; angleDeg?: number; lengthFt?: number; depthFt?: number; /** Service-zone (indoor unit) ids this outdoor unit serves. */ serves?: string[] }>;
   /** Indoor unit footprint (in) used for the keep-out zones, per service zone id. */
   unitFootprintsIn?: Record<string, { lengthIn: number; widthIn: number }>;
   /** Layout compromises (e.g. keep-out zone relaxed because the room is too small to honour it). */
@@ -99,8 +103,8 @@ export interface AirDistributionDesignResult {
 }
 
 /** Terminal faces of the whole room as routing obstacles (ft). */
-function terminalObstacles(terms: CoordinatedAirTerminal[]): TopoObstacle[] {
-  return terms.map((t) => ({ id: t.id, rect: terminalFaceRectFt(t.position, t.faceDimension) }));
+function terminalObstacles(terms: CoordinatedAirTerminal[], metric = false): TopoObstacle[] {
+  return terms.map((t) => ({ id: t.id, rect: terminalFaceRectFt(t.position, t.faceDimension, metric) }));
 }
 
 /** Terminal-centre exclusion zones (ft): unit footprint + service clearance + half the largest face. */
@@ -153,6 +157,9 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     ventilationEffectivenessEz,
     exhaustCfm: exhaustInput = 0
   } = input;
+  const isMetric = units === 'metric';
+  const targetNc = input.targetNc ?? DEFAULT_SPACE_NC_TARGETS[spaceTypeId]?.nc ?? 30;
+  const terminalCatalog = diffuserCatalogFor(units);
 
   // Boundary: canvas px -> ft. Engine internals are feet from here on.
   const hasScale = typeof scalePxPerUnit === 'number' && scalePxPerUnit > 0;
@@ -238,7 +245,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     totalOutdoorAirCfm: totalOaCfm,
     availableEspInWg: chosenCandidate.availableEspInWg,
     mountingWallSide,
-    targetNc: 30,
+    targetNc,
     maxAvailableCeilingDepthIn,
     exteriorWalls
   });
@@ -278,7 +285,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   for (const zone of serviceZones) {
     let supplyInZone: CoordinatedAirTerminal[] = [];
     for (const level of ['service', 'footprint', 'none'] as const) {
-      supplyInZone = placeSupplyDiffusersForZone(zone, { targetCfmPerDiffuser: 350, optimizeThrow: true, keepOuts: terminalKeepOuts(serviceZones, unitDims, level) });
+      supplyInZone = placeSupplyDiffusersForZone(zone, { targetCfmPerDiffuser: 350, optimizeThrow: true, keepOuts: terminalKeepOuts(serviceZones, unitDims, level), catalog: terminalCatalog, metric: isMetric });
       if (supplyInZone.length > 0) {
         if (level !== 'service') layoutWarnings.push(`${zone.unitTag}: ${level === 'footprint' ? 'unit service clearance' : 'unit keep-out'} relaxed - bay too small for the full keep-out zone`);
         break;
@@ -299,7 +306,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
       network.push(...ductSegments(sized));
     }
   };
-  routeSupply(terminalObstacles(allSupplyTerminals));
+  routeSupply(terminalObstacles(allSupplyTerminals, isMetric));
 
   // Return grilles keep off the supply ducts: body + 0.5 ft edge clearance + the largest half face
   const supplyStrips = (): Rect[] => allSupplyDucts.map((d) =>
@@ -314,7 +321,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     ];
     for (const at of attempts) {
       const keepOuts = [...terminalKeepOuts(serviceZones, unitDims, at.level), ...(at.ducts ? strips : [])];
-      ret = spreadReturnCfm(placeReturnGrillesForZone(zone, supplyByZone.get(zone.id)!, { keepOuts }), zone.returnCfm);
+      ret = spreadReturnCfm(placeReturnGrillesForZone(zone, supplyByZone.get(zone.id)!, { keepOuts, catalog: terminalCatalog, metric: isMetric }), zone.returnCfm);
       const sup = supplyByZone.get(zone.id)!;
       const separated = ret.every((r) => sup.every((q) => Math.hypot(r.position.x - q.position.x, r.position.y - q.position.y) >= MIN_TERMINAL_SPACING_FT - 1e-6));
       // a layout that squeezes a grille closer than 4 ft to a supply is only accepted when nothing better exists
@@ -329,7 +336,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     returnByZone.set(zone.id, ret);
     allReturnTerminals.push(...ret);
   }
-  const routing = { obstacles: terminalObstacles([...allSupplyTerminals, ...allReturnTerminals]), units };
+  const routing = { obstacles: terminalObstacles([...allSupplyTerminals, ...allReturnTerminals], isMetric), units };
   // a return grille that could not keep off the supply ducts: re-route the supply networks around it
   if (ductStripsRelaxed) routeSupply(routing.obstacles);
   const supplyNetwork: Seg2[] = ductSegments(allSupplyDucts);
@@ -348,12 +355,19 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   // spaced >= 1 ft apart along that wall (34 x 13 in footprint)
   const others = (input.otherZonePolygons ?? []).map((p) => (hasScale ? polygonPxToFt(p, scalePxPerUnit as number, units) : p.slice()));
   const placedOdu: Pt2[][] = [];
-  const outdoorUnitPositions = serviceZones.map((z) => {
+  // Split systems: one outdoor unit per indoor unit. VRF: ONE outdoor module serves every indoor unit of the room.
+  const isVrf = systemType === 'vrf';
+  const oduGroups: EquipmentServiceZone[][] = isVrf && serviceZones.length > 0 ? [serviceZones] : serviceZones.map((z) => [z]);
+  const outdoorUnitPositions = oduGroups.map((group) => {
+    const near = {
+      x: group.reduce((a, z) => a + z.equipmentPosition.x, 0) / group.length,
+      y: group.reduce((a, z) => a + z.equipmentPosition.y, 0) / group.length
+    };
     const p = calculateOutdoorUnitPlacement(roomPolygon, [], null, 1, {
       side: mountingWallSide,
       otherZonePolygons: others,
       placedFootprints: placedOdu,
-      preferNear: { x: z.equipmentPosition.x, y: z.equipmentPosition.y }
+      preferNear: near
     });
     const rad = ((p.angleDeg ?? 0) * Math.PI) / 180;
     const tx = Math.cos(rad), ty = Math.sin(rad);
@@ -364,7 +378,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
       { x: p.x + tx * L / 2 - ty * D / 2, y: p.y + ty * L / 2 + tx * D / 2 },
       { x: p.x - tx * L / 2 - ty * D / 2, y: p.y - ty * L / 2 + tx * D / 2 }
     ]);
-    return { x: p.x, y: p.y, wallSide: p.wallSide as string, angleDeg: p.angleDeg, lengthFt: p.lengthFt, depthFt: p.depthFt, wall: p.wall };
+    return { x: p.x, y: p.y, wallSide: p.wallSide as string, angleDeg: p.angleDeg, lengthFt: p.lengthFt, depthFt: p.depthFt, wall: p.wall, serves: group.map((z) => z.id) };
   });
   const oduBase = outdoorUnitPositions[0]
     ? outdoorUnitPositions[0].wall
@@ -388,7 +402,8 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     outdoorAirSystem,
     profile,
     exhaustCfm,
-    exfiltrationCfm
+    exfiltrationCfm,
+    units
   });
 
   // Design Decision Log
@@ -486,12 +501,12 @@ export function recalculateScopedOverride(
 
   // Re-run terminal placement for this modified zone around the user-locked terminals
   const newSupply = layoutAroundLocked(
-    placeSupplyDiffusersForZone(targetZone, { optimizeThrow: true }),
+    placeSupplyDiffusersForZone(targetZone, { optimizeThrow: true, catalog: diffuserCatalogFor(currentDesign.units), metric: currentDesign.units === 'metric' }),
     lockedSupply,
     targetZone.supplyCfm
   );
   const newReturn = layoutAroundLocked(
-    spreadReturnCfm(placeReturnGrillesForZone(targetZone, newSupply), targetZone.returnCfm),
+    spreadReturnCfm(placeReturnGrillesForZone(targetZone, newSupply, { catalog: diffuserCatalogFor(currentDesign.units), metric: currentDesign.units === 'metric' }), targetZone.returnCfm),
     lockedReturn,
     targetZone.returnCfm
   );
@@ -530,7 +545,8 @@ export function recalculateScopedOverride(
     outdoorAirSystem: currentDesign.outdoorAirSystem,
     profile: currentDesign.standardsProfile,
     exhaustCfm: currentDesign.massBalance?.exhaustCfm,
-    exfiltrationCfm: currentDesign.massBalance?.exfiltrationCfm
+    exfiltrationCfm: currentDesign.massBalance?.exfiltrationCfm,
+    units: currentDesign.units
   });
 
   return {
@@ -555,6 +571,34 @@ export interface ZonePayloadDiffuser {
   throwT50Ft: number;
   actualNc: number;
   deltaPInWg: number;
+  /** Indoor unit (service zone) this terminal belongs to - Sum of a unit's supply terminals == its CFM. */
+  unitId: string;
+  serviceZoneId: string;
+  unitTag: string;
+  /** Face size in inches (exact) for drawing, whatever the label unit. */
+  faceWidthIn: number;
+  faceHeightIn: number;
+}
+
+export interface ZonePayloadServiceZone {
+  id: string;
+  /** Engine service-zone id (sz-N) when `id` has been re-keyed to the canvas unit ref. */
+  engineId?: string;
+  unitTag: string;
+  /** Supply / return CFM of this indoor unit (== sum of its terminals). */
+  supplyCfm: number;
+  returnCfm: number;
+  capacityBtu: number;
+  /** Service area outline (canvas px). */
+  polygon: number[];
+  /** Indoor unit centre (canvas px). */
+  unitPos: { x: number; y: number };
+  /** Index into `outdoorUnitPositions` of the outdoor unit serving this indoor unit. */
+  outdoorUnitIndex: number;
+  /** Indoor unit plan footprint in inches (long x short side). */
+  footprintIn?: { lengthIn: number; widthIn: number };
+  supplyTerminalIds: string[];
+  returnTerminalIds: string[];
 }
 
 export interface ZonePayloadDuct {
@@ -566,6 +610,9 @@ export interface ZonePayloadDuct {
   cfm: number;
   sizeLabel: string;
   velocityFpm: number;
+  /** Indoor unit (service zone) whose network this duct belongs to. */
+  unitId?: string;
+  serviceZoneId?: string;
 }
 
 export interface ZonePayload {
@@ -576,6 +623,10 @@ export interface ZonePayload {
   outdoorUnitPos: { x: number; y: number };
   outdoorUnitPositions: { x: number; y: number }[];
   serviceZonePolygons: number[][];
+  /** One entry per indoor unit: its CFM, polygon, terminal ids and serving outdoor unit. */
+  unitServiceZones: ZonePayloadServiceZone[];
+  /** Outdoor unit footprints (canvas px length/depth, rotation) parallel to `outdoorUnitPositions`. */
+  outdoorUnitDetails: Array<{ x: number; y: number; angleDeg: number; lengthPx: number; depthPx: number; wallSide: string; serves: string[] }>;
   catalogQty: number;
   catalogModel: string;
   catalogEsp: string;
@@ -593,6 +644,12 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
     return `${mm(w)}x${mm(h)}`;
   };
   const pt = (p: { x: number; y: number }): { x: number; y: number; } => ({ x: px(p.x), y: px(p.y) });
+  const metric = design.units === 'metric';
+  const tagOf = new Map(design.serviceZones.map((z) => [z.id, z.unitTag]));
+  const faceIn = (face: string | undefined): { faceWidthIn: number; faceHeightIn: number } => {
+    const f = parseFaceIn(face, metric);
+    return { faceWidthIn: f.w, faceHeightIn: f.h };
+  };
 
   const diffusers = [
     ...design.supplyTerminals.map((t) => ({
@@ -603,7 +660,11 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
       type: 'supply' as const,
       throwT50Ft: t.throwT50Ft || 12,
       actualNc: t.ncRating || 25,
-      deltaPInWg: t.deltaPInWg || 0.05
+      deltaPInWg: t.deltaPInWg || 0.05,
+      unitId: t.unitId,
+      serviceZoneId: t.unitId,
+      unitTag: tagOf.get(t.unitId) ?? t.unitId,
+      ...faceIn(t.faceDimension)
     })),
     ...design.returnTerminals.map((t) => ({
       id: t.id,
@@ -613,7 +674,11 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
       type: 'return' as const,
       throwT50Ft: t.throwT50Ft || 10,
       actualNc: t.ncRating || 25,
-      deltaPInWg: t.deltaPInWg || 0.04
+      deltaPInWg: t.deltaPInWg || 0.04,
+      unitId: t.unitId,
+      serviceZoneId: t.unitId,
+      unitTag: tagOf.get(t.unitId) ?? t.unitId,
+      ...faceIn(t.faceDimension)
     }))
   ];
 
@@ -628,7 +693,9 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
       heightIn: d.heightIn,
       cfm: d.airflowCfm,
       sizeLabel: ductLabel(d.widthIn, d.heightIn),
-      velocityFpm: d.velocityFpm
+      velocityFpm: d.velocityFpm,
+      unitId: d.unitId,
+      serviceZoneId: d.unitId
     })),
     ...design.returnDucts.map((d) => ({
       id: d.id,
@@ -638,7 +705,9 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
       heightIn: d.heightIn,
       cfm: d.airflowCfm,
       sizeLabel: ductLabel(d.widthIn, d.heightIn),
-      velocityFpm: d.velocityFpm
+      velocityFpm: d.velocityFpm,
+      unitId: d.unitId,
+      serviceZoneId: d.unitId
     }))
   ];
 
@@ -648,6 +717,31 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
     ? design.outdoorUnitPositions
     : design.serviceZones.map((sz) => ({ x: sz.equipmentPosition.x, y: sz.equipmentPosition.y }));
   const outdoorUnitPositions = oduFt.map(pt);
+  const oduIndexOf = (zoneId: string, i: number): number => {
+    const idx = design.outdoorUnitPositions?.findIndex((o) => o.serves?.includes(zoneId)) ?? -1;
+    return idx >= 0 ? idx : Math.min(i, Math.max(0, outdoorUnitPositions.length - 1));
+  };
+  const unitServiceZones: ZonePayloadServiceZone[] = design.serviceZones.map((sz, i) => ({
+    id: sz.id,
+    unitTag: sz.unitTag,
+    supplyCfm: design.supplyTerminals.filter((t) => t.unitId === sz.id).reduce((a, t) => a + t.cfm, 0),
+    returnCfm: design.returnTerminals.filter((t) => t.unitId === sz.id).reduce((a, t) => a + t.cfm, 0),
+    capacityBtu: sz.actualCapacityBtu,
+    polygon: sz.serviceAreaPolygon.map(px),
+    unitPos: pt(sz.equipmentPosition),
+    outdoorUnitIndex: oduIndexOf(sz.id, i),
+    footprintIn: design.unitFootprintsIn?.[sz.id],
+    supplyTerminalIds: design.supplyTerminals.filter((t) => t.unitId === sz.id).map((t) => t.id),
+    returnTerminalIds: design.returnTerminals.filter((t) => t.unitId === sz.id).map((t) => t.id)
+  }));
+  const outdoorUnitDetails = (design.outdoorUnitPositions ?? []).map((o, i) => ({
+    ...(outdoorUnitPositions[i] ?? pt(o)),
+    angleDeg: o.angleDeg ?? 0,
+    lengthPx: px(o.lengthFt ?? 0),
+    depthPx: px(o.depthFt ?? 0),
+    wallSide: o.wallSide,
+    serves: o.serves ?? []
+  }));
 
   return {
     diffusers,
@@ -657,6 +751,8 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
     outdoorUnitPos: outdoorUnitPositions[0] || { x: unitPos.x, y: unitPos.y },
     outdoorUnitPositions,
     serviceZonePolygons: design.serviceZones.map((sz) => sz.serviceAreaPolygon.map(px)),
+    unitServiceZones,
+    outdoorUnitDetails,
     catalogQty: design.selectedOption.unitCount,
     catalogModel: design.selectedOption.unitModel,
     catalogEsp: `${design.selectedOption.availableEspInWg} in.wg`

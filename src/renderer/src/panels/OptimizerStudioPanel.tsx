@@ -77,6 +77,14 @@ export const OptimizerStudioPanel: React.FC = () => {
   const isImperial = project.units === 'imperial';
   const loadResult = calculateZoneLoad(selectedZone, project);
 
+  // What is actually on the canvas (the engine layout written by Auto-Layout); candidates below are proposals.
+  const canvasSupply = selectedZone.diffusers.filter((d) => d.type !== 'return' && d.type !== 'exhaust');
+  const canvasSupplySummary = ((): string => {
+    const bySize = new Map<string, number>();
+    for (const d of canvasSupply) bySize.set(d.size, (bySize.get(d.size) ?? 0) + 1);
+    return Array.from(bySize.entries()).map(([size, n]) => `${n} \u00D7 ${size}`).join(', ');
+  })();
+
   // Generate bounded candidate designs
   const recommendations = generateSystemCandidates(
     loadResult.totalLoad,
@@ -494,11 +502,17 @@ export const OptimizerStudioPanel: React.FC = () => {
                         </div>
                       )}
                       <div className="flex justify-between">
-                        <span>Diffuser Configuration:</span>
+                        <span>Diffuser Configuration (proposal):</span>
                         <strong className="text-teal-400 font-mono">
                           {cand.diffusers.quantity} × {formatDuctSize(cand.diffusers.diffuserRecord.faceSizeIn.width, cand.diffusers.diffuserRecord.faceSizeIn.height, project.units)} (NC {cand.diffusers.actualNc})
                         </strong>
                       </div>
+                      {canvasSupply.length > 0 && (
+                        <div className="flex justify-between border-t border-neutral-900 pt-1">
+                          <span>On canvas now (Auto-Layout):</span>
+                          <strong className="text-neutral-300 font-mono">{canvasSupplySummary}</strong>
+                        </div>
+                      )}
                     </div>
 
                     {/* Diagnostics / Violations */}

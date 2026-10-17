@@ -100,6 +100,7 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
 
           <button
             onClick={onClose}
+            aria-label="Close"
             className="p-1.5 text-neutral-400 hover:text-white bg-neutral-900 hover:bg-neutral-800 rounded-lg border border-neutral-800 transition-colors cursor-pointer"
           >
             <X size={18} />
@@ -207,6 +208,7 @@ export const ArchitectureInspectorModal: React.FC<ArchitectureInspectorModalProp
                   </span>
                   <strong className="text-neutral-200 block text-[11px] mt-1">
                     {candidate.diffusers.quantity} × {candidate.diffusers.diffuserRecord.model}
+                    <span className="text-neutral-500 font-normal"> (proposal)</span>
                   </strong>
                   <p className="text-[10px] text-neutral-400 mt-1">
                     Acoustic NC {candidate.diffusers.actualNc} with {candidate.diffusers.throwT50Ft} ft throw reaching perimeter zones.

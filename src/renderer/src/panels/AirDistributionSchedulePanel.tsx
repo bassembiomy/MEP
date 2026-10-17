@@ -2,9 +2,9 @@ import { modelDisplayName } from '../engine/hvacCatalogs';
 import React, { useState } from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoad } from '../engine/loadCalc';
-import { toBtuh, toCfm, toSqFt, polygonFtToPx } from '../engine/units';
+import { toBtuh, toCfm } from '../engine/units';
 import { formatAirflow, formatLoad, formatDuctSize, formatVelocity, formatPressure, formatArea, formatLength } from '../format/units';
-import { executeAirDistributionDesign, convertDesignResultToZonePayload } from '../engine/airDistributionEngine';
+import { designZone, zonePatchFromDesign } from './zoneDesign';
 import { generateMasterSchedules } from '../engine/export/exportSchedules';
 import { exportFullEngineeringDesignReport } from '../engine/export/exportDesignReport';
 import { FileSpreadsheet, Download, Layers, Check } from 'lucide-react';
@@ -18,13 +18,16 @@ interface DiffRow { id: string; type: string; model: string; neck: string; face:
 /** Re-render an engine size string like 24"x12" in the project unit system (metric -> mm, 50 mm steps). */
 const reformatSize = (label: string, units: string): string => {
   const m = /^\s*(\d+(?:\.\d+)?)\s*(?:"|in)?\s*[x\u00D7]\s*(\d+(?:\.\d+)?)\s*(?:"|in)?\s*$/i.exec(label || '');
-  return m ? formatDuctSize(parseFloat(m[1]), parseFloat(m[2]), units) : label;
+  if (!m) return label;
+  // Metric terminals are labelled in mm already (no inch mark, values >= 100): keep them as is.
+  if (units === 'metric' && !/"|in/i.test(label) && Math.max(parseFloat(m[1]), parseFloat(m[2])) >= 100) return `${m[1]}x${m[2]} mm`;
+  return formatDuctSize(parseFloat(m[1]), parseFloat(m[2]), units);
 };
 
 const dash = '\u2014';
 
 export const AirDistributionSchedulePanel: React.FC = () => {
-  const { project, zones, selectedZoneId, updateZone } = useProjectStore();
+  const { project, zones, selectedZoneId, updateZone, dxfBoundingBox } = useProjectStore();
   const [activeSubTab, setActiveSubTab] = useState<SubTabId>('air-distribution');
   const [appliedToCad, setAppliedToCad] = useState<boolean>(false);
   const [sourceOverride, setSourceOverride] = useState<'canvas' | 'proposal' | null>(null);
@@ -44,31 +47,11 @@ export const AirDistributionSchedulePanel: React.FC = () => {
   // Calculate zone thermal load & airflow
   const loadResult = calculateZoneLoad(currentZone, project);
 
-  // Execute full air distribution engine. The canvas polygon is in px; the engine converts to ft
-  // (scale = px per ft or px per m) and all loads/airflows below are converted to Btu/h and CFM.
+  // The ONE air-distribution pipeline (shared with the zone panel's Auto-Layout): the canvas polygon is in px, the engine
+  // converts to ft and all loads / airflows are imperial (Btu/h, CFM). What is shown here as "proposal" is exactly what
+  // Apply / Auto-Layout writes to the canvas.
   const units = project.units;
-  const hasPolygon = !!currentZone.points && currentZone.points.length >= 6;
-  const roomPolygon = hasPolygon
-    ? currentZone.points
-    : polygonFtToPx([0, 0, 50, 0, 50, 30, 0, 30], project.scale, units);
-
-  const design = executeAirDistributionDesign({
-    roomName: currentZone.name || 'Conditioned Space',
-    roomPolygon,
-    otherZonePolygons: zones.filter((z) => z.id !== currentZone.id && z.points && z.points.length >= 6).map((z) => z.points),
-    scalePxPerUnit: project.scale,
-    units,
-    roomAreaSqFt: toSqFt(loadResult.area, units) || 1500,
-    sensibleLoadBtu: toBtuh(loadResult.sensibleLoad, units) || 120000,
-    totalLoadBtu: toBtuh(loadResult.totalLoad, units) || 141000,
-    requiredCfm: toCfm(loadResult.supplyCfm, units) || 4000,
-    occupancyCount: loadResult.occupants || undefined,
-    spaceTypeId: currentZone.spaceTypeId || 'office',
-    exhaustCfm: toCfm(loadResult.exhaustCfm || 0, units),
-    systemType: currentZone.systemType || 'concealed',
-    mountingWallSide: 'east',
-    maxAvailableCeilingDepthIn: 14
-  });
+  const { design, payload } = designZone(currentZone, zones, project, dxfBoundingBox);
 
   const schedules = generateMasterSchedules(design);
 
@@ -120,8 +103,7 @@ export const AirDistributionSchedulePanel: React.FC = () => {
   const diffRows = showCanvas ? canvasDiffs : proposalDiffs;
 
   const handleApplyToCad = (): void => {
-    const payload = convertDesignResultToZonePayload(design);
-    updateZone(currentZone.id, payload);
+    updateZone(currentZone.id, zonePatchFromDesign(currentZone, payload));
     setAppliedToCad(true);
     setTimeout(() => setAppliedToCad(false), 3000);
   };

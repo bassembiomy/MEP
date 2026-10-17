@@ -1847,6 +1847,71 @@ export const STANDARD_DIFFUSER_CATALOG: DiffuserCatalogItem[] = [
   }
 ];
 
+const MM_IN = 25.4;
+const mmToIn = (mm: number): number => mm / MM_IN;
+
+/**
+ * Metric (modular 600 / 300 mm ceiling grid) variant of a catalogue diffuser: the face is a ceiling-module size and the
+ * neck a preferred round/rect size in mm, performance follows the neck-velocity similarity of the imperial base item
+ * (CFM and area scale together, throw with sqrt(area); NC and dP at equal velocity are unchanged).
+ */
+function metricDiffuser(
+  base: DiffuserCatalogItem,
+  id: string,
+  faceMm: { w: number; h: number },
+  neckMm: { d?: number; w?: number; h?: number }
+): DiffuserCatalogItem {
+  const neckAreaBase = (base.neckSizeIn.diameter ? Math.PI / 4 * base.neckSizeIn.diameter ** 2 : base.neckSizeIn.width * base.neckSizeIn.height);
+  const nw = neckMm.d ?? neckMm.w ?? 0;
+  const nh = neckMm.d ?? neckMm.h ?? 0;
+  const neckAreaNew = neckMm.d ? Math.PI / 4 * mmToIn(neckMm.d) ** 2 : mmToIn(nw) * mmToIn(nh);
+  const s = neckAreaNew / neckAreaBase;
+  const neckLabel = neckMm.d ? `\u00D8${neckMm.d} mm` : `${nw}x${nh} mm`;
+  return {
+    id,
+    manufacturer: base.manufacturer,
+    model: `TMS-M ${faceMm.w}x${faceMm.h} (${neckLabel} Neck)`,
+    terminalType: base.terminalType,
+    neckSizeIn: neckMm.d
+      ? { width: mmToIn(neckMm.d), height: mmToIn(neckMm.d), diameter: mmToIn(neckMm.d) }
+      : { width: mmToIn(nw), height: mmToIn(nh) },
+    faceSizeIn: { width: mmToIn(faceMm.w), height: mmToIn(faceMm.h) },
+    minCfm: Math.round(base.minCfm * s),
+    maxCfm: Math.round(base.maxCfm * s),
+    performanceTable: base.performanceTable.map((p) => ({
+      cfm: Math.round(p.cfm * s),
+      deltaPInWg: p.deltaPInWg,
+      ncRating: p.ncRating,
+      throwFt: { t50: p.throwFt.t50 * Math.sqrt(s), t100: p.throwFt.t100 * Math.sqrt(s), t150: p.throwFt.t150 * Math.sqrt(s) }
+    })),
+    costIndex: Math.round(base.costIndex * Math.max(0.8, s)),
+    provenance: { source: 'Titus Ceiling Diffuser Catalog (metric module sizes, derived)', version: '2024.1', isDemonstrationOnly: true }
+  };
+}
+
+const byId = (id: string): DiffuserCatalogItem => STANDARD_DIFFUSER_CATALOG.find((d) => d.id === id) as DiffuserCatalogItem;
+
+/**
+ * Modular metric diffuser catalogue (used when the project is metric): faces 300x300, 600x300 and 600x600 mm to suit the
+ * 600 mm ceiling grid, necks 150 - 400 mm. Face strings are emitted in mm (e.g. "600x600").
+ */
+export const METRIC_DIFFUSER_CATALOG: DiffuserCatalogItem[] = [
+  metricDiffuser(byId('dif-sq-9x9'), 'dif-m-300x300-n150', { w: 300, h: 300 }, { d: 150 }),
+  metricDiffuser(byId('dif-sq-12x12'), 'dif-m-300x300-n200', { w: 300, h: 300 }, { d: 200 }),
+  metricDiffuser(byId('dif-sq-12x12'), 'dif-m-600x300-n300x150', { w: 600, h: 300 }, { w: 300, h: 150 }),
+  metricDiffuser(byId('dif-sq-15x15'), 'dif-m-600x600-n250', { w: 600, h: 600 }, { d: 250 }),
+  metricDiffuser(byId('dif-sq-18x18'), 'dif-m-600x600-n300', { w: 600, h: 600 }, { d: 300 }),
+  metricDiffuser(byId('dif-sq-18x18'), 'dif-m-600x600-n350', { w: 600, h: 600 }, { d: 350 }),
+  metricDiffuser(byId('dif-sq-18x18'), 'dif-m-600x600-n400', { w: 600, h: 600 }, { d: 400 }),
+  { ...byId('dif-linear-2slot'), id: 'dif-m-linear-2slot', model: 'Linear Slot 2-Slot 1200 mm' },
+  { ...byId('grille-return-eggcrate'), id: 'grille-m-return-eggcrate', model: '50F Eggcrate Return 600x600 mm', neckSizeIn: { width: mmToIn(600), height: mmToIn(600) }, faceSizeIn: { width: mmToIn(600), height: mmToIn(600) } }
+];
+
+/** Diffuser catalogue for the project unit system. */
+export function diffuserCatalogFor(units?: string): DiffuserCatalogItem[] {
+  return units === 'metric' ? METRIC_DIFFUSER_CATALOG : STANDARD_DIFFUSER_CATALOG;
+}
+
 /**
  * Standard Duct Types
  */

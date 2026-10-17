@@ -65,7 +65,7 @@ export const CatalogManagerModal: React.FC<CatalogManagerProps> = ({ isOpen, onC
               <p className="text-[10px] text-neutral-400">Import real manufacturer data (.xlsx / .csv) and control which entries the engine uses</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer">
+          <button onClick={onClose} aria-label="Close" className="p-1 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer">
             <X size={14} />
           </button>
         </div>

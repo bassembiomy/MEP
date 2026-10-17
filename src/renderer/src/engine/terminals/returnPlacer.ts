@@ -11,6 +11,7 @@ import {
   MIN_TERMINAL_SPACING_FT
 } from '../geometry';
 import { pointInRect, type Rect } from '../ducts/clearance';
+import type { DiffuserCatalogItem } from '../types';
 
 /** Default return = 90% of supply when no exhaust / exfiltration data is available. */
 export const DEFAULT_RETURN_TO_SUPPLY_RATIO = 0.9;
@@ -123,7 +124,7 @@ export function selectReturnPositions(
 export function placeReturnGrillesForZone(
   zone: EquipmentServiceZone,
   supplyTerminals: CoordinatedAirTerminal[],
-  options: { unitPerFt?: number; exhaustCfm?: number; exfiltrationCfm?: number; keepOuts?: Rect[] } = {}
+  options: { unitPerFt?: number; exhaustCfm?: number; exfiltrationCfm?: number; keepOuts?: Rect[]; catalog?: DiffuserCatalogItem[]; metric?: boolean } = {}
 ): CoordinatedAirTerminal[] {
   const unitPerFt = options.unitPerFt ?? 1;
   const returnCfm = zone.returnCfm || computeReturnCfm(zone.supplyCfm, options);
@@ -155,7 +156,7 @@ export function placeReturnGrillesForZone(
   positions = keptPos;
 
   const cfmPerReturn = Math.round(returnCfm / positions.length);
-  const selected = selectBestDiffuserFromCatalog(cfmPerReturn, zone.targetNc);
+  const selected = selectBestDiffuserFromCatalog(cfmPerReturn, zone.targetNc, 'square-ceiling', options.catalog, { metric: options.metric });
 
   return positions.map((p, i) => ({
     id: `RAG-${zone.unitTag}-${i + 1}`,

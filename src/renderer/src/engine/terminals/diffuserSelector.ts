@@ -26,6 +26,28 @@ export interface SelectedDiffuserResult {
 
 export interface DiffuserSelectionOptions {
   maxNeckVelocityFpm?: number;
+  /** Emit face / neck labels in millimetres (`600x600`, `\u00D8250 mm`) instead of inches. */
+  metric?: boolean;
+}
+
+const MM_PER_INCH = 25.4;
+const trimIn = (v: number): string => String(parseFloat(v.toFixed(2)));
+
+/** Face and neck labels of a catalog item: inches `18"x18"` / `12" dia`, or millimetres `600x600` / `\u00D8300 mm`. */
+export function terminalSizeLabels(item: DiffuserCatalogItem, metric = false): { face: string; neck: string } {
+  const f = item.faceSizeIn;
+  const n = item.neckSizeIn;
+  if (metric) {
+    const mm = (v: number): number => Math.round(v * MM_PER_INCH);
+    return {
+      face: f ? `${mm(f.width)}x${mm(f.height)}` : '600x600',
+      neck: n ? (n.diameter ? `\u00D8${mm(n.diameter)} mm` : `${mm(n.width)}x${mm(n.height)} mm`) : '\u00D8250 mm'
+    };
+  }
+  return {
+    face: f ? `${trimIn(f.width)}"x${trimIn(f.height)}"` : '24"x24"',
+    neck: n ? (n.diameter ? `${trimIn(n.diameter)}" dia` : `${trimIn(n.width)}"x${trimIn(n.height)}"`) : '10"x10"'
+  };
 }
 
 /** Neck free area in ft2 (round neck when `diameter` is given, otherwise rectangular). */
@@ -142,10 +164,9 @@ export function selectBestDiffuserFromCatalog(
     ? 1
     : Math.max(1, Math.ceil(cfmPerTerminal / cap));
 
-  const faceDim = chosen.faceSizeIn ? `${chosen.faceSizeIn.width}"x${chosen.faceSizeIn.height}"` : '24"x24"';
-  const neckDim = chosen.neckSizeIn
-    ? (chosen.neckSizeIn.diameter ? `${chosen.neckSizeIn.diameter}" dia` : `${chosen.neckSizeIn.width}"x${chosen.neckSizeIn.height}"`)
-    : '10"x10"';
+  const labels = terminalSizeLabels(chosen, options.metric === true);
+  const faceDim = labels.face;
+  const neckDim = labels.neck;
 
   return {
     catalogItem: chosen,

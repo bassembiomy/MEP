@@ -101,23 +101,23 @@ export const Toolbar: React.FC = () => {
     const isImperial = project.units === 'imperial';
     // Zone fields stored in PROJECT units must be converted so the physical design stays the same:
     // ceiling height (ft<->m), lighting/equipment overrides (W/ft2<->W/m2), manual airflow (CFM<->L/s)
-    // and manual load (Btu/h<->W).
-    const round = (v: number, d: number): number => Math.round(v * Math.pow(10, d)) / Math.pow(10, d);
+    // and manual load (Btu/h<->W). Values keep FULL precision (a 10 ft -> 3.048 m -> 10 ft round trip is exact);
+    // rounding is a display concern only.
     for (const z of zones) {
       const patch: Partial<typeof z> = {
-        ceilingHeight: round(isImperial ? z.ceilingHeight * M_PER_FT : z.ceilingHeight * FT_PER_M, 2)
+        ceilingHeight: isImperial ? z.ceilingHeight * M_PER_FT : z.ceilingHeight * FT_PER_M
       };
       if (z.lightingOverride !== undefined) {
-        patch.lightingOverride = round(isImperial ? z.lightingOverride * SQFT_PER_SQM : z.lightingOverride / SQFT_PER_SQM, 2);
+        patch.lightingOverride = isImperial ? z.lightingOverride * SQFT_PER_SQM : z.lightingOverride / SQFT_PER_SQM;
       }
       if (z.equipmentOverride !== undefined) {
-        patch.equipmentOverride = round(isImperial ? z.equipmentOverride * SQFT_PER_SQM : z.equipmentOverride / SQFT_PER_SQM, 2);
+        patch.equipmentOverride = isImperial ? z.equipmentOverride * SQFT_PER_SQM : z.equipmentOverride / SQFT_PER_SQM;
       }
       if (z.manualCfmOverride !== undefined) {
-        patch.manualCfmOverride = round(isImperial ? z.manualCfmOverride * LPS_PER_CFM : z.manualCfmOverride * CFM_PER_LPS, 0);
+        patch.manualCfmOverride = isImperial ? z.manualCfmOverride * LPS_PER_CFM : z.manualCfmOverride * CFM_PER_LPS;
       }
       if (z.manualCoolingOverride !== undefined) {
-        patch.manualCoolingOverride = round(isImperial ? z.manualCoolingOverride * W_PER_BTUH : z.manualCoolingOverride * BTUH_PER_W, 0);
+        patch.manualCoolingOverride = isImperial ? z.manualCoolingOverride * W_PER_BTUH : z.manualCoolingOverride * BTUH_PER_W;
       }
       updateZone(z.id, patch);
     }

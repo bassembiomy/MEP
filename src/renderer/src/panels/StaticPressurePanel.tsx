@@ -33,6 +33,7 @@ const isDuctedCheck = (t: string | undefined): boolean => t === 'concealed' || t
 export const StaticPressurePanel: React.FC = () => {
   const { selectedZoneId, zones, project } = useProjectStore();
   const [activeSubTab, setActiveSubTab] = useState<'acoustic' | 'pressure'>('acoustic');
+  const [unitChoice, setUnitChoice] = useState<string | null>(null);
 
   const selectedZone = zones.find((z) => z.id === selectedZoneId) || zones[0];
 
@@ -54,35 +55,52 @@ export const StaticPressurePanel: React.FC = () => {
     selectedZone.systemType === 'vrf' ||
     selectedZone.systemType === 'fcu';
 
-  // Single airflow source: the zone's required design airflow (CFM) vs. what the drawn duct network carries.
+  // Single airflow source: the zone's required design airflow (CFM) vs. what the drawn duct networks carry.
+  // A multi-unit zone has ONE independent duct network per indoor unit (duct.unitId / diffuser.unitId): every unit is
+  // solved on its own (trunk, critical path, fan point), never a single trunk against the whole room airflow.
   const designCfm = toCfm(loadResult.supplyCfm, units);
-  const supplyTrunks = selectedZone.ducts.filter((d) => d.type !== 'return');
-  const trunkCfm = supplyTrunks.length > 0 ? Math.max(...supplyTrunks.map((d) => d.cfm)) : 0;
-  const flowMismatch = isDuctedCheck(selectedZone.systemType) && trunkCfm > 0 && Math.abs(trunkCfm - designCfm) / Math.max(designCfm, 1) > 0.1;
-
-  // Solve critical path
   const defaultDuctType = STANDARD_DUCT_TYPES[0];
-  const criticalPath = solveDirectedNetworkStaticPressure(
-    selectedZone.ducts,
-    selectedZone.diffusers,
-    STANDARD_DIFFUSER_CATALOG,
-    defaultDuctType,
-    project.scale
-  );
+  const GROUP_ALL = 'all';
+  const groupIds: string[] = [];
+  for (const d of [...selectedZone.ducts, ...selectedZone.diffusers]) {
+    const g = d.unitId ?? GROUP_ALL;
+    if (!groupIds.includes(g)) groupIds.push(g);
+  }
+  if (groupIds.length === 0) groupIds.push(GROUP_ALL);
+  const unitTagOf = (id: string, i: number): string =>
+    selectedZone.unitServiceZones?.find((u) => u.id === id)?.unitTag ?? (groupIds.length > 1 ? `Unit ${i + 1}` : 'System');
 
-  // Match equipment record
-  const matchingEquip =
-    STANDARD_EQUIPMENT_CATALOG.find(
-      (e) => e.systemType === selectedZone.systemType && e.nominalCfm >= designCfm * 0.7
-    ) || STANDARD_EQUIPMENT_CATALOG[0];
+  const unitResults = groupIds.map((gid, i) => {
+    const gDucts = selectedZone.ducts.filter((d) => (d.unitId ?? GROUP_ALL) === gid);
+    const gDiffs = selectedZone.diffusers.filter((d) => (d.unitId ?? GROUP_ALL) === gid);
+    const gSupply = gDiffs.filter((d) => d.type !== 'return' && d.type !== 'exhaust');
+    const unitCfm = gSupply.length > 0 ? gSupply.reduce((a, d) => a + d.cfm, 0) : designCfm;
+    const supplyDucts = gDucts.filter((d) => d.type !== 'return');
+    const trunk = supplyDucts.length > 0
+      ? supplyDucts.reduce((best, d) => (d.cfm > best.cfm ? d : best), supplyDucts[0])
+      : undefined;
+    const path = solveDirectedNetworkStaticPressure(gDucts, gDiffs, STANDARD_DIFFUSER_CATALOG, defaultDuctType, project.scale);
+    const equip =
+      STANDARD_EQUIPMENT_CATALOG.find((e) => e.systemType === selectedZone.systemType && e.nominalCfm >= unitCfm * 0.7) ||
+      STANDARD_EQUIPMENT_CATALOG[0];
+    const fan = evaluateFanOperatingPoint(equip, unitCfm, path.espRequiredInWg);
+    return { id: gid, tag: unitTagOf(gid, i), ducts: gDucts, diffs: gDiffs, unitCfm, trunk, criticalPath: path, equip, fan };
+  });
+  const worst = unitResults.reduce((w, r) => (r.criticalPath.espRequiredInWg - r.equip.maxRatedEspInWg > w.criticalPath.espRequiredInWg - w.equip.maxRatedEspInWg ? r : w), unitResults[0]);
+  const active = unitResults.find((r) => r.id === unitChoice) ?? worst;
+  const multiUnit = unitResults.length > 1;
 
-  const fanResult = evaluateFanOperatingPoint(
-    matchingEquip,
-    designCfm,
-    criticalPath.espRequiredInWg
-  );
+  // Flow check per unit: a unit's trunk must carry that UNIT's airflow; the unit airflows together must add up to the room.
+  const ductedSys = isDuctedCheck(selectedZone.systemType);
+  const unitMismatch = unitResults.filter((r) => r.trunk && r.unitCfm > 0 && Math.abs(r.trunk.cfm - r.unitCfm) / r.unitCfm > 0.1);
+  const totalUnitCfm = unitResults.reduce((a, r) => a + r.unitCfm, 0);
+  const totalMismatch = multiUnit && Math.abs(totalUnitCfm - designCfm) / Math.max(designCfm, 1) > 0.1;
+  const flowMismatch = ductedSys && (unitMismatch.length > 0 || totalMismatch);
 
-  const balancingSchedule = calculateBranchBalancingSchedule(criticalPath, selectedZone.diffusers);
+  const criticalPath = active.criticalPath;
+  const matchingEquip = active.equip;
+  const fanResult = active.fan;
+  const balancingSchedule = calculateBranchBalancingSchedule(criticalPath, active.diffs);
 
   const targetNc = selectedZone.targetNc || 32;
   const locationCategory = selectedZone.ductLocationCategory || 'above-suspended-ceiling';
@@ -176,9 +194,22 @@ export const StaticPressurePanel: React.FC = () => {
         <div className="bg-amber-950/30 border border-amber-800/50 text-amber-300 text-[11px] p-3 rounded-xl flex items-start gap-2">
           <AlertTriangle size={14} className="shrink-0 mt-0.5" />
           <span>
-            The drawn duct network carries <strong>{formatAirflow(trunkCfm, units)}</strong> in its trunk but this zone requires{' '}
-            <strong>{formatAirflow(designCfm, units)}</strong>. The pressure results below describe the drawn network; re-run Auto-Layout or
-            apply a design from the Optimizer to resize it.
+            {unitMismatch.length > 0 ? (
+              <>
+                {unitMismatch.map((r) => (
+                  <span key={r.id}>
+                    {r.tag}: trunk carries <strong>{formatAirflow(r.trunk?.cfm ?? 0, units)}</strong> but its terminals total{' '}
+                    <strong>{formatAirflow(r.unitCfm, units)}</strong>.{' '}
+                  </span>
+                ))}
+              </>
+            ) : (
+              <>
+                The {unitResults.length} unit networks carry <strong>{formatAirflow(totalUnitCfm, units)}</strong> in total but this zone requires{' '}
+                <strong>{formatAirflow(designCfm, units)}</strong>.{' '}
+              </>
+            )}
+            The pressure results describe the drawn networks; re-run Auto-Layout or apply a design from the Optimizer to resize them.
           </span>
         </div>
       )}
@@ -290,6 +321,49 @@ export const StaticPressurePanel: React.FC = () => {
       ) : (
         /* Critical Path & Balancing Sub-tab */
         <div className="flex flex-col gap-6">
+          {/* Per-unit trunk & critical path summary */}
+          <div>
+            <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider block mb-2.5">
+              {multiUnit ? `Per-Unit Trunk & Critical Path (${unitResults.length} indoor units, independent networks)` : 'Trunk & Critical Path'}
+            </span>
+            <div className="overflow-x-auto bg-neutral-950 border border-neutral-850 rounded-xl">
+              <table className="w-full text-[11px] text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-neutral-800 text-neutral-500 font-bold uppercase tracking-wider text-[9px]">
+                    <th className="py-2 px-3">Unit</th>
+                    <th className="py-2 px-3 text-right">Unit Flow</th>
+                    <th className="py-2 px-3">Trunk</th>
+                    <th className="py-2 px-3">Critical Terminal</th>
+                    <th className="py-2 px-3 text-right">Required ESP</th>
+                    <th className="py-2 px-3 text-right">Fan ESP</th>
+                    <th className="py-2 px-3 text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-850/60 text-neutral-300 font-mono">
+                  {unitResults.map((r) => (
+                    <tr
+                      key={r.id}
+                      onClick={() => setUnitChoice(r.id)}
+                      className={`cursor-pointer hover:bg-neutral-900/40 ${r.id === active.id ? 'bg-blue-950/20' : ''}`}
+                    >
+                      <td className="py-2 px-3 font-sans font-bold text-neutral-200">{r.tag}{r.id === worst.id && multiUnit ? ' (controlling)' : ''}</td>
+                      <td className="py-2 px-3 text-right text-emerald-400">{formatAirflow(r.unitCfm, units)}</td>
+                      <td className="py-2 px-3">
+                        {r.trunk ? `${r.trunk.id}: ${formatAirflow(r.trunk.cfm, units)} @ ${formatDuctSize(r.trunk.widthIn, r.trunk.heightIn, units)}` : '-'}
+                      </td>
+                      <td className="py-2 px-3">{r.criticalPath.terminalId || '-'}</td>
+                      <td className="py-2 px-3 text-right text-blue-400">{formatPressure(r.criticalPath.espRequiredInWg, units)}</td>
+                      <td className="py-2 px-3 text-right">{formatPressure(r.equip.maxRatedEspInWg, units)}</td>
+                      <td className={`py-2 px-3 text-center font-sans font-bold ${r.fan.isValid ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {r.fan.isValid ? 'OK' : 'DEFICIT'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           {/* Fan Operating Status Alert */}
           <div
             className={`p-4 rounded-xl border flex items-center justify-between gap-4 ${
