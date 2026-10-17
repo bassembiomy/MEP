@@ -1,6 +1,7 @@
 // Canvas polish L2 (pure, no React / Konva): plant connection, system-type callout labels, label priorities, level of
 // detail, chilled-water stubs, condensate routing to drain points and canvas-local drain point persistence.
-import { routeManhattan, RouteRect, simplifyOrthogonal } from './drawingGeometry';
+import { polygonClearance, routeManhattan, RouteRect, simplifyOrthogonal } from './drawingGeometry';
+import { routeInsidePolygon } from './routeInside';
 import { condensateRoute } from './shopDrawing';
 
 export type Pt = { x: number; y: number };
@@ -189,6 +190,44 @@ export interface ChwRoute {
   labelAt: Pt;
 }
 
+/** Minimum length (ft) of a chilled-water stub visible beyond the unit footprint. */
+export const CHW_STUB_MIN_FT = 2;
+
+/** Distance along the polyline (from the unit centre) at which it leaves the unit footprint rectangle. */
+export function footprintExitDistance(pts: number[], fp: { w: number; d: number }, k: number): number {
+  const total = pathLength(pts);
+  const step = Math.max(0.02 * k, 1e-3);
+  const hw = fp.w / 2 + 1e-6, hd = fp.d / 2 + 1e-6;
+  const cx = pts[0], cy = pts[1];
+  for (let d = 0; d <= total; d += step) {
+    const q = pointAlong(pts, d);
+    if (Math.abs(q.x - cx) > hw || Math.abs(q.y - cy) > hd) return d;
+  }
+  return total;
+}
+
+/**
+ * Pushes the free end of a stub outward (along its last leg) until at least `minFt` of pipe shows beyond the unit
+ * footprint, so the stub is never hidden under the unit symbol.
+ */
+export function extendStubBeyondUnit(pts: number[], fp: { w: number; d: number }, k: number, minFt = CHW_STUB_MIN_FT): number[] {
+  const need = minFt * k;
+  let out = pts.slice();
+  for (let pass = 0; pass < 8; pass++) {
+    const vis = pathLength(out) - footprintExitDistance(out, fp, k);
+    if (vis >= need - 1e-9) break;
+    const n = out.length;
+    let dx = out[n - 2] - out[n - 4], dy = out[n - 1] - out[n - 3];
+    let l = Math.hypot(dx, dy);
+    if (l < 1e-9) { dx = 1; dy = 0; l = 1; }
+    const add = need - Math.max(0, vis);
+    out[n - 2] += (dx / l) * add;
+    out[n - 1] += (dy / l) * add;
+    out = simplifyOrthogonal(out);
+  }
+  return out;
+}
+
 export const CHW_SUPPLY_TEXT = 'CHWS';
 export const CHW_RETURN_TEXT = 'CHWR';
 
@@ -210,14 +249,21 @@ export function chwRoute(
     const n = nearestOnPolygon(unit, polygon);
     target = n ? n.q : { x: unit.x + fp.w / 2 + 3 * k, y: unit.y };
   }
-  if (Math.hypot(target.x - unit.x, target.y - unit.y) < 1e-6) return null;
   const r = routeManhattan(unit, target, [], { maxBends: 3 });
-  const points = simplifyOrthogonal(r.points);
-  const first = pointAlong(points, 0.001);
-  const half = Math.abs(first.ux) > Math.abs(first.uy) ? fp.w / 2 : fp.d / 2;
+  let points = simplifyOrthogonal(r.points);
+  if (points.length < 4) {
+    // degenerate (stub sits on the unit centre): head for the nearest wall, else straight out to the right
+    const n = nearestOnPolygon(unit, polygon);
+    const t = n && Math.hypot(n.q.x - unit.x, n.q.y - unit.y) > 1e-6 ? n.q : { x: unit.x + fp.w / 2 + 3 * k, y: unit.y };
+    points = simplifyOrthogonal(routeManhattan(unit, t, [], { maxBends: 3 }).points);
+  }
+  if (points.length < 4) return null;
+  points = extendStubBeyondUnit(points, fp, k);
   const total = pathLength(points);
-  const v0 = Math.min(total * 0.45, half + 1.2 * k), v1 = Math.min(total * 0.8, half + 2.6 * k);
-  const valves = v1 - v0 > 0.5 * k ? [pointAlong(points, v0), pointAlong(points, v1)] : [pointAlong(points, total * 0.5)];
+  const exit = footprintExitDistance(points, fp, k);
+  const vis = Math.max(0, total - exit);
+  const v0 = exit + Math.min(1.0 * k, vis * 0.35), v1 = exit + Math.min(2.2 * k, vis * 0.75);
+  const valves = v1 - v0 > 0.5 * k ? [pointAlong(points, v0), pointAlong(points, v1)] : [pointAlong(points, exit + vis * 0.5)];
   let best = { x: points[0], y: points[1] }, bl = -1;
   for (let i = 0; i + 3 < points.length; i += 2) {
     const l = Math.hypot(points[i + 2] - points[i], points[i + 3] - points[i + 1]);
@@ -275,20 +321,22 @@ export function condensatePlan(
   drains: DrainPoint[],
   obstacles: RouteRect[] = []
 ): CondensatePlan | null {
-  let points: number[];
-  let target: Pt;
+  let points: number[] | null = null;
+  let target: Pt = unit;
   let toDrain = false;
-  const dp = nearestDrain(unit, drains);
-  if (dp) {
-    const r = routeManhattan(unit, dp, obstacles, { clearance: 0.4 * k, maxBends: 3 });
-    points = r.points;
-    target = { x: dp.x, y: dp.y };
-    toDrain = true;
-  } else {
+  // only drain points inside this zone are reachable: the line never leaves its own room
+  const own = drains
+    .filter((d) => polygon.length >= 6 && polygonClearance(polygon, d.x, d.y) >= -0.05 * k)
+    .sort((a, b) => Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y));
+  for (const dp of own) {
+    const r = routeInsidePolygon(unit, dp, polygon, obstacles, k);
+    if (r) { points = r; target = { x: dp.x, y: dp.y }; toDrain = true; break; }
+  }
+  if (!points) {
     const w = polygon.length >= 6 ? condensateRoute(unit, polygon) : null;
     if (!w) return null;
-    points = w.points;
     target = w.wallPoint;
+    points = routeInsidePolygon(unit, w.wallPoint, polygon, obstacles, k) ?? w.points;
   }
   if (points.length < 4) return null;
   // the route must start/end exactly on the unit and the drain (simplification keeps the end points)

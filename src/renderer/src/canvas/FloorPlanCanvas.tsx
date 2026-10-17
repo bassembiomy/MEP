@@ -128,6 +128,7 @@ import {
   saveDrainPoints,
   toggleDrainPoint
 } from './polishL2';
+import { CONDENSATE_TAG, boundsWithLabels, pipeBubbleSpots, type FitLabel } from './polishM2';
 
 // Duct outline geometry cache (keyed by the zone's duct array identity, then k).
 const ductGeomCache = new WeakMap<DuctSegment[], { k: number; runs: DuctRunOutline[] }>();
@@ -367,6 +368,8 @@ export const FloorPlanCanvas: React.FC = () => {
 
   // Cursor / rubber band live on their own layer and are driven imperatively (no React re-render per mousemove).
   const cursorLayerRef = useRef<Konva.Layer>(null);
+  // placed labels / callouts of the current layout (Fit All includes their boxes so none is cropped at the edge)
+  const fitLabelsRef = useRef<FitLabel[]>([]);
   const rubberRef = useRef<Konva.Line>(null);
   const snapMarkerRef = useRef<Konva.Rect>(null);
   const cursorDotRef = useRef<Konva.Circle>(null);
@@ -521,7 +524,8 @@ export const FloorPlanCanvas: React.FC = () => {
       minY: b.minY - Math.max(0, (minSpan - (b.maxY - b.minY)) / 2),
       maxY: b.maxY + Math.max(0, (minSpan - (b.maxY - b.minY)) / 2)
     };
-    const f = fitBounds(bb, size.w, size.h, 0.92, FIT_PADDING);
+    const withLabels = boundsWithLabels(bb, fitLabelsRef.current, (bx) => fitBounds(bx, size.w, size.h, 0.92, FIT_PADDING).scale);
+    const f = fitBounds(withLabels, size.w, size.h, 0.92, FIT_PADDING);
     setStageScale(f.scale);
     setStagePos({ x: f.x, y: f.y });
   }, [allContentBounds, size.w, size.h, k]);
@@ -1339,10 +1343,6 @@ export const FloorPlanCanvas: React.FC = () => {
             const pieces: number[][] = [];
             for (let i = 0; i + 3 < p.points.length; i += 2) pieces.push(p.points.slice(i, i + 4));
             for (const r of ductBodyRects(pieces, pieces.map(() => 3 / s))) addWorldRect(r, `pipe:${p.id}`);
-            // the refrigerant "R" bubble sits at the pipe midpoint: labels keep off it
-            const mid = polylineMidpoint(p.points);
-            const br = 5.5 * Math.min(1.8, textScale);
-            addWorldRect({ x: mid.x - br, y: mid.y - br, w: 2 * br, h: 2 * br }, `rb:${p.id}`);
           }
         }
         for (const pl of plan.plenums) addWorldRect(pl.rect, `plenum:${z.id}:${pl.uIdx}`);
@@ -1565,6 +1565,31 @@ export const FloorPlanCanvas: React.FC = () => {
         }
       }
 
+      // P (plant end) / R (unit end) refrigerant bubbles: laid out like labels along the pipe, >= 1.5 ft off each unit edge
+      if (plan && av.refrigerantPiping && !selfContained) {
+        const ofpB = unitFootprintPx('odu', k, outdoorDimsFor(z));
+        const idu = { w: fp.w, d: fp.d }, odu = { w: ofpB.w, d: ofpB.d };
+        for (const p of plan.piping) {
+          if (p.points.length < 4) continue;
+          const mk = (tag: 'R' | 'P', prefer: 'start' | 'end'): void => {
+            const fontPx = 8 * ff;
+            const spots = pipeBubbleSpots(p.points, odu, idu, k, prefer);
+            const mid = polylineMidpoint(p.points);
+            const id = `${tag === 'R' ? 'rb' : 'pb'}:${z.id}:${p.uIdx}`;
+            const cands = (spots.length ? spots : [mid]).map((q) => ({ x: q.x * s, y: q.y * s, angleDeg: 0 }));
+            reqs.push({
+              id, lines: [tag], fontPx, priority: LABEL_PRIORITY.pipe + 1, anchor: { x: cands[0].x, y: cands[0].y },
+              candidates: cands, mandatory: true, ignoreTags: [`pipe:${p.id}`]
+            });
+            meta.set(id, {
+              id, zoneId: z.id, kind: 'pipe', lines: [colorLine(tag, '#000000')], fontPx,
+              anchorWorld: { x: cands[0].x / s, y: cands[0].y / s }, bg: '#facc15', border: '#000000'
+            });
+          };
+          mk('R', 'end');
+          mk('P', 'start');
+        }
+      }
       // Refrigerant line sizes, condensate drain tag, volume dampers, access panels
       if (plan && tier >= 2 && detailLod) {
         const alongCandidates = (pts: number[], size: { w: number; h: number }, off: number): ReturnType<typeof ductTagCandidates> => {
@@ -1597,18 +1622,21 @@ export const FloorPlanCanvas: React.FC = () => {
           const lines = [CHW_SUPPLY_TEXT, CHW_RETURN_TEXT];
           const size = measureLabel(lines, fontPx);
           const cands = alongCandidates(c.points, size, 8);
-          if (!cands.length) continue;
           const id = `chw:${z.id}:${c.uIdx}`;
-          reqs.push({ id, lines, fontPx, priority: LABEL_PRIORITY.chw, anchor: { x: c.labelAt.x * s, y: c.labelAt.y * s }, candidates: cands, ignoreTags: [`chw:${z.id}:${c.uIdx}`] });
+          // guaranteed: never dropped; when nothing along the pipe is free it falls back to a far spot with a leader
+          reqs.push({
+            id, lines, fontPx, priority: LABEL_PRIORITY.chw, anchor: { x: c.labelAt.x * s, y: c.labelAt.y * s },
+            anchorHalf: { w: 4, h: 4 }, candidates: cands.length ? cands : undefined, guaranteed: true, ignoreTags: [`chw:${z.id}:${c.uIdx}`]
+          });
           meta.set(id, {
             id, zoneId: z.id, kind: 'pipe', lines: [colorLine(CHW_SUPPLY_TEXT, '#38bdf8'), colorLine(CHW_RETURN_TEXT, '#f87171')],
-            fontPx, anchorWorld: c.labelAt, bg: 'rgba(12,12,12,0.72)'
+            fontPx, anchorWorld: c.labelAt, bg: 'rgba(12,12,12,0.72)', leaderTo: c.labelAt, leaderColor: '#38bdf8', leaderOnFar: true
           });
         }
         if (showAccessories) {
           for (const dr of plan.drains) {
             const fontPx = 8 * ff;
-            const lines = [`CD ${CONDENSATE_SIZE_TEXT}`, CONDENSATE_SLOPE_TEXT];
+            const lines = [`${CONDENSATE_TAG} ${CONDENSATE_SIZE_TEXT}`, CONDENSATE_SLOPE_TEXT];
             const size = measureLabel(lines, fontPx);
             const cands = alongCandidates(dr.points, size, 4);
             if (!cands.length) continue;
@@ -1653,6 +1681,17 @@ export const FloorPlanCanvas: React.FC = () => {
     return byZone;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zones, project, k, sBucket, annotationVisibility, detailed, fontFactor, textScale, selectedZoneId, shopPlans, sheet, showSheet, showAccessories, hoverClr, dxfTexts, dxfLayers, overlayRects, settledView]);
+
+  useEffect(() => {
+    const out: FitLabel[] = [];
+    labelItems.forEach((items) => {
+      for (const it of items) {
+        const p = it.placed;
+        out.push({ ax: it.anchorWorld.x, ay: it.anchorWorld.y, dx: p.dx, dy: p.dy, w: p.rect.w, h: p.rect.h });
+      }
+    });
+    fitLabelsRef.current = out;
+  }, [labelItems]);
 
   /** A placed label: constant screen-size text with a box sized to the measured text. */
   const renderLabelItem = (it: LabelItem): React.JSX.Element => {
@@ -1980,7 +2019,7 @@ export const FloorPlanCanvas: React.FC = () => {
     );
   };
 
-  const renderOutdoorUnitSymbol = (ts: number, catDims?: CatDims): React.JSX.Element => {
+  const renderOutdoorUnitSymbol = (_ts: number, catDims?: CatDims): React.JSX.Element => {
     const fp = unitFootprintPx('odu', k, catDims);
     const w = fp.w, d = fp.d;
     const twoFans = w / d > 1.4;
@@ -1996,10 +2035,6 @@ export const FloorPlanCanvas: React.FC = () => {
             <Line points={[0, -r, 0, r]} stroke="#22d3ee" strokeWidth={sw(1)} />
           </Group>
         ))}
-        <Group x={w / 2 + 11 * Math.min(1.8, ts)} y={-d / 2 - 5 * Math.min(1.8, ts)}>
-          <Circle radius={5 * Math.min(1.8, ts)} fill="#facc15" stroke="#000000" strokeWidth={0.8} />
-          <Text x={-3 * Math.min(1.8, ts)} y={-4 * Math.min(1.8, ts)} text="P" fontSize={Math.max(6 * ts, 7 / stageScale)} fill="#000000" fontStyle="bold" listening={false} />
-        </Group>
       </Group>
     );
   };
@@ -2113,12 +2148,6 @@ export const FloorPlanCanvas: React.FC = () => {
                   lineCap="round"
                   lineJoin="round"
                 />
-                {pp.points.length >= 4 && (
-                  <Group x={polylineMidpoint(pp.points).x} y={polylineMidpoint(pp.points).y}>
-                    <Circle radius={5.5 * Math.min(1.8, ts)} fill="#facc15" stroke="#000000" strokeWidth={getStrokeWidth(0.8, 0.8)} />
-                    <Text x={-3 * Math.min(1.8, ts)} y={-4 * Math.min(1.8, ts)} text="R" fontSize={6 * Math.min(1.8, ts)} fill="#000000" fontStyle="bold" />
-                  </Group>
-                )}
               </Group>
             ))}
           </Group>
@@ -2612,8 +2641,11 @@ export const FloorPlanCanvas: React.FC = () => {
             {renderPreview()}
           </Layer>
 
-          {/* Condensate drain points (placed with the Drain point tool) */}
-          <Layer listening={false}>
+          {/* Sheet layer: legend + title block (toggleable, included in Export PNG) */}
+          <Layer listening={false} visible={showSheet}>{renderSheet()}</Layer>
+
+          {/* Overlay: condensate drain points (Drain point tool) + cursor / rubber band / snap marker (updated imperatively, never re-renders the drawing). One layer keeps the stage at <= 5 layers. */}
+          <Layer ref={cursorLayerRef} listening={false}>
             {drainPoints.map((d) => (
               <Group key={d.id} x={d.x} y={d.y}>
                 <Circle radius={7 / stageScale} fill="rgba(8,145,178,0.35)" stroke="#67e8f9" strokeWidth={1.6 / stageScale} />
@@ -2622,13 +2654,6 @@ export const FloorPlanCanvas: React.FC = () => {
                 <Text x={9 / stageScale} y={-5 / stageScale} text="FD" fontSize={10 / stageScale} fontStyle="bold" fill="#67e8f9" />
               </Group>
             ))}
-          </Layer>
-
-          {/* Sheet layer: legend + title block (toggleable, included in Export PNG) */}
-          <Layer listening={false} visible={showSheet}>{renderSheet()}</Layer>
-
-          {/* Cursor / rubber band / snap marker: updated imperatively, never re-renders the drawing */}
-          <Layer ref={cursorLayerRef} listening={false}>
             {tempPoints.length > 0 && (
               <Group>
                 <Line points={tempPoints} stroke="#3b82f6" strokeWidth={getStrokeWidth(2.0, 2.0)} />
@@ -2721,7 +2746,7 @@ export const FloorPlanCanvas: React.FC = () => {
               ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
               : 'bg-neutral-900/90 text-neutral-400 border-neutral-750'
           }`}
-          title="Accessories layer: volume dampers (VD), flexible connections, condensate drains (CD), access panels (AP)"
+          title="Accessories layer: volume dampers (VD), flexible connections, condensate drain pipes (CDP), access panels (AP)"
         >
           <span>Accessories {showAccessories ? 'ON' : 'OFF'}</span>
         </button>

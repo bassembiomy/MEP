@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { ModalPortal } from './ModalPortal';
 import { useProjectStore, type Zone } from '../store/projectStore';
 import { isImperial } from '../engine/units';
+import { sectionTabLabel, staggerLabels } from '../canvas/polishM2';
 import {
   buildSections,
   dimText,
@@ -57,6 +58,12 @@ const SectionSvg = React.forwardRef<SVGSVGElement, { s: Section; units: string }
     ['CEILING', lv.ceiling],
     ['SLAB', lv.slabUnderside]
   ];
+  // duct size labels sit above their element; neighbours at the unit end would overlap, so they are staggered with leaders
+  const ductLabels = s.elements
+    .map((e, i) => ({ e, i }))
+    .filter(({ e }) => (e.type === 'trunk' || e.type === 'branch' || e.type === 'crossing') && e.label)
+    .map(({ e, i }) => ({ id: String(i), x: X(e.x0) + Math.max(1, (e.x1 - e.x0) * PX_FT) / 2, y: Y(e.z1) - 3, w: (e.label as string).length * 5.4 + 4 }));
+  const staggered = new Map(staggerLabels(ductLabels, 11, 2).map((l) => [l.id, l]));
   return (
     <svg ref={ref} xmlns="http://www.w3.org/2000/svg" width={W} height={H} viewBox={`0 0 ${W} ${H}`} fontFamily="monospace">
       <rect width={W} height={H} fill="#0a0a0a" />
@@ -78,9 +85,16 @@ const SectionSvg = React.forwardRef<SVGSVGElement, { s: Section; units: string }
           <g key={`${e.type}-${e.id ?? ''}-${i}`}>
             <rect x={x} y={y} width={w} height={h} fill={isBad ? '#ef444455' : st.fill} stroke={stroke} strokeWidth={isBad ? 2 : 1} />
             {e.cut && (e.type !== 'neck') && <path d={`M${x} ${y} L${x + w} ${y + h} M${x + w} ${y} L${x} ${y + h}`} stroke={stroke} strokeWidth={1} />}
-            {duct && e.label && (
-              <text x={x + w / 2} y={y - 3} fill={isBad ? '#fca5a5' : '#d4d4d4'} fontSize={9} textAnchor="middle">{e.label}</text>
-            )}
+            {duct && e.label && (() => {
+              const l = staggered.get(String(i));
+              const ly = l ? l.y : y - 3;
+              return (
+                <>
+                  {l?.leader && <line x1={x + w / 2} x2={x + w / 2} y1={ly + 2} y2={y} stroke="#737373" strokeWidth={0.8} />}
+                  <text x={x + w / 2} y={ly} fill={isBad ? '#fca5a5' : '#d4d4d4'} fontSize={9} textAnchor="middle">{e.label}</text>
+                </>
+              );
+            })()}
             {(e.type === 'unit' || e.type === 'slab') && e.label && (
               <text x={e.type === 'slab' ? X(s.length) + 6 : x + w / 2} y={e.type === 'slab' ? y + h / 2 + 3 : y + h / 2 + 3} fill="#d4d4d4" fontSize={9} textAnchor={e.type === 'slab' ? 'start' : 'middle'}>{e.label}</text>
             )}
@@ -156,7 +170,7 @@ export const SectionViewModal: React.FC<Props> = ({ zone, onClose }) => {
                 cur?.id === s.id ? 'bg-blue-600 border-blue-500 text-white' : 'bg-neutral-900 border-neutral-800 text-neutral-400'
               }`}
             >
-              {s.label} {s.kind === 'transverse' ? 'Transverse' : `Trunk${s.unitId ? ` ${s.unitId}` : ''}`}
+              {sectionTabLabel(zone, s)}
               {s.issues.some((i) => i.severity === 'error') ? ' !' : ''}
             </button>
           ))}

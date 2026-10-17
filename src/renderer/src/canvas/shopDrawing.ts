@@ -382,7 +382,7 @@ export function legendItems(): LegendItem[] {
     { key: 'flex', label: 'FLEXIBLE CONNECTION' },
     { key: 'access', label: 'AP - ACCESS PANEL' },
     { key: 'refrigerant', label: 'REFRIGERANT LINES (LL / SL)' },
-    { key: 'condensate', label: 'CD - CONDENSATE DRAIN' },
+    { key: 'condensate', label: 'CDP – CONDENSATE DRAIN PIPE' },
     { key: 'idu', label: 'IDU - INDOOR UNIT' },
     { key: 'odu', label: 'ODU - OUTDOOR UNIT' }
   ];
