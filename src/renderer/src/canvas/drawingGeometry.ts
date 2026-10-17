@@ -1063,3 +1063,265 @@ export function supplyCfmOf(terminals: Array<{ type?: string; cfm: number }>): n
 /** Packaged rooftop units are self-contained: no separate condensing unit / refrigerant lines. */
 export const isSelfContainedSystem = (systemType?: string): boolean =>
   systemType === 'packaged' || systemType === 'package' || systemType === 'rtu';
+
+// ───────────────────────── Orthogonal (Manhattan) routing around obstacles ─────────────────────────
+
+export interface RouteRect { x: number; y: number; w: number; h: number }
+export interface ManhattanRoute {
+  /** Flat polyline [x0,y0,x1,y1,...] with collinear points removed. */
+  points: number[];
+  bends: number;
+  /** False when no obstacle-free route was found (the points are then a plain L fallback). */
+  ok: boolean;
+}
+
+const rectInflate = (r: RouteRect, d: number): RouteRect => ({ x: r.x - d, y: r.y - d, w: r.w + 2 * d, h: r.h + 2 * d });
+const rectHasPoint = (r: RouteRect, x: number, y: number): boolean => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+
+/** Remove duplicate and collinear vertices of an orthogonal polyline. */
+export function simplifyOrthogonal(pts: number[], eps = 1e-6): number[] {
+  const p: number[][] = [];
+  for (let i = 0; i < pts.length; i += 2) {
+    const last = p[p.length - 1];
+    if (last && Math.abs(last[0] - pts[i]) < eps && Math.abs(last[1] - pts[i + 1]) < eps) continue;
+    p.push([pts[i], pts[i + 1]]);
+  }
+  const out: number[][] = [];
+  for (let i = 0; i < p.length; i++) {
+    if (i > 0 && i < p.length - 1) {
+      const a = out[out.length - 1], b = p[i], c = p[i + 1];
+      const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+      if (Math.abs(cross) < eps) continue;
+    }
+    out.push(p[i]);
+  }
+  return out.flat();
+}
+
+/** Number of direction changes in a polyline. */
+export function countBends(pts: number[]): number {
+  const s = simplifyOrthogonal(pts);
+  return Math.max(0, s.length / 2 - 2);
+}
+
+class MinHeap {
+  private a: Array<[number, number]> = [];
+  get size(): number { return this.a.length; }
+  push(c: number, v: number): void {
+    const a = this.a;
+    a.push([c, v]);
+    let i = a.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (a[p][0] <= a[i][0]) break;
+      [a[p], a[i]] = [a[i], a[p]];
+      i = p;
+    }
+  }
+  pop(): [number, number] {
+    const a = this.a;
+    const top = a[0];
+    const last = a.pop() as [number, number];
+    if (a.length > 0) {
+      a[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1, r = l + 1;
+        let m = i;
+        if (l < a.length && a[l][0] < a[m][0]) m = l;
+        if (r < a.length && a[r][0] < a[m][0]) m = r;
+        if (m === i) break;
+        [a[m], a[i]] = [a[i], a[m]];
+        i = m;
+      }
+    }
+    return top;
+  }
+}
+
+function routeOnGrid(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  rects: RouteRect[],
+  maxBends: number,
+  bendPenalty: number
+): number[] | null {
+  const E = 1e-6;
+  const uniq = (v: number[]): number[] => {
+    const s = v.slice().sort((a, b) => a - b);
+    const o: number[] = [];
+    for (const x of s) if (o.length === 0 || x - o[o.length - 1] > E) o.push(x);
+    return o;
+  };
+  const xs = uniq([from.x, to.x, ...rects.flatMap((r) => [r.x, r.x + r.w])]);
+  const ys = uniq([from.y, to.y, ...rects.flatMap((r) => [r.y, r.y + r.h])]);
+  const nx = xs.length, ny = ys.length;
+  const ix = (x: number): number => xs.findIndex((v) => Math.abs(v - x) <= E);
+  const iy = (y: number): number => ys.findIndex((v) => Math.abs(v - y) <= E);
+  const si = ix(from.x), sj = iy(from.y), ti = ix(to.x), tj = iy(to.y);
+  // a grid edge is blocked when it crosses the strict interior of an (inflated) obstacle
+  const hBlocked = (j: number, i: number): boolean => {
+    const y = ys[j], x0 = xs[i], x1 = xs[i + 1];
+    for (const r of rects) if (y > r.y + E && y < r.y + r.h - E && x0 < r.x + r.w - E && x1 > r.x + E) return true;
+    return false;
+  };
+  const vBlocked = (i: number, j: number): boolean => {
+    const x = xs[i], y0 = ys[j], y1 = ys[j + 1];
+    for (const r of rects) if (x > r.x + E && x < r.x + r.w - E && y0 < r.y + r.h - E && y1 > r.y + E) return true;
+    return false;
+  };
+  const hCache = new Map<number, boolean>(), vCache = new Map<number, boolean>();
+  const hb = (j: number, i: number): boolean => {
+    const key = j * nx + i;
+    let v = hCache.get(key);
+    if (v === undefined) { v = hBlocked(j, i); hCache.set(key, v); }
+    return v;
+  };
+  const vb = (i: number, j: number): boolean => {
+    const key = i * ny + j;
+    let v = vCache.get(key);
+    if (v === undefined) { v = vBlocked(i, j); vCache.set(key, v); }
+    return v;
+  };
+  const NB = maxBends + 1;
+  const stateOf = (i: number, j: number, d: number, b: number): number => ((j * nx + i) * 4 + d) * NB + b;
+  const total = nx * ny * 4 * NB;
+  const dist = new Float64Array(total).fill(Infinity);
+  const prev = new Int32Array(total).fill(-1);
+  const heap = new MinHeap();
+  // directions: 0 = +x, 1 = +y, 2 = -x, 3 = -y; the start state uses d = 4 - handled by seeding all four with 0 bends
+  const DX = [1, 0, -1, 0], DY = [0, 1, 0, -1];
+  const startSet = new Set<number>();
+  for (let d = 0; d < 4; d++) {
+    const s = stateOf(si, sj, d, 0);
+    dist[s] = 0;
+    startSet.add(s);
+    heap.push(0, s);
+  }
+  let goal = -1;
+  while (heap.size > 0) {
+    const [c, s] = heap.pop();
+    if (c > dist[s] + 1e-9) continue;
+    const b = s % NB;
+    const rest = (s - b) / NB;
+    const d = rest % 4;
+    const cell = (rest - d) / 4;
+    const i = cell % nx, j = (cell - i) / nx;
+    if (i === ti && j === tj) { goal = s; break; }
+    const isStart = startSet.has(s);
+    for (let nd = 0; nd < 4; nd++) {
+      if (!isStart && nd === (d + 2) % 4) continue; // no U-turn
+      // leaving the start has no preceding direction: the first heading is free
+      const turn = nd !== d && !isStart;
+      const nb = b + (turn ? 1 : 0);
+      if (nb > maxBends) continue;
+      const ni = i + DX[nd], nj = j + DY[nd];
+      if (ni < 0 || nj < 0 || ni >= nx || nj >= ny) continue;
+      const blocked = nd === 0 ? hb(j, i) : nd === 2 ? hb(j, ni) : nd === 1 ? vb(i, j) : vb(i, nj);
+      if (blocked) continue;
+      const len = Math.abs(xs[ni] - xs[i]) + Math.abs(ys[nj] - ys[j]);
+      const ns = stateOf(ni, nj, nd, nb);
+      const nc = c + len + (turn ? bendPenalty : 0);
+      if (nc < dist[ns] - 1e-9) { dist[ns] = nc; prev[ns] = s; heap.push(nc, ns); }
+    }
+  }
+  if (goal < 0) return null;
+  const rev: number[] = [];
+  for (let s = goal; s >= 0; s = prev[s]) {
+    const b = s % NB;
+    const rest = (s - b) / NB;
+    const d = rest % 4;
+    const cell = (rest - d) / 4;
+    const i = cell % nx, j = (cell - i) / nx;
+    rev.push(xs[i], ys[j]);
+  }
+  const pts: number[] = [];
+  for (let n = rev.length - 2; n >= 0; n -= 2) pts.push(rev[n], rev[n + 1]);
+  return simplifyOrthogonal(pts);
+}
+
+/**
+ * Manhattan route from `from` to `to` that keeps `clearance` (px) away from every obstacle bbox. At most `maxBends`
+ * bends (default 3) are tried first, then up to 8, then a plain L ignoring obstacles (`ok = false`). Obstacles whose
+ * inflated box contains an end point (the units the pipe connects) are ignored so the route can leave and enter them.
+ * Pure and deterministic.
+ */
+export function routeManhattan(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  obstacles: RouteRect[],
+  opts: { clearance?: number; maxBends?: number; bendPenalty?: number } = {}
+): ManhattanRoute {
+  const clearance = opts.clearance ?? 0;
+  const maxBends = opts.maxBends ?? 3;
+  const bendPenalty = opts.bendPenalty ?? Math.max(1, Math.hypot(to.x - from.x, to.y - from.y) * 0.05);
+  const all = obstacles
+    .map((r) => rectInflate(r, clearance))
+    .filter((r) => !rectHasPoint(r, from.x, from.y) && !rectHasPoint(r, to.x, to.y));
+  const margin = Math.max(16 * clearance, 1);
+  const wx0 = Math.min(from.x, to.x) - margin, wx1 = Math.max(from.x, to.x) + margin;
+  const wy0 = Math.min(from.y, to.y) - margin, wy1 = Math.max(from.y, to.y) + margin;
+  const near = all.filter((r) => r.x < wx1 && r.x + r.w > wx0 && r.y < wy1 && r.y + r.h > wy0);
+  const sets = near.length === all.length ? [all] : [near, all];
+  const bendTries = maxBends >= 8 ? [maxBends] : [maxBends, 8];
+  for (const mb of bendTries) {
+    for (const set of sets) {
+      const pts = routeOnGrid(from, to, set, mb, bendPenalty);
+      if (pts) return { points: pts, bends: countBends(pts), ok: true };
+    }
+  }
+  const l = simplifyOrthogonal([from.x, from.y, to.x, from.y, to.x, to.y]);
+  return { points: l, bends: countBends(l), ok: false };
+}
+
+/** True when any segment of the polyline crosses the strict interior of `r`. */
+export function polylineHitsRect(pts: number[], r: RouteRect, eps = 1e-6): boolean {
+  for (let i = 0; i + 3 < pts.length; i += 2) {
+    const x0 = Math.min(pts[i], pts[i + 2]), x1 = Math.max(pts[i], pts[i + 2]);
+    const y0 = Math.min(pts[i + 1], pts[i + 3]), y1 = Math.max(pts[i + 1], pts[i + 3]);
+    if (x1 > r.x + eps && x0 < r.x + r.w - eps && y1 > r.y + eps && y0 < r.y + r.h - eps) return true;
+  }
+  return false;
+}
+
+/** Parallel offset of a polyline by `d` (left of travel positive), mitred at the corners. */
+export function offsetPolyline(pts: number[], d: number): number[] {
+  const n = pts.length / 2;
+  if (n < 2) return pts.slice();
+  const nrm: Array<[number, number]> = [];
+  for (let i = 0; i < n - 1; i++) {
+    const dx = pts[i * 2 + 2] - pts[i * 2], dy = pts[i * 2 + 3] - pts[i * 2 + 1];
+    const l = Math.hypot(dx, dy) || 1;
+    nrm.push([dy / l, -dx / l]);
+  }
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = nrm[Math.max(0, i - 1)], b = nrm[Math.min(nrm.length - 1, i)];
+    const dot = a[0] * b[0] + a[1] * b[1];
+    const f = d / Math.max(0.25, 1 + dot);
+    out.push(pts[i * 2] + (a[0] + b[0]) * f, pts[i * 2 + 1] + (a[1] + b[1]) * f);
+  }
+  return out;
+}
+
+/** Obstacle boxes (px) for duct pieces [x1,y1,x2,y2]: one box per axis-aligned piece, several along a diagonal. */
+export function ductBodyRects(pieces: number[][], halfWidthsPx: number[]): RouteRect[] {
+  const out: RouteRect[] = [];
+  pieces.forEach((p, i) => {
+    const hw = Math.max(0, halfWidthsPx[i] ?? halfWidthsPx[0] ?? 0);
+    const dx = p[2] - p[0], dy = p[3] - p[1];
+    const len = Math.hypot(dx, dy);
+    if (Math.abs(dx) < 1e-6 || Math.abs(dy) < 1e-6) {
+      out.push({ x: Math.min(p[0], p[2]) - hw, y: Math.min(p[1], p[3]) - hw, w: Math.abs(dx) + 2 * hw, h: Math.abs(dy) + 2 * hw });
+      return;
+    }
+    const steps = Math.max(1, Math.ceil(len / Math.max(1e-6, 2 * hw || len)));
+    for (let s = 0; s < steps; s++) {
+      const a = (s + 0.5) / steps;
+      const cx = p[0] + dx * a, cy = p[1] + dy * a;
+      const r = Math.max(hw, len / steps / 2) * 0.75;
+      out.push({ x: cx - r, y: cy - r, w: 2 * r, h: 2 * r });
+    }
+  });
+  return out;
+}
