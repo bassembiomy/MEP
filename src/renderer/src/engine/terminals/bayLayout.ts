@@ -3,6 +3,7 @@ import {
   isPointInPolygon,
   distanceToPolygonEdge,
   getPolygonBounds,
+  getPolygonCentroid,
   MIN_TERMINAL_SPACING_FT,
   type TerminalGridOptions,
   type TerminalGridResult
@@ -170,15 +171,50 @@ const minPair = (pts: P[]): number => {
  * is split into convex arms and each arm receives a terminal count proportional to its area (at least one), laid out on
  * its own grid, so a far arm is never starved by a single terminal at the junction.
  */
-export function layoutBayTerminalGrid(points: number[], n: number, options: TerminalGridOptions = {}): TerminalGridResult {
+export function layoutBayTerminalGrid(
+  points: number[],
+  n: number,
+  options: TerminalGridOptions & { /** Full room outline: terminals keep >= 1.2 ft off ITS walls (the bay may be a slab of the room). */ wallPolygon?: number[] } = {}
+): TerminalGridResult {
+  const wallPoly = options.wallPolygon && options.wallPolygon.length >= 6 ? options.wallPolygon : points;
   const bays = decomposeConvex(points);
-  if (bays.length <= 1) return layoutTerminalGrid(points, n, options);
+  if (bays.length <= 1) {
+    const g = layoutTerminalGrid(points, n, options);
+    const u1 = options.unitPerFt && options.unitPerFt > 0 ? options.unitPerFt : 1;
+    const c1 = getPolygonCentroid(points);
+    // keep >= 1.2 ft off the walls (a tight cell can leave a terminal closer): walk it back toward the centre
+    g.points = g.points.map((p) => {
+      let q = p;
+      for (let k = 0; k < 60 && distanceToPolygonEdge(q.x, q.y, wallPoly) < 1.2 * u1; k++) {
+        const dx = c1.x - q.x, dy = c1.y - q.y, len = Math.hypot(dx, dy);
+        if (len < 1e-6) break;
+        const nq = { x: q.x + (dx / len) * 0.1 * u1, y: q.y + (dy / len) * 0.1 * u1 };
+        if (!isPointInPolygon(nq.x, nq.y, points) || !isPointInPolygon(nq.x, nq.y, wallPoly)) break;
+        q = nq;
+      }
+      return q;
+    });
+    return g;
+  }
   const counts = allocateByArea(bays.map(polygonAreaAbs), n);
   const pts: P[] = [];
   let rows = 0, cols = 0, spacingX = 0, spacingY = 0, throwSum = 0, areaSum = 0, wallMin = Infinity;
+  const u0 = options.unitPerFt && options.unitPerFt > 0 ? options.unitPerFt : 1;
+  const minWall = 1.2 * u0;
   bays.forEach((b, i) => {
     const g = layoutTerminalGrid(b, counts[i], options);
     if (g.points.length === 0) return;
+    // a narrow arm can pull a terminal toward a REAL wall of the room: walk it back toward the arm centre
+    const bc = getPolygonCentroid(b);
+    g.points = g.points.map((p) => {
+      let q = p;
+      for (let k = 0; k < 60 && distanceToPolygonEdge(q.x, q.y, wallPoly) < minWall; k++) {
+        const dx = bc.x - q.x, dy = bc.y - q.y, len = Math.hypot(dx, dy);
+        if (len < 1e-6) break;
+        q = { x: q.x + (dx / len) * 0.1 * u0, y: q.y + (dy / len) * 0.1 * u0 };
+      }
+      return q;
+    });
     pts.push(...g.points);
     const a = polygonAreaAbs(b);
     throwSum += g.throwLengthFt * a;
@@ -190,7 +226,9 @@ export function layoutBayTerminalGrid(points: number[], n: number, options: Term
   const u = options.unitPerFt && options.unitPerFt > 0 ? options.unitPerFt : 1;
   const kept: P[] = [];
   for (const p of pts) if (kept.every((q) => Math.hypot(p.x - q.x, p.y - q.y) >= MIN_TERMINAL_SPACING_FT * u - 1e-6)) kept.push(p);
-  const final = kept.length ? kept : pts;
+  // a sliver bay (thinner than 2 x the wall clearance) cannot hold a terminal 1.2 ft off its walls: its neighbours cover it
+  const clear = kept.filter((p) => distanceToPolygonEdge(p.x, p.y, wallPoly) >= minWall - 1e-6);
+  const final = clear.length ? clear : kept.length ? kept : pts;
   return {
     points: final,
     rows, cols, spacingX, spacingY,

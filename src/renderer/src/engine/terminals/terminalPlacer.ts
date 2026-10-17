@@ -95,7 +95,7 @@ export function selectDiffuserCountAndSize(
   polygonFt: number[],
   zoneCfm: number,
   targetNc: number,
-  options: { catalog?: DiffuserCatalogItem[]; maxNeckVelocityFpm?: number; maxCount?: number; unitPerFt?: number; keepOuts?: Rect[] } = {}
+  options: { catalog?: DiffuserCatalogItem[]; maxNeckVelocityFpm?: number; maxCount?: number; unitPerFt?: number; keepOuts?: Rect[]; wallPolygon?: number[] } = {}
 ): ThrowSelection | null {
   const unitPerFt = options.unitPerFt ?? 1;
   // Non-convex bays (L / T / U) are split into convex arms and each arm gets terminals in proportion to its area
@@ -111,7 +111,7 @@ export function selectDiffuserCountAndSize(
   const gridFor = (n: number): { grid: ReturnType<typeof layoutTerminalGrid>; cover: number } => {
     let g = gridCache.get(n);
     if (!g) {
-      const grid = layoutBayTerminalGrid(polygonFt, n, { unitPerFt, keepOuts: options.keepOuts });
+      const grid = layoutBayTerminalGrid(polygonFt, n, { unitPerFt, keepOuts: options.keepOuts, wallPolygon: options.wallPolygon });
       g = { grid, cover: maxDistanceToNearestTerminal(polygonFt, grid.points, { unitPerFt }) };
       gridCache.set(n, g);
     }
@@ -214,7 +214,7 @@ export function placeSupplyDiffusersForZone(
   if (!(zoneCfm > 0) || zone.serviceAreaPolygon.length < 6) return [];
 
   if (optimizeThrow) {
-    const sel = selectDiffuserCountAndSize(zone.serviceAreaPolygon, zoneCfm, zone.targetNc, { unitPerFt, keepOuts, catalog });
+    const sel = selectDiffuserCountAndSize(zone.serviceAreaPolygon, zoneCfm, zone.targetNc, { unitPerFt, keepOuts, catalog, wallPolygon: zone.roomPolygon });
     if (sel) {
       const item = sel.item;
       const { face, neck } = terminalSizeLabels(item, metric);
@@ -235,7 +235,7 @@ export function placeSupplyDiffusersForZone(
     selected = selectBestDiffuserFromCatalog(Math.round(zoneCfm / numDiffusers), zone.targetNc, 'square-ceiling', catalog, { metric });
   }
 
-  const grid = layoutBayTerminalGrid(zone.serviceAreaPolygon, numDiffusers, { unitPerFt, keepOuts });
+  const grid = layoutBayTerminalGrid(zone.serviceAreaPolygon, numDiffusers, { unitPerFt, keepOuts, wallPolygon: zone.roomPolygon });
   if (grid.points.length === 0) return [];
   numDiffusers = grid.points.length; // the room may hold fewer than requested; never stack terminals
 
