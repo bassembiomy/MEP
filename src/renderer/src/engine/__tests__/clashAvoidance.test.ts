@@ -35,7 +35,7 @@ const design = executeAirDistributionDesign({
 const terms = [...design.supplyTerminals, ...design.returnTerminals];
 const sections = [...design.supplyDucts, ...design.returnDucts];
 assert(design.serviceZones.length === 2, `2 units expected, got ${design.serviceZones.length}`);
-assert(design.supplyTerminals.length >= 8, `at least 8 supply diffusers, got ${design.supplyTerminals.length}`);
+assert(design.supplyTerminals.length >= 6, `at least 6 supply diffusers (fewer, larger: >= 60% of size rating each), got ${design.supplyTerminals.length}`);
 
 function wallDist(x: number, y: number): number {
   return distanceToPolygonEdge(x, y, ROOM);

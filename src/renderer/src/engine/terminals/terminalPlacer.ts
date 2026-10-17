@@ -31,6 +31,14 @@ export interface CoordinatedAirTerminal {
 /** Lowest turndown of a diffuser relative to its catalog minimum CFM (design airflow at ~40% of tested minimum). */
 const MIN_TURNDOWN = 0.4;
 
+/** A diffuser carries at least this fraction of its catalog size rating (centre of its CFM range). */
+export const MIN_RATING_FRACTION = 0.55;
+/** Preferred floor area per supply diffuser (ft2); denser layouts are penalised. */
+const MIN_FT2_PER_DIFFUSER = 100;
+const MAX_FT2_PER_DIFFUSER = 170;
+/** Catalog size rating (CFM): the centre of the tested range. */
+export const sizeRatingCfm = (item: DiffuserCatalogItem): number => (item.minCfm + item.maxCfm) / 2;
+
 interface PerfPoint { nc: number; t50: number; dp: number }
 
 /**
@@ -83,7 +91,7 @@ export const COVERAGE_T50_FACTOR = 1.5;
 /** Overshoot (x the 1.5 T50 limit) tolerated before the coverage cost starts - the rule is approximate (~1.5). */
 const COVERAGE_TOLERANCE = 1.05;
 /** Score cost per unit of coverage overshoot (a terminal out of the throw band costs 0.15). */
-const COVERAGE_PENALTY = 1.0;
+const COVERAGE_PENALTY = 3.0;
 
 /**
  * Professional selection: for every candidate count n (grid layout) and catalog size, compute
@@ -118,7 +126,15 @@ export function selectDiffuserCountAndSize(
     return g;
   };
 
-  const tryPass = (ncTol: number, minSpacing: number): ThrowSelection | null => {
+  // Floor area served: fewer, larger diffusers (professional density ~100 - 250 ft2 each, never a swarm of small ones)
+  let areaFt2 = 0;
+  for (let i = 0, n = polygonFt.length / 2; i < n; i++) {
+    const j = (i + 1) % n;
+    areaFt2 += polygonFt[2 * i] * polygonFt[2 * j + 1] - polygonFt[2 * j] * polygonFt[2 * i + 1];
+  }
+  areaFt2 = Math.abs(areaFt2) / 2 / (unitPerFt * unitPerFt);
+
+  const tryPass = (ncTol: number, minSpacing: number, minRatingFraction: number, strictCover = false): ThrowSelection | null => {
     let best: ThrowSelection | null = null;
     let bestScore = Infinity;
     const seenCounts = new Set<number>();
@@ -134,16 +150,25 @@ export function selectDiffuserCountAndSize(
         const area = neckAreaSqFt(item);
         if (area > 0 && q / area > vLimit) continue;
         if (q > item.maxCfm || q < item.minCfm * MIN_TURNDOWN) continue;
+        // a diffuser works near its catalog size rating (centre of its tested range): no 9" neck at 40% of its rating
+        if (q < 0.95 * minRatingFraction * sizeRatingCfm(item)) continue; // 5% slack: metric items are rounded scalings of the imperial ones
         const perf = diffuserPerformanceAt(item, q);
         if (perf.nc > targetNc + ncTol) continue;
+        // first passes: hard coverage rule (every occupied point within ~1.5 x T50 of a supply)
+        if (strictCover && cover > COVERAGE_T50_FACTOR * perf.t50) continue;
         const ratio = perf.t50 / L;
-        const inBand = ratio >= THROW_RATIO_MIN && ratio <= THROW_RATIO_MAX;
         // Coverage rule (any occupied point within ~1.5 x T50 of a supply): a shortfall is a soft cost that grows with the
         // overshoot, so an L / T arm with no terminal near it is decisive but a marginal miss never buys a swarm of tiny ones.
         const overshoot = Math.max(0, cover / (COVERAGE_T50_FACTOR * Math.max(perf.t50, 1e-6)) - COVERAGE_TOLERANCE);
-        const coverPenalty = Math.min(overshoot, 2) * COVERAGE_PENALTY;
+        const coverPenalty = Math.min(overshoot, 3) * COVERAGE_PENALTY;
         // Unreachable band: do not chase it with ever more terminals (strong count penalty)
-        const score = Math.abs(ratio - 1) + (inBand ? 0.02 : 0.15) * actual + coverPenalty + 0.00001 * (item.costIndex ?? 0);
+        // Professional density: ~100 - 250 ft2 per diffuser. Fewer, larger diffusers win unless the throw band is missed badly;
+        // an over-dense layout (< 100 ft2 each) or a sparse one (> 250 ft2 each) is penalised, band misses cost their distance.
+        const perTerm = areaFt2 > 0 ? areaFt2 / actual : Infinity;
+        const dense = Number.isFinite(perTerm) ? Math.max(0, MIN_FT2_PER_DIFFUSER - perTerm) / MIN_FT2_PER_DIFFUSER : 0;
+        const sparse = Number.isFinite(perTerm) ? Math.max(0, perTerm - MAX_FT2_PER_DIFFUSER) / MAX_FT2_PER_DIFFUSER : 0;
+        const bandMiss = ratio < THROW_RATIO_MIN ? THROW_RATIO_MIN - ratio : ratio > THROW_RATIO_MAX ? ratio - THROW_RATIO_MAX : 0;
+        const score = 3 * bandMiss + 0.05 * actual + 2.5 * dense + 2.0 * sparse + coverPenalty + 0.3 * Math.max(0, perf.nc - targetNc) + 0.00001 * (item.costIndex ?? 0);
         if (score < bestScore - 1e-12) {
           bestScore = score;
           best = { count: actual, item, cfmEach: q, t50: perf.t50, throwLengthFt: L, ratio, nc: perf.nc, dp: perf.dp, grid, maxCoverageDistFt: cover };
@@ -154,7 +179,16 @@ export function selectDiffuserCountAndSize(
   };
   // Preferred spacing leaves room for a return grille >= MIN_TERMINAL_SPACING_FT from every supply
   // (cell-corner return is s/sqrt(2) from four supplies); otherwise fall back to the bare minimum.
-  return tryPass(2, MIN_TERMINAL_SPACING_FT * Math.SQRT2) ?? tryPass(2, MIN_TERMINAL_SPACING_FT) ?? tryPass(2, 0) ?? tryPass(8, 0);
+  const S = MIN_TERMINAL_SPACING_FT;
+  for (const strict of [true, false]) {
+    for (const frac of [MIN_RATING_FRACTION, 0]) {
+      for (const sp of [S * Math.SQRT2, S, 0]) {
+        const r = tryPass(0, sp, frac, strict) ?? tryPass(2, sp, frac, strict);
+        if (r) return r;
+      }
+    }
+  }
+  return tryPass(8, 0, 0);
 }
 
 type TerminalDescriptor = {

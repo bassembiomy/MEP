@@ -124,7 +124,7 @@ export function selectReturnPositions(
 export function placeReturnGrillesForZone(
   zone: EquipmentServiceZone,
   supplyTerminals: CoordinatedAirTerminal[],
-  options: { unitPerFt?: number; exhaustCfm?: number; exfiltrationCfm?: number; keepOuts?: Rect[]; catalog?: DiffuserCatalogItem[]; metric?: boolean } = {}
+  options: { unitPerFt?: number; exhaustCfm?: number; exfiltrationCfm?: number; keepOuts?: Rect[]; catalog?: DiffuserCatalogItem[]; metric?: boolean; /** Upper bound on the number of return grilles (fewer grilles = shorter return main, fewer crossings). */ maxCount?: number } = {}
 ): CoordinatedAirTerminal[] {
   const unitPerFt = options.unitPerFt ?? 1;
   const returnCfm = zone.returnCfm || computeReturnCfm(zone.supplyCfm, options);
@@ -133,6 +133,7 @@ export function placeReturnGrillesForZone(
   const numReturns = wide
     ? Math.max(2, Math.min(4, supplyTerminals.length))
     : Math.max(1, Math.min(2, supplyTerminals.length));
+  const cap = options.maxCount && options.maxCount >= 1 ? Math.floor(options.maxCount) : Infinity;
 
   // Plenum-return ducted units: first return is placed on the unit's return side (nearest the unit),
   // but still >= separation from every supply.
@@ -141,7 +142,7 @@ export function placeReturnGrillesForZone(
     : undefined;
 
   const supplyPts = supplyTerminals.map(t => t.position);
-  let positions = selectReturnPositions(zone.serviceAreaPolygon, supplyPts, numReturns, { unitPerFt, anchor, keepOuts: options.keepOuts });
+  let positions = selectReturnPositions(zone.serviceAreaPolygon, supplyPts, Math.min(numReturns, cap), { unitPerFt, anchor, keepOuts: options.keepOuts });
   if (positions.length === 0) return [];
   // A small bay cannot hold the preferred count: drop returns closer than the 4 ft minimum to any supply or to
   // another return, but always keep the best-separated one.

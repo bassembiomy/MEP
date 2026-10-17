@@ -38,6 +38,10 @@ export interface Diffuser {
   unitId?: string;
   serviceZoneId?: string;
   unitTag?: string;
+  /** Return grille that opens into the ceiling plenum (no return duct is routed to it). */
+  plenumReturn?: boolean;
+  /** Set after a unit-system change when the remapped size's neck velocity exceeds the limit. */
+  sizeWarning?: string;
 }
 
 export interface DuctSegment {
@@ -59,6 +63,9 @@ export interface DuctSegment {
   crossoverWith?: string[];
   /** Clearance problem text from the router. */
   clearanceIssue?: string;
+  designWarnings?: string[];
+  /** Short return box at the unit of a ceiling-plenum return. */
+  plenumBox?: boolean;
   /** Indoor unit (service zone) whose duct network this segment belongs to. */
   unitId?: string;
   serviceZoneId?: string;
@@ -101,6 +108,8 @@ export interface Zone {
   manualCfmOverride?: number;
   manualCoolingOverride?: number;
   systemType?: 'high-wall' | 'cassette' | 'concealed' | 'packaged' | 'vrf' | 'ahu' | 'fcu';
+  /** Return path: 'plenum' (grilles open into the ceiling void, short return box at the unit) or 'ducted' (return mains). */
+  returnStrategy?: 'plenum' | 'ducted';
   ductTypeId?: string;
   diffuserTypeId?: string;
   maxVelocityLimitFpm?: number;

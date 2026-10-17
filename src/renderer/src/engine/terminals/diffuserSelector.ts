@@ -100,7 +100,7 @@ function supplyCandidates(catalog: DiffuserCatalogItem[], terminalType: string):
   const c = catalog.filter(
     (d) => d.terminalType === terminalType || d.terminalType === 'square-ceiling' || d.terminalType === 'round-ceiling'
   );
-  return (c.length ? c : catalog).slice().sort((a, b) => neckAreaSqFt(a) - neckAreaSqFt(b));
+  return (c.length ? c : catalog).slice().sort((a, b) => neckAreaSqFt(a) - neckAreaSqFt(b) || a.costIndex - b.costIndex);
 }
 
 /** Largest CFM per terminal any catalog supply diffuser can deliver within the limits. */

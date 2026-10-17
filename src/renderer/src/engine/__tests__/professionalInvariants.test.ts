@@ -11,7 +11,7 @@ import type { DuctSegment } from '../../store/projectStore';
  */
 import { calculateZoneLoad } from '../loadCalc';
 import { generateSystemCandidates } from '../systemDesigner';
-import { executeAirDistributionDesign, convertDesignResultToZonePayload } from '../airDistributionEngine';
+import { executeAirDistributionDesign, convertDesignResultToZonePayload, MAX_DUCTED_RETURN_CROSSINGS_PER_UNIT } from '../airDistributionEngine';
 import { routeDucts } from '../ductRouter';
 import { pxPerFt, toBtuh, toCfm, toSqFt, SQFT_PER_SQM, BTUH_PER_W, CFM_PER_LPS, MM_PER_IN } from '../units';
 import { isPointInPolygon, calculateWallMountedUnitPos } from '../geometry';
@@ -653,25 +653,66 @@ for (let ri = 0; ri < rooms.length; ri++) {
     }
 
     // ── Engine duct networks (feet) ──
-    {
-      const segs: NetSeg[] = [...design.supplyDucts, ...design.returnDucts].map((d) => ({
-        id: d.id, a: d.startPoint, b: d.endPoint, cfm: d.airflowCfm, w: d.widthIn, h: d.heightIn, parent: d.parentDuctId,
-        trunk: d.role === 'main-trunk', flagged: d.meetsDesignCriteria === false, velocity: d.velocityFpm,
-        vLimit: d.allowableVelocityFpm, network: d.systemType === 'return' ? 'return' : 'supply', unit: d.unitId
+    // Default return strategy for concealed units with a ceiling plenum is 'plenum': NO return mains, only one short
+    // return box per unit. The ducted variant (imperial cases) is checked with the same network / clash rules, plus
+    // at most ONE supply / return crossing per unit.
+    const engineNetworkChecks = (tag: string, d: ReturnType<typeof executeAirDistributionDesign>): void => {
+      const plenum = d.returnStrategy === 'plenum';
+      const terms0 = [...d.supplyTerminals, ...d.returnTerminals];
+      const mains = [...d.supplyDucts, ...d.returnDucts].filter((x) => !x.plenumBox);
+      const segs: NetSeg[] = mains.map((x) => ({
+        id: x.id, a: x.startPoint, b: x.endPoint, cfm: x.airflowCfm, w: x.widthIn, h: x.heightIn, parent: x.parentDuctId,
+        trunk: x.role === 'main-trunk', flagged: x.meetsDesignCriteria === false, velocity: x.velocityFpm,
+        vLimit: x.allowableVelocityFpm, network: x.systemType === 'return' ? 'return' : 'supply', unit: x.unitId
       }));
-      const terms: NetTerm[] = allTerms.map((t) => ({ id: t.id, p: t.position, cfm: t.cfm, network: t.type === 'return' ? 'return' : 'supply', unit: t.unitId }));
-      const roots = new Map(design.serviceZones.map((z) => [z.id, { x: z.equipmentPosition.x, y: z.equipmentPosition.y }]));
-      checkDuctNetworks('ducts(engine)', segs, terms, roots, polyFt, 1, uc.units === 'metric');
+      const terms: NetTerm[] = terms0.filter((t) => !(plenum && t.type === 'return')).map((t) => ({ id: t.id, p: t.position, cfm: t.cfm, network: t.type === 'return' ? 'return' : 'supply', unit: t.unitId }));
+      const roots = new Map(d.serviceZones.map((z) => [z.id, { x: z.equipmentPosition.x, y: z.equipmentPosition.y }]));
+      checkDuctNetworks(tag, segs, terms, roots, polyFt, 1, uc.units === 'metric');
 
       // plan clashes: wall clearance of the duct edge, ducts through terminals, supply/return crossings
-      const csegs: ClashSeg[] = [...design.supplyDucts, ...design.returnDucts].map((d) => ({
-        id: d.id, a: d.startPoint, b: d.endPoint, wIn: d.widthIn, network: d.systemType === 'return' ? 'return' : 'supply', crossover: !!d.crossover, flagged: !!d.clearanceIssue
+      const csegs: ClashSeg[] = [...d.supplyDucts, ...d.returnDucts].map((x) => ({
+        id: x.id, a: x.startPoint, b: x.endPoint, wIn: x.widthIn, network: x.systemType === 'return' ? 'return' : 'supply', crossover: !!x.crossover, flagged: !!x.clearanceIssue
       }));
-      const cterms: ClashTerm[] = allTerms.map((t) => {
+      const cterms: ClashTerm[] = terms0.map((t) => {
         const f = parseTerminalSizeIn(t.faceDimension) ?? { w: 24, h: 24 };
         return { id: t.id, p: t.position, w: f.w, h: f.h };
       });
-      checkClashes('ducts(engine)', csegs, cterms, polyFt, 1, design.serviceZones.map((z) => ({ x: z.equipmentPosition.x, y: z.equipmentPosition.y })));
+      const rootPts = d.serviceZones.map((z) => ({ x: z.equipmentPosition.x, y: z.equipmentPosition.y }));
+      checkClashes(tag, csegs, cterms, polyFt, 1, rootPts);
+
+      if (plenum) {
+        // zero return mains: one short box per unit, nothing else
+        const boxes = d.returnDucts;
+        const bad = boxes.length !== d.serviceZones.length || boxes.some((b) => !b.plenumBox || Math.hypot(b.endPoint.x - b.startPoint.x, b.endPoint.y - b.startPoint.y) > 4 + 1e-6);
+        check(`${tag}.plenumHasNoReturnMain`, !bad, () => `${boxes.length} return section(s) for ${d.serviceZones.length} unit(s): ${boxes.map((b) => `${b.id}${b.plenumBox ? '(box)' : '(MAIN)'}`).join(',')}`);
+        const sawFlag = convertDesignResultToZonePayload(d).diffusers.filter((x) => x.type === 'return').every((x) => x.plenumReturn === true);
+        check(`${tag}.plenumGrillesFlagged`, sawFlag, () => 'return grilles of a plenum design are not flagged plenumReturn in the payload');
+      } else {
+        // ducted: at most MAX_DUCTED_RETURN_CROSSINGS_PER_UNIT supply / return crossings per unit
+        let worst = 0, worstUnit = '';
+        for (const z of d.serviceZones) {
+          let n = 0;
+          for (const r of csegs.filter((c) => c.network === 'return' && d.returnDucts.find((q) => q.id === c.id)?.unitId === z.id)) {
+            for (const sg of csegs.filter((c) => c.network === 'supply')) {
+              const pt = crossPoint(sg, r, 1);
+              if (pt && !rootPts.some((q) => Math.hypot(q.x - pt.x, q.y - pt.y) <= 0.1)) n++;
+            }
+          }
+          if (n > worst) { worst = n; worstUnit = z.unitTag; }
+        }
+        // topologically unavoidable: a middle unit of >= 3 bays stacked in a room <= 12 ft deep is sandwiched between two
+        // supply trunks (the crossings are flagged as crossovers on the ducts and checked by noSupplyReturnCrossing)
+        const sandwiched = d.serviceZones.length >= 3 && Math.min(bb.w, bb.h) <= 12;
+        check(`${tag}.returnCrossingsLe1PerUnit`, sandwiched || worst <= MAX_DUCTED_RETURN_CROSSINGS_PER_UNIT, () => `${worstUnit} return main crosses the supply ${worst} times`);
+      }
+    };
+    engineNetworkChecks('ducts(engine)', design);
+    if (uc.units === 'imperial') {
+      try {
+        engineNetworkChecks('ducts(engine,ducted)', executeAirDistributionDesign({ ...input, returnStrategy: 'ducted' }));
+      } catch (e) {
+        check('crash.executeAirDistributionDesign(ducted)', false, () => String((e as Error).stack || e).split('\n').slice(0, 3).join(' | '));
+      }
     }
 
     // ── Indoor unit keep-out: no terminal face inside footprint + 2 ft service clearance ──
@@ -790,14 +831,14 @@ for (let ri = 0; ri < rooms.length; ri++) {
         const again = routeDucts(pxPoly, payload.diffusers.map((d) => ({ ...d })), uc.units, zone.id, payload.unitPos, 'concealed', payload.outdoorUnitPos, { targetNc: 32 }, k);
         const dd = deepDiff(routed, again);
         check('determinism.routeDucts', !dd, () => dd!);
-        const segs: NetSeg[] = (routed.ducts as Array<DuctSegment & { parentDuctId?: string }>).map((d) => ({
+        const segs: NetSeg[] = (routed.ducts as Array<DuctSegment & { parentDuctId?: string }>).filter((d) => !d.plenumBox).map((d) => ({
           id: d.id, a: { x: d.points[0], y: d.points[1] }, b: { x: d.points[2], y: d.points[3] }, cfm: d.cfm, w: d.widthIn, h: d.heightIn,
           parent: d.parentDuctId, trunk: d.type === 'trunk', // return sections carry no trunk/branch role in DuctSegment
           flagged: d.acousticVerification ? d.acousticVerification.complianceStatus !== 'PASS' : false,
           velocity: d.velocityFpm ?? 0, vLimit: d.acousticVerification?.allowableAcousticVelocityFpm ?? Infinity,
           network: d.type === 'return' ? 'return' : 'supply', unit: 'u'
         }));
-        const terms: NetTerm[] = payload.diffusers.map((d) => ({ id: d.id, p: { x: d.x, y: d.y }, cfm: d.cfm, network: d.type === 'return' ? 'return' : 'supply', unit: 'u' }));
+        const terms: NetTerm[] = payload.diffusers.filter((d) => !d.plenumReturn).map((d) => ({ id: d.id, p: { x: d.x, y: d.y }, cfm: d.cfm, network: d.type === 'return' ? 'return' : 'supply', unit: 'u' }));
         checkDuctNetworks('ducts(routeDucts)', segs, terms, new Map([['u', routed.unitPos]]), pxPoly, 1 / k, uc.units === 'metric');
         const csegs: ClashSeg[] = (routed.ducts as Array<DuctSegment & { crossover?: boolean; clearanceIssue?: string }>).map((d) => ({
           id: d.id, a: { x: d.points[0], y: d.points[1] }, b: { x: d.points[2], y: d.points[3] }, wIn: d.widthIn,
