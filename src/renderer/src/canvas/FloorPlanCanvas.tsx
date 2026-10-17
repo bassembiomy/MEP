@@ -129,7 +129,7 @@ import {
   saveDrainPoints,
   toggleDrainPoint
 } from './polishL2';
-import { CONDENSATE_TAG, boundsWithLabels, pipeBubbleSpots, type FitLabel } from './polishM2';
+import { CONDENSATE_TAG, pipeBubbleSpots, type FitLabel } from './polishM2';
 import { NO_DRAIN_TEXT, needsAccessPanel, zonesMissingDrainPoint, exportContentBounds } from './polishN1';
 
 // Duct outline geometry cache (keyed by the zone's duct array identity, then k).
@@ -505,6 +505,7 @@ export const FloorPlanCanvas: React.FC = () => {
   }, []);
 
   // ───────── Fit / zoom ─────────
+  const FIT_ALL_PADDING = { top: FIT_PADDING.top + 100, right: FIT_PADDING.right + 60, bottom: FIT_PADDING.bottom + 60, left: FIT_PADDING.left + 60 };
   const allContentBounds = useCallback((): Bounds | null => {
     const parts: Array<Bounds | null> = [dxfBoundingBox];
     for (const z of zones) {
@@ -527,8 +528,9 @@ export const FloorPlanCanvas: React.FC = () => {
       minY: b.minY - Math.max(0, (minSpan - (b.maxY - b.minY)) / 2),
       maxY: b.maxY + Math.max(0, (minSpan - (b.maxY - b.minY)) / 2)
     };
-    const withLabels = boundsWithLabels(bb, fitLabelsRef.current, (bx) => fitBounds(bx, size.w, size.h, 0.92, FIT_PADDING).scale);
-    const f = fitBounds(withLabels, size.w, size.h, 0.92, FIT_PADDING);
+    // World-space content only; label overhang is covered by a fixed screen-px margin (never by label boxes, which
+    // depend on the current zoom and would create a feedback loop).
+    const f = fitBounds(bb, size.w, size.h, 0.92, FIT_ALL_PADDING);
     setStageScale(f.scale);
     setStagePos({ x: f.x, y: f.y });
   }, [allContentBounds, size.w, size.h, k]);
@@ -1475,14 +1477,14 @@ export const FloorPlanCanvas: React.FC = () => {
       if (plan && noDrainIds.has(z.id) && zUnits.length > 0) {
         const u0 = zUnits[0];
         const id = `nd:${z.id}`;
-        const fontPx = 9 * ff;
+        const fontPx = 11 * ff;
         reqs.push({
-          id, lines: [NO_DRAIN_TEXT], fontPx, priority: 80, mandatory: true, guaranteed: true, anchor: { x: u0.x * s, y: u0.y * s },
+          id, lines: ['!'], fontPx, priority: 80, mandatory: true, guaranteed: true, anchor: { x: u0.x * s, y: u0.y * s },
           anchorHalf: { w: (fp.w * s) / 2, h: (fp.d * s) / 2 }
         });
         meta.set(id, {
-          id, zoneId: z.id, kind: 'warning', lines: [colorLine(NO_DRAIN_TEXT, '#fbbf24')], fontPx, anchorWorld: { x: u0.x, y: u0.y },
-          bg: 'rgba(69,26,3,0.92)', border: '#f59e0b', leaderOnFar: true, leaderTo: { x: u0.x, y: u0.y }, leaderColor: '#f59e0b'
+          id, zoneId: z.id, kind: 'warning', lines: [colorLine('!', '#fbbf24')], fontPx, anchorWorld: { x: u0.x, y: u0.y },
+          bg: 'rgba(69,26,3,0.92)', border: '#f59e0b'
         });
       }
       if (tier >= 2 && zUnits.length >= 2 && isDuctedSystem(z)) {
