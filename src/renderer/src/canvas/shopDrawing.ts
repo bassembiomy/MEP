@@ -176,7 +176,7 @@ export interface Takeoff {
  * One takeoff per supply branch: the branch end that touches (nearest to) the trunk / return it taps. The volume damper sits
  * just downstream of the trunk edge. Pure.
  */
-export function findBranchTakeoffs(ducts: ShopDuct[], k: number): Takeoff[] {
+export function findBranchTakeoffs(ducts: ShopDuct[], k: number, avoid: Rect[] = []): Takeoff[] {
   const out: Takeoff[] = [];
   for (const d of ducts) {
     if (d.type !== 'branch' || d.points.length < 4) continue;
@@ -198,11 +198,24 @@ export function findBranchTakeoffs(ducts: ShopDuct[], k: number): Takeoff[] {
     const sx = atA ? ax : bx, sy = atA ? ay : by;
     const ux = ((atA ? bx : ax) - sx) / len, uy = ((atA ? by : ay) - sy) / len;
     const trunkHw = parent ? ductHalfWidthPx(parent.widthIn || parent.diameterIn || 0, k) : 0;
-    const off = Math.min(len * 0.4, trunkHw + 0.75 * k);
+    const halfWidthPx = ductHalfWidthPx(d.widthIn || d.diameterIn || 0, k);
+    let off = Math.min(len * 0.4, trunkHw + 0.75 * k);
+    // slide the damper further along the branch while its symbol would sit on something else (unit tag, panel, flex ...)
+    const hit = (o: number): boolean => {
+      const hw = Math.max(halfWidthPx, 0.2 * k) * 1.25 + 0.2 * k;
+      const r: Rect = { x: sx + ux * o - hw, y: sy + uy * o - hw, w: 2 * hw, h: 2 * hw };
+      return avoid.some((a) => a.x < r.x + r.w && a.x + a.w > r.x && a.y < r.y + r.h && a.y + a.h > r.y);
+    };
+    if (avoid.length > 0 && hit(off)) {
+      const maxOff = Math.min(len * 0.85, off + 8 * k);
+      for (let o = off + 0.5 * k; o <= maxOff + 1e-9; o += 0.5 * k) {
+        if (!hit(o)) { off = o; break; }
+      }
+    }
     out.push({
       id: `vd:${d.id}`, ductId: d.id,
       x: sx + ux * off, y: sy + uy * off, tx: sx, ty: sy, ux, uy,
-      halfWidthPx: ductHalfWidthPx(d.widthIn || d.diameterIn || 0, k)
+      halfWidthPx
     });
   }
   return out;
@@ -405,10 +418,12 @@ export function buildTitleBlock(input: {
   sheetNo?: string;
   sheetTitle?: string;
   dpi?: number;
+  /** Standard drawing scale text (from `planSheet`); overrides the derived print scale. */
+  scaleText?: string;
 }): TitleBlock {
   const projectName = (input.projectName || 'UNTITLED PROJECT').toUpperCase();
   const location = (input.location || '-').toUpperCase();
-  const scaleText = printScaleText(input.pxPerFt, input.dpi ?? 96);
+  const scaleText = input.scaleText ?? printScaleText(input.pxPerFt, input.dpi ?? 96);
   const unitsText = input.units === 'metric' ? 'METRIC (m, mm)' : 'IMPERIAL (ft-in)';
   const dateText = formatSheetDate(input.date ?? new Date());
   const sheetText = `${input.sheetNo ?? 'M-101'} ${input.sheetTitle ?? 'HVAC LAYOUT'}`;
@@ -526,7 +541,7 @@ export function calloutCandidates(
   if (!Number.isFinite(minX)) return out;
   const clampX = (x: number): number => Math.min(maxX - size.w / 2, Math.max(minX + size.w / 2, x));
   const clampY = (y: number): number => Math.min(maxY - size.h / 2, Math.max(minY + size.h / 2, y));
-  for (const g of [gap, gap * 4]) {
+  for (const g of [gap, gap * 4, gap * 10]) {
     const fx = [anchor.x, (minX + maxX) / 2, minX + size.w / 2, maxX - size.w / 2];
     const fy = [anchor.y, (minY + maxY) / 2, minY + size.h / 2, maxY - size.h / 2];
     for (const x of fx) out.push({ x: clampX(x), y: minY - g - size.h / 2, angleDeg: 0 });
@@ -535,4 +550,505 @@ export function calloutCandidates(
     for (const x of fx) out.push({ x: clampX(x), y: maxY + g + size.h / 2, angleDeg: 0 });
   }
   return out;
+}
+
+// ───────────────────────── Accessory placement (service side, R bubble, plenum) ─────────────────────────
+
+/** Point at half the total length of a polyline [x0,y0,x1,y1,...] plus the direction of the segment it falls on. */
+export function polylineMidpoint(pts: number[]): { x: number; y: number; ux: number; uy: number } {
+  let total = 0;
+  for (let i = 0; i + 3 < pts.length; i += 2) total += Math.hypot(pts[i + 2] - pts[i], pts[i + 3] - pts[i + 1]);
+  if (pts.length < 4 || total < 1e-9) return { x: pts[0] ?? 0, y: pts[1] ?? 0, ux: 1, uy: 0 };
+  let rem = total / 2;
+  for (let i = 0; i + 3 < pts.length; i += 2) {
+    const l = Math.hypot(pts[i + 2] - pts[i], pts[i + 3] - pts[i + 1]);
+    if (l <= 1e-12) continue;
+    if (rem <= l + 1e-9) {
+      const t = rem / l;
+      return { x: pts[i] + (pts[i + 2] - pts[i]) * t, y: pts[i + 1] + (pts[i + 3] - pts[i + 1]) * t, ux: (pts[i + 2] - pts[i]) / l, uy: (pts[i + 3] - pts[i + 1]) / l };
+    }
+    rem -= l;
+  }
+  const n = pts.length;
+  return { x: pts[n - 2], y: pts[n - 1], ux: 1, uy: 0 };
+}
+
+/** Point `dist` px back along a polyline measured from its END (e.g. where a pipe arrives at a unit). */
+export function pointFromEnd(pts: number[], dist: number): Pt {
+  let rem = dist;
+  for (let i = pts.length - 4; i >= 0; i -= 2) {
+    const l = Math.hypot(pts[i + 2] - pts[i], pts[i + 3] - pts[i + 1]);
+    if (l <= 1e-12) continue;
+    if (rem <= l) {
+      const t = rem / l;
+      return { x: pts[i + 2] + (pts[i] - pts[i + 2]) * t, y: pts[i + 3] + (pts[i + 1] - pts[i + 3]) * t };
+    }
+    rem -= l;
+  }
+  return { x: pts[0] ?? 0, y: pts[1] ?? 0 };
+}
+
+export type ServiceSide = 'right' | 'left' | 'top' | 'bottom';
+
+/**
+ * Access panel on the unit's service side: the side (right, top, left, bottom order) that keeps the panel off the
+ * refrigerant / drain arrival points and out of the other boxes (flex connections, plenum box). Pure.
+ */
+export function accessPanelPlacement(
+  unit: Pt,
+  footprint: { w: number; d: number },
+  k: number,
+  avoid: { pts?: Pt[]; boxes?: Rect[] } = {}
+): { side: ServiceSide; rect: Rect } {
+  const s = 2 * k, g = 0.75 * k;
+  const rects: Record<ServiceSide, Rect> = {
+    right: { x: unit.x + footprint.w / 2 + g, y: unit.y - s / 2, w: s, h: s },
+    top: { x: unit.x - s / 2, y: unit.y - footprint.d / 2 - g - s, w: s, h: s },
+    left: { x: unit.x - footprint.w / 2 - g - s, y: unit.y - s / 2, w: s, h: s },
+    bottom: { x: unit.x - s / 2, y: unit.y + footprint.d / 2 + g + 1.2 * k, w: s, h: s } // below the equipment tag
+  };
+  const order: ServiceSide[] = ['right', 'top', 'left', 'bottom'];
+  let best: ServiceSide = 'right', bestScore = Infinity;
+  order.forEach((side, i) => {
+    const r = rects[side];
+    let score = i * 0.01;
+    for (const b of avoid.boxes ?? []) if (b.x < r.x + r.w && b.x + b.w > r.x && b.y < r.y + r.h && b.y + b.h > r.y) score += 1000;
+    const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    for (const p of avoid.pts ?? []) score += (6 * k) / (Math.hypot(p.x - cx, p.y - cy) + 0.5 * k);
+    if (score < bestScore - 1e-9) { bestScore = score; best = side; }
+  });
+  return { side: best, rect: rects[best] };
+}
+
+/** True when the zone returns through the ceiling plenum (return grilles + transfer box, no return ducts). */
+export const isPlenumReturn = (zone: object): boolean => (zone as { returnStrategy?: string }).returnStrategy === 'plenum';
+
+/** Short transfer / plenum box on the return (left) side of an indoor unit, as deep as the unit. */
+export function plenumBox(unit: Pt, footprint: { w: number; d: number }, k: number): Rect {
+  const w = 1.5 * k;
+  return { x: unit.x - footprint.w / 2 - w, y: unit.y - footprint.d / 2, w, h: footprint.d };
+}
+
+// ───────────────────────── Elevations + crossover detail ─────────────────────────
+
+const IN_PER_M = 1000 / MM_PER_IN;
+
+/** Elevation above floor from inches: `+2'-10"` (imperial) | `2.85 m` (metric). */
+export function formatElevation(inches: number, units: string | undefined): string {
+  if (units === 'metric') return `${(inches / IN_PER_M).toFixed(2)} m`;
+  const neg = inches < 0;
+  const total = Math.round(Math.abs(inches));
+  const ft = Math.floor(total / 12), inch = total % 12;
+  return `${neg ? '-' : '+'}${ft}'-${inch}"`;
+}
+
+/** Ceiling height (project length units: ft or m) in inches; undefined when absent / invalid. */
+export function ceilingInches(ceilingHeight: number | undefined, units: string | undefined): number | undefined {
+  if (ceilingHeight === undefined || !Number.isFinite(ceilingHeight) || ceilingHeight <= 0) return undefined;
+  return units === 'metric' ? ceilingHeight * IN_PER_M : ceilingHeight * 12;
+}
+
+export const CEILING_GAP_IN = 6;
+export const CROSSOVER_CLEARANCE_IN = 2;
+
+/** Bottom-of-duct elevation (inches AFF) of a duct hung tight under the ceiling: ceiling - 6 in - duct height. */
+export function ductBodIn(heightIn: number, ceilingIn: number): number {
+  return ceilingIn - CEILING_GAP_IN - heightIn;
+}
+
+export interface CrossoverElevations {
+  absolute: boolean;
+  /** Bottom of duct (in AFF); NaN for relative output. */
+  upperBodIn: number;
+  lowerBodIn: number;
+  upperText: string;
+  lowerText: string;
+}
+
+/**
+ * Elevation tags of a crossing pair. The upper duct's BOD = the lower duct's top + 2 in. With a ceiling height the values are
+ * absolute (upper duct tight under the ceiling, 6 in gap); without it they are relative to the lower duct's BOD.
+ */
+export function crossoverElevations(
+  upperHeightIn: number,
+  lowerHeightIn: number,
+  ceilingHeight: number | undefined,
+  units: string | undefined
+): CrossoverElevations {
+  const ceil = ceilingInches(ceilingHeight, units);
+  if (ceil !== undefined) {
+    const upperBodIn = ductBodIn(upperHeightIn, ceil);
+    const lowerBodIn = upperBodIn - CROSSOVER_CLEARANCE_IN - lowerHeightIn;
+    return { absolute: true, upperBodIn, lowerBodIn, upperText: `BOD ${formatElevation(upperBodIn, units)}`, lowerText: `BOD ${formatElevation(lowerBodIn, units)}` };
+  }
+  const rise = lowerHeightIn + CROSSOVER_CLEARANCE_IN;
+  const fmt = (v: number): string => (units === 'metric' ? `${Math.round((v * MM_PER_IN) / 5) * 5} mm` : `${Math.round(v)}"`);
+  return { absolute: false, upperBodIn: NaN, lowerBodIn: NaN, upperText: `↑ +${fmt(rise)}`, lowerText: `↓ ±0${units === 'metric' ? ' mm' : '"'}` };
+}
+
+export interface CrossoverDuct {
+  id: string;
+  type: 'trunk' | 'branch' | 'return';
+  points: number[];
+  widthIn: number;
+  heightIn?: number;
+  diameterIn?: number;
+  crossover?: boolean;
+  crossoverWith?: string[];
+}
+
+export const ductHeightIn = (d: { heightIn?: number; widthIn: number; diameterIn?: number }): number =>
+  d.heightIn || d.diameterIn || d.widthIn || 0;
+
+export interface CrossoverPair {
+  upperId: string;
+  lowerId: string;
+  /** Plan crossing of the two centre lines (fallback: lower duct midpoint when they do not intersect). */
+  point: Pt;
+  intersects: boolean;
+}
+
+function segIntersect(a: number[], b: number[]): Pt | null {
+  const dx = a[2] - a[0], dy = a[3] - a[1], ex = b[2] - b[0], ey = b[3] - b[1];
+  const den = dx * ey - dy * ex;
+  if (Math.abs(den) < 1e-9) return null;
+  const t = ((b[0] - a[0]) * ey - (b[1] - a[1]) * ex) / den;
+  const u = ((b[0] - a[0]) * dy - (b[1] - a[1]) * dx) / den;
+  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+  return { x: a[0] + dx * t, y: a[1] + dy * t };
+}
+
+/** Crossing pairs from `crossover` / `crossoverWith`. The return duct is the lower one (same type: lower id is lower). */
+export function findCrossoverPairs(ducts: CrossoverDuct[]): CrossoverPair[] {
+  const byId = new Map<string, CrossoverDuct>();
+  for (const d of ducts) byId.set(d.id, d);
+  const seen = new Set<string>();
+  const out: CrossoverPair[] = [];
+  for (const d of ducts) {
+    if (!d.crossover) continue;
+    for (const oid of d.crossoverWith ?? []) {
+      const o = byId.get(oid);
+      if (!o) continue;
+      const key = d.id < o.id ? `${d.id}|${o.id}` : `${o.id}|${d.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let lower: CrossoverDuct, upper: CrossoverDuct;
+      if ((d.type === 'return') !== (o.type === 'return')) { lower = d.type === 'return' ? d : o; upper = lower === d ? o : d; }
+      else { lower = d.id < o.id ? d : o; upper = lower === d ? o : d; }
+      if (lower.points.length < 4 || upper.points.length < 4) continue;
+      const pt = segIntersect(lower.points, upper.points);
+      out.push({
+        upperId: upper.id, lowerId: lower.id, intersects: !!pt,
+        point: pt ?? { x: (lower.points[0] + lower.points[2]) / 2, y: (lower.points[1] + lower.points[3]) / 2 }
+      });
+    }
+  }
+  return out;
+}
+
+export interface CrossoverBreak {
+  center: Pt;
+  /** Unit vector along the lower duct. */
+  ux: number;
+  uy: number;
+  /** Half length of the gap along the lower duct (px). */
+  gapHalf: number;
+  /** Gap end points on the lower centre line. */
+  a: Pt;
+  b: Pt;
+  /** Quad (8 numbers) painted in the background colour over the lower duct to open the gap. */
+  eraser: number[];
+  /** Two slanted break lines closing the lower duct at the gap ends. */
+  breakLines: number[][];
+  /** Piece of the upper duct redrawn over the gap: centre, direction and half length (px). */
+  patch: { x: number; y: number; vx: number; vy: number; halfLen: number };
+}
+
+/** Gap in the lower duct where the upper one passes over it (plan view). */
+export function crossoverBreak(
+  lower: { points: number[]; widthIn: number; diameterIn?: number },
+  upper: { points: number[]; widthIn: number; diameterIn?: number },
+  point: Pt,
+  k: number
+): CrossoverBreak {
+  const lx = lower.points[2] - lower.points[0], ly = lower.points[3] - lower.points[1];
+  const ll = Math.hypot(lx, ly) || 1;
+  const ux = lx / ll, uy = ly / ll, nx = -uy, ny = ux;
+  const vx0 = upper.points[2] - upper.points[0], vy0 = upper.points[3] - upper.points[1];
+  const vl = Math.hypot(vx0, vy0) || 1;
+  const vx = vx0 / vl, vy = vy0 / vl;
+  const lhw = ductHalfWidthPx(lower.widthIn || lower.diameterIn || 0, k);
+  const uhw = ductHalfWidthPx(upper.widthIn || upper.diameterIn || 0, k);
+  const sinT = Math.max(0.25, Math.abs(ux * vy - uy * vx));
+  const cosT = Math.abs(ux * vx + uy * vy);
+  const pad = Math.max(0.2 * k, 2);
+  const gapHalf = Math.min(uhw / sinT + pad, ll / 2);
+  const a = { x: point.x - ux * gapHalf, y: point.y - uy * gapHalf };
+  const b = { x: point.x + ux * gapHalf, y: point.y + uy * gapHalf };
+  const w = lhw + 0.6;
+  const eraser = [
+    a.x + nx * w, a.y + ny * w, b.x + nx * w, b.y + ny * w,
+    b.x - nx * w, b.y - ny * w, a.x - nx * w, a.y - ny * w
+  ];
+  const ext = lhw * 1.25, sl = Math.max(lhw * 0.35, 0.5);
+  const brk = (c: Pt): number[] => [c.x + nx * ext - ux * sl, c.y + ny * ext - uy * sl, c.x - nx * ext + ux * sl, c.y - ny * ext + uy * sl];
+  return {
+    center: point, ux, uy, gapHalf, a, b, eraser, breakLines: [brk(a), brk(b)],
+    patch: { x: point.x, y: point.y, vx, vy, halfLen: gapHalf * cosT + w * Math.abs(ux * vy - uy * vx) + 1 }
+  };
+}
+
+/** Rise (apex up) / drop (apex down) symbol: a circle with a triangle, centred on `c`. */
+export function riseDropSymbol(c: Pt, size: number, dir: 'rise' | 'drop'): { radius: number; triangle: number[] } {
+  const s = size * 0.6, sgn = dir === 'rise' ? -1 : 1;
+  return {
+    radius: size,
+    triangle: [c.x - s, c.y - sgn * s * 0.55, c.x + s, c.y - sgn * s * 0.55, c.x, c.y + sgn * s * 0.75]
+  };
+}
+
+/** Where a duct carries its rise/drop symbol: `offsetPx` from the crossing along the duct, on the side with more room. */
+export function crossoverSymbolPos(duct: { points: number[] }, at: Pt, offsetPx: number): Pt {
+  const x1 = duct.points[0], y1 = duct.points[1], x2 = duct.points[2], y2 = duct.points[3];
+  const l = Math.hypot(x2 - x1, y2 - y1) || 1;
+  const ux = (x2 - x1) / l, uy = (y2 - y1) / l;
+  const t = (at.x - x1) * ux + (at.y - y1) * uy;
+  const sign = t > l - t ? -1 : 1; // -1 = toward the duct start
+  const room = sign < 0 ? t : l - t;
+  const tt = t + sign * Math.min(offsetPx, Math.max(0, room));
+  return { x: x1 + ux * tt, y: y1 + uy * tt };
+}
+
+// ───────────────────────── Standard drawing scales + sheet ─────────────────────────
+
+export interface StandardScale {
+  id: string;
+  /** Title block text: `1:50` | `1/4" = 1'-0"`. */
+  label: string;
+  /** Paper length / real length. */
+  ratio: number;
+  system: 'metric' | 'imperial';
+}
+
+const mkMetric = (den: number): StandardScale => ({ id: `1:${den}`, label: `1:${den}`, ratio: 1 / den, system: 'metric' });
+const mkImp = (label: string, inchPerFt: number): StandardScale => ({ id: label, label, ratio: inchPerFt / 12, system: 'imperial' });
+
+/** Largest scale first. */
+export const METRIC_SCALES: StandardScale[] = [20, 25, 50, 75, 100, 125, 150, 200].map(mkMetric);
+export const IMPERIAL_SCALES: StandardScale[] = [
+  mkImp('1/4" = 1\'-0"', 1 / 4),
+  mkImp('3/16" = 1\'-0"', 3 / 16),
+  mkImp('1/8" = 1\'-0"', 1 / 8),
+  mkImp('3/32" = 1\'-0"', 3 / 32),
+  mkImp('1/16" = 1\'-0"', 1 / 16)
+];
+
+export const scalesFor = (units: string | undefined): StandardScale[] => (units === 'metric' ? METRIC_SCALES : IMPERIAL_SCALES);
+
+export const MM_PER_FT = 304.8;
+
+export interface SheetSpec { id: 'A1' | 'ARCH D'; wMm: number; hMm: number; marginMm: number }
+export const SHEET_A1: SheetSpec = { id: 'A1', wMm: 841, hMm: 594, marginMm: 10 };
+export const SHEET_ARCH_D: SheetSpec = { id: 'ARCH D', wMm: 914.4, hMm: 609.6, marginMm: 12.7 };
+export const sheetSpecFor = (units: string | undefined): SheetSpec => (units === 'metric' ? SHEET_A1 : SHEET_ARCH_D);
+
+/** Sheet drawing unit in paper mm (the title block is 300 units = 110 mm wide). */
+export const SHEET_UNIT_MM = 110 / 300;
+const SHEET_PAD_MM = 12;
+const sheetStripMm = (legendCount: number): number => {
+  const u = SHEET_UNIT_MM;
+  const lh = (30 + Math.ceil(legendCount / 2) * 18) * u;
+  return Math.max(112 * u, lh) + 2 * 12 * u;
+};
+
+export interface PickedScale { scale: StandardScale; fits: boolean; sheet: SheetSpec }
+
+/**
+ * Largest standard scale (metric 1:20 .. 1:200 | imperial 1/4" .. 1/16" = 1'-0") whose drawing extents (feet) fit the usable
+ * area of the A1 (metric) / ARCH D (imperial) sheet. When none fits the smallest scale is returned with `fits: false`.
+ */
+export function pickStandardScale(extentsFt: { w: number; h: number }, units: string | undefined, legendCount = legendItems().length): PickedScale {
+  const sheet = sheetSpecFor(units);
+  const list = scalesFor(units);
+  const availW = sheet.wMm - 2 * sheet.marginMm - 2 * SHEET_PAD_MM;
+  const availH = sheet.hMm - 2 * sheet.marginMm - sheetStripMm(legendCount) - 2 * SHEET_PAD_MM;
+  for (const scale of list) {
+    if (extentsFt.w * MM_PER_FT * scale.ratio <= availW + 1e-9 && extentsFt.h * MM_PER_FT * scale.ratio <= availH + 1e-9) {
+      return { scale, fits: true, sheet };
+    }
+  }
+  return { scale: list[list.length - 1], fits: false, sheet };
+}
+
+export interface ScaleBar {
+  /** Real length of the whole bar and its unit. */
+  length: number;
+  unit: 'm' | 'ft';
+  segments: number;
+  /** Bar length on paper (mm). */
+  paperMm: number;
+  labels: string[];
+}
+
+const BAR_LENGTHS_M = [1, 2, 5, 10, 20, 50, 100, 200, 500];
+const BAR_LENGTHS_FT = [1, 2, 4, 5, 10, 20, 25, 50, 100, 200, 500];
+
+/** Graphic scale bar: the longest round real length that stays within `maxPaperMm` (default 70 mm) on paper. */
+export function buildScaleBar(scale: StandardScale, maxPaperMm = 70): ScaleBar {
+  const metric = scale.system === 'metric';
+  const list = metric ? BAR_LENGTHS_M : BAR_LENGTHS_FT;
+  const mmPerUnit = metric ? 1000 : MM_PER_FT;
+  let length = list[0];
+  for (const l of list) if (l * mmPerUnit * scale.ratio <= maxPaperMm + 1e-9) length = l;
+  const segments = length % 4 === 0 ? 4 : length % 5 === 0 ? 5 : 2;
+  const labels: string[] = [];
+  for (let i = 0; i <= segments; i++) {
+    const v = (length * i) / segments;
+    labels.push(String(Math.round(v * 100) / 100));
+  }
+  labels[labels.length - 1] += metric ? ' m' : ' ft';
+  return { length, unit: metric ? 'm' : 'ft', segments, paperMm: length * mmPerUnit * scale.ratio, labels };
+}
+
+export interface SheetPlan {
+  scale: StandardScale;
+  fits: boolean;
+  sheet: SheetSpec;
+  /** World px per paper mm at the chosen scale. */
+  pxPerMm: number;
+  /** Sheet drawing unit (world px). */
+  u: number;
+  /** Paper edge, inner border, title block, legend and scale-bar box (world px). */
+  frame: Rect;
+  border: Rect;
+  title: Rect;
+  legend: Rect;
+  scaleBarBox: Rect;
+  scaleBar: ScaleBar;
+  /** The frame (what Export crops to); also the sheet's union bounds. */
+  bounds: Rect;
+}
+
+/**
+ * Sheet frame at a standard scale: the paper (A1 / ARCH D) in world px around the drawing extents, with border, title block +
+ * legend bottom-right, scale bar bottom-left. `k` = world px per foot.
+ */
+export function planSheet(extents: Bounds, k: number, units: string | undefined, legendCount = legendItems().length): SheetPlan {
+  const extW = Math.max(extents.maxX - extents.minX, 1e-6), extH = Math.max(extents.maxY - extents.minY, 1e-6);
+  const picked = pickStandardScale({ w: extW / k, h: extH / k }, units, legendCount);
+  const { scale, sheet } = picked;
+  const pxPerMm = k / MM_PER_FT / scale.ratio;
+  const u = SHEET_UNIT_MM * pxPerMm;
+  const mm = (v: number): number => v * pxPerMm;
+  const strip = sheetStripMm(legendCount);
+  const availW = sheet.wMm - 2 * sheet.marginMm - 2 * SHEET_PAD_MM;
+  const availH = sheet.hMm - 2 * sheet.marginMm - strip - 2 * SHEET_PAD_MM;
+  const cx = (extents.minX + extents.maxX) / 2, cy = (extents.minY + extents.maxY) / 2;
+  const frame: Rect = {
+    x: cx - mm(sheet.marginMm + SHEET_PAD_MM + availW / 2),
+    y: cy - mm(sheet.marginMm + SHEET_PAD_MM + availH / 2),
+    w: mm(sheet.wMm), h: mm(sheet.hMm)
+  };
+  const border: Rect = { x: frame.x + mm(sheet.marginMm), y: frame.y + mm(sheet.marginMm), w: mm(sheet.wMm - 2 * sheet.marginMm), h: mm(sheet.hMm - 2 * sheet.marginMm) };
+  const gap = 12 * u;
+  const tw = 300 * u, th = 112 * u;
+  const lw = 340 * u, lh = (30 + Math.ceil(legendCount / 2) * 18) * u;
+  const title: Rect = { x: border.x + border.w - gap - tw, y: border.y + border.h - gap - th, w: tw, h: th };
+  const legend: Rect = { x: title.x - gap - lw, y: border.y + border.h - gap - lh, w: lw, h: lh };
+  const scaleBar = buildScaleBar(scale);
+  const sbw = mm(scaleBar.paperMm) + 24 * u, sbh = 34 * u;
+  const scaleBarBox: Rect = { x: border.x + gap, y: border.y + border.h - gap - sbh, w: sbw, h: sbh };
+  return { scale, fits: picked.fits, sheet, pxPerMm, u, frame, border, title, legend, scaleBarBox, scaleBar, bounds: frame };
+}
+
+export const DEFAULT_EXPORT_DPI = 150;
+export const MAX_EXPORT_PIXELS = 60e6;
+
+/** Export size in pixels for a sheet at `dpi` (reduced when it would exceed `MAX_EXPORT_PIXELS`). */
+export function exportPixelSize(sheet: SheetSpec, dpi = DEFAULT_EXPORT_DPI): { w: number; h: number; dpi: number } {
+  let d = Math.max(30, dpi);
+  const px = (v: number): number => Math.round((v / 25.4) * d);
+  while (px(sheet.wMm) * px(sheet.hMm) > MAX_EXPORT_PIXELS && d > 30) d = Math.floor(d * 0.9);
+  return { w: px(sheet.wMm), h: px(sheet.hMm), dpi: d };
+}
+
+// ───────────────────────── PNG dpi metadata ─────────────────────────
+
+const CRC_TABLE: number[] = (() => {
+  const t: number[] = [];
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let i = 0; i < 8; i++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t.push(c >>> 0);
+  }
+  return t;
+})();
+const crc32 = (bytes: number[]): number => {
+  let c = 0xffffffff;
+  for (const b of bytes) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+
+/** Insert a pHYs chunk (pixels per metre from `dpi`) after IHDR so print tools size the image correctly. */
+export function pngSetDpi(png: Uint8Array, dpi: number): Uint8Array {
+  const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (png.length < 33 || sig.some((b, i) => png[i] !== b)) return png;
+  const ppm = Math.round(dpi / 0.0254);
+  const u32 = (v: number): number[] => [(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255];
+  const body = [0x70, 0x48, 0x59, 0x73, ...u32(ppm), ...u32(ppm), 1];
+  const chunk = [...u32(9), ...body, ...u32(crc32(body))];
+  const ihdrEnd = 8 + 4 + 4 + 13 + 4;
+  const out = new Uint8Array(png.length + chunk.length);
+  out.set(png.subarray(0, ihdrEnd), 0);
+  out.set(chunk, ihdrEnd);
+  out.set(png.subarray(ihdrEnd), ihdrEnd + chunk.length);
+  return out;
+}
+
+// ───────────────────────── Persisted view toggles ─────────────────────────
+
+export interface KeyValueStorage { getItem(k: string): string | null; setItem(k: string, v: string): void }
+
+export function defaultStorage(): KeyValueStorage | null {
+  try {
+    return typeof window !== 'undefined' && window.localStorage ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+export const VIEW_PREFS_PREFIX = 'mep.canvas.';
+
+export function loadStoredBool(key: string, fallback: boolean, storage: KeyValueStorage | null = defaultStorage()): boolean {
+  try {
+    const v = storage?.getItem(VIEW_PREFS_PREFIX + key);
+    return v === '1' ? true : v === '0' ? false : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveStoredBool(key: string, value: boolean, storage: KeyValueStorage | null = defaultStorage()): void {
+  try {
+    storage?.setItem(VIEW_PREFS_PREFIX + key, value ? '1' : '0');
+  } catch {
+    /* storage unavailable: the toggle still works for this session */
+  }
+}
+
+export function loadStoredNumber(key: string, fallback: number, storage: KeyValueStorage | null = defaultStorage()): number {
+  try {
+    const n = Number(storage?.getItem(VIEW_PREFS_PREFIX + key));
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveStoredNumber(key: string, value: number, storage: KeyValueStorage | null = defaultStorage()): void {
+  try {
+    storage?.setItem(VIEW_PREFS_PREFIX + key, String(value));
+  } catch {
+    /* ignore */
+  }
 }

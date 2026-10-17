@@ -4,7 +4,8 @@ import { uprightAngle } from './drawingGeometry';
 export interface Rect { x: number; y: number; w: number; h: number }
 /** An obstacle may carry a tag so a label can ignore obstacles that belong to its own symbol (e.g. its duct section). */
 export interface Obstacle extends Rect { tag?: string }
-export interface LabelCandidate { x: number; y: number; angleDeg?: number }
+/** `leader`: the label sits away from its symbol and should be tied to it with a leader line. */
+export interface LabelCandidate { x: number; y: number; angleDeg?: number; leader?: boolean }
 
 export interface LabelRequest {
   id: string;
@@ -23,7 +24,16 @@ export interface LabelRequest {
   candidates?: LabelCandidate[];
   /** Obstacles with these tags are ignored for this label. */
   ignoreTags?: string[];
+  /**
+   * Never dropped, never left on top of something when any room exists: after the normal candidates fail it retries with
+   * smaller fonts (see `FALLBACK_FONT_SCALES`) and finally with far candidates tied to the symbol by a leader line.
+   * Implies `mandatory`.
+   */
+  guaranteed?: boolean;
 }
+
+/** Font scales tried (in order) by a `guaranteed` label. */
+export const FALLBACK_FONT_SCALES = [1, 0.85, 0.72];
 
 export interface PlacedLabel {
   id: string;
@@ -39,6 +49,10 @@ export interface PlacedLabel {
   dy: number;
   /** Axis-aligned bounding box of the (possibly rotated) label. */
   rect: Rect;
+  /** Font actually used (smaller than requested after a fallback). */
+  fontPx: number;
+  /** Draw a leader line from the anchor to the label. */
+  leader: boolean;
 }
 
 export const LABEL_CHAR_W = 0.6;
@@ -84,6 +98,51 @@ export function compassCandidates(
     for (const [dx, dy] of dirs) out.push({ x: anchor.x + dx * ex, y: anchor.y + dy * ey, angleDeg: 0 });
   }
   return out;
+}
+
+/** Far candidates (leader-line labels): 16 directions at three growing distances around the anchor. */
+export function leaderCandidates(
+  anchor: { x: number; y: number },
+  half: { w: number; h: number },
+  size: { w: number; h: number },
+  gap = 3
+): LabelCandidate[] {
+  const out: LabelCandidate[] = [];
+  const r0 = Math.max(half.w, half.h);
+  for (const g of [gap * 4 + 10, gap * 8 + 20, gap * 14 + 34]) {
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * 2 * Math.PI;
+      const c = Math.cos(a), sn = Math.sin(a);
+      out.push({
+        x: anchor.x + c * (r0 + g + size.w / 2 * Math.abs(c)),
+        y: anchor.y + sn * (r0 + g + size.h / 2 * Math.abs(sn)),
+        angleDeg: 0,
+        leader: true
+      });
+    }
+  }
+  return out;
+}
+
+/** Screen-space rectangle (px, container origin) -> layout space (world px * layoutScale) for a stage view. */
+export function screenRectToLayout(
+  r: Rect,
+  view: { x: number; y: number; scale: number },
+  layoutScale: number,
+  pad = 0
+): Rect {
+  const f = layoutScale / Math.max(1e-9, view.scale);
+  return { x: (r.x - view.x) * f - pad, y: (r.y - view.y) * f - pad, w: r.w * f + 2 * pad, h: r.h * f + 2 * pad };
+}
+
+/** Overlay toolbars (HUD) as label obstacles in layout space. */
+export function overlayObstacles(
+  rects: Rect[],
+  view: { x: number; y: number; scale: number },
+  layoutScale: number,
+  pad = 6
+): Obstacle[] {
+  return rects.map((r) => ({ ...screenRectToLayout(r, view, layoutScale, pad * layoutScale / Math.max(1e-9, view.scale)), tag: 'overlay' }));
 }
 
 /**
@@ -143,34 +202,46 @@ export function layoutLabels(
     return c;
   };
   for (const req of sorted) {
-    const size = measureLabel(req.lines, req.fontPx);
-    const cands = req.candidates ?? compassCandidates(req.anchor, req.anchorHalf ?? { w: 0, h: 0 }, size, req.gap ?? 3);
-    let chosen: { c: LabelCandidate; rect: Rect } | null = null;
-    let best: { c: LabelCandidate; rect: Rect; cost: number } | null = null;
-    for (const c of cands) {
-      const rect = rotatedAabb(c.x, c.y, size.w, size.h, c.angleDeg ?? 0);
-      if (!blocked(rect, req.ignoreTags)) { chosen = { c, rect }; break; }
-      if (req.mandatory) {
-        const cc = cost(rect, req.ignoreTags);
-        if (!best || cc < best.cost - 1e-9) best = { c, rect, cost: cc };
+    const mandatory = !!req.mandatory || !!req.guaranteed;
+    const scales = req.guaranteed ? FALLBACK_FONT_SCALES : [1];
+    let chosen: { c: LabelCandidate; rect: Rect; size: { w: number; h: number }; fontPx: number } | null = null;
+    let best: { c: LabelCandidate; rect: Rect; size: { w: number; h: number }; fontPx: number; cost: number } | null = null;
+    for (let si = 0; si < scales.length && !chosen; si++) {
+      const fontPx = req.fontPx * scales[si];
+      const size = measureLabel(req.lines, fontPx);
+      const half = req.anchorHalf ?? { w: 0, h: 0 };
+      let cands = req.candidates ?? compassCandidates(req.anchor, half, size, req.gap ?? 3);
+      // the last (smallest) size may also use far, leader-line positions
+      if (req.guaranteed && si === scales.length - 1) cands = cands.concat(leaderCandidates(req.anchor, half, size, req.gap ?? 3));
+      for (const c of cands) {
+        const rect = rotatedAabb(c.x, c.y, size.w, size.h, c.angleDeg ?? 0);
+        if (!blocked(rect, req.ignoreTags)) { chosen = { c, rect, size, fontPx }; break; }
+        if (mandatory) {
+          const cc = cost(rect, req.ignoreTags);
+          // prefer the larger font at equal cost
+          if (!best || cc < best.cost - 1e-9) best = { c, rect, size, fontPx, cost: cc };
+        }
       }
     }
-    if (!chosen && req.mandatory && best) chosen = best;
-    if (!chosen && req.mandatory) {
+    if (!chosen && mandatory && best) chosen = best;
+    if (!chosen && mandatory) {
+      const size = measureLabel(req.lines, req.fontPx);
       const c = { x: req.anchor.x, y: req.anchor.y, angleDeg: 0 };
-      chosen = { c, rect: rotatedAabb(c.x, c.y, size.w, size.h, 0) };
+      chosen = { c, rect: rotatedAabb(c.x, c.y, size.w, size.h, 0), size, fontPx: req.fontPx };
     }
     if (!chosen) {
+      const size = measureLabel(req.lines, req.fontPx);
       result.set(req.id, {
         id: req.id, visible: false, x: req.anchor.x, y: req.anchor.y, angleDeg: 0, w: size.w, h: size.h,
-        dx: 0, dy: 0, rect: { x: req.anchor.x, y: req.anchor.y, w: 0, h: 0 }
+        dx: 0, dy: 0, rect: { x: req.anchor.x, y: req.anchor.y, w: 0, h: 0 }, fontPx: req.fontPx, leader: false
       });
       continue;
     }
     placed.push(chosen.rect);
     result.set(req.id, {
-      id: req.id, visible: true, x: chosen.c.x, y: chosen.c.y, angleDeg: chosen.c.angleDeg ?? 0, w: size.w, h: size.h,
-      dx: chosen.c.x - req.anchor.x, dy: chosen.c.y - req.anchor.y, rect: chosen.rect
+      id: req.id, visible: true, x: chosen.c.x, y: chosen.c.y, angleDeg: chosen.c.angleDeg ?? 0, w: chosen.size.w, h: chosen.size.h,
+      dx: chosen.c.x - req.anchor.x, dy: chosen.c.y - req.anchor.y, rect: chosen.rect,
+      fontPx: chosen.fontPx, leader: !!chosen.c.leader
     });
   }
   return result;

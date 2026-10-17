@@ -61,19 +61,42 @@ import {
   bucketScale,
   LabelRequest,
   PlacedLabel,
-  Obstacle as LObstacle
+  Obstacle as LObstacle,
+  Rect as LRect,
+  overlayObstacles
 } from './labelLayout';
 import {
   assignTerminalsByAssociation,
   findBranchTakeoffs,
   damperSymbol,
   findFlexConnections,
-  accessPanelRect,
   condensateRoute,
   routeRefrigerant,
   refrigerantLineSizes,
   buildTitleBlock,
-  layoutSheet,
+  planSheet,
+  SheetPlan,
+  exportPixelSize,
+  pngSetDpi,
+  DEFAULT_EXPORT_DPI,
+  loadStoredBool,
+  saveStoredBool,
+  loadStoredNumber,
+  saveStoredNumber,
+  polylineMidpoint,
+  pointFromEnd,
+  accessPanelPlacement,
+  isPlenumReturn,
+  plenumBox,
+  findCrossoverPairs,
+  crossoverElevations,
+  crossoverBreak,
+  riseDropSymbol,
+  crossoverSymbolPos,
+  ductHeightIn,
+  ductBodIn,
+  ceilingInches,
+  formatElevation,
   legendItems,
   LegendKey,
   dxfTextRect,
@@ -93,6 +116,15 @@ function getDuctRuns(ducts: DuctSegment[], k: number): DuctRunOutline[] {
   const runs = buildDuctOutline(ducts, k);
   ductGeomCache.set(ducts, { k, runs });
   return runs;
+}
+
+/** Ducts drawn for a zone: a plenum-return zone has no return ducts (cached per ducts array so run outlines stay cached). */
+const plenumDuctCache = new WeakMap<DuctSegment[], DuctSegment[]>();
+function visibleDucts(z: Zone): DuctSegment[] {
+  if (!isPlenumReturn(z)) return z.ducts;
+  let hit = plenumDuctCache.get(z.ducts);
+  if (!hit) { hit = z.ducts.filter((d) => d.type !== 'return'); plenumDuctCache.set(z.ducts, hit); }
+  return hit;
 }
 
 type CatDims = { width: number; depth: number; height: number } | null;
@@ -133,6 +165,8 @@ interface LabelItem {
   /** World point the label is tied to by a leader line (callout). */
   leaderTo?: { x: number; y: number };
   leaderColor?: string;
+  /** Leader line only when the layout had to move the label away from its symbol. */
+  leaderOnFar?: boolean;
 }
 interface DuctSection { id: string; text: string; duct: DuctSegment; ductIds: string[]; pieces: number[][]; network: 'supply' | 'return' }
 
@@ -143,6 +177,22 @@ interface ZoneShopPlan {
   flex: FlexConnection[];
   panels: Array<{ uIdx: number; rect: { x: number; y: number; w: number; h: number } }>;
   drains: Array<{ uIdx: number; points: number[] }>;
+  /** Return-plenum transfer boxes (zones with returnStrategy 'plenum'), one per indoor unit. */
+  plenums: Array<{ uIdx: number; rect: { x: number; y: number; w: number; h: number } }>;
+  /** Crossover detail: lower duct gap + rise/drop symbols + elevation text. */
+  crossovers: ZoneCrossover[];
+}
+
+interface ZoneCrossover {
+  key: string;
+  upperId: string;
+  lowerId: string;
+  point: { x: number; y: number };
+  brk: ReturnType<typeof crossoverBreak>;
+  upperSym: { x: number; y: number };
+  lowerSym: { x: number; y: number };
+  upperText: string;
+  lowerText: string;
 }
 
 /** Where a crossing duct meets its partner(s) in plan (fallback: the duct midpoint). */
@@ -224,6 +274,7 @@ export const FloorPlanCanvas: React.FC = () => {
     cadCalibration,
     calibrateCad,
     annotationVisibility,
+    setAnnotationVisibility,
     activePreview
   } = useProjectStore();
 
@@ -243,10 +294,17 @@ export const FloorPlanCanvas: React.FC = () => {
   const [calibDist, setCalibDist] = useState<string>('');
   const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
   // Detailed annotations: CFM / velocity on duct-section tags and NC on terminal tags (off = clean shop drawing).
-  const [detailed, setDetailed] = useState<boolean>(false);
+  const [detailed, setDetailed] = useState<boolean>(() => loadStoredBool('detailed', false));
   // Shop-drawing layers (view options): accessories (dampers, flex, access panels, condensate) and the sheet (legend + title block).
-  const [showAccessories, setShowAccessories] = useState<boolean>(true);
-  const [showSheet, setShowSheet] = useState<boolean>(true);
+  const [showAccessories, setShowAccessories] = useState<boolean>(() => loadStoredBool('accessories', true));
+  const [showSheet, setShowSheet] = useState<boolean>(() => loadStoredBool('sheet', true));
+  const [exportDpi, setExportDpi] = useState<number>(() => loadStoredNumber('exportDpi', DEFAULT_EXPORT_DPI));
+  // screen rects (container px) of the HUD toolbars: label obstacles; and the view they were measured against
+  const [overlayRects, setOverlayRects] = useState<LRect[]>([]);
+  const [settledView, setSettledView] = useState<{ x: number; y: number; scale: number }>({ x: 0, y: 0, scale: 1 });
+  const [draggingTerminal, setDraggingTerminal] = useState<string | null>(null);
+  const hudTopRef = useRef<HTMLDivElement>(null);
+  const hudBottomRef = useRef<HTMLDivElement>(null);
   const [hoverClr, setHoverClr] = useState<string | null>(null);
   const [exporting, setExporting] = useState<boolean>(false);
   const calibRef = useRef(calib);
@@ -276,6 +334,45 @@ export const FloorPlanCanvas: React.FC = () => {
   // Physical scale: canvas px per foot.
   const k = pxPerFt(project.scale, project.units);
   const gridStep = gridStepPx(project.scale, project.units);
+
+  // ───────── Persisted view toggles (localStorage; every access guarded) ─────────
+  useEffect(() => saveStoredBool('detailed', detailed), [detailed]);
+  useEffect(() => saveStoredBool('accessories', showAccessories), [showAccessories]);
+  useEffect(() => saveStoredBool('sheet', showSheet), [showSheet]);
+  useEffect(() => saveStoredNumber('exportDpi', exportDpi), [exportDpi]);
+  useEffect(() => {
+    // Dimensions lives in the store: restore the stored value once, then persist later changes.
+    const cur = useProjectStore.getState().annotationVisibility.dimensions;
+    const stored = loadStoredBool('dimensions', cur);
+    if (stored !== cur) setAnnotationVisibility('dimensions', stored);
+    return useProjectStore.subscribe((state, prev) => {
+      if (state.annotationVisibility.dimensions !== prev.annotationVisibility.dimensions) {
+        saveStoredBool('dimensions', state.annotationVisibility.dimensions);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Overlay toolbars (HUD) are label obstacles: measure their rects in container px.
+  useLayoutEffect(() => {
+    const root = containerRef.current;
+    if (!root) return;
+    const o = root.getBoundingClientRect();
+    const rects: LRect[] = [];
+    const add = (el: Element): void => {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) rects.push({ x: r.left - o.left, y: r.top - o.top, w: r.width, h: r.height });
+    };
+    if (hudTopRef.current) Array.from(hudTopRef.current.children).forEach(add);
+    if (hudBottomRef.current) add(hudBottomRef.current);
+    setOverlayRects((prev) => (JSON.stringify(prev) === JSON.stringify(rects) ? prev : rects));
+  }, [size.w, size.h, detailed, showAccessories, showSheet, exportDpi, project.units, dxfLayers, drawMode, calib, cadCalibration?.needsCalibration, bannerDismissed]);
+
+  // The view the label layout converts overlay rects with: settles shortly after pan / zoom ends (no relayout per frame).
+  useEffect(() => {
+    const t = window.setTimeout(() => setSettledView({ x: stagePos.x, y: stagePos.y, scale: stageScale }), 160);
+    return () => window.clearTimeout(t);
+  }, [stagePos.x, stagePos.y, stageScale]);
 
   // ───────── Stage size via ResizeObserver ─────────
   useEffect(() => {
@@ -375,7 +472,7 @@ export const FloorPlanCanvas: React.FC = () => {
   const handleFitDesign = useCallback(() => {
     const b0 = allContentBounds();
     if (!b0) return;
-    const sh = showSheet ? layoutSheet(b0) : null;
+    const sh = showSheet ? planSheet(b0, k, project.units) : null;
     const b = sh
       ? { minX: Math.min(b0.minX, sh.bounds.x), minY: b0.minY, maxX: Math.max(b0.maxX, sh.bounds.x + sh.bounds.w), maxY: sh.bounds.y + sh.bounds.h }
       : b0;
@@ -389,7 +486,7 @@ export const FloorPlanCanvas: React.FC = () => {
     const f = fitBounds(bb, size.w, size.h, 0.92, FIT_PADDING);
     setStageScale(f.scale);
     setStagePos({ x: f.x, y: f.y });
-  }, [allContentBounds, size.w, size.h, k, showSheet]);
+  }, [allContentBounds, size.w, size.h, k, showSheet, project.units]);
 
   const handleFitSelection = useCallback(() => {
     const z = zones.find((zz) => zz.id === selectedZoneId);
@@ -998,7 +1095,10 @@ export const FloorPlanCanvas: React.FC = () => {
       const fp = unitFootprintPx(unitKindForSystem(z.systemType), k, catalogDimsFor(z.catalogModel));
       const ducted = isDuctedSystem(z);
       const outdoors = isSelfContainedSystem(z.systemType) ? [] : outdoorPositionsOf(z);
-      const plan: ZoneShopPlan = { piping: [], takeoffs: [], flex: [], panels: [], drains: [] };
+      const plan: ZoneShopPlan = { piping: [], takeoffs: [], flex: [], panels: [], drains: [], plenums: [], crossovers: [] };
+      const plenum = isPlenumReturn(z);
+      // return ducts are not drawn for a plenum return: the shop plan ignores them too
+      const zDucts = visibleDucts(z);
       if (units.length > 0 && !isSelfContainedSystem(z.systemType)) {
         const load = calculateZoneLoad(z, project);
         const qty = Math.max(1, z.catalogQty || units.length || 1);
@@ -1013,22 +1113,54 @@ export const FloorPlanCanvas: React.FC = () => {
           plan.piping.push({ id: `${z.id}:${uIdx}`, uIdx, points: r.points, sizeText: sizes.text });
         });
       }
-      plan.takeoffs = findBranchTakeoffs(z.ducts, k);
-      if (ducted && z.ducts.length) plan.flex = findFlexConnections(units, fp, z.ducts, k, z.id);
+      // unit-wall crowd control: tag rect, panel, plenum box and flex are placed before the dampers slide away from them
+      const unitTagRect = (u: { x: number; y: number }): { x: number; y: number; w: number; h: number } => {
+        const fs = 9.5 * textScale;
+        return { x: u.x - 3.6 * fs, y: u.y + fp.d / 2 + 2 * textScale, w: 7.2 * fs, h: fs * 1.4 };
+      };
+      if (plenum) units.forEach((u, uIdx) => plan.plenums.push({ uIdx, rect: plenumBox(u, fp, k) }));
+      if (ducted && zDucts.length) plan.flex = findFlexConnections(units, fp, zDucts, k, z.id);
+      const flexBoxes = plan.flex.map((f) => ({ x: f.x - 0.6 * k, y: f.y - 0.6 * k, w: 1.2 * k, h: 1.2 * k }));
       units.forEach((u, uIdx) => {
-        plan.panels.push({ uIdx, rect: accessPanelRect(u, fp, k) });
         if (z.points.length >= 6) {
           const cd = condensateRoute(u, z.points);
           if (cd) plan.drains.push({ uIdx, points: cd.points });
         }
+        const pipe = plan.piping.find((pp) => pp.uIdx === uIdx);
+        const drain = plan.drains.find((dd) => dd.uIdx === uIdx);
+        const pts = [] as Array<{ x: number; y: number }>;
+        if (pipe) pts.push(pointFromEnd(pipe.points, 2 * k));
+        if (drain) pts.push({ x: drain.points[2], y: drain.points[3] });
+        const boxes2 = [...flexBoxes, ...plan.plenums.filter((pl) => pl.uIdx === uIdx).map((pl) => pl.rect)];
+        plan.panels.push({ uIdx, rect: accessPanelPlacement(u, fp, k, { pts, boxes: boxes2 }).rect });
       });
+      const avoidRects = [...units.map(unitTagRect), ...plan.panels.map((p) => p.rect), ...flexBoxes, ...plan.plenums.map((p) => p.rect)];
+      plan.takeoffs = findBranchTakeoffs(zDucts, k, avoidRects);
+      // crossover detail
+      const ceil = z.ceilingHeight;
+      for (const pr of findCrossoverPairs(zDucts)) {
+        const up = zDucts.find((d) => d.id === pr.upperId), lo = zDucts.find((d) => d.id === pr.lowerId);
+        if (!up || !lo) continue;
+        const el = crossoverElevations(ductHeightIn(up), ductHeightIn(lo), ceil, project.units);
+        const brk = crossoverBreak(lo, up, pr.point, k);
+        const symOff = 0.5 * k;
+        plan.crossovers.push({
+          key: `${pr.upperId}|${pr.lowerId}`, upperId: pr.upperId, lowerId: pr.lowerId, point: pr.point, brk,
+          upperSym: crossoverSymbolPos(up, pr.point, brk.patch.halfLen + symOff + 0.9 * k),
+          lowerSym: crossoverSymbolPos(lo, pr.point, brk.gapHalf + symOff + 0.9 * k),
+          upperText: el.upperText, lowerText: el.lowerText
+        });
+      }
       plans.set(z.id, plan);
     }
     return plans;
-  }, [zones, k, project]);
+  }, [zones, k, project, textScale]);
 
   const drawingExtents = useMemo(() => allContentBounds(), [allContentBounds]);
-  const sheet = useMemo(() => (drawingExtents ? layoutSheet(drawingExtents) : null), [drawingExtents]);
+  const sheet: SheetPlan | null = useMemo(
+    () => (drawingExtents ? planSheet(drawingExtents, k, project.units) : null),
+    [drawingExtents, k, project.units]
+  );
 
   // ───────── Annotation layout (collision-free labels; recomputed per zoom bucket, not per wheel tick) ─────────
   const sBucket = scaleBucket(stageScale);
@@ -1059,7 +1191,10 @@ export const FloorPlanCanvas: React.FC = () => {
     if (showSheet && sheet) {
       addWorldRect(sheet.title, 'sheet');
       addWorldRect(sheet.legend, 'sheet');
+      addWorldRect(sheet.scaleBarBox, 'sheet');
     }
+    // Overlay toolbars (HUD) cover part of the drawing: labels keep clear of them
+    for (const o of overlayObstacles(overlayRects, settledView, s)) obstacles.push(o);
     // DXF text near the design (a label must not sit on CAD text)
     const dxfRects: Array<{ x: number; y: number; r: number }> = [];
     if (av.dxfText && dxfTexts.length > 0 && tier >= 2) {
@@ -1085,6 +1220,7 @@ export const FloorPlanCanvas: React.FC = () => {
       const avoid: Array<{ x: number; y: number; r: number }> = [];
       const plan = shopPlans.get(z.id);
       const zUnits = unitPositionsOf(z);
+      const zDucts = visibleDucts(z);
       // symbols are obstacles for every label
       for (const d of z.diffusers) {
         const face = terminalFacePx(d, k, units);
@@ -1110,7 +1246,7 @@ export const FloorPlanCanvas: React.FC = () => {
       }
       // duct bodies: a tag of another section / a terminal / the zone label must not sit on them
       if (av.ducts || av.ductCenterlines) {
-        for (const d of z.ducts) {
+        for (const d of zDucts) {
           const hw = ductHalfWidthPx(d.widthIn || d.diameterIn || 0, k);
           for (const r of ductBodyRects([d.points], [hw])) addWorldRect(r, `duct:${d.id}`);
           const len = Math.hypot(d.points[2] - d.points[0], d.points[3] - d.points[1]);
@@ -1129,7 +1265,16 @@ export const FloorPlanCanvas: React.FC = () => {
             const pieces: number[][] = [];
             for (let i = 0; i + 3 < p.points.length; i += 2) pieces.push(p.points.slice(i, i + 4));
             for (const r of ductBodyRects(pieces, pieces.map(() => 3 / s))) addWorldRect(r, `pipe:${p.id}`);
+            // the refrigerant "R" bubble sits at the pipe midpoint: labels keep off it
+            const mid = polylineMidpoint(p.points);
+            const br = 5.5 * Math.min(1.8, textScale);
+            addWorldRect({ x: mid.x - br, y: mid.y - br, w: 2 * br, h: 2 * br }, `rb:${p.id}`);
           }
+        }
+        for (const pl of plan.plenums) addWorldRect(pl.rect, `plenum:${z.id}:${pl.uIdx}`);
+        for (const xo of plan.crossovers) {
+          const rr = 0.9 * k;
+          for (const c of [xo.upperSym, xo.lowerSym]) addWorldRect({ x: c.x - rr, y: c.y - rr, w: 2 * rr, h: 2 * rr }, `xs:${xo.key}`);
         }
         if (showAccessories) {
           for (const t of plan.takeoffs) {
@@ -1157,7 +1302,7 @@ export const FloorPlanCanvas: React.FC = () => {
         const anchor = { x: target.x * s, y: target.y * s };
         const id = `c:${z.id}`;
         reqs.push({
-          id, lines, fontPx, priority: 90, mandatory: true, anchor,
+          id, lines, fontPx, priority: 90, mandatory: true, guaranteed: true, anchor,
           candidates: calloutCandidates(size, anchor, z.points.map((v) => v * s))
         });
         meta.set(id, {
@@ -1166,11 +1311,26 @@ export const FloorPlanCanvas: React.FC = () => {
         });
       }
 
-      // Warnings: X-OVER, clearance, over-capacity badge (all through the layout, never drawn ad hoc)
+      // Warnings: crossover elevations, clearance, over-capacity badge (all through the layout, never drawn ad hoc)
       if (tier >= 2 && (av.ducts || av.ductCenterlines)) {
-        for (const d of z.ducts) {
+        const paired = new Set<string>();
+        if (plan) {
+          for (const xo of plan.crossovers) {
+            paired.add(xo.upperId); paired.add(xo.lowerId);
+            const sides: Array<[string, { x: number; y: number }, string]> = [[xo.upperId, xo.upperSym, xo.upperText], [xo.lowerId, xo.lowerSym, xo.lowerText]];
+            for (const [did, pos, text] of sides) {
+              const id = `xo:${z.id}:${did}`;
+              reqs.push({ id, lines: [text], fontPx: 9 * ff, priority: 80, mandatory: true, guaranteed: true, anchor: { x: pos.x * s, y: pos.y * s }, anchorHalf: { w: 0.9 * k * s, h: 0.9 * k * s }, ignoreTags: [`xs:${xo.key}`] });
+              meta.set(id, {
+                id, zoneId: z.id, kind: 'warning', lines: [colorLine(text, '#fb7185')], fontPx: 9 * ff, anchorWorld: pos,
+                bg: 'rgba(12,12,12,0.8)', border: '#f43f5e', leaderOnFar: true, leaderTo: pos, leaderColor: '#f43f5e'
+              });
+            }
+          }
+        }
+        for (const d of zDucts) {
           const hw = ductHalfWidthPx(d.widthIn || d.diameterIn || 0, k) * s;
-          if (d.crossover) {
+          if (d.crossover && !paired.has(d.id)) {
             const xo = crossoverPoint(z, d);
             const id = `xo:${z.id}:${d.id}`;
             reqs.push({ id, lines: ['X-OVER'], fontPx: 9 * ff, priority: 80, mandatory: true, anchor: { x: xo.x * s, y: xo.y * s }, anchorHalf: { w: hw + 2, h: hw + 2 } });
@@ -1187,6 +1347,22 @@ export const FloorPlanCanvas: React.FC = () => {
             reqs.push({ id, lines: lines.map((l) => l.text), fontPx: 9 * ff, priority: 80, mandatory: true, anchor: { x: mid.x * s, y: mid.y * s }, anchorHalf: { w: hw + 2, h: hw + 2 } });
             meta.set(id, { id, zoneId: z.id, kind: 'warning', lines, fontPx: 9 * ff, anchorWorld: mid, bg: 'rgba(12,12,12,0.8)', border: '#f59e0b' });
           }
+        }
+      }
+      // Return plenum: one note at the return grilles (the transfer box at the unit is drawn with the accessories)
+      if (isPlenumReturn(z)) {
+        const rets = z.diffusers.filter((d) => d.type === 'return');
+        const pl = plan?.plenums[0];
+        const c = rets.length > 0
+          ? { x: rets.reduce((a, d) => a + d.x, 0) / rets.length, y: rets.reduce((a, d) => a + d.y, 0) / rets.length }
+          : pl ? { x: pl.rect.x + pl.rect.w / 2, y: pl.rect.y + pl.rect.h / 2 } : null;
+        if (c) {
+          const id = `pr:${z.id}`;
+          reqs.push({ id, lines: ['PLENUM RETURN'], fontPx: 9 * ff, priority: 70, mandatory: true, guaranteed: true, anchor: { x: c.x * s, y: c.y * s }, anchorHalf: { w: 10, h: 10 } });
+          meta.set(id, {
+            id, zoneId: z.id, kind: 'warning', lines: [colorLine('PLENUM RETURN', '#d8b4fe')], fontPx: 9 * ff, anchorWorld: c,
+            bg: 'rgba(12,12,12,0.8)', border: '#c084fc'
+          });
         }
       }
       if (tier >= 2 && zUnits.length >= 2 && isDuctedSystem(z)) {
@@ -1234,7 +1410,7 @@ export const FloorPlanCanvas: React.FC = () => {
       }
 
       // ONE tag per terminal: "CD-1" / "18x18 . 162 CFM"
-      if (tier >= 2 && (av.diffuserTags || av.diffuserCfm)) {
+      if ((tier >= 2 || z.id === selectedZoneId) && (av.diffuserTags || av.diffuserCfm)) {
         let nS = 0, nR = 0, nE = 0;
         for (const d of z.diffusers) {
           const code = d.type === 'return' ? 'RG' : d.type === 'exhaust' ? 'EG' : z.systemType === 'high-wall' ? 'HW' : 'CD';
@@ -1253,20 +1429,21 @@ export const FloorPlanCanvas: React.FC = () => {
           const id = `t:${z.id}:${d.id}`;
           const fontPx = 10 * ff;
           reqs.push({
-            id, lines: lines.map((l) => l.text), fontPx, priority: 30,
+            id, lines: lines.map((l) => l.text), fontPx, priority: 30, guaranteed: true,
             anchor: { x: d.x * s, y: d.y * s }, anchorHalf: { w: (face.w * s) / 2, h: (face.h * s) / 2 }
           });
           meta.set(id, {
             id, zoneId: z.id, kind: 'terminal', lines, fontPx, anchorWorld: { x: d.x, y: d.y },
-            bg: 'rgba(12,12,12,0.72)'
+            bg: 'rgba(12,12,12,0.72)', leaderOnFar: true, leaderTo: { x: d.x, y: d.y }, leaderColor: '#a3a3a3'
           });
         }
       }
 
       // Duct size ONCE per section (size only; CFM / velocity only in Detailed mode)
-      const ductTagOn = av.ductSizeBadges || av.dimensions || (detailed && av.ductCfm);
-      if (tier >= 2 && ductTagOn && (av.ducts || av.ductCenterlines) && z.ducts.length) {
-        const sections = buildDuctSections(z.ducts, getDuctRuns(z.ducts, k), units);
+      const ductTagOn = av.ductSizeBadges || av.dimensions || detailed;
+      if (tier >= 2 && ductTagOn && (av.ducts || av.ductCenterlines) && zDucts.length) {
+        const sections = buildDuctSections(zDucts, getDuctRuns(zDucts, k), units);
+        const ceilIn = ceilingInches(z.ceilingHeight, units);
         for (const sec of sections) {
           const lines: LabelLine[] = [];
           const col = sec.network === 'return' ? '#cbd5e1' : '#67e8f9';
@@ -1278,6 +1455,10 @@ export const FloorPlanCanvas: React.FC = () => {
             if (av.ductCfm) parts.push(formatAirflow(d.cfm, units));
             if (av.ductSizeBadges) parts.push(formatVelocity(vel, units));
             if (parts.length) lines.push({ text: parts.join(' · '), color: '#facc15', bold: false });
+            // Detailed: bottom-of-duct elevation on the main trunks
+            if (d.type === 'trunk' && ceilIn !== undefined) {
+              lines.push({ text: `BOD ${formatElevation(ductBodIn(ductHeightIn(d), ceilIn), units)}`, color: '#fda4af', bold: false });
+            }
           }
           if (!lines.length) continue;
           const fontPx = 9 * ff;
@@ -1379,16 +1560,18 @@ export const FloorPlanCanvas: React.FC = () => {
     });
     return byZone;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [zones, project, k, sBucket, annotationVisibility, detailed, fontFactor, textScale, selectedZoneId, shopPlans, sheet, showSheet, showAccessories, hoverClr, dxfTexts, dxfLayers]);
+  }, [zones, project, k, sBucket, annotationVisibility, detailed, fontFactor, textScale, selectedZoneId, shopPlans, sheet, showSheet, showAccessories, hoverClr, dxfTexts, dxfLayers, overlayRects, settledView]);
 
   /** A placed label: constant screen-size text with a box sized to the measured text. */
   const renderLabelItem = (it: LabelItem): React.JSX.Element => {
     const p = it.placed;
+    if (draggingTerminal === it.id) return <React.Fragment key={it.id} />; // re-laid out when the drop commits
     const sc = stageScale;
     const x = it.anchorWorld.x + p.dx / sc;
     const y = it.anchorWorld.y + p.dy / sc;
-    const lh = it.fontPx * 1.25;
-    const leader = it.leaderTo ? rectEdgePoint(x, y, p.w / 2 / sc, p.h / 2 / sc, it.leaderTo.x, it.leaderTo.y) : null;
+    const fontPx = p.fontPx || it.fontPx;
+    const lh = fontPx * 1.25;
+    const leader = it.leaderTo && (!it.leaderOnFar || p.leader) ? rectEdgePoint(x, y, p.w / 2 / sc, p.h / 2 / sc, it.leaderTo.x, it.leaderTo.y) : null;
     return (
       <React.Fragment key={it.id}>
       {leader && it.leaderTo && (
@@ -1412,7 +1595,7 @@ export const FloorPlanCanvas: React.FC = () => {
             verticalAlign="middle"
             wrap="none"
             text={ln.text}
-            fontSize={it.fontPx}
+            fontSize={fontPx}
             fontStyle={ln.bold === false ? 'normal' : 'bold'}
             fill={ln.color}
             listening={false}
@@ -1514,13 +1697,28 @@ export const FloorPlanCanvas: React.FC = () => {
     const t = sheet.title, l = sheet.legend;
     const tb = buildTitleBlock({
       projectName: project.name, location: project.location, pxPerFt: k, units: project.units,
-      sheetNo: 'M-101', sheetTitle: 'HVAC LAYOUT'
+      sheetNo: 'M-101', sheetTitle: 'HVAC LAYOUT', scaleText: `${sheet.scale.label}  (${sheet.sheet.id})`
     });
+    const f = sheet.frame, bd = sheet.border, sb = sheet.scaleBar, sbb = sheet.scaleBarBox;
+    const barW = sb.paperMm * sheet.pxPerMm, barX = sbb.x + 8 * u, barY = sbb.y + 16 * u, barH = 5 * u;
+    const segW = barW / sb.segments;
     const line = 1.2 * u;
     const items = legendItems();
     const colW = (l.w - 16 * u) / 2;
     return (
       <Group listening={false}>
+        {/* Sheet frame at the standard scale: paper edge + inner border */}
+        <Rect x={f.x} y={f.y} width={f.w} height={f.h} stroke="#64748b" strokeWidth={line} dash={[12 * u, 6 * u]} />
+        <Rect x={bd.x} y={bd.y} width={bd.w} height={bd.h} stroke="#e2e8f0" strokeWidth={line * 1.6} />
+        {/* Graphic scale bar */}
+        <Rect x={sbb.x} y={sbb.y} width={sbb.w} height={sbb.h} fill="#0f172a" stroke="#e2e8f0" strokeWidth={line} />
+        <Text x={sbb.x + 8 * u} y={sbb.y + 4 * u} text={`SCALE ${sheet.scale.label}`} fontSize={7.5 * u} fontStyle="bold" fill="#cbd5e1" />
+        {Array.from({ length: sb.segments }).map((_, i) => (
+          <Rect key={i} x={barX + i * segW} y={barY} width={segW} height={barH} fill={i % 2 === 0 ? '#e2e8f0' : '#0f172a'} stroke="#e2e8f0" strokeWidth={0.8 * u} />
+        ))}
+        {sb.labels.map((lb, i) => (
+          <Text key={lb + i} x={barX + i * segW - 10 * u} y={barY + barH + 2 * u} width={20 * u + (i === sb.segments ? 8 * u : 0)} align="center" wrap="none" text={lb} fontSize={6.5 * u} fill="#cbd5e1" />
+        ))}
         <Rect x={l.x} y={l.y} width={l.w} height={l.h} fill="#0f172a" stroke="#e2e8f0" strokeWidth={line} />
         <Text x={l.x + 8 * u} y={l.y + 7 * u} text="LEGEND" fontSize={10 * u} fontStyle="bold" fill="#e2e8f0" />
         <Line points={[l.x, l.y + 22 * u, l.x + l.w, l.y + 22 * u]} stroke="#475569" strokeWidth={0.8 * u} />
@@ -1548,25 +1746,38 @@ export const FloorPlanCanvas: React.FC = () => {
     );
   };
 
-  /** Export PNG (pixelRatio 2): fits the drawing + sheet, renders the full stage including the sheet layer, then restores the view. */
+  /**
+   * Export PNG. Sheet ON: the sheet frame (A1 / ARCH D at the standard scale) is cropped out of the stage at exactly
+   * sheet-size x dpi pixels (default 150 dpi) and the PNG carries its dpi, so it prints at the stated scale. Sheet OFF: the
+   * drawing at pixelRatio 2. The view is restored afterwards.
+   */
   const exportPng = (): void => {
     const stage = stageRef.current;
     if (!stage) return;
-    const sb = showSheet && sheet
-      ? { minX: sheet.bounds.x, minY: sheet.bounds.y, maxX: sheet.bounds.x + sheet.bounds.w, maxY: sheet.bounds.y + sheet.bounds.h }
-      : null;
-    const b = unionBounds([allContentBounds(), sb]);
+    const sheetOn = showSheet && sheet;
+    const b = sheetOn
+      ? { minX: sheet.frame.x, minY: sheet.frame.y, maxX: sheet.frame.x + sheet.frame.w, maxY: sheet.frame.y + sheet.frame.h }
+      : allContentBounds();
     if (!b) { showMessage('Nothing to export yet'); return; }
     const prev = { scale: stageScale, pos: stagePos };
-    const f = fitBounds(b, size.w, size.h, 0.94);
+    const f = fitBounds(b, size.w, size.h, sheetOn ? 1 : 0.94);
     let url = '';
+    let dpiUsed = 0;
     try {
       flushSync(() => {
         setExporting(true);
         setStageScale(f.scale);
         setStagePos({ x: f.x, y: f.y });
       });
-      url = stage.toDataURL({ pixelRatio: 2, mimeType: 'image/png' });
+      if (sheetOn) {
+        const px = exportPixelSize(sheet.sheet, exportDpi);
+        dpiUsed = px.dpi;
+        const rx = f.x + sheet.frame.x * f.scale, ry = f.y + sheet.frame.y * f.scale;
+        const rw = sheet.frame.w * f.scale, rh = sheet.frame.h * f.scale;
+        url = stage.toDataURL({ x: rx, y: ry, width: rw, height: rh, pixelRatio: px.w / rw, mimeType: 'image/png' });
+      } else {
+        url = stage.toDataURL({ pixelRatio: 2, mimeType: 'image/png' });
+      }
     } finally {
       flushSync(() => {
         setExporting(false);
@@ -1575,12 +1786,25 @@ export const FloorPlanCanvas: React.FC = () => {
       });
     }
     if (!url) return;
+    let href = url;
+    if (dpiUsed > 0 && url.startsWith('data:image/png;base64,')) {
+      try {
+        const bin = atob(url.slice(url.indexOf(',') + 1));
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        href = URL.createObjectURL(new Blob([pngSetDpi(bytes, dpiUsed) as BlobPart], { type: 'image/png' }));
+      } catch {
+        href = url;
+      }
+    }
     const a = document.createElement('a');
-    a.href = url;
-    a.download = `${(project.name || 'hvac-layout').replace(/[^a-z0-9_-]+/gi, '_')}-M-101.png`;
+    a.href = href;
+    const tag = sheetOn ? `-M-101-${sheet.scale.id.replace(/[^a-z0-9]+/gi, '_')}-${dpiUsed}dpi` : '-M-101';
+    a.download = `${(project.name || 'hvac-layout').replace(/[^a-z0-9_-]+/gi, '_')}${tag}.png`;
     document.body.appendChild(a);
     a.click();
     a.remove();
+    if (href !== url) window.setTimeout(() => URL.revokeObjectURL(href), 10000);
   };
 
   // ───────── Symbols (true physical size) ─────────
@@ -1680,7 +1904,7 @@ export const FloorPlanCanvas: React.FC = () => {
             <Line points={[0, -r, 0, r]} stroke="#22d3ee" strokeWidth={sw(1)} />
           </Group>
         ))}
-        <Group x={w / 2 + 6 * ts} y={-d / 2}>
+        <Group x={w / 2 + 11 * Math.min(1.8, ts)} y={-d / 2 - 5 * Math.min(1.8, ts)}>
           <Circle radius={5 * Math.min(1.8, ts)} fill="#facc15" stroke="#000000" strokeWidth={0.8} />
           <Text x={-3 * Math.min(1.8, ts)} y={-4 * Math.min(1.8, ts)} text="P" fontSize={Math.max(6 * ts, 7 / stageScale)} fill="#000000" fontStyle="bold" listening={false} />
         </Group>
@@ -1770,7 +1994,8 @@ export const FloorPlanCanvas: React.FC = () => {
     // Packaged RTUs are self-contained: no condensing unit symbol and no refrigerant lines.
     const outdoors = isSelfContainedSystem(zone.systemType) ? [] : outdoorPositionsOf(zone);
     const labels = labelItems.get(zone.id) ?? [];
-    const ductRuns = annotationVisibility.ducts || annotationVisibility.ductCenterlines ? getDuctRuns(zone.ducts, k) : [];
+    const zDucts = visibleDucts(zone);
+    const ductRuns = annotationVisibility.ducts || annotationVisibility.ductCenterlines ? getDuctRuns(zDucts, k) : [];
     const plan = shopPlans.get(zone.id);
     // separation of the liquid / suction pair: physical, but never thinner than 3 screen px
     const pairSep = Math.max(0.3 * k, 3.2 / stageScale);
@@ -1797,7 +2022,7 @@ export const FloorPlanCanvas: React.FC = () => {
                   lineJoin="round"
                 />
                 {pp.points.length >= 4 && (
-                  <Group x={(pp.points[0] + pp.points[2]) / 2} y={(pp.points[1] + pp.points[3]) / 2}>
+                  <Group x={polylineMidpoint(pp.points).x} y={polylineMidpoint(pp.points).y}>
                     <Circle radius={5.5 * Math.min(1.8, ts)} fill="#facc15" stroke="#000000" strokeWidth={getStrokeWidth(0.8, 0.8)} />
                     <Text x={-3 * Math.min(1.8, ts)} y={-4 * Math.min(1.8, ts)} text="R" fontSize={6 * Math.min(1.8, ts)} fill="#000000" fontStyle="bold" />
                   </Group>
@@ -1841,7 +2066,7 @@ export const FloorPlanCanvas: React.FC = () => {
         })}
 
         {/* Per-segment annotations: flow arrow, X-over dash, clearance outline (all text comes from the shared label layout) */}
-        {zone.ducts.map((d) => {
+        {zDucts.map((d) => {
           const x1 = d.points[0], y1 = d.points[1], x2 = d.points[2], y2 = d.points[3];
           const dx = x2 - x1, dy = y2 - y1;
           const len = Math.hypot(dx, dy) || 1;
@@ -1850,7 +2075,7 @@ export const FloorPlanCanvas: React.FC = () => {
           const hw = ductHalfWidthPx(d.widthIn, k);
           const ax = x1 + dx * 0.6, ay = y1 + dy * 0.6;
           const arrowLen = Math.min(Math.max(hw, 0.5 * k), len * 0.25);
-          const xo = d.crossover && annotationVisibility.ducts ? crossoverPoint(zone, d) : null;
+          const xo = d.crossover && annotationVisibility.ducts && !(plan?.crossovers.some((c) => c.upperId === d.id || c.lowerId === d.id)) ? crossoverPoint(zone, d) : null;
           const xoSpan = Math.min(len * 0.5, Math.max(hw * 2.5, 2 * k));
           return (
             <Group key={`ann-${d.id}`}>
@@ -1891,6 +2116,57 @@ export const FloorPlanCanvas: React.FC = () => {
                   />
                 )}
               </Group>
+            </Group>
+          );
+        })}
+
+        {/* Crossover detail: the lower duct is broken (gap + break lines) under the upper one, rise / drop symbols */}
+        {annotationVisibility.ducts && plan && plan.crossovers.map((xo) => {
+          const up = zDucts.find((d) => d.id === xo.upperId), lo = zDucts.find((d) => d.id === xo.lowerId);
+          if (!up || !lo) return null;
+          const upHw = ductHalfWidthPx(up.widthIn || up.diameterIn || 0, k);
+          const lowReturn = lo.type === 'return';
+          const upReturn = up.type === 'return';
+          const col = (ret: boolean): string => (ret ? '#64748b' : '#38bdf8');
+          const pa = xo.brk.patch;
+          const pnx = -pa.vy, pny = pa.vx;
+          const sw = getStrokeWidth(1.2, 1.4);
+          const rise = riseDropSymbol(xo.upperSym, 0.6 * k, 'rise');
+          const drop = riseDropSymbol(xo.lowerSym, 0.6 * k, 'drop');
+          return (
+            <Group key={`xo-${zone.id}-${xo.key}`} listening={false}>
+              <Line points={xo.brk.eraser} closed fill="#0c0c0c" />
+              {/* the upper duct continues over the gap */}
+              <Line
+                points={[pa.x - pa.vx * pa.halfLen + pnx * upHw, pa.y - pa.vy * pa.halfLen + pny * upHw, pa.x + pa.vx * pa.halfLen + pnx * upHw, pa.y + pa.vy * pa.halfLen + pny * upHw,
+                  pa.x + pa.vx * pa.halfLen - pnx * upHw, pa.y + pa.vy * pa.halfLen - pny * upHw, pa.x - pa.vx * pa.halfLen - pnx * upHw, pa.y - pa.vy * pa.halfLen - pny * upHw]}
+                closed fill={upReturn ? 'rgba(100, 116, 139, 0.18)' : 'rgba(6, 182, 212, 0.18)'} strokeEnabled={false}
+              />
+              <Line points={[pa.x - pa.vx * pa.halfLen + pnx * upHw, pa.y - pa.vy * pa.halfLen + pny * upHw, pa.x + pa.vx * pa.halfLen + pnx * upHw, pa.y + pa.vy * pa.halfLen + pny * upHw]} stroke={col(upReturn)} strokeWidth={sw} />
+              <Line points={[pa.x - pa.vx * pa.halfLen - pnx * upHw, pa.y - pa.vy * pa.halfLen - pny * upHw, pa.x + pa.vx * pa.halfLen - pnx * upHw, pa.y + pa.vy * pa.halfLen - pny * upHw]} stroke={col(upReturn)} strokeWidth={sw} />
+              {/* break lines closing the lower duct on both sides of the gap */}
+              {xo.brk.breakLines.map((bl, i) => (
+                <Line key={i} points={bl} stroke={col(lowReturn)} strokeWidth={getStrokeWidth(1.0, 1.4)} />
+              ))}
+              <Circle x={xo.upperSym.x} y={xo.upperSym.y} radius={rise.radius} fill="#0f172a" stroke="#f43f5e" strokeWidth={getStrokeWidth(0.8, 1.2)} />
+              <Line points={rise.triangle} closed fill="#f43f5e" />
+              <Circle x={xo.lowerSym.x} y={xo.lowerSym.y} radius={drop.radius} fill="#0f172a" stroke="#f43f5e" strokeWidth={getStrokeWidth(0.8, 1.2)} />
+              <Line points={drop.triangle} closed fill="#f43f5e" />
+            </Group>
+          );
+        })}
+
+        {/* Return plenum: transfer box at the unit, dotted return-air paths from the grilles (no return ducts) */}
+        {plan && plan.plenums.map((pl) => {
+          const cx = pl.rect.x + pl.rect.w / 2, cy = pl.rect.y + pl.rect.h / 2;
+          return (
+            <Group key={`plenum-${zone.id}-${pl.uIdx}`} listening={false}>
+              {zone.diffusers.filter((d) => d.type === 'return').map((d) => (
+                <Line key={d.id} points={[d.x, d.y, cx, cy]} stroke="#c084fc" opacity={0.55} strokeWidth={getStrokeWidth(0.4, 0.9)} dash={[2 / stageScale, 5 / stageScale]} />
+              ))}
+              <Rect x={pl.rect.x} y={pl.rect.y} width={pl.rect.w} height={pl.rect.h} fill="rgba(88, 28, 135, 0.28)" stroke="#c084fc" strokeWidth={getStrokeWidth(0.15 * k, 1.4)} />
+              <Line points={[pl.rect.x, pl.rect.y, pl.rect.x + pl.rect.w, pl.rect.y + pl.rect.h]} stroke="#c084fc" strokeWidth={getStrokeWidth(0.06 * k, 0.8)} />
+              <Line points={[pl.rect.x, pl.rect.y + pl.rect.h, pl.rect.x + pl.rect.w, pl.rect.y]} stroke="#c084fc" strokeWidth={getStrokeWidth(0.06 * k, 0.8)} />
             </Group>
           );
         })}
@@ -1948,8 +2224,12 @@ export const FloorPlanCanvas: React.FC = () => {
               x={dif.x}
               y={dif.y}
               draggable={lodTier >= 2}
+              onDragStart={() => setDraggingTerminal(`t:${zone.id}:${dif.id}`)}
               onDragMove={(e) => snapNodeDuringDrag(e.target)}
-              onDragEnd={(e) => commitDiffuser(zone.id, dif.id, e.target.x(), e.target.y())}
+              onDragEnd={(e) => {
+                commitDiffuser(zone.id, dif.id, e.target.x(), e.target.y());
+                setDraggingTerminal(null);
+              }}
             >
               {/* full-face hit target: the terminal is grabbable anywhere on its face, incl. the centre */}
               <Rect x={-fw / 2} y={-fh / 2} width={fw} height={fh} fill="rgba(0,0,0,0.001)" />
@@ -2243,7 +2523,7 @@ export const FloorPlanCanvas: React.FC = () => {
       </div>
 
       {/* Top HUD Info Overlay */}
-      <div className="absolute top-4 left-4 flex items-center gap-2 flex-wrap max-w-[calc(100%-2rem)]">
+      <div ref={hudTopRef} className="absolute top-4 left-4 flex items-center gap-2 flex-wrap max-w-[calc(100%-2rem)]">
         <div className="bg-neutral-900/90 border border-neutral-800 px-3.5 py-1.5 rounded-xl text-[10px] text-neutral-400 font-medium backdrop-blur shadow flex items-center gap-2">
           <span>Zoom: <strong className="text-blue-400 font-mono">{Math.round(stageScale * 100)}%</strong></span>
           <span className="text-neutral-700">|</span>
@@ -2322,11 +2602,19 @@ export const FloorPlanCanvas: React.FC = () => {
         <button
           onClick={exportPng}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border bg-neutral-900/90 hover:bg-neutral-800 text-neutral-200 border-neutral-750"
-          title="Export the whole drawing incl. the sheet layer as a 2x PNG"
+          title="Export the sheet (A1 / ARCH D at the standard drawing scale) as a PNG at the chosen pixel density; without the sheet layer: the drawing at 2x"
         >
           <Download size={13} className="text-blue-400" />
           <span>Export PNG</span>
         </button>
+        <select
+          value={exportDpi}
+          onChange={(e) => setExportDpi(Number(e.target.value))}
+          className="px-1.5 py-1.5 rounded-xl text-[11px] font-bold shadow-lg backdrop-blur border bg-neutral-900/90 text-neutral-200 border-neutral-750 cursor-pointer"
+          title="Export pixel density (default 150 dpi)"
+        >
+          {[96, 150, 200, 300].map((d) => <option key={d} value={d}>{d} dpi</option>)}
+        </select>
 
         <button
           onClick={() => setIsLayerManagerOpen(!isLayerManagerOpen)}
@@ -2410,7 +2698,7 @@ export const FloorPlanCanvas: React.FC = () => {
       <CadLayerManagerModal isOpen={isLayerManagerOpen} onClose={() => setIsLayerManagerOpen(false)} />
 
       {/* Viewport Floating Zoom Navigation Controls */}
-      <div className="absolute bottom-4 right-4 flex items-center gap-1.5 bg-neutral-900/90 border border-neutral-800 p-1.5 rounded-2xl backdrop-blur-md shadow-2xl">
+      <div ref={hudBottomRef} className="absolute bottom-4 right-4 flex items-center gap-1.5 bg-neutral-900/90 border border-neutral-800 p-1.5 rounded-2xl backdrop-blur-md shadow-2xl">
         <div className="flex items-center gap-1 px-1 text-[10px] text-neutral-400 font-medium border-r border-neutral-800 pr-2 mr-0.5">
           <span>Text:</span>
           <button
