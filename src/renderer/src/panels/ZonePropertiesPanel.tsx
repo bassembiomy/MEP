@@ -6,7 +6,7 @@ import { placeDiffusers } from '../engine/diffuserPlacer';
 import { routeDucts } from '../engine/ductRouter';
 import { pxPerFt, toCfm } from '../engine/units';
 import { formatAirflow, formatVelocity } from '../format/units';
-import { calculateOptimalOutdoorUnitPos, calculateOptimalIndoorUnitPos, getPolygonCentroid } from '../engine/geometry';
+import { calculateOutdoorUnitPlacement, calculateOptimalIndoorUnitPos, calculateWallMountedUnitPos, getPolygonCentroid } from '../engine/geometry';
 import { getCatalogSizingForZone } from '../engine/systemDesigner';
 import { STANDARD_DUCT_TYPES } from '../engine/hvacCatalogs';
 import {
@@ -59,39 +59,16 @@ function scanlineMid(points: number[], axis: 'x' | 'y', c: number): number | nul
   return best;
 }
 
-/** Nearest point on the polygon boundary, inset toward `toward` by `inset` px. */
-function snapToWall(points: number[], p: Pt, toward: Pt, inset: number): Pt {
-  const n = points.length / 2;
-  let best = p;
-  let bd = Infinity;
-  for (let i = 0; i < n; i++) {
-    const ax = points[2 * i];
-    const ay = points[2 * i + 1];
-    const bx = points[2 * ((i + 1) % n)];
-    const by = points[2 * ((i + 1) % n) + 1];
-    const dx = bx - ax;
-    const dy = by - ay;
-    const len2 = dx * dx + dy * dy || 1;
-    const t = Math.max(0, Math.min(1, ((p.x - ax) * dx + (p.y - ay) * dy) / len2));
-    const q = { x: ax + t * dx, y: ay + t * dy };
-    const d = Math.hypot(q.x - p.x, q.y - p.y);
-    if (d < bd) {
-      bd = d;
-      best = q;
-    }
-  }
-  const vx = toward.x - best.x;
-  const vy = toward.y - best.y;
-  const vl = Math.hypot(vx, vy) || 1;
-  return { x: best.x + (vx / vl) * inset, y: best.y + (vy / vl) * inset };
-}
-
 /**
  * Places `qty` indoor units: one per equal strip along the room's long axis (so each unit serves its own
  * share of the floor). A single unit uses the engine's optimal wall/ceiling position.
  */
 function layoutIndoorUnits(points: number[], qty: number, odu: Pt, unitPerFt: number, onWall: boolean): Pt[] {
-  if (qty <= 1) return [calculateOptimalIndoorUnitPos(points, odu, unitPerFt)];
+  if (qty <= 1) {
+    return [onWall
+      ? calculateWallMountedUnitPos(points, unitPerFt, { outdoorUnitPos: odu })
+      : calculateOptimalIndoorUnitPos(points, odu, unitPerFt)];
+  }
   const xs = points.filter((_, i) => i % 2 === 0);
   const ys = points.filter((_, i) => i % 2 === 1);
   const minX = Math.min(...xs);
@@ -113,7 +90,7 @@ function layoutIndoorUnits(points: number[], qty: number, odu: Pt, unitPerFt: nu
       const x = scanlineMid(points, 'y', y);
       p = { x: x ?? centroid.x, y };
     }
-    out.push(onWall ? snapToWall(points, p, centroid, 2 * unitPerFt) : p);
+    out.push(onWall ? calculateWallMountedUnitPos(points, unitPerFt, { outdoorUnitPos: odu, near: p }) : p);
   }
   return out;
 }
@@ -205,7 +182,10 @@ export const ZonePropertiesPanel: React.FC = () => {
     );
 
     const odu = force || !base.outdoorUnitPos
-      ? calculateOptimalOutdoorUnitPos(base.points, zones, dxfBoundingBox, upf)
+      ? calculateOutdoorUnitPlacement(base.points, zones, dxfBoundingBox, upf, {
+          // px polygons of every OTHER zone (same space as base.points; upf = px per ft)
+          otherZonePolygons: zones.filter((z) => z.id !== base.id && z.points && z.points.length >= 6).map((z) => z.points)
+        })
       : base.outdoorUnitPos;
 
     const spacing = isImperial ? 10 : 3;

@@ -55,6 +55,7 @@ export const AirDistributionSchedulePanel: React.FC = () => {
   const design = executeAirDistributionDesign({
     roomName: currentZone.name || 'Conditioned Space',
     roomPolygon,
+    otherZonePolygons: zones.filter((z) => z.id !== currentZone.id && z.points && z.points.length >= 6).map((z) => z.points),
     scalePxPerUnit: project.scale,
     units,
     roomAreaSqFt: toSqFt(loadResult.area, units) || 1500,

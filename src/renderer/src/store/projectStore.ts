@@ -50,6 +50,11 @@ export interface DuctSegment {
   areaSqFt?: number;
   sectionCategory?: DuctSectionCategory;
   acousticVerification?: DuctAcousticVerification;
+  /** Unavoidable supply/return plan crossing: needs a vertical offset. */
+  crossover?: boolean;
+  crossoverWith?: string[];
+  /** Clearance problem text from the router. */
+  clearanceIssue?: string;
 }
 
 export interface DxfEntity {

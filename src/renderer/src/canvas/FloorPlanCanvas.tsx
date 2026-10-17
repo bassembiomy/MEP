@@ -1398,8 +1398,63 @@ export const FloorPlanCanvas: React.FC = () => {
           const hw = ductHalfWidthPx(d.widthIn, k);
           const ax = x1 + dx * 0.6, ay = y1 + dy * 0.6;
           const arrowLen = Math.min(Math.max(hw, 0.5 * k), len * 0.25);
+          // Crossover: find where this duct crosses its partner(s) in plan (fallback: duct midpoint)
+          let xo: { x: number; y: number } | null = null;
+          if (d.crossover && annotationVisibility.ducts) {
+            xo = { x: x1 + dx * 0.5, y: y1 + dy * 0.5 };
+            for (const oid of d.crossoverWith ?? []) {
+              const o = zone.ducts.find((q) => q.id === oid);
+              if (!o) continue;
+              const ex = o.points[2] - o.points[0], ey = o.points[3] - o.points[1];
+              const den = dx * ey - dy * ex;
+              if (Math.abs(den) < 1e-9) continue;
+              const t = ((o.points[0] - x1) * ey - (o.points[1] - y1) * ex) / den;
+              const u2 = ((o.points[0] - x1) * dy - (o.points[1] - y1) * dx) / den;
+              if (t >= 0 && t <= 1 && u2 >= 0 && u2 <= 1) { xo = { x: x1 + dx * t, y: y1 + dy * t }; break; }
+            }
+          }
+          const xoSpan = Math.min(len * 0.5, Math.max(hw * 2.5, 2 * k));
           return (
             <Group key={`ann-${d.id}`} listening={false}>
+              {d.clearanceIssue && annotationVisibility.ducts && (
+                <>
+                  <Line
+                    points={[
+                      x1 + nx * hw, y1 + ny * hw, x2 + nx * hw, y2 + ny * hw,
+                      x2 - nx * hw, y2 - ny * hw, x1 - nx * hw, y1 - ny * hw
+                    ]}
+                    closed
+                    stroke="#f59e0b"
+                    strokeWidth={getStrokeWidth(1.6, 1.8)}
+                  />
+                  <Text
+                    x={x1 + dx * 0.5 + nx * (hw + 1 * k)}
+                    y={y1 + dy * 0.5 + ny * (hw + 1 * k)}
+                    text={`clearance: ${d.clearanceIssue}`}
+                    fontSize={Math.max(8 * textScale, 9 / stageScale)}
+                    fill="#f59e0b"
+                    fontStyle="bold"
+                  />
+                </>
+              )}
+              {xo && (
+                <>
+                  <Line
+                    points={[xo.x - ux * xoSpan / 2, xo.y - uy * xoSpan / 2, xo.x + ux * xoSpan / 2, xo.y + uy * xoSpan / 2]}
+                    stroke="#f43f5e"
+                    strokeWidth={getStrokeWidth(1.4, 1.6)}
+                    dash={[4 / stageScale, 3 / stageScale]}
+                  />
+                  <Text
+                    x={xo.x + nx * (hw + 0.5 * k)}
+                    y={xo.y + ny * (hw + 0.5 * k)}
+                    text="X-OVER"
+                    fontSize={Math.max(8 * textScale, 9 / stageScale)}
+                    fill="#f43f5e"
+                    fontStyle="bold"
+                  />
+                </>
+              )}
               {annotationVisibility.ducts && len > 2.5 * k && (
                 <Line
                   points={[
