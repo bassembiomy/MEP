@@ -3,6 +3,7 @@ import { useProjectStore } from '../store/projectStore';
 import { calculateZoneLoad } from '../engine/loadCalc';
 import { toBtuh, toCfm, toSqFt } from '../engine/units';
 import { formatAirflow, formatArea, formatLoad } from '../format/units';
+import { zoneDesignAirflowCfm } from './zoneDesign';
 import { Table } from 'lucide-react';
 
 export const LoadSummaryPanel: React.FC = () => {
@@ -18,7 +19,7 @@ export const LoadSummaryPanel: React.FC = () => {
         area: acc.area + load.area,
         sensible: acc.sensible + load.sensibleLoad,
         totalLoad: acc.totalLoad + load.totalLoad,
-        supplyCfm: acc.supplyCfm + load.supplyCfm,
+        supplyCfm: acc.supplyCfm + zoneDesignAirflowCfm(z, project),
         oaCfm: acc.oaCfm + load.oaCfm,
         exhaustCfm: acc.exhaustCfm + load.exhaustCfm,
         returnCfm: acc.returnCfm + load.returnCfm
@@ -78,7 +79,7 @@ export const LoadSummaryPanel: React.FC = () => {
                     {fLoad(load.totalLoad)}
                   </td>
                   <td className="py-3 text-right text-amber-500 font-bold">{load.totalTons}</td>
-                  <td className="py-3 text-right text-emerald-400">{fAir(load.supplyCfm)}</td>
+                  <td className="py-3 text-right text-emerald-400">{formatAirflow(zoneDesignAirflowCfm(z, project), units)}</td>
                   <td className="py-3 text-right text-neutral-400">{fAir(load.oaCfm)}</td>
                   <td className="py-3 text-right text-neutral-400">{fAir(load.exhaustCfm)}</td>
                   <td className="py-3 text-right text-teal-400">{fAir(load.returnCfm)}</td>
@@ -94,7 +95,7 @@ export const LoadSummaryPanel: React.FC = () => {
                 {fLoad(totals.totalLoad)}
               </td>
               <td className="py-3 text-right text-amber-500 font-extrabold">{Math.round(totalTons * 10) / 10}</td>
-              <td className="py-3 text-right text-emerald-400">{fAir(totals.supplyCfm)}</td>
+              <td className="py-3 text-right text-emerald-400">{formatAirflow(totals.supplyCfm, units)}</td>
               <td className="py-3 text-right text-neutral-400">{fAir(totals.oaCfm)}</td>
               <td className="py-3 text-right text-neutral-400">{fAir(totals.exhaustCfm)}</td>
               <td className="py-3 text-right text-teal-400">{fAir(totals.returnCfm)}</td>

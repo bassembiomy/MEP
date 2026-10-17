@@ -15,6 +15,7 @@ import {
 } from '../engine/deploymentTypes';
 import { normalizeCadToCanvas } from '../engine/dxfParser';
 import { pxPerFt } from '../engine/units';
+import { designZone, zonePatchFromDesign } from '../panels/zoneDesign';
 import { rescaleProjectGeometry } from '../canvas/drawingGeometry';
 import {
   buildDeploymentManifest,
@@ -569,109 +570,26 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     return { annotationVisibility: updated };
   }),
 
-  loadDemoSystems: () => set(() => {
-    const zone1Points = [60, 60, 240, 60, 240, 180, 60, 180];
-    const zone2Points = [360, 60, 540, 60, 540, 180, 360, 180];
-    const zone3Points = [60, 270, 240, 270, 240, 390, 60, 390];
-    const zone4Points = [360, 270, 540, 270, 540, 390, 360, 390];
-
-    const z1Id = `zone-demo-concealed`;
-    const z2Id = `zone-demo-highwall`;
-    const z3Id = `zone-demo-packaged`;
-    const z4Id = `zone-demo-cassette`;
-
-    const diffusers1 = [
-      { id: 'dif-z1-1', x: 130, y: 120, cfm: 200, size: '9"x9"', actualNc: 22, throwT50Ft: 9, deltaPInWg: 0.032 },
-      { id: 'dif-z1-2', x: 190, y: 120, cfm: 200, size: '9"x9"', actualNc: 22, throwT50Ft: 9, deltaPInWg: 0.032 }
-    ];
-    const ducts1 = [
-      { id: 'duct-z1-t1', type: 'trunk' as const, points: [95, 120, 130, 120], widthIn: 10, heightIn: 8, cfm: 400, sizeLabel: '10"x8"', velocityFpm: 720 },
-      { id: 'duct-z1-b1', type: 'branch' as const, points: [130, 120, 190, 120], widthIn: 8, heightIn: 6, cfm: 200, sizeLabel: '8"x6"', velocityFpm: 600 }
-    ];
-
-    const diffusers3 = [
-      { id: 'dif-z3-1', x: 130, y: 330, cfm: 250, size: '9"x9"', actualNc: 24, throwT50Ft: 10, deltaPInWg: 0.038 },
-      { id: 'dif-z3-2', x: 190, y: 330, cfm: 250, size: '9"x9"', actualNc: 24, throwT50Ft: 10, deltaPInWg: 0.038 }
-    ];
-    const ducts3 = [
-      { id: 'duct-z3-s1', type: 'trunk' as const, points: [20, 310, 130, 310], widthIn: 12, heightIn: 8, cfm: 500, sizeLabel: '12"x8"', velocityFpm: 750 },
-      { id: 'duct-z3-s2', type: 'branch' as const, points: [130, 310, 190, 310], widthIn: 8, heightIn: 8, cfm: 250, sizeLabel: '8"x8"', velocityFpm: 562 },
-      { id: 'duct-z3-r1', type: 'return' as const, points: [20, 350, 110, 350], widthIn: 12, heightIn: 8, cfm: 500, sizeLabel: '12"x8" (R)', velocityFpm: 750 }
-    ];
-
+  loadDemoSystems: () => set((state) => {
+    // The demo only defines geometry, space types, system types and metadata. Terminals, units and ducts come from the
+    // SAME auto-design pipeline as Auto-Layout (designZone / zonePatchFromDesign), so every number matches the engine.
+    const k = pxPerFt(state.project.scale, state.project.units);
+    const rect = (x: number, y: number, wFt: number, hFt: number): number[] => [x, y, x + wFt * k, y, x + wFt * k, y + hFt * k, x, y + hFt * k];
+    const mk = (id: string, name: string, points: number[], spaceTypeId: string, ceilingHeight: number, occupants: number, systemType: Zone['systemType']): Zone => ({
+      id, name, points, spaceTypeId, ceilingHeight, occupants, systemType, diffusers: [], ducts: []
+    });
+    const z1Id = 'zone-demo-concealed';
     const demoZones: Zone[] = [
-      {
-        id: z1Id,
-        name: "Concealed Ducted Split",
-        points: zone1Points,
-        spaceTypeId: 'office',
-        ceilingHeight: 9,
-        occupants: 3,
-        systemType: 'concealed',
-        unitPos: { x: 95, y: 120 },
-        outdoorUnitPos: { x: 20, y: 120 },
-        diffusers: diffusers1,
-        ducts: ducts1,
-        catalogQty: 1,
-        catalogModel: '42QSS024-D',
-        catalogEsp: '0.45 in.wg'
-      },
-      {
-        id: z2Id,
-        name: "High Wall DX Split",
-        points: zone2Points,
-        spaceTypeId: 'office',
-        ceilingHeight: 9,
-        occupants: 2,
-        systemType: 'high-wall',
-        unitPos: { x: 505, y: 120 },
-        outdoorUnitPos: { x: 580, y: 120 },
-        diffusers: [],
-        ducts: [],
-        catalogQty: 1,
-        catalogModel: 'Optimax 24K'
-      },
-      {
-        id: z3Id,
-        name: "Packaged Rooftop Unit",
-        points: zone3Points,
-        spaceTypeId: 'conference',
-        ceilingHeight: 10,
-        occupants: 8,
-        systemType: 'packaged',
-        unitPos: { x: 95, y: 330 },
-        outdoorUnitPos: { x: 20, y: 330 },
-        diffusers: diffusers3,
-        ducts: ducts3,
-        catalogQty: 1,
-        catalogModel: 'WeatherMaster 48HC-08',
-        catalogEsp: '1.20 in.wg'
-      },
-      {
-        id: z4Id,
-        name: "Cassette Split System",
-        points: zone4Points,
-        spaceTypeId: 'lobby',
-        ceilingHeight: 10,
-        occupants: 4,
-        systemType: 'cassette',
-        unitPos: undefined,
-        outdoorUnitPos: { x: 580, y: 330 },
-        diffusers: [
-          { id: 'dif-z4-1', x: 450, y: 330, cfm: 600, size: '36K', actualNc: 28, throwT50Ft: 14, deltaPInWg: 0.04 }
-        ],
-        ducts: [],
-        catalogQty: 1,
-        catalogModel: '40KMC036'
-      }
+      mk(z1Id, 'Concealed Ducted Split', rect(60, 60, 18, 12), 'office', 9, 4, 'concealed'),
+      mk('zone-demo-highwall', 'High Wall DX Split', rect(360, 60, 18, 12), 'office', 9, 2, 'high-wall'),
+      mk('zone-demo-packaged', 'Packaged Rooftop Unit', rect(60, 270, 18, 12), 'retail', 10, 8, 'packaged'),
+      mk('zone-demo-cassette', 'Cassette Split System', rect(360, 270, 18, 12), 'conference', 10, 8, 'cassette')
     ];
-
-    return {
-      zones: demoZones,
-      selectedZoneId: z1Id,
-      drawMode: 'select',
-      activePreview: null
-    };
+    const designed = demoZones.map((z) => ({
+      ...z,
+      ...zonePatchFromDesign(z, designZone(z, demoZones, state.project, null).payload)
+    }) as Zone);
+    return { zones: designed, selectedZoneId: z1Id, drawMode: 'select', activePreview: null };
   }),
 
   setLoadedCatalogs: (catalogs) => set({ loadedCatalogs: catalogs }),

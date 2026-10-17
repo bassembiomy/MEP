@@ -8,8 +8,7 @@ import { SystemComparisonTable } from './panels/SystemComparisonTable';
 import { LoadSummaryPanel } from './panels/LoadSummaryPanel';
 import { AirDistributionSchedulePanel } from './panels/AirDistributionSchedulePanel';
 import { useProjectStore } from './store/projectStore';
-import { calculateZoneLoad } from './engine/loadCalc';
-import { toCfm } from './engine/units';
+import { zoneDesignAirflowCfm } from './panels/zoneDesign';
 import { formatAirflow } from './format/units';
 import Versions from './components/Versions';
 import { CatalogManagerModal } from './components/CatalogManagerModal';
@@ -18,7 +17,7 @@ import { Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table, FileSpreadsheet,
 
 function App(): React.JSX.Element {
   const { project, zones, setProject, activeTab, setActiveTab, selectedZoneId } = useProjectStore();
-  const totalCfm = zones.reduce((sum, z) => sum + toCfm(calculateZoneLoad(z, project).supplyCfm, project.units), 0);
+  const totalCfm = zones.reduce((sum, z) => sum + zoneDesignAirflowCfm(z, project), 0);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [sectionsOpen, setSectionsOpen] = useState(false);
   const sectionZone = zones.find((z) => z.id === selectedZoneId) ?? zones[0];

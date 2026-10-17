@@ -5,6 +5,7 @@ import { calculateZoneLoad } from '../engine/loadCalc';
 import { generateSystemCandidates, type DesignCandidate } from '../engine/systemDesigner';
 import { deliveredCfmFor } from '../engine/systemArchitecture/equipmentSelector';
 import { toCfm } from '../engine/units';
+import { zoneDesignAirflowCfm } from './zoneDesign';
 import { formatAirflow, formatLoad, formatPressure, formatDuctSize } from '../format/units';
 import { createDeploymentPreview } from '../engine/deploymentManager';
 import { SelectionTraceViewer } from '../components/SelectionTraceViewer';
@@ -173,7 +174,7 @@ export const OptimizerStudioPanel: React.FC = () => {
             Redo ({redoStack.length})
           </button>
           <span className="bg-neutral-950 border border-neutral-800 px-3 py-1.5 rounded-xl text-neutral-400 font-mono text-[10px]">
-            Airflow: <strong className="text-emerald-400">{formatAirflow(toCfm(loadResult.supplyCfm, project.units), project.units)}</strong>
+            Airflow: <strong className="text-emerald-400">{formatAirflow(zoneDesignAirflowCfm(selectedZone, project), project.units)}</strong>
           </span>
         </div>
       </div>

@@ -165,3 +165,17 @@ export function zonePatchFromDesign(zone: Zone, payload0: ZonePayload): ZoneDesi
   }
   return patch;
 }
+
+/**
+ * THE design supply airflow of a zone (CFM): Σ supply terminals of the applied design (same number as the canvas zone
+ * label and the schedules), falling back to the load-calc supply airflow while no terminals are placed (e.g. high-wall).
+ * Header, Optimizer chip, Load Schedule and zone label must all read this.
+ */
+export function zoneDesignAirflowCfm(zone: Zone, project: ProjectMetadata): number {
+  if (zone.diffusers.length > 0) {
+    let s = 0;
+    for (const t of zone.diffusers) if (t.type !== 'return' && t.type !== 'exhaust') s += t.cfm || 0;
+    return s;
+  }
+  return toCfm(calculateZoneLoad(zone, project).supplyCfm, project.units);
+}
