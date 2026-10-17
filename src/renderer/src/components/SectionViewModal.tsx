@@ -62,8 +62,8 @@ const SectionSvg = React.forwardRef<SVGSVGElement, { s: Section; units: string }
   const ductLabels = s.elements
     .map((e, i) => ({ e, i }))
     .filter(({ e }) => (e.type === 'trunk' || e.type === 'branch' || e.type === 'crossing') && e.label)
-    .map(({ e, i }) => ({ id: String(i), x: X(e.x0) + Math.max(1, (e.x1 - e.x0) * PX_FT) / 2, y: Y(e.z1) - 3, w: (e.label as string).length * 5.4 + 4 }));
-  const staggered = new Map(staggerLabels(ductLabels, 11, 2).map((l) => [l.id, l]));
+    .map(({ e, i }) => ({ id: String(i), x: X(e.x0) + Math.max(1, (e.x1 - e.x0) * PX_FT) / 2, y: Y(e.z1) - 3, yBelow: Y(e.z0) + 13, w: (e.label as string).length * 5.6 + 8 }));
+  const staggered = new Map(staggerLabels(ductLabels, 13, 4).map((l) => [l.id, l]));
   return (
     <svg ref={ref} xmlns="http://www.w3.org/2000/svg" width={W} height={H} viewBox={`0 0 ${W} ${H}`} fontFamily="monospace">
       <rect width={W} height={H} fill="#0a0a0a" />
@@ -90,7 +90,9 @@ const SectionSvg = React.forwardRef<SVGSVGElement, { s: Section; units: string }
               const ly = l ? l.y : y - 3;
               return (
                 <>
-                  {l?.leader && <line x1={x + w / 2} x2={x + w / 2} y1={ly + 2} y2={y} stroke="#737373" strokeWidth={0.8} />}
+                  {l?.leader && (l.side === 'below'
+                    ? <line x1={x + w / 2} x2={x + w / 2} y1={y + h} y2={ly - 10} stroke="#737373" strokeWidth={0.8} />
+                    : <line x1={x + w / 2} x2={x + w / 2} y1={ly + 2} y2={y} stroke="#737373" strokeWidth={0.8} />)}
                   <text x={x + w / 2} y={ly} fill={isBad ? '#fca5a5' : '#d4d4d4'} fontSize={9} textAnchor="middle">{e.label}</text>
                 </>
               );

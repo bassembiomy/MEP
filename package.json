@@ -25,6 +25,7 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@mlightcad/libredwg-web": "^0.7.7",
     "adm-zip": "^0.5.18",
+    "jspdf": "4.2.1",
     "konva": "^10.3.0",
     "lucide-react": "^1.23.0",
     "pdf-parse": "^2.4.5",

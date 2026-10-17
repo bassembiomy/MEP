@@ -30,6 +30,8 @@ export interface LabelRequest {
    * Implies `mandatory`.
    */
   guaranteed?: boolean;
+  /** Minimum empty gap (px) kept between this label and every other placed label (small bubbles use it so they never touch). */
+  spacing?: number;
 }
 
 /** Font scales tried (in order) by a `guaranteed` label. */
@@ -195,19 +197,22 @@ export function layoutLabels(
 ): Map<string, PlacedLabel> {
   const margin = opts.margin ?? 1;
   const result = new Map<string, PlacedLabel>();
-  const placed: Rect[] = [];
+  const placed: Array<{ rect: Rect; sp: number }> = [];
   const sorted = requests
     .slice()
     .sort((a, b) => b.priority - a.priority || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const blocked = (r: Rect, ign?: string[]): boolean => {
+  const blocked = (r: Rect, ign?: string[], sp = 0): boolean => {
     for (const o of obstacles) if (!(ign && o.tag && ign.includes(o.tag)) && rectsOverlap(r, o, margin)) return true;
-    for (const p of placed) if (rectsOverlap(r, p, margin)) return true;
+    for (const p of placed) if (rectsOverlap(r, p.rect, Math.max(margin, sp, p.sp))) return true;
     return false;
   };
-  const cost = (r: Rect, ign?: string[]): number => {
+  const cost = (r: Rect, ign?: string[], sp = 0): number => {
     let c = 0;
     for (const o of obstacles) if (!(ign && o.tag && ign.includes(o.tag))) c += overlapArea(r, o);
-    for (const p of placed) c += overlapArea(r, p);
+    for (const p of placed) {
+      const m = Math.max(sp, p.sp);
+      c += overlapArea(r, m > 0 ? { x: p.rect.x - m, y: p.rect.y - m, w: p.rect.w + 2 * m, h: p.rect.h + 2 * m } : p.rect);
+    }
     return c;
   };
   for (const req of sorted) {
@@ -224,9 +229,9 @@ export function layoutLabels(
       if (req.guaranteed && si === scales.length - 1) cands = cands.concat(leaderCandidates(req.anchor, half, size, req.gap ?? 3));
       for (const c of cands) {
         const rect = rotatedAabb(c.x, c.y, size.w, size.h, c.angleDeg ?? 0);
-        if (!blocked(rect, req.ignoreTags)) { chosen = { c, rect, size, fontPx }; break; }
+        if (!blocked(rect, req.ignoreTags, req.spacing ?? 0)) { chosen = { c, rect, size, fontPx }; break; }
         if (mandatory) {
-          const cc = cost(rect, req.ignoreTags);
+          const cc = cost(rect, req.ignoreTags, req.spacing ?? 0);
           // prefer the larger font at equal cost
           if (!best || cc < best.cost - 1e-9) best = { c, rect, size, fontPx, cost: cc };
         }
@@ -246,7 +251,7 @@ export function layoutLabels(
       });
       continue;
     }
-    placed.push(chosen.rect);
+    placed.push({ rect: chosen.rect, sp: req.spacing ?? 0 });
     result.set(req.id, {
       id: req.id, visible: true, x: chosen.c.x, y: chosen.c.y, angleDeg: chosen.c.angleDeg ?? 0, w: chosen.size.w, h: chosen.size.h,
       dx: chosen.c.x - req.anchor.x, dy: chosen.c.y - req.anchor.y, rect: chosen.rect,
@@ -261,3 +266,74 @@ export function scaleBucket(scale: number): number {
   return Math.round(Math.log2(Math.max(1e-6, scale)) * 4);
 }
 export const bucketScale = (bucket: number): number => Math.pow(2, bucket / 4);
+
+// ───────────────────────── Leader routing ─────────────────────────
+
+/** Segment (x1,y1)-(x2,y2) against an axis-aligned rect (Liang-Barsky); touching an edge does not count when `inset` > 0. */
+export function segmentHitsRect(x1: number, y1: number, x2: number, y2: number, r: Rect, inset = 0): boolean {
+  const rx0 = r.x + inset, rx1 = r.x + r.w - inset, ry0 = r.y + inset, ry1 = r.y + r.h - inset;
+  if (rx1 <= rx0 || ry1 <= ry0) return false;
+  let t0 = 0, t1 = 1;
+  const dx = x2 - x1, dy = y2 - y1;
+  const p = [-dx, dx, -dy, dy], q = [x1 - rx0, rx1 - x1, y1 - ry0, ry1 - y1];
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(p[i]) < 1e-12) { if (q[i] < 0) return false; continue; }
+    const t = q[i] / p[i];
+    if (p[i] < 0) { if (t > t1) return false; if (t > t0) t0 = t; } else { if (t < t0) return false; if (t < t1) t1 = t; }
+  }
+  return t0 <= t1;
+}
+
+export function polylineHitsRect(pts: number[], r: Rect, inset = 0): boolean {
+  for (let i = 0; i + 3 < pts.length; i += 2) if (segmentHitsRect(pts[i], pts[i + 1], pts[i + 2], pts[i + 3], r, inset)) return true;
+  return false;
+}
+
+/** Drop the part of a polyline that lies inside `r` at its start (so the leader starts on the label's edge). */
+function trimStartInside(pts: number[], r: Rect): number[] {
+  const inside = (x: number, y: number): boolean => x > r.x && x < r.x + r.w && y > r.y && y < r.y + r.h;
+  let out = pts.slice();
+  while (out.length >= 4 && inside(out[0], out[1])) {
+    if (inside(out[2], out[3]) && out.length > 4) { out = out.slice(2); continue; }
+    // exit point of the first segment
+    const [x1, y1, x2, y2] = out;
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 30; i++) {
+      const m = (lo + hi) / 2;
+      if (inside(x1 + (x2 - x1) * m, y1 + (y2 - y1) * m)) lo = m; else hi = m;
+    }
+    out = [x1 + (x2 - x1) * hi, y1 + (y2 - y1) * hi, ...out.slice(2)];
+    break;
+  }
+  return out;
+}
+
+export interface LeaderRoute { points: number[]; symbolHits: number; labelHits: number }
+
+/**
+ * Leader from a label box to its target point: the straight line or one of the two one-elbow orthogonal polylines
+ * (horizontal-then-vertical, vertical-then-horizontal), whichever intersects no symbol box and the fewest other labels.
+ * Ties prefer straight, then the shorter path. `symbols` boxes are shrunk by `inset` so reaching the target on a symbol's own
+ * boundary is not a crossing. Pure; any consistent coordinate space.
+ */
+export function routeLeader(label: Rect, target: { x: number; y: number }, symbols: Rect[], labels: Rect[] = [], inset = 0.75): LeaderRoute {
+  const cx = label.x + label.w / 2, cy = label.y + label.h / 2;
+  const straight = [cx, cy, target.x, target.y];
+  const cands: Array<{ pts: number[]; elbow: boolean }> = [
+    { pts: straight, elbow: false },
+    { pts: [cx, cy, target.x, cy, target.x, target.y], elbow: true },
+    { pts: [cx, cy, cx, target.y, target.x, target.y], elbow: true }
+  ];
+  let best: (LeaderRoute & { score: number }) | null = null;
+  for (const c of cands) {
+    const pts = trimStartInside(c.pts, label);
+    if (pts.length < 4) continue;
+    let symbolHits = 0, labelHits = 0, len = 0;
+    for (const r of symbols) if (polylineHitsRect(pts, r, inset)) symbolHits++;
+    for (const r of labels) if (polylineHitsRect(pts, r, 0)) labelHits++;
+    for (let i = 0; i + 3 < pts.length; i += 2) len += Math.hypot(pts[i + 2] - pts[i], pts[i + 3] - pts[i + 1]);
+    const score = symbolHits * 1e6 + labelHits * 1e3 + (c.elbow ? 1 : 0) + len * 1e-3;
+    if (!best || score < best.score - 1e-9) best = { points: pts, symbolHits, labelHits, score };
+  }
+  return best ? { points: best.points, symbolHits: best.symbolHits, labelHits: best.labelHits } : { points: straight, symbolHits: 0, labelHits: 0 };
+}

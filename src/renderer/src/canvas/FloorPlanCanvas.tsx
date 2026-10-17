@@ -62,7 +62,8 @@ import {
   PlacedLabel,
   Obstacle as LObstacle,
   Rect as LRect,
-  overlayObstacles
+  overlayObstacles,
+  routeLeader
 } from './labelLayout';
 import {
   assignTerminalsByAssociation,
@@ -75,6 +76,7 @@ import {
   planSheet,
   SheetPlan,
   exportPixelSize,
+  pdfPagePlan,
   pngSetDpi,
   DEFAULT_EXPORT_DPI,
   loadStoredBool,
@@ -101,7 +103,6 @@ import {
   shortClearanceReason,
   calloutCandidates,
   gridCandidatesInPolygon,
-  rectEdgePoint,
   Takeoff,
   FlexConnection
 } from './shopDrawing';
@@ -129,6 +130,7 @@ import {
   toggleDrainPoint
 } from './polishL2';
 import { CONDENSATE_TAG, boundsWithLabels, pipeBubbleSpots, type FitLabel } from './polishM2';
+import { NO_DRAIN_TEXT, needsAccessPanel, zonesMissingDrainPoint, exportContentBounds } from './polishN1';
 
 // Duct outline geometry cache (keyed by the zone's duct array identity, then k).
 const ductGeomCache = new WeakMap<DuctSegment[], { k: number; runs: DuctRunOutline[] }>();
@@ -317,6 +319,7 @@ export const FloorPlanCanvas: React.FC = () => {
   const [calib, setCalib] = useState<{ stage: 'p1' | 'p2' | 'enter'; p1?: { x: number; y: number }; p2?: { x: number; y: number } } | null>(null);
   const [calibDist, setCalibDist] = useState<string>('');
   const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
+  const [drainBannerDismissed, setDrainBannerDismissed] = useState<boolean>(false);
   // Detailed annotations: CFM / velocity on duct-section tags and NC on terminal tags (off = clean shop drawing).
   const [detailed, setDetailed] = useState<boolean>(() => loadStoredBool('detailed', false));
   // Shop-drawing layers (view options): accessories (dampers, flex, access panels, condensate) and the sheet (legend + title block).
@@ -1202,7 +1205,8 @@ export const FloorPlanCanvas: React.FC = () => {
           ...termBoxes, ...otherUnits, ...units.map(unitTagRect),
           ...(plan.chw.filter((c) => c.uIdx === uIdx).flatMap((c) => c.valves.map((v) => ({ x: v.x - 0.8 * k, y: v.y - 0.8 * k, w: 1.6 * k, h: 1.6 * k }))))
         ];
-        plan.panels.push({ uIdx, rect: accessPanelPlacement(u, fp, k, { pts, boxes: boxes2 }).rect });
+        // only concealed / ducted / FCU / AHU units above a ceiling get an access panel (not wall-mounted high-wall units)
+        if (needsAccessPanel(unitKindForSystem(z.systemType))) plan.panels.push({ uIdx, rect: accessPanelPlacement(u, fp, k, { pts, boxes: boxes2 }).rect });
       });
       const avoidRects = [...units.map(unitTagRect), ...plan.panels.map((p) => p.rect), ...flexBoxes, ...plan.plenums.map((p) => p.rect)];
       plan.takeoffs = findBranchTakeoffs(zDucts, k, avoidRects);
@@ -1233,6 +1237,29 @@ export const FloorPlanCanvas: React.FC = () => {
   );
 
   // ───────── Annotation layout (collision-free labels; recomputed per zoom bucket, not per wheel tick) ─────────
+  const noDrainZones = useMemo(
+    () => zonesMissingDrainPoint(zones.map((z) => ({ id: z.id, name: z.name, drains: shopPlans.get(z.id)?.drains ?? [] }))),
+    [zones, shopPlans]
+  );
+  const noDrainIds = useMemo(() => new Set(noDrainZones.map((n) => n.id)), [noDrainZones]);
+  /** Unit and terminal symbol boxes (world px): callout / warning leaders are routed around them. */
+  const symbolRects = useMemo(() => {
+    const out: Array<{ x: number; y: number; w: number; h: number }> = [];
+    for (const z of zones) {
+      const fpz = unitFootprintPx(unitKindForSystem(z.systemType), k, catalogDimsFor(z.catalogModel));
+      for (const u of unitPositionsOf(z)) out.push({ x: u.x - fpz.w / 2, y: u.y - fpz.d / 2, w: fpz.w, h: fpz.d });
+      if (hasRefrigerantPlant(z)) {
+        const o = unitFootprintPx('odu', k, outdoorDimsFor(z));
+        for (const p of outdoorPositionsOf(z)) out.push({ x: p.x - o.w / 2, y: p.y - o.d / 2, w: o.w, h: o.d });
+      }
+      for (const d of z.diffusers) {
+        const face = terminalFacePx(d, k, project.units);
+        out.push({ x: d.x - face.w / 2, y: d.y - face.h / 2, w: face.w, h: face.h });
+      }
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zones, k, project.units]);
   const sBucket = scaleBucket(stageScale);
   const fontFactor = (project.equipmentScale || 1.5) / 1.5;
   const labelItems = useMemo(() => {
@@ -1444,6 +1471,20 @@ export const FloorPlanCanvas: React.FC = () => {
           });
         }
       }
+      // Condensate units but no drain point in this zone: amber notice at the first unit (listed in the banner too)
+      if (plan && noDrainIds.has(z.id) && zUnits.length > 0) {
+        const u0 = zUnits[0];
+        const id = `nd:${z.id}`;
+        const fontPx = 9 * ff;
+        reqs.push({
+          id, lines: [NO_DRAIN_TEXT], fontPx, priority: 80, mandatory: true, guaranteed: true, anchor: { x: u0.x * s, y: u0.y * s },
+          anchorHalf: { w: (fp.w * s) / 2, h: (fp.d * s) / 2 }
+        });
+        meta.set(id, {
+          id, zoneId: z.id, kind: 'warning', lines: [colorLine(NO_DRAIN_TEXT, '#fbbf24')], fontPx, anchorWorld: { x: u0.x, y: u0.y },
+          bg: 'rgba(69,26,3,0.92)', border: '#f59e0b', leaderOnFar: true, leaderTo: { x: u0.x, y: u0.y }, leaderColor: '#f59e0b'
+        });
+      }
       if (tier >= 2 && zUnits.length >= 2 && isDuctedSystem(z)) {
         const asg = assignTerminalsByAssociation(z.diffusers.filter(isSupplyTerminal), zUnits, { zoneId: z.id });
         if (asg.anyOverloaded) {
@@ -1579,7 +1620,7 @@ export const FloorPlanCanvas: React.FC = () => {
             const cands = (spots.length ? spots : [mid]).map((q) => ({ x: q.x * s, y: q.y * s, angleDeg: 0 }));
             reqs.push({
               id, lines: [tag], fontPx, priority: LABEL_PRIORITY.pipe + 1, anchor: { x: cands[0].x, y: cands[0].y },
-              candidates: cands, mandatory: true, ignoreTags: [`pipe:${p.id}`]
+              candidates: cands, mandatory: true, ignoreTags: [`pipe:${p.id}`], spacing: 5
             });
             meta.set(id, {
               id, zoneId: z.id, kind: 'pipe', lines: [colorLine(tag, '#000000')], fontPx,
@@ -1639,11 +1680,17 @@ export const FloorPlanCanvas: React.FC = () => {
             const lines = [`${CONDENSATE_TAG} ${CONDENSATE_SIZE_TEXT}`, CONDENSATE_SLOPE_TEXT];
             const size = measureLabel(lines, fontPx);
             const cands = alongCandidates(dr.points, size, 4);
-            if (!cands.length) continue;
             const aw = longest(dr.points);
             const id = `cd:${z.id}:${dr.uIdx}`;
-            reqs.push({ id, lines, fontPx, priority: LABEL_PRIORITY.condensate, anchor: { x: aw.x * s, y: aw.y * s }, candidates: cands, ignoreTags: [id] });
-            meta.set(id, { id, zoneId: z.id, kind: 'accessory', lines: lines.map((t) => colorLine(t, '#67e8f9')), fontPx, anchorWorld: aw, bg: 'rgba(12,12,12,0.72)' });
+            // guaranteed: never dropped; when nothing along the drain is free it falls back to a far spot with a leader
+            reqs.push({
+              id, lines, fontPx, priority: LABEL_PRIORITY.condensate, anchor: { x: aw.x * s, y: aw.y * s }, anchorHalf: { w: 4, h: 4 },
+              candidates: cands.length ? cands : undefined, guaranteed: true, ignoreTags: [id]
+            });
+            meta.set(id, {
+              id, zoneId: z.id, kind: 'accessory', lines: lines.map((t) => colorLine(t, '#67e8f9')), fontPx, anchorWorld: aw,
+              bg: 'rgba(12,12,12,0.72)', leaderTo: aw, leaderColor: '#67e8f9', leaderOnFar: true
+            });
           }
           for (const t of plan.takeoffs) {
             const hw = Math.max(t.halfWidthPx, 0.2 * k) * 1.25;
@@ -1680,7 +1727,7 @@ export const FloorPlanCanvas: React.FC = () => {
     });
     return byZone;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [zones, project, k, sBucket, annotationVisibility, detailed, fontFactor, textScale, selectedZoneId, shopPlans, sheet, showSheet, showAccessories, hoverClr, dxfTexts, dxfLayers, overlayRects, settledView]);
+  }, [zones, project, k, sBucket, annotationVisibility, detailed, fontFactor, textScale, selectedZoneId, shopPlans, noDrainIds, sheet, showSheet, showAccessories, hoverClr, dxfTexts, dxfLayers, overlayRects, settledView]);
 
   useEffect(() => {
     const out: FitLabel[] = [];
@@ -1702,12 +1749,25 @@ export const FloorPlanCanvas: React.FC = () => {
     const y = it.anchorWorld.y + p.dy / sc;
     const fontPx = p.fontPx || it.fontPx;
     const lh = fontPx * 1.25;
-    const leader = it.leaderTo && (!it.leaderOnFar || p.leader) ? rectEdgePoint(x, y, p.w / 2 / sc, p.h / 2 / sc, it.leaderTo.x, it.leaderTo.y) : null;
+    // leader: straight or one-elbow orthogonal, whichever crosses no unit / terminal symbol and the fewest other labels
+    let leader: number[] | null = null;
+    if (it.leaderTo && (!it.leaderOnFar || p.leader)) {
+      const me = { x: x - p.w / 2 / sc, y: y - p.h / 2 / sc, w: p.w / sc, h: p.h / sc };
+      const others: Array<{ x: number; y: number; w: number; h: number }> = [];
+      labelItems.forEach((items) => {
+        for (const o of items) {
+          if (o.id === it.id) continue;
+          const q = o.placed;
+          others.push({ x: o.anchorWorld.x + q.dx / sc - q.rect.w / 2 / sc, y: o.anchorWorld.y + q.dy / sc - q.rect.h / 2 / sc, w: q.rect.w / sc, h: q.rect.h / sc });
+        }
+      });
+      leader = routeLeader(me, it.leaderTo, symbolRects, others, 0.5 / sc).points;
+    }
     return (
       <React.Fragment key={it.id}>
       {leader && it.leaderTo && (
         <Group listening={false}>
-          <Line points={[leader.x, leader.y, it.leaderTo.x, it.leaderTo.y]} stroke={it.leaderColor || '#facc15'} strokeWidth={getStrokeWidth(1.2, 1.2)} />
+          <Line points={leader} stroke={it.leaderColor || '#facc15'} strokeWidth={getStrokeWidth(1.2, 1.2)} />
           <Circle x={it.leaderTo.x} y={it.leaderTo.y} radius={2.5 / sc} fill={it.leaderColor || '#facc15'} />
         </Group>
       )}
@@ -1882,14 +1942,16 @@ export const FloorPlanCanvas: React.FC = () => {
    * sheet-size x dpi pixels (default 150 dpi) and the PNG carries its dpi, so it prints at the stated scale. Sheet OFF: the
    * drawing at pixelRatio 2. The view is restored afterwards.
    */
-  const exportPng = (): void => {
+  /** Render the export raster (sheet frame at sheet-size x dpi, or the drawing incl. every label / callout box at 2x). */
+  const captureExport = (): { url: string; dpiUsed: number; sheetOn: boolean } | null => {
     const stage = stageRef.current;
-    if (!stage) return;
-    const sheetOn = showSheet && sheet;
-    const b = sheetOn
+    if (!stage) return null;
+    const sheetOn = !!(showSheet && sheet);
+    const content = allContentBounds();
+    const b = sheetOn && sheet
       ? { minX: sheet.frame.x, minY: sheet.frame.y, maxX: sheet.frame.x + sheet.frame.w, maxY: sheet.frame.y + sheet.frame.h }
-      : allContentBounds();
-    if (!b) { showMessage('Nothing to export yet'); return; }
+      : content && exportContentBounds(content, fitLabelsRef.current, (bx) => fitBounds(bx, size.w, size.h, 0.94).scale);
+    if (!b) { showMessage('Nothing to export yet'); return null; }
     const prev = { scale: stageScale, pos: stagePos };
     const f = fitBounds(b, size.w, size.h, sheetOn ? 1 : 0.94);
     let url = '';
@@ -1900,7 +1962,7 @@ export const FloorPlanCanvas: React.FC = () => {
         setStageScale(f.scale);
         setStagePos({ x: f.x, y: f.y });
       });
-      if (sheetOn) {
+      if (sheetOn && sheet) {
         const px = exportPixelSize(sheet.sheet, exportDpi);
         dpiUsed = px.dpi;
         const rx = f.x + sheet.frame.x * f.scale, ry = f.y + sheet.frame.y * f.scale;
@@ -1916,7 +1978,13 @@ export const FloorPlanCanvas: React.FC = () => {
         setStagePos(prev.pos);
       });
     }
-    if (!url) return;
+    return url ? { url, dpiUsed, sheetOn } : null;
+  };
+
+  const exportPng = (): void => {
+    const cap = captureExport();
+    if (!cap) return;
+    const { url, dpiUsed, sheetOn } = cap;
     let href = url;
     if (dpiUsed > 0 && url.startsWith('data:image/png;base64,')) {
       try {
@@ -1930,12 +1998,31 @@ export const FloorPlanCanvas: React.FC = () => {
     }
     const a = document.createElement('a');
     a.href = href;
-    const tag = sheetOn ? `-M-101-${sheet.scale.id.replace(/[^a-z0-9]+/gi, '_')}-${dpiUsed}dpi` : '-M-101';
+    const tag = sheetOn && sheet ? `-M-101-${sheet.scale.id.replace(/[^a-z0-9]+/gi, '_')}-${dpiUsed}dpi` : '-M-101';
     a.download = `${(project.name || 'hvac-layout').replace(/[^a-z0-9_-]+/gi, '_')}${tag}.png`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     if (href !== url) window.setTimeout(() => URL.revokeObjectURL(href), 10000);
+  };
+
+  /**
+   * Export PDF (sheet layer ON): the page is the chosen sheet (A1 841 x 594 mm | ARCH D 36 x 24 in) and the sheet raster
+   * fills it exactly, so printed lengths match the drawing scale (1 ft at 1/8" = 0.125 in).
+   */
+  const exportPdf = async (): Promise<void> => {
+    if (!(showSheet && sheet)) { showMessage('Turn the Sheet layer ON to export a PDF at true scale'); return; }
+    const cap = captureExport();
+    if (!cap) return;
+    try {
+      const { jsPDF } = await import('jspdf');
+      const plan = pdfPagePlan(sheet.sheet, exportDpi);
+      const doc = new jsPDF({ orientation: plan.orientation, unit: 'mm', format: plan.pageMm, compress: true });
+      doc.addImage(cap.url, 'PNG', plan.image.x, plan.image.y, plan.image.w, plan.image.h, undefined, 'FAST');
+      doc.save(`${(project.name || 'hvac-layout').replace(/[^a-z0-9_-]+/gi, '_')}-M-101-${sheet.scale.id.replace(/[^a-z0-9]+/gi, '_')}-${plan.imagePx.dpi}dpi.pdf`);
+    } catch (err) {
+      showMessage(`PDF export failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   // ───────── Symbols (true physical size) ─────────
@@ -2783,6 +2870,14 @@ export const FloorPlanCanvas: React.FC = () => {
           <Download size={13} className="text-blue-400" />
           <span>Export PNG</span>
         </button>
+        <button
+          onClick={() => { void exportPdf(); }}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shadow-lg backdrop-blur cursor-pointer border bg-neutral-900/90 hover:bg-neutral-800 text-neutral-200 border-neutral-750"
+          title="Export the sheet as a PDF whose page is the sheet (A1 / ARCH D) with the drawing at true scale (needs the Sheet layer ON)"
+        >
+          <Download size={13} className="text-rose-400" />
+          <span>Export PDF</span>
+        </button>
         <select
           value={exportDpi}
           onChange={(e) => setExportDpi(Number(e.target.value))}
@@ -2832,6 +2927,16 @@ export const FloorPlanCanvas: React.FC = () => {
             ))}
           </select>
           <button onClick={() => setBannerDismissed(true)} className="text-amber-400 hover:text-white cursor-pointer" title="Dismiss">
+            <XIcon size={12} />
+          </button>
+        </div>
+      )}
+
+      {noDrainZones.length > 0 && !drainBannerDismissed && (
+        <div className={`absolute left-4 flex items-center gap-2 bg-amber-950/90 border border-amber-600/60 text-amber-200 text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow backdrop-blur ${cadCalibration?.needsCalibration && !bannerDismissed && !calib ? 'top-28' : 'top-16'}`}>
+          <span className="text-amber-400">!</span>
+          <span>{NO_DRAIN_TEXT}: {noDrainZones.map((n) => n.name).join(', ')}</span>
+          <button onClick={() => setDrainBannerDismissed(true)} className="text-amber-400 hover:text-white cursor-pointer" title="Dismiss">
             <XIcon size={12} />
           </button>
         </div>

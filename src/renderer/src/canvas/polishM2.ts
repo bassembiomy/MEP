@@ -70,31 +70,44 @@ export function pipeBubbleSpots(
 
 // ───────────────────────── Section view ─────────────────────────
 
-export interface StaggerInput { id: string; x: number; y: number; w: number }
-export interface StaggerOutput { id: string; x: number; y: number; level: number; leader: boolean }
+export interface StaggerInput {
+  id: string; x: number; y: number; w: number;
+  /** Baseline just under the element: when given, lifted labels alternate between above (y) and below (yBelow). */
+  yBelow?: number;
+}
+export interface StaggerOutput { id: string; x: number; y: number; level: number; leader: boolean; side: 'above' | 'below' }
 
 /**
- * Collision avoidance for labels sitting above their element: each label keeps its x and is lifted in `lineH` steps until
- * its box (w x lineH, baseline at y) overlaps none already placed. Lifted labels get a leader down to the element.
+ * Collision avoidance for labels beside their element: each label keeps its x and is moved in `lineH + gap` steps until its
+ * box (w x lineH, baseline at y) overlaps none already placed. Slots run: base, then alternately below (when `yBelow` is
+ * given) and further above, so a crowded unit end spreads on both sides. Moved labels get a leader to the element.
  */
 export function staggerLabels(items: StaggerInput[], lineH = 11, gap = 2, maxLevels = 8): StaggerOutput[] {
   const placed: Array<{ x0: number; x1: number; y0: number; y1: number }> = [];
   const out = new Map<string, StaggerOutput>();
   const order = items.slice().sort((a, b) => a.x - b.x || a.y - b.y || (a.id < b.id ? -1 : 1));
+  const step = lineH + gap;
   for (const it of order) {
+    // slot list: [side, step index]
+    const slots: Array<['above' | 'below', number]> = [['above', 0]];
+    for (let n = 1; slots.length <= maxLevels; n++) {
+      if (it.yBelow !== undefined) slots.push(['below', n - 1]);
+      slots.push(['above', n]);
+    }
     let level = 0;
-    for (; level < maxLevels; level++) {
-      const y = it.y - level * (lineH + gap);
+    for (; level < slots.length && level <= maxLevels; level++) {
+      const [side, n] = slots[level];
+      const y = side === 'above' ? it.y - n * step : (it.yBelow as number) + n * step;
       const r = { x0: it.x - it.w / 2 - gap, x1: it.x + it.w / 2 + gap, y0: y - lineH, y1: y };
       if (!placed.some((p) => r.x0 < p.x1 && r.x1 > p.x0 && r.y0 < p.y1 && r.y1 > p.y0)) {
         placed.push(r);
-        out.set(it.id, { id: it.id, x: it.x, y, level, leader: level > 0 });
+        out.set(it.id, { id: it.id, x: it.x, y, level, leader: level > 0, side });
         break;
       }
     }
     if (!out.has(it.id)) {
-      const y = it.y - maxLevels * (lineH + gap);
-      out.set(it.id, { id: it.id, x: it.x, y, level: maxLevels, leader: true });
+      const y = it.y - maxLevels * step;
+      out.set(it.id, { id: it.id, x: it.x, y, level: maxLevels, leader: true, side: 'above' });
     }
   }
   return items.map((i) => out.get(i.id) as StaggerOutput);

@@ -975,6 +975,40 @@ export function exportPixelSize(sheet: SheetSpec, dpi = DEFAULT_EXPORT_DPI): { w
   return { w: px(sheet.wMm), h: px(sheet.hMm), dpi: d };
 }
 
+// ───────────────────────── PDF export (true scale) ─────────────────────────
+
+export interface PdfPlan {
+  /** jsPDF page format in mm: [width, height] of the chosen sheet (A1 841 x 594 | ARCH D 914.4 x 609.6 = 36 x 24 in). */
+  pageMm: [number, number];
+  pageIn: [number, number];
+  orientation: 'landscape' | 'portrait';
+  /** Image placement on the page (mm): the sheet raster fills the page exactly, so paper size = sheet size. */
+  image: { x: number; y: number; w: number; h: number };
+  /** Raster size (px) and the dpi actually used for it. */
+  imagePx: { w: number; h: number; dpi: number };
+}
+
+/** Page size + image placement for a sheet raster exported at `dpi`: 1 sheet px = 1/dpi in on paper (no scaling, no margins). */
+export function pdfPagePlan(sheet: SheetSpec, dpi = DEFAULT_EXPORT_DPI): PdfPlan {
+  const px = exportPixelSize(sheet, dpi);
+  return {
+    pageMm: [sheet.wMm, sheet.hMm],
+    pageIn: [sheet.wMm / 25.4, sheet.hMm / 25.4],
+    orientation: sheet.wMm >= sheet.hMm ? 'landscape' : 'portrait',
+    image: { x: 0, y: 0, w: sheet.wMm, h: sheet.hMm },
+    imagePx: px
+  };
+}
+
+/** Paper length (mm) of a real length (ft) at a standard scale: 1 ft at 1/8" = 1'-0" -> 3.175 mm (0.125 in). */
+export const paperMmForFeet = (ft: number, scale: StandardScale): number => ft * MM_PER_FT * scale.ratio;
+
+/**
+ * Printed length (mm) of one foot of the drawing: `k` world px per ft, `frameWorldW` the sheet frame width in world px,
+ * the frame being placed over `plan.image.w` mm of paper.
+ */
+export const printedMmPerFoot = (plan: PdfPlan, frameWorldW: number, k: number): number => (k * plan.image.w) / Math.max(1e-9, frameWorldW);
+
 // ───────────────────────── PNG dpi metadata ─────────────────────────
 
 const CRC_TABLE: number[] = (() => {
