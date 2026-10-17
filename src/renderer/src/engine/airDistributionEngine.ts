@@ -1,8 +1,9 @@
 import { StandardsProfile, getStandardsProfile } from './standards/designStandards';
-import { optimizeMultiUnitCandidates, evaluateUnitCountOption, MultiUnitCandidate } from './systemArchitecture/equipmentOptimizer';
+import { optimizeMultiUnitCandidates, evaluateUnitCountOption, eligibleItemsFor, MultiUnitCandidate } from './systemArchitecture/equipmentOptimizer';
 import { evaluateSizing, MAX_UNIT_COUNT } from './systemArchitecture/equipmentSelector';
 import { generateDesignDecisionLog } from './systemArchitecture/designDecisionLogger';
-import { partitionRoomIntoServiceZones, EquipmentServiceZone } from './zoning/zonePartitioner';
+import { partitionRoomIntoServiceZones, partitionRoomIntoBays, polygonAreaFt2, EquipmentServiceZone } from './zoning/zonePartitioner';
+import { decomposeConvex } from './terminals/bayLayout';
 import { placeSupplyDiffusersForZone, CoordinatedAirTerminal } from './terminals/terminalPlacer';
 import { placeReturnGrillesForZone } from './terminals/returnPlacer';
 import { routeSteppedSupplyDucts, ductSegments, flagCrossovers, SteppedDuctSection } from './ducts/steppedDuctRouter';
@@ -14,10 +15,11 @@ import { sizeDuctNetwork } from './ducts/aerodynamicDuctSizer';
 import { routeFreshAirDucts, OutdoorAirSystem } from './outdoorAir/freshAirRouter';
 import { calculateAshrae621Ventilation, Ashrae621Result } from './outdoorAir/outdoorAirCalculator';
 import { polygonPxToFt, pxPerFt, UnitSystem, MM_PER_IN } from './units';
-import { calculateOutdoorUnitPlacement, calculateWallMountedUnitPos, getPolygonBounds, isPointInPolygon, distanceToPolygonEdge, MIN_TERMINAL_SPACING_FT, WALL_UNIT_DEFAULT_WIDTH_FT, Pt2 } from './geometry';
+import { calculateOutdoorUnitPlacement, calculateWallMountedUnitPos, clipPolygonToRect, getPolygonBounds, isPointInPolygon, distanceToPolygonEdge, MIN_TERMINAL_SPACING_FT, WALL_UNIT_DEFAULT_WIDTH_FT, Pt2 } from './geometry';
 import { executeMasterHvacValidation, MasterValidationReport } from './validation/hvacValidator';
 import { diffuserCatalogFor } from './hvacCatalogs';
 import { DEFAULT_SPACE_NC_TARGETS } from './acousticDuctEngine';
+import { DEFAULT_VOID_IN, maxDuctDepthForVoid } from './ceilingVoid';
 
 export interface AirDistributionDesignInput {
   roomName: string;
@@ -99,7 +101,7 @@ export function resolveReturnStrategy(
   input: { systemType?: string; returnStrategy?: ReturnStrategy; ceilingPlenum?: boolean; maxAvailableCeilingDepthIn?: number }
 ): ReturnStrategy {
   if (input.returnStrategy === 'plenum' || input.returnStrategy === 'ducted') return input.returnStrategy;
-  const plenum = input.ceilingPlenum ?? (input.maxAvailableCeilingDepthIn ?? 14) >= MIN_PLENUM_DEPTH_IN;
+  const plenum = input.ceilingPlenum ?? (input.maxAvailableCeilingDepthIn ?? DEFAULT_VOID_IN) >= MIN_PLENUM_DEPTH_IN;
   return PLENUM_RETURN_SYSTEMS.has(input.systemType ?? 'concealed') && plenum ? 'plenum' : 'ducted';
 }
 
@@ -148,6 +150,8 @@ export interface AirDistributionDesignResult {
   unitFootprintsIn?: Record<string, { lengthIn: number; widthIn: number }>;
   /** Layout compromises (e.g. keep-out zone relaxed because the room is too small to honour it). */
   layoutWarnings?: string[];
+  /** Design-level compromises: wall-unit coverage vs. oversize limit, VRF indoor / outdoor of different manufacturers ... */
+  designWarnings?: string[];
   /** 'plenum': returns open into the ceiling void (one short return box per unit); 'ducted': return mains are routed. */
   returnStrategy?: ReturnStrategy;
   /** System type the design was made for ('vrf', 'ahu' ...). */
@@ -200,6 +204,40 @@ function spreadReturnCfm(returns: CoordinatedAirTerminal[], totalCfm: number): C
 export const HIGH_WALL_DEFAULT_THROW_FT = 25;
 /** Half-angle of the discharge cone of a wall-mounted unit (deg). */
 export const HIGH_WALL_CONE_HALF_ANGLE_DEG = 45;
+
+/** Installed wall-unit capacity never exceeds this multiple of the room load (more units only while they stay inside it). */
+export const WALL_UNITS_MAX_CAPACITY_RATIO = 1.3;
+
+/** Smallest distance (ft) from a wall of the convex `leg` to its farthest vertex: the throw a unit mounted on the best wall needs. */
+function legMountDepthFt(leg: number[]): number {
+  const n = Math.floor(leg.length / 2);
+  let best = Infinity;
+  for (let i = 0; i < n; i++) {
+    const ax = leg[2 * i], ay = leg[2 * i + 1], bx = leg[2 * ((i + 1) % n)], by = leg[2 * ((i + 1) % n) + 1];
+    const len = Math.hypot(bx - ax, by - ay);
+    if (len < 1e-6) continue;
+    let far = 0;
+    for (let j = 0; j < n; j++) far = Math.max(far, Math.abs((bx - ax) * (ay - leg[2 * j + 1]) - (ax - leg[2 * j]) * (by - ay)) / len);
+    best = Math.min(best, far);
+  }
+  return Number.isFinite(best) ? best : 0;
+}
+
+/** Cuts a convex leg into `k` equal strips across its longer side. */
+function splitConvexIntoStrips(leg: number[], k: number): number[][] {
+  if (k <= 1) return [leg.slice()];
+  const b = getPolygonBounds(leg);
+  const alongX = b.width >= b.height;
+  const out: number[][] = [];
+  for (let i = 0; i < k; i++) {
+    const rect = alongX
+      ? { minX: b.minX + (b.width * i) / k, maxX: b.minX + (b.width * (i + 1)) / k, minY: b.minY - 1, maxY: b.maxY + 1 }
+      : { minX: b.minX - 1, maxX: b.maxX + 1, minY: b.minY + (b.height * i) / k, maxY: b.minY + (b.height * (i + 1)) / k };
+    const piece = clipPolygonToRect(leg, rect);
+    if (piece.length >= 6) out.push(piece);
+  }
+  return out.length ? out : [leg.slice()];
+}
 
 /** Discharge direction of each placed wall unit. */
 const blowDirOfZone = new WeakMap<EquipmentServiceZone, { x: number; y: number }>();
@@ -264,7 +302,7 @@ function highWallUncoveredCount(poly: number[], zones: EquipmentServiceZone[], t
  * Places each zone's wall-mounted indoor unit on a wall (back flush, footprint inside the room, units never overlapping on a
  * wall). Of the walls around the bay the one whose unit throws over most of the bay is taken (ties: the wall nearest the bay).
  */
-function placeWallUnits(roomPolygon: number[], serviceZones: EquipmentServiceZone[], mountingWallSide: 'north' | 'south' | 'east' | 'west', throwFt = HIGH_WALL_DEFAULT_THROW_FT): void {
+function placeWallUnits(roomPolygon: number[], serviceZones: EquipmentServiceZone[], mountingWallSide: 'north' | 'south' | 'east' | 'west', throwFt = HIGH_WALL_DEFAULT_THROW_FT, confineToBay = false): void {
   const placedWall: Array<{ x: number; y: number }> = [];
   const nEdges = Math.floor(roomPolygon.length / 2);
   const settle = (near: { x: number; y: number }): ReturnType<typeof calculateWallMountedUnitPos> => {
@@ -289,14 +327,31 @@ function placeWallUnits(roomPolygon: number[], serviceZones: EquipmentServiceZon
       const t = Math.max(0, Math.min(1, ((base.x - ax) * (bx - ax) + (base.y - ay) * (by - ay)) / len2));
       candidates.push({ x: ax + (bx - ax) * t, y: ay + (by - ay) * t });
     }
-    let best: ReturnType<typeof calculateWallMountedUnitPos> | null = null;
-    let bestScore = -1;
+    // Leg layouts: the unit sits behind its OWN leg (a wall touching the bay), preferably on an exterior wall.
+    const roomB = getPolygonBounds(roomPolygon);
+    const isExteriorWall = (wl: { x1: number; y1: number; x2: number; y2: number }): boolean =>
+      (Math.abs(wl.x1 - wl.x2) < 0.05 && (Math.abs(wl.x1 - roomB.minX) < 0.05 || Math.abs(wl.x1 - roomB.maxX) < 0.05)) ||
+      (Math.abs(wl.y1 - wl.y2) < 0.05 && (Math.abs(wl.y1 - roomB.minY) < 0.05 || Math.abs(wl.y1 - roomB.maxY) < 0.05));
+    const inBay = (q: { x: number; y: number }): boolean =>
+      isPointInPolygon(q.x, q.y, z.serviceAreaPolygon) || distanceToPolygonEdge(q.x, q.y, z.serviceAreaPolygon) <= 0.75;
+    const scored: Array<{ w: ReturnType<typeof calculateWallMountedUnitPos>; score: number; ext: boolean }> = [];
     for (const c of candidates) {
+      if (confineToBay && c !== base && !inBay(c)) continue;
       const w = settle(c);
+      if (confineToBay && !inBay(w)) continue;
       const stub = { ...z, equipmentPosition: { ...z.equipmentPosition, x: w.x, y: w.y, wallSide: w.wallSide } } as EquipmentServiceZone;
       const d = blowDirectionOf(stub, w.wall);
       const score = samples.filter((q) => wallUnitReaches({ x: w.x, y: w.y }, d, q.x, q.y, roomPolygon, throwFt)).length;
-      if (score > bestScore) { bestScore = score; best = w; }
+      scored.push({ w, score, ext: isExteriorWall(w.wall) });
+    }
+    if (!scored.length) scored.push({ w: settle(base), score: 0, ext: false });
+    const maxScore = Math.max(...scored.map((c) => c.score));
+    let best: ReturnType<typeof calculateWallMountedUnitPos> | null = null;
+    let bestScore = -1;
+    for (const c of scored) {
+      // an exterior wall (short refrigerant run behind the unit) wins over an interior one within 10% of the best coverage
+      const eff = confineToBay && c.ext && c.score >= 0.9 * maxScore ? maxScore + 0.5 + c.score * 1e-6 : c.score;
+      if (eff > bestScore) { bestScore = eff; best = c.w; }
     }
     const w = best!;
     placedWall.push({ x: w.x, y: w.y });
@@ -316,7 +371,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     occupancyCount,
     systemType = 'concealed',
     standardsProfileType = 'ashrae',
-    maxAvailableCeilingDepthIn = 14,
+    maxAvailableCeilingDepthIn = DEFAULT_VOID_IN,
     mountingWallSide: mountingWallSideIn = 'east',
     userOverrideUnitCount,
     exteriorWalls = [],
@@ -379,9 +434,57 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     }
   }
 
-  // High-wall units throw a limited cone: add units (each leg its own unit facing into the leg) until the whole room is covered.
+  // High-wall units throw a limited cone. L / T / U rooms get ONE unit per convex leg (more only when a leg's load exceeds the
+  // largest unit or the wall-to-far-side depth exceeds the throw); each unit sits behind its own leg. Installed capacity stays
+  // <= WALL_UNITS_MAX_CAPACITY_RATIO x the load: otherwise fewer units are used and the coverage gap is a design warning.
   let highWallUncovered = 0;
-  if (systemType === 'high-wall' && !overrideApplied) {
+  const designWarnings: string[] = [];
+  let wallBays: number[][] | null = null;
+  const wallLegs = systemType === 'high-wall' && !overrideApplied ? decomposeConvex(roomPolygon) : [];
+  if (wallLegs.length > 1) {
+    const cands = (n: number): MultiUnitCandidate | null => optimization.candidates.find((c) => c.unitCount === n)
+      ?? evaluateUnitCountOption(n, { roomName, sensibleLoadBtu, totalLoadBtu, requiredCfm, roomAreaSqFt, maxAvailableCeilingDepthIn, systemType, profile, units: isMetric ? 'metric' : 'imperial' });
+    const throwFt = throwFtOf(chosenCandidate);
+    const legAreas = wallLegs.map((l) => polygonAreaFt2(l));
+    const areaSum = legAreas.reduce((a, b) => a + b, 0) || 1;
+    const maxUnitBtu = Math.max(...eligibleItemsFor('high-wall').map((e) => e.totalCapacityBtuPerHour), 1);
+    const need = wallLegs.map((leg, i) => Math.min(3, Math.max(
+      1,
+      Math.ceil(legMountDepthFt(leg) / throwFt - 1e-9),
+      Math.ceil((totalLoadBtu * legAreas[i] / areaSum) / maxUnitBtu - 1e-9)
+    )));
+    const needed = Math.min(MAX_UNIT_COUNT, need.reduce((a, b) => a + b, 0));
+    const base = chosenCandidate.unitCount;
+    let n = Math.max(needed, Math.min(base, MAX_UNIT_COUNT));
+    // fewer units until the whole set is a valid selection within the oversize limit
+    for (; n > base; n--) {
+      const c = cands(n);
+      if (c && c.isValid && (c.capacityRatio ?? 1) <= WALL_UNITS_MAX_CAPACITY_RATIO + 1e-9) {
+        chosenCandidate = c;
+        if (!allCandidates.some((x) => x.unitCount === n)) allCandidates.push(c);
+        break;
+      }
+    }
+    const nUnits = chosenCandidate.unitCount;
+    if (nUnits < needed) {
+      designWarnings.push(`High-wall coverage: ${needed} wall unit(s) would be needed for ${wallLegs.length} legs / throw, but would exceed ${WALL_UNITS_MAX_CAPACITY_RATIO}x the ${Math.round(totalLoadBtu).toLocaleString('en-US')} Btu/h load - ${nUnits} unit(s) are used and part of the room is outside the unit throw`);
+    }
+    if (nUnits >= wallLegs.length) {
+      const counts = need.map(() => 1);
+      let left = nUnits - wallLegs.length;
+      while (left > 0) {
+        // extra units go to the legs that still need them, then to the leg with the largest area per unit
+        let bi = 0, bs = -Infinity;
+        counts.forEach((c, i) => {
+          const sc = (c < need[i] ? 1e6 : 0) + legAreas[i] / c;
+          if (sc > bs) { bs = sc; bi = i; }
+        });
+        counts[bi]++;
+        left--;
+      }
+      wallBays = wallLegs.flatMap((leg, i) => splitConvexIntoStrips(leg, counts[i]));
+    }
+  } else if (systemType === 'high-wall' && !overrideApplied) {
     const alt: Record<string, 'north' | 'south' | 'east' | 'west'> = { east: 'north', west: 'north', north: 'east', south: 'east' };
     const probe = (cand: MultiUnitCandidate): { uncovered: number; side: 'north' | 'south' | 'east' | 'west' } => {
       let best: { uncovered: number; side: 'north' | 'south' | 'east' | 'west' } | null = null;
@@ -409,6 +512,10 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
       if (!cand) continue;
       const next = probe(cand);
       if (next.uncovered < highWallUncovered) {
+        if ((cand.capacityRatio ?? 1) > WALL_UNITS_MAX_CAPACITY_RATIO + 1e-9) {
+          designWarnings.push(`High-wall coverage: ${n} wall units would cover more of the room but exceed ${WALL_UNITS_MAX_CAPACITY_RATIO}x the load (capacity ratio ${Math.round((cand.capacityRatio ?? 1) * 100)}%) - ${chosenCandidate.unitCount} unit(s) are used`);
+          break;
+        }
         chosenCandidate = cand;
         if (!allCandidates.some((c) => c.unitCount === n)) allCandidates.push(cand);
         highWallUncovered = next.uncovered;
@@ -442,7 +549,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   };
 
   // Service Zone Partitioning
-  const serviceZones = partitionRoomIntoServiceZones({
+  const serviceZoneInput = {
     roomName,
     roomPolygon,
     unitCount: chosenCandidate.unitCount,
@@ -458,7 +565,10 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     targetNc,
     maxAvailableCeilingDepthIn,
     exteriorWalls
-  });
+  };
+  const serviceZones = wallBays && wallBays.length === chosenCandidate.unitCount
+    ? partitionRoomIntoBays(serviceZoneInput, wallBays)
+    : partitionRoomIntoServiceZones(serviceZoneInput);
 
   // Distribute the room return across bays in proportion to bay supply (sum is exact)
   {
@@ -480,7 +590,11 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   // Wall-mounted indoor units (high-wall) sit ON a wall: back flush with the wall line, footprint inside the room and
   // inside the wall segment. Each bay's unit takes the wall nearest to the bay's centre; units never overlap on a wall.
   const wallMounted = systemType === 'high-wall';
-  if (wallMounted) placeWallUnits(roomPolygon, serviceZones, mountingWallSide, throwFtOf(chosenCandidate));
+  const legLayout = wallMounted && wallBays !== null && wallBays.length === serviceZones.length;
+  if (wallMounted) {
+    placeWallUnits(roomPolygon, serviceZones, mountingWallSide, throwFtOf(chosenCandidate), legLayout);
+    if (legLayout) highWallUncovered = highWallUncoveredCount(roomPolygon, serviceZones, throwFtOf(chosenCandidate));
+  }
 
   // Indoor unit footprints come from the selected catalog item (default ducted unit 40 x 24 in)
   const catDims = chosenCandidate.equipmentDetails?.catalogItem?.dimensionsIn;
@@ -519,7 +633,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     for (const zone of serviceZones) {
       // Phase 5 & 6: Stepped Duct Network Routing & Sizing
       const raw = routeSteppedSupplyDucts(zone, supplyByZone.get(zone.id)!, profile, network, { obstacles, units });
-      const sized = sizeDuctNetwork(raw, profile, maxAvailableCeilingDepthIn, units);
+      const sized = sizeDuctNetwork(raw, profile, maxDuctDepthForVoid(maxAvailableCeilingDepthIn), units);
       allSupplyDucts.push(...sized);
       network.push(...ductSegments(sized));
     }
@@ -549,16 +663,24 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     // plenum grilles keep >= 6 ft from EVERY supply diffuser of the room (short-circuit), ducted ones from their own bay's
     const sup = plenumReturn ? allSupplyTerminals : supplyByZone.get(zone.id)!;
     // a grille never sits under a supply duct while a layout with only a reduced service clearance exists
-    const attempts: Array<{ level: 'service' | 'footprint' | 'none'; ducts: boolean }> = [
-      { level: 'service', ducts: true }, { level: 'footprint', ducts: true },
-      { level: 'service', ducts: false }, { level: 'footprint', ducts: false }, { level: 'none', ducts: false }
-    ];
+    // Plenum returns open into the (open) ceiling void, so before the keep-out around ANY indoor unit is relaxed (grille
+    // >= 3 ft from the unit FOOTPRINT EDGE: 2 ft service + 1 ft) the grille may move out of its own, too small, bay.
+    const attempts: Array<{ level: 'service' | 'footprint' | 'none'; ducts: boolean; room?: boolean }> = plenumReturn
+      ? [
+        { level: 'service', ducts: true }, { level: 'service', ducts: true, room: true },
+        { level: 'service', ducts: false }, { level: 'service', ducts: false, room: true },
+        { level: 'footprint', ducts: true }, { level: 'footprint', ducts: false }, { level: 'none', ducts: false }
+      ]
+      : [
+        { level: 'service', ducts: true }, { level: 'footprint', ducts: true },
+        { level: 'service', ducts: false }, { level: 'footprint', ducts: false }, { level: 'none', ducts: false }
+      ];
     let fallback: ReturnPlacement | null = null;
     for (const at of attempts) {
       // in a normal room a separated layout at a stricter keep-out level beats a wall-clearance win at a more relaxed one (tiny rooms trade)
       if (fallback && at.level !== fallback.level && Math.min(roomBounds.width, roomBounds.height) >= 12) return fallback;
       const keepOuts = [...terminalKeepOuts(serviceZones, unitDims, at.level), ...(at.ducts ? strips : []), ...(extraKeepOut ? [extraKeepOut] : [])];
-      const ret = spreadReturnCfm(placeReturnGrillesForZone(zone, sup, { keepOuts, catalog: terminalCatalog, metric: isMetric, maxCount, plenum: plenumReturn }), zone.returnCfm);
+      const ret = spreadReturnCfm(placeReturnGrillesForZone(zone, sup, { keepOuts, catalog: terminalCatalog, metric: isMetric, maxCount, plenum: plenumReturn, wholeRoom: at.room }), zone.returnCfm);
       const separated = ret.every((r) => sup.every((q) => Math.hypot(r.position.x - q.position.x, r.position.y - q.position.y) >= MIN_TERMINAL_SPACING_FT - 1e-6));
       const wallOk = ret.every((r) => distanceToPolygonEdge(r.position.x, r.position.y, roomPolygon) >= 1 - 1e-6);
       const last = at === attempts[attempts.length - 1];
@@ -572,7 +694,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   const routeReturnFor = (zone: EquipmentServiceZone, ret: CoordinatedAirTerminal[], avoid: Seg2[], extraTerms: CoordinatedAirTerminal[]): SteppedDuctSection[] => {
     const obstacles = terminalObstacles([...allSupplyTerminals, ...extraTerms, ...ret], isMetric);
     const raw = routeReturnDucts(zone, ret, profile, avoid, { obstacles, units });
-    return sizeDuctNetwork(raw, profile, maxAvailableCeilingDepthIn, units);
+    return sizeDuctNetwork(raw, profile, maxDuctDepthForVoid(maxAvailableCeilingDepthIn), units);
   };
   const crossingsOf = (sections: SteppedDuctSection[]): number =>
     countCrossings(ductSegments(sections), ductSegments(allSupplyDucts), unitRoots, 0.1, 0.02);
@@ -626,7 +748,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
       continue;
     }
     const rawReturnDucts = routeReturnDucts(zone, returnByZone.get(zone.id)!, profile, [...supplyNetwork, ...returnNetwork], routing);
-    const sizedReturn = sizeDuctNetwork(rawReturnDucts, profile, maxAvailableCeilingDepthIn, units);
+    const sizedReturn = sizeDuctNetwork(rawReturnDucts, profile, maxDuctDepthForVoid(maxAvailableCeilingDepthIn), units);
     allReturnDucts.push(...sizedReturn);
     returnNetwork.push(...ductSegments(sizedReturn));
   }
@@ -651,7 +773,9 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
       placedFootprints: placedOdu,
       preferNear: near,
       // shortest refrigerant run: the exterior wall nearest to this unit's own indoor unit (still outside every zone)
-      nearestWall: true
+      nearestWall: true,
+      // leg layouts: the wall behind the unit's OWN leg
+      ...(wallMounted && group.length === 1 ? { region: group[0].serviceAreaPolygon } : {})
     });
     const rad = ((p.angleDeg ?? 0) * Math.PI) / 180;
     const tx = Math.cos(rad), ty = Math.sin(rad);
@@ -754,6 +878,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     outdoorUnitPositions: plantConnection === 'refrigerant' ? outdoorUnitPositions.map(({ wall: _wall, ...rest }) => rest) : [],
     unitFootprintsIn: unitDims,
     layoutWarnings,
+    designWarnings: [...designWarnings, ...(chosenCandidate.designWarnings ?? [])],
     returnStrategy,
     systemType,
     plantConnection,
@@ -836,13 +961,13 @@ export function recalculateScopedOverride(
 
   // Re-route and resize supply and return ducts for this zone
   const rawSupply = routeSteppedSupplyDucts(targetZone, newSupply, currentDesign.standardsProfile, othersNetwork);
-  const sizedSupply = sizeDuctNetwork(rawSupply, currentDesign.standardsProfile, targetZone.maxAvailableCeilingDepthIn, currentDesign.units);
+  const sizedSupply = sizeDuctNetwork(rawSupply, currentDesign.standardsProfile, maxDuctDepthForVoid(targetZone.maxAvailableCeilingDepthIn ?? DEFAULT_VOID_IN), currentDesign.units);
 
   const sizedReturn = currentDesign.returnStrategy === 'plenum'
     ? routePlenumReturnBox(targetZone, newReturn, currentDesign.standardsProfile, [...otherSupplyDucts, ...sizedSupply], currentDesign.units)
     : sizeDuctNetwork(
       routeReturnDucts(targetZone, newReturn, currentDesign.standardsProfile, [...othersNetwork, ...ductSegments(sizedSupply)]),
-      currentDesign.standardsProfile, targetZone.maxAvailableCeilingDepthIn, currentDesign.units
+      currentDesign.standardsProfile, maxDuctDepthForVoid(targetZone.maxAvailableCeilingDepthIn ?? DEFAULT_VOID_IN), currentDesign.units
     );
 
   const mergedSupplyDucts = [...otherSupplyDucts, ...sizedSupply];
@@ -972,6 +1097,10 @@ export interface ZonePayload {
   outdoorModel?: string;
   /** ASHRAE 62.1 zone outdoor air Voz (CFM) for the fresh-air callout. */
   outdoorAirCfm: number;
+  /** Tags of the indoor units in unitPositions order (['FCU-01', 'FCU-02']) - sections / inspector show these instead of raw zone ids. */
+  unitTags: string[];
+  /** Design-level compromises (see AirDistributionDesignResult.designWarnings). */
+  designWarnings: string[];
 }
 
 /**
@@ -1115,6 +1244,8 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
     plantConnection: design.plantConnection ?? 'refrigerant',
     chwStubs: (design.chwStubs ?? []).map((c) => ({ ...c, ...pt(c) })),
     ...(design.outdoorModel ? { outdoorModel: design.outdoorModel } : {}),
-    outdoorAirCfm: design.outdoorAirCfm ?? design.massBalance?.outdoorAirCfm ?? 0
+    outdoorAirCfm: design.outdoorAirCfm ?? design.massBalance?.outdoorAirCfm ?? 0,
+    unitTags: design.serviceZones.map((z) => z.unitTag),
+    designWarnings: [...(design.designWarnings ?? [])]
   };
 }

@@ -1621,6 +1621,7 @@ const _fillBase: Record<_FillKind, string> = {
 const _fillSpec: Array<{ kind: _FillKind; id: string; model: string; tons: number }> = [
   { kind: 'ducted', id: 'eq-ducted-9k', model: '42QSS009-D-G', tons: 0.75 },
   { kind: 'ducted', id: 'eq-ducted-60k', model: '42QDS060-D-G', tons: 5 },
+  { kind: 'wall', id: 'eq-hw-7k', model: 'Optimax 7K-G', tons: 0.58 },
   { kind: 'wall', id: 'eq-hw-9k', model: 'Optimax 9K-G', tons: 0.75 },
   { kind: 'wall', id: 'eq-hw-36k', model: 'Optimax 36K-G', tons: 3 },
   { kind: 'cassette', id: 'eq-cass-9k', model: '40KMC009-G', tons: 0.75 },

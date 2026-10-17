@@ -1,3 +1,4 @@
+import { DEFAULT_VOID_IN, maxDuctDepthForVoid } from '../ceilingVoid';
 import { EquipmentServiceZone, DesignControlMode } from '../zoning/zonePartitioner';
 import { CoordinatedAirTerminal } from '../terminals/terminalPlacer';
 import { ASHRAE_PROFILE, StandardsProfile } from '../standards/designStandards';
@@ -230,7 +231,7 @@ export function routeSteppedSupplyDucts(
 
   const terminals: TopoTerminal[] = supplyTerminals.map((t) => ({ id: t.id, x: t.position.x, y: t.position.y, cfm: t.cfm }));
   const clearance = ctx.obstacles !== undefined;
-  const depth = zone.maxAvailableCeilingDepthIn ?? 14;
+  const depth = maxDuctDepthForVoid(zone.maxAvailableCeilingDepthIn ?? DEFAULT_VOID_IN);
 
   // Clearance mode: route -> size -> verify; the duct EDGE (not the centreline) must clear walls and diffusers, so the
   // sized half widths feed back into the routing until they agree.

@@ -160,7 +160,7 @@ export function sizePlenumReturn(
 export function placeReturnGrillesForZone(
   zone: EquipmentServiceZone,
   supplyTerminals: CoordinatedAirTerminal[],
-  options: { /** Ceiling-plenum return: 1-2 grilles sized for the unit return CFM (face velocity <= 400 fpm). */ plenum?: boolean; unitPerFt?: number; exhaustCfm?: number; exfiltrationCfm?: number; keepOuts?: Rect[]; catalog?: DiffuserCatalogItem[]; metric?: boolean; /** Upper bound on the number of return grilles (fewer grilles = shorter return main, fewer crossings). */ maxCount?: number } = {}
+  options: { /** Ceiling-plenum return: 1-2 grilles sized for the unit return CFM (face velocity <= 400 fpm). */ plenum?: boolean; unitPerFt?: number; exhaustCfm?: number; exfiltrationCfm?: number; keepOuts?: Rect[]; catalog?: DiffuserCatalogItem[]; metric?: boolean; /** Upper bound on the number of return grilles (fewer grilles = shorter return main, fewer crossings). */ maxCount?: number; /** Plenum return only: the grille may sit anywhere in the room (the ceiling void is open), not just inside this unit's bay. */ wholeRoom?: boolean } = {}
 ): CoordinatedAirTerminal[] {
   const unitPerFt = options.unitPerFt ?? 1;
   const returnCfm = zone.returnCfm || computeReturnCfm(zone.supplyCfm, options);
@@ -223,7 +223,7 @@ function placePlenumReturnGrilles(
   zone: EquipmentServiceZone,
   supplyTerminals: CoordinatedAirTerminal[],
   returnCfm: number,
-  options: { unitPerFt?: number; keepOuts?: Rect[]; catalog?: DiffuserCatalogItem[]; metric?: boolean; maxCount?: number }
+  options: { unitPerFt?: number; keepOuts?: Rect[]; catalog?: DiffuserCatalogItem[]; metric?: boolean; maxCount?: number; wholeRoom?: boolean }
 ): CoordinatedAirTerminal[] {
   const unitPerFt = options.unitPerFt ?? 1;
   const size = sizePlenumReturn(returnCfm, zone.targetNc, options.catalog, options.metric);
@@ -232,7 +232,8 @@ function placePlenumReturnGrilles(
     ? { x: zone.equipmentPosition.x, y: zone.equipmentPosition.y }
     : undefined;
   const supplyPts = supplyTerminals.map((t) => t.position);
-  const positions = selectReturnPositions(zone.serviceAreaPolygon, supplyPts, want, { unitPerFt, anchor, keepOuts: options.keepOuts });
+  const region = options.wholeRoom && zone.roomPolygon && zone.roomPolygon.length >= 6 ? zone.roomPolygon : zone.serviceAreaPolygon;
+  const positions = selectReturnPositions(region, supplyPts, want, { unitPerFt, anchor, keepOuts: options.keepOuts });
   if (!positions.length) return [];
   const cfmEach = Math.round(returnCfm / positions.length);
   return positions.map((p, i) => ({

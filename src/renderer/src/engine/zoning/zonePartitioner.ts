@@ -414,3 +414,41 @@ export function partitionRoomIntoServiceZones(input: EquipmentServiceZoneInput):
 
   return zones;
 }
+
+/** Signed-area magnitude of a flat polygon ring (ft2). */
+export function polygonAreaFt2(pts: number[]): number {
+  return Math.abs(ringArea(pts));
+}
+
+/**
+ * Service zones for an explicit list of bays (one indoor unit per bay), e.g. the convex legs of an L / T / U room for
+ * wall-mounted units. The shared per-zone data (ids, tags, pressure budgets) comes from the regular partitioner; the bay
+ * outline replaces the strip and the airflow / load slices follow the bay AREA share (exact sums). The unit position
+ * starts at the bay centroid (wall units are snapped onto a wall of their own bay afterwards).
+ */
+export function partitionRoomIntoBays(input: EquipmentServiceZoneInput, bays: number[][]): EquipmentServiceZone[] {
+  const n = bays.length;
+  const zones = partitionRoomIntoServiceZones({ ...input, unitCount: n });
+  const areas = bays.map((b) => polygonAreaFt2(b));
+  const slices = distributeLoadsAcrossZones({
+    totalSensibleBtu: input.totalSensibleBtu,
+    totalLatentBtu: input.totalLatentBtu,
+    totalCfm: input.totalSupplyCfm,
+    totalOutdoorAirCfm: input.totalOutdoorAirCfm,
+    weights: areas
+  });
+  return zones.slice(0, n).map((z, i) => {
+    const c = getPolygonCentroid(bays[i]);
+    return {
+      ...z,
+      serviceAreaPolygon: bays[i].slice(),
+      supplyCfm: slices[i].supplyCfm,
+      returnCfm: slices[i].returnCfm,
+      outdoorAirCfm: slices[i].outdoorAirCfm,
+      sensibleLoadBtu: slices[i].sensibleBtu,
+      latentLoadBtu: slices[i].latentBtu,
+      totalLoadBtu: slices[i].totalBtu,
+      equipmentPosition: { ...z.equipmentPosition, x: parseFloat(c.x.toFixed(2)), y: parseFloat(c.y.toFixed(2)) }
+    };
+  });
+}

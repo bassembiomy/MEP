@@ -555,7 +555,7 @@ for (let ri = 0; ri < rooms.length; ri++) {
       exhaustCfm: toCfm(load.exhaustCfm || 0, uc.units),
       systemType: 'concealed',
       mountingWallSide: 'east' as const,
-      maxAvailableCeilingDepthIn: 14,
+      maxAvailableCeilingDepthIn: 24,
       // every third room has a neighbouring zone directly east of its bounding box: the ODU must not overlap it
       otherZonePolygons: ri % 3 === 0
         ? [[bb.maxX, bb.minY, bb.maxX + 40, bb.minY, bb.maxX + 40, bb.maxY, bb.maxX, bb.maxY].map((v) => v * k)]
