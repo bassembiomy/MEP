@@ -48,7 +48,8 @@ export function findClearanceIssue(
   for (const o of obstacles) {
     if (!ductOverlapsRect(d.seg, hw, o.rect, 0.01 * scale)) continue;
     const cx = (o.rect.minX + o.rect.maxX) / 2, cy = (o.rect.minY + o.rect.maxY) / 2;
-    const ends = d.endsAt.includes(o.id) && Math.hypot(d.seg.end.x - cx, d.seg.end.y - cy) <= 0.15 * scale;
+    // the run-out that ends at the terminal's centre is its tap, not a clash (whatever the section role)
+    const ends = Math.hypot(d.seg.end.x - cx, d.seg.end.y - cy) <= 0.15 * scale;
     if (!ends) return `duct passes through terminal ${o.id}`;
   }
   return null;

@@ -40,6 +40,8 @@ export interface Diffuser {
   unitTag?: string;
   /** Return grille that opens into the ceiling plenum (no return duct is routed to it). */
   plenumReturn?: boolean;
+  /** 'plenum' on a plenum-return grille: no association line is drawn. */
+  returnPath?: 'plenum';
   /** Set after a unit-system change when the remapped size's neck velocity exceeds the limit. */
   sizeWarning?: string;
 }
@@ -110,6 +112,16 @@ export interface Zone {
   systemType?: 'high-wall' | 'cassette' | 'concealed' | 'packaged' | 'vrf' | 'ahu' | 'fcu';
   /** Return path: 'plenum' (grilles open into the ceiling void, short return box at the unit) or 'ducted' (return mains). */
   returnStrategy?: 'plenum' | 'ducted';
+  /** 'plenum': returns open into the ceiling void (no association lines); 'ducted': return mains. */
+  returnPath?: 'plenum' | 'ducted';
+  /** How the indoor units are served: refrigerant (outdoor units), chilled-water (stubs) or self-contained. */
+  plantConnection?: 'refrigerant' | 'chilled-water' | 'self-contained';
+  /** Chilled-water supply / return stub endpoints (canvas px). */
+  chwStubs?: { unitIndex: number; x: number; y: number; side: 'north' | 'south' | 'east' | 'west'; kind: 'supply' | 'return' }[];
+  /** VRF outdoor module model (catalogModel is then the indoor unit). */
+  outdoorModel?: string;
+  /** ASHRAE 62.1 zone outdoor air Voz (CFM) for the fresh-air callout. */
+  outdoorAirCfm?: number;
   ductTypeId?: string;
   diffuserTypeId?: string;
   maxVelocityLimitFpm?: number;

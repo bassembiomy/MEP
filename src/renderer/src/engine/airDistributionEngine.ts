@@ -14,7 +14,7 @@ import { sizeDuctNetwork } from './ducts/aerodynamicDuctSizer';
 import { routeFreshAirDucts, OutdoorAirSystem } from './outdoorAir/freshAirRouter';
 import { calculateAshrae621Ventilation, Ashrae621Result } from './outdoorAir/outdoorAirCalculator';
 import { polygonPxToFt, pxPerFt, UnitSystem, MM_PER_IN } from './units';
-import { calculateOutdoorUnitPlacement, calculateWallMountedUnitPos, getPolygonBounds, distanceToPolygonEdge, MIN_TERMINAL_SPACING_FT, WALL_UNIT_DEFAULT_WIDTH_FT, Pt2 } from './geometry';
+import { calculateOutdoorUnitPlacement, calculateWallMountedUnitPos, getPolygonBounds, isPointInPolygon, distanceToPolygonEdge, MIN_TERMINAL_SPACING_FT, WALL_UNIT_DEFAULT_WIDTH_FT, Pt2 } from './geometry';
 import { executeMasterHvacValidation, MasterValidationReport } from './validation/hvacValidator';
 import { diffuserCatalogFor } from './hvacCatalogs';
 import { DEFAULT_SPACE_NC_TARGETS } from './acousticDuctEngine';
@@ -66,6 +66,25 @@ export interface AirDistributionDesignInput {
 }
 
 export type ReturnStrategy = 'plenum' | 'ducted';
+
+/** How the indoor unit is served: DX refrigerant (split / VRF), chilled water (AHU / FCU) or self-contained (RTU / packaged). */
+export type PlantConnection = 'refrigerant' | 'chilled-water' | 'self-contained';
+
+export function plantConnectionFor(systemType: string | undefined): PlantConnection {
+  const t = (systemType ?? 'concealed').toLowerCase();
+  if (t === 'ahu' || t === 'fcu' || t === 'chilled-water' || t === 'cwu') return 'chilled-water';
+  if (t === 'packaged' || t === 'rtu' || t === 'rooftop' || t === 'package') return 'self-contained';
+  return 'refrigerant';
+}
+
+/** Chilled-water supply / return connection stub of an indoor unit, on the side facing the nearest exterior wall / shaft (feet). */
+export interface ChwStub {
+  unitIndex: number;
+  x: number;
+  y: number;
+  side: 'north' | 'south' | 'east' | 'west';
+  kind: 'supply' | 'return';
+}
 
 /** System types whose return can be drawn through the ceiling plenum. */
 const PLENUM_RETURN_SYSTEMS = new Set(['concealed', 'fcu']);
@@ -131,6 +150,16 @@ export interface AirDistributionDesignResult {
   layoutWarnings?: string[];
   /** 'plenum': returns open into the ceiling void (one short return box per unit); 'ducted': return mains are routed. */
   returnStrategy?: ReturnStrategy;
+  /** System type the design was made for ('vrf', 'ahu' ...). */
+  systemType?: string;
+  /** refrigerant: outdoor units; chilled-water: CHW stubs and no outdoor units; self-contained: neither. */
+  plantConnection?: PlantConnection;
+  /** Chilled-water supply / return stubs (feet), two per indoor unit; empty unless `plantConnection` is 'chilled-water'. */
+  chwStubs?: ChwStub[];
+  /** VRF: outdoor module model (the indoor model is `selectedOption.unitModel`). */
+  outdoorModel?: string;
+  /** ASHRAE 62.1 zone outdoor air Voz (CFM), limited to the supply airflow. */
+  outdoorAirCfm?: number;
 }
 
 /** Terminal faces of the whole room as routing obstacles (ft). */
@@ -167,6 +196,115 @@ function spreadReturnCfm(returns: CoordinatedAirTerminal[], totalCfm: number): C
   return returns;
 }
 
+/** Default throw (ft, to 50 fpm terminal velocity) of a wall-mounted indoor unit when the catalog gives none. */
+export const HIGH_WALL_DEFAULT_THROW_FT = 25;
+/** Half-angle of the discharge cone of a wall-mounted unit (deg). */
+export const HIGH_WALL_CONE_HALF_ANGLE_DEG = 45;
+
+/** Discharge direction of each placed wall unit. */
+const blowDirOfZone = new WeakMap<EquipmentServiceZone, { x: number; y: number }>();
+
+function throwFtOf(cand: MultiUnitCandidate): number {
+  const t = (cand.equipmentDetails?.catalogItem as unknown as { throwT50Ft?: number } | undefined)?.throwT50Ft;
+  return typeof t === 'number' && t > 0 ? t : HIGH_WALL_DEFAULT_THROW_FT;
+}
+
+/** Unit vector pointing from a wall-mounted unit into the room (from the wall line towards the unit). */
+function blowDirectionOf(z: EquipmentServiceZone, wall: { x1: number; y1: number; x2: number; y2: number } | undefined): { x: number; y: number } {
+  const side = z.equipmentPosition.wallSide;
+  const byName: Record<string, { x: number; y: number }> = { east: { x: -1, y: 0 }, west: { x: 1, y: 0 }, north: { x: 0, y: 1 }, south: { x: 0, y: -1 } };
+  if (wall) {
+    const dx = wall.x2 - wall.x1, dy = wall.y2 - wall.y1, len = Math.hypot(dx, dy);
+    if (len > 1e-6) {
+      const px = z.equipmentPosition.x - wall.x1, py = z.equipmentPosition.y - wall.y1;
+      const t = (px * dx + py * dy) / (len * len);
+      const nx = px - t * dx, ny = py - t * dy, nl = Math.hypot(nx, ny);
+      if (nl > 1e-6) return { x: nx / nl, y: ny / nl };
+    }
+  }
+  return byName[side ?? 'east'] ?? byName.east;
+}
+
+/** Points this close to a wall unit are reached by its entrainment / near-field spread whatever the cone angle (ft). */
+const HIGH_WALL_NEAR_FIELD_FT = 10;
+
+/** True when the wall unit at `p` blowing along `d` reaches (x, y): within the throw, inside the +-45 deg cone (or the near field), line of sight inside the room. */
+function wallUnitReaches(p: { x: number; y: number }, d: { x: number; y: number }, x: number, y: number, poly: number[], throwFt: number): boolean {
+  const cosMin = Math.cos((HIGH_WALL_CONE_HALF_ANGLE_DEG * Math.PI) / 180);
+  const dx = x - p.x, dy = y - p.y, dist = Math.hypot(dx, dy);
+  if (dist > throwFt) return false;
+  if (dist > HIGH_WALL_NEAR_FIELD_FT && (dx * d.x + dy * d.y) / dist < cosMin - 1e-9) return false;
+  if (dist > 1e-6 && (dx * d.x + dy * d.y) / dist < -1e-9) return false; // never behind the wall
+  const n = Math.max(2, Math.ceil(dist / 1));
+  for (let i = 1; i < n; i++) {
+    if (!isPointInPolygon(p.x + (dx * i) / n, p.y + (dy * i) / n, poly)) return false;
+  }
+  return true;
+}
+
+/** 2 ft sample grid of the points of `region` (kept >= 0.5 ft off the walls of `room`). */
+function samplePoints(region: number[], room: number[]): Array<{ x: number; y: number }> {
+  const b = getPolygonBounds(region);
+  const out: Array<{ x: number; y: number }> = [];
+  for (let x = b.minX + 1; x < b.maxX; x += 2) {
+    for (let y = b.minY + 1; y < b.maxY; y += 2) {
+      if (isPointInPolygon(x, y, region) && distanceToPolygonEdge(x, y, room) >= 0.5) out.push({ x, y });
+    }
+  }
+  return out;
+}
+
+/** Number of sample points of the room NOT reached by any wall unit's throw cone. */
+function highWallUncoveredCount(poly: number[], zones: EquipmentServiceZone[], throwFt: number): number {
+  const units = zones.map((z) => ({ p: z.equipmentPosition, d: blowDirOfZone.get(z) ?? blowDirectionOf(z, undefined) }));
+  return samplePoints(poly, poly).filter((q) => !units.some((u) => wallUnitReaches(u.p, u.d, q.x, q.y, poly, throwFt))).length;
+}
+
+/**
+ * Places each zone's wall-mounted indoor unit on a wall (back flush, footprint inside the room, units never overlapping on a
+ * wall). Of the walls around the bay the one whose unit throws over most of the bay is taken (ties: the wall nearest the bay).
+ */
+function placeWallUnits(roomPolygon: number[], serviceZones: EquipmentServiceZone[], mountingWallSide: 'north' | 'south' | 'east' | 'west', throwFt = HIGH_WALL_DEFAULT_THROW_FT): void {
+  const placedWall: Array<{ x: number; y: number }> = [];
+  const nEdges = Math.floor(roomPolygon.length / 2);
+  const settle = (near: { x: number; y: number }): ReturnType<typeof calculateWallMountedUnitPos> => {
+    let w = calculateWallMountedUnitPos(roomPolygon, 1, { near, exteriorSide: mountingWallSide });
+    for (let k = 1; k <= 12 && placedWall.some((q) => Math.hypot(w.x - q.x, w.y - q.y) < WALL_UNIT_DEFAULT_WIDTH_FT + 0.5); k++) {
+      const len = Math.hypot(w.wall.x2 - w.wall.x1, w.wall.y2 - w.wall.y1) || 1;
+      const tx = (w.wall.x2 - w.wall.x1) / len, ty = (w.wall.y2 - w.wall.y1) / len;
+      const sh = Math.ceil(k / 2) * (WALL_UNIT_DEFAULT_WIDTH_FT + 0.5) * (k % 2 ? 1 : -1);
+      w = calculateWallMountedUnitPos(roomPolygon, 1, { near: { x: near.x + tx * sh, y: near.y + ty * sh }, exteriorSide: mountingWallSide });
+    }
+    return w;
+  };
+  for (const z of serviceZones) {
+    const base = { x: z.equipmentPosition.x, y: z.equipmentPosition.y };
+    const samples = samplePoints(z.serviceAreaPolygon, roomPolygon);
+    const candidates = [base];
+    for (let i = 0; i < nEdges; i++) {
+      const ax = roomPolygon[2 * i], ay = roomPolygon[2 * i + 1];
+      const bx = roomPolygon[2 * ((i + 1) % nEdges)], by = roomPolygon[2 * ((i + 1) % nEdges) + 1];
+      const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
+      if (len2 < 1e-9) continue;
+      const t = Math.max(0, Math.min(1, ((base.x - ax) * (bx - ax) + (base.y - ay) * (by - ay)) / len2));
+      candidates.push({ x: ax + (bx - ax) * t, y: ay + (by - ay) * t });
+    }
+    let best: ReturnType<typeof calculateWallMountedUnitPos> | null = null;
+    let bestScore = -1;
+    for (const c of candidates) {
+      const w = settle(c);
+      const stub = { ...z, equipmentPosition: { ...z.equipmentPosition, x: w.x, y: w.y, wallSide: w.wallSide } } as EquipmentServiceZone;
+      const d = blowDirectionOf(stub, w.wall);
+      const score = samples.filter((q) => wallUnitReaches({ x: w.x, y: w.y }, d, q.x, q.y, roomPolygon, throwFt)).length;
+      if (score > bestScore) { bestScore = score; best = w; }
+    }
+    const w = best!;
+    placedWall.push({ x: w.x, y: w.y });
+    z.equipmentPosition = { ...z.equipmentPosition, x: w.x, y: w.y, rotation: w.rotation, wallSide: w.wallSide };
+    blowDirOfZone.set(z, blowDirectionOf(z, w.wall));
+  }
+}
+
 export function executeAirDistributionDesign(input: AirDistributionDesignInput): AirDistributionDesignResult {
   const {
     roomName,
@@ -179,7 +317,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     systemType = 'concealed',
     standardsProfileType = 'ashrae',
     maxAvailableCeilingDepthIn = 14,
-    mountingWallSide = 'east',
+    mountingWallSide: mountingWallSideIn = 'east',
     userOverrideUnitCount,
     exteriorWalls = [],
     scalePxPerUnit,
@@ -188,6 +326,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     ventilationEffectivenessEz,
     exhaustCfm: exhaustInput = 0
   } = input;
+  let mountingWallSide = mountingWallSideIn;
   const isMetric = units === 'metric';
   const targetNc = input.targetNc ?? DEFAULT_SPACE_NC_TARGETS[spaceTypeId]?.nc ?? 30;
   const terminalCatalog = diffuserCatalogFor(units);
@@ -208,7 +347,8 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     roomAreaSqFt,
     maxAvailableCeilingDepthIn,
     systemType,
-    profile
+    profile,
+    units: isMetric ? 'metric' : 'imperial'
   });
 
   let chosenCandidate = optimization.recommendedOption;
@@ -221,7 +361,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     const evaluated = impossible
       ? null
       : (optimization.candidates.find((c) => c.unitCount === n)
-        ?? evaluateUnitCountOption(n, { roomName, sensibleLoadBtu, totalLoadBtu, requiredCfm, roomAreaSqFt, maxAvailableCeilingDepthIn, systemType, profile }));
+        ?? evaluateUnitCountOption(n, { roomName, sensibleLoadBtu, totalLoadBtu, requiredCfm, roomAreaSqFt, maxAvailableCeilingDepthIn, systemType, profile, units: isMetric ? 'metric' : 'imperial' }));
     if (!evaluated) {
       overrideWarnings.push(`Requested unit count ${n} is impossible (must be a whole number from 1 to ${MAX_UNIT_COUNT}); using the optimizer's choice of ${chosenCandidate.unitCount} unit(s).`);
     } else {
@@ -236,6 +376,45 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
         for (const v of evaluated.violations ?? []) overrideWarnings.push(v);
       }
       for (const w of evaluated.warnings ?? []) overrideWarnings.push(w);
+    }
+  }
+
+  // High-wall units throw a limited cone: add units (each leg its own unit facing into the leg) until the whole room is covered.
+  let highWallUncovered = 0;
+  if (systemType === 'high-wall' && !overrideApplied) {
+    const alt: Record<string, 'north' | 'south' | 'east' | 'west'> = { east: 'north', west: 'north', north: 'east', south: 'east' };
+    const probe = (cand: MultiUnitCandidate): { uncovered: number; side: 'north' | 'south' | 'east' | 'west' } => {
+      let best: { uncovered: number; side: 'north' | 'south' | 'east' | 'west' } | null = null;
+      // bays may be cut along either axis: take the cut whose units throw over more of the room
+      for (const side of [mountingWallSideIn, alt[mountingWallSideIn]]) {
+        const zs = partitionRoomIntoServiceZones({
+          roomName, roomPolygon, unitCount: cand.unitCount, selectedModel: cand.unitModel,
+          nominalTonnage: cand.nominalTonsPerUnit * cand.unitCount, totalCapacityBtu: cand.totalDeliveredCapacityBtu,
+          totalSensibleBtu: sensibleLoadBtu, totalLatentBtu: totalLoadBtu - sensibleLoadBtu, totalSupplyCfm: cand.totalDeliveredCfm,
+          totalOutdoorAirCfm: 0, availableEspInWg: cand.availableEspInWg, mountingWallSide: side, targetNc, maxAvailableCeilingDepthIn, exteriorWalls
+        });
+        placeWallUnits(roomPolygon, zs, side, throwFtOf(cand));
+        const uncovered = highWallUncoveredCount(roomPolygon, zs, throwFtOf(cand));
+        if (!best || uncovered < best.uncovered) best = { uncovered, side };
+      }
+      return best!;
+    };
+    const cur = probe(chosenCandidate);
+    highWallUncovered = cur.uncovered;
+    mountingWallSide = cur.side;
+    const startN = chosenCandidate.unitCount;
+    for (let n = startN + 1; n <= Math.min(MAX_UNIT_COUNT, startN + 6) && highWallUncovered > 0; n++) {
+      const cand = optimization.candidates.find((c) => c.unitCount === n)
+        ?? evaluateUnitCountOption(n, { roomName, sensibleLoadBtu, totalLoadBtu, requiredCfm, roomAreaSqFt, maxAvailableCeilingDepthIn, systemType, profile, units: isMetric ? 'metric' : 'imperial' });
+      if (!cand) continue;
+      const next = probe(cand);
+      if (next.uncovered < highWallUncovered) {
+        chosenCandidate = cand;
+        if (!allCandidates.some((c) => c.unitCount === n)) allCandidates.push(cand);
+        highWallUncovered = next.uncovered;
+        mountingWallSide = next.side;
+        if (!cand.isValid) overrideWarnings.push(`${n} wall units are needed for throw coverage; sizing: ${(cand.violations ?? []).join('; ')}`);
+      }
     }
   }
 
@@ -301,21 +480,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   // Wall-mounted indoor units (high-wall) sit ON a wall: back flush with the wall line, footprint inside the room and
   // inside the wall segment. Each bay's unit takes the wall nearest to the bay's centre; units never overlap on a wall.
   const wallMounted = systemType === 'high-wall';
-  if (wallMounted) {
-    const placedWall: Array<{ x: number; y: number }> = [];
-    for (const z of serviceZones) {
-      const near = { x: z.equipmentPosition.x, y: z.equipmentPosition.y };
-      let w = calculateWallMountedUnitPos(roomPolygon, 1, { near, exteriorSide: mountingWallSide });
-      for (let k = 1; k <= 12 && placedWall.some((q) => Math.hypot(w.x - q.x, w.y - q.y) < WALL_UNIT_DEFAULT_WIDTH_FT + 0.5); k++) {
-        const len = Math.hypot(w.wall.x2 - w.wall.x1, w.wall.y2 - w.wall.y1) || 1;
-        const tx = (w.wall.x2 - w.wall.x1) / len, ty = (w.wall.y2 - w.wall.y1) / len;
-        const sh = Math.ceil(k / 2) * (WALL_UNIT_DEFAULT_WIDTH_FT + 0.5) * (k % 2 ? 1 : -1);
-        w = calculateWallMountedUnitPos(roomPolygon, 1, { near: { x: near.x + tx * sh, y: near.y + ty * sh }, exteriorSide: mountingWallSide });
-      }
-      placedWall.push({ x: w.x, y: w.y });
-      z.equipmentPosition = { ...z.equipmentPosition, x: w.x, y: w.y, rotation: w.rotation, wallSide: w.wallSide };
-    }
-  }
+  if (wallMounted) placeWallUnits(roomPolygon, serviceZones, mountingWallSide, throwFtOf(chosenCandidate));
 
   // Indoor unit footprints come from the selected catalog item (default ducted unit 40 x 24 in)
   const catDims = chosenCandidate.equipmentDetails?.catalogItem?.dimensionsIn;
@@ -326,6 +491,9 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
       : { lengthIn: DEFAULT_IDU_LENGTH_IN, widthIn: DEFAULT_IDU_WIDTH_IN };
   }
   const layoutWarnings: string[] = [];
+  if (systemType === 'high-wall' && highWallUncovered > 0) {
+    layoutWarnings.push(`High-wall throw: ${highWallUncovered} room sample point(s) lie outside the unit throw cone - add or relocate units`);
+  }
 
   // Order: supply terminals (outside every unit's footprint + 2 ft service clearance) -> supply networks -> return grilles
   // (outside the units' keep-outs AND clear of the routed supply ducts) -> return networks. Each network avoids the
@@ -378,7 +546,8 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
   interface ReturnPlacement { ret: CoordinatedAirTerminal[]; level: 'service' | 'footprint' | 'none'; ducts: boolean }
   const placeReturnsFor = (zone: EquipmentServiceZone, extraKeepOut: Rect | null, maxCount?: number): ReturnPlacement | null => {
     const strips = supplyStrips();
-    const sup = supplyByZone.get(zone.id)!;
+    // plenum grilles keep >= 6 ft from EVERY supply diffuser of the room (short-circuit), ducted ones from their own bay's
+    const sup = plenumReturn ? allSupplyTerminals : supplyByZone.get(zone.id)!;
     // a grille never sits under a supply duct while a layout with only a reduced service clearance exists
     const attempts: Array<{ level: 'service' | 'footprint' | 'none'; ducts: boolean }> = [
       { level: 'service', ducts: true }, { level: 'footprint', ducts: true },
@@ -389,7 +558,7 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
       // in a normal room a separated layout at a stricter keep-out level beats a wall-clearance win at a more relaxed one (tiny rooms trade)
       if (fallback && at.level !== fallback.level && Math.min(roomBounds.width, roomBounds.height) >= 12) return fallback;
       const keepOuts = [...terminalKeepOuts(serviceZones, unitDims, at.level), ...(at.ducts ? strips : []), ...(extraKeepOut ? [extraKeepOut] : [])];
-      const ret = spreadReturnCfm(placeReturnGrillesForZone(zone, sup, { keepOuts, catalog: terminalCatalog, metric: isMetric, maxCount }), zone.returnCfm);
+      const ret = spreadReturnCfm(placeReturnGrillesForZone(zone, sup, { keepOuts, catalog: terminalCatalog, metric: isMetric, maxCount, plenum: plenumReturn }), zone.returnCfm);
       const separated = ret.every((r) => sup.every((q) => Math.hypot(r.position.x - q.position.x, r.position.y - q.position.y) >= MIN_TERMINAL_SPACING_FT - 1e-6));
       const wallOk = ret.every((r) => distanceToPolygonEdge(r.position.x, r.position.y, roomPolygon) >= 1 - 1e-6);
       const last = at === attempts[attempts.length - 1];
@@ -499,6 +668,27 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     ? outdoorUnitPositions[0].wall
     : { x1: 0, y1: 0, x2: 0, y2: 0 };
 
+  // Plant connection: only refrigerant systems have outdoor units. Chilled-water units get supply / return stubs on the
+  // side facing the nearest exterior wall (shaft); self-contained units (RTU / packaged) have neither.
+  const plantConnection = plantConnectionFor(systemType);
+  const chwStubs: ChwStub[] = [];
+  if (plantConnection === 'chilled-water') {
+    serviceZones.forEach((z, i) => {
+      const eq = z.equipmentPosition;
+      const ref = outdoorUnitPositions[Math.min(i, outdoorUnitPositions.length - 1)] ?? outdoorUnitPositions[0];
+      const dx = ref ? ref.x - eq.x : 1, dy = ref ? ref.y - eq.y : 0;
+      const side: ChwStub['side'] = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 'east' : 'west') : (dy >= 0 ? 'south' : 'north');
+      const fp = unitFootprintFt(eq, unitDims[z.id]);
+      const hx = (fp.maxX - fp.minX) / 2, hy = (fp.maxY - fp.minY) / 2;
+      const ox = side === 'east' ? hx : side === 'west' ? -hx : 0;
+      const oy = side === 'south' ? hy : side === 'north' ? -hy : 0;
+      // supply and return stubs sit 0.5 ft either side of the unit axis, perpendicular to the exit direction
+      const px = side === 'north' || side === 'south' ? 0.5 : 0, py = side === 'east' || side === 'west' ? 0.5 : 0;
+      chwStubs.push({ unitIndex: i, x: parseFloat((eq.x + ox - px).toFixed(2)), y: parseFloat((eq.y + oy - py).toFixed(2)), side, kind: 'supply' });
+      chwStubs.push({ unitIndex: i, x: parseFloat((eq.x + ox + px).toFixed(2)), y: parseFloat((eq.y + oy + py).toFixed(2)), side, kind: 'return' });
+    });
+  }
+
   // Phase 7: Dedicated Outdoor Air System (intake louver on the same exterior wall)
   const outdoorAirSystem = routeFreshAirDucts(serviceZones, totalOaCfm, {
     x: (oduBase.x1 + oduBase.x2) / 2,
@@ -561,10 +751,15 @@ export function executeAirDistributionDesign(input: AirDistributionDesignInput):
     units: units === 'metric' ? 'metric' : 'imperial',
     ventilation,
     massBalance,
-    outdoorUnitPositions: outdoorUnitPositions.map(({ wall: _wall, ...rest }) => rest),
+    outdoorUnitPositions: plantConnection === 'refrigerant' ? outdoorUnitPositions.map(({ wall: _wall, ...rest }) => rest) : [],
     unitFootprintsIn: unitDims,
     layoutWarnings,
-    returnStrategy
+    returnStrategy,
+    systemType,
+    plantConnection,
+    chwStubs,
+    outdoorModel: chosenCandidate.outdoorModel,
+    outdoorAirCfm: totalOaCfm
   };
 }
 
@@ -623,7 +818,7 @@ export function recalculateScopedOverride(
     targetZone.supplyCfm
   );
   const newReturn = layoutAroundLocked(
-    spreadReturnCfm(placeReturnGrillesForZone(targetZone, newSupply, { catalog: diffuserCatalogFor(currentDesign.units), metric: currentDesign.units === 'metric' }), targetZone.returnCfm),
+    spreadReturnCfm(placeReturnGrillesForZone(targetZone, newSupply, { catalog: diffuserCatalogFor(currentDesign.units), metric: currentDesign.units === 'metric', plenum: currentDesign.returnStrategy === 'plenum' }), targetZone.returnCfm),
     lockedReturn,
     targetZone.returnCfm
   );
@@ -701,6 +896,8 @@ export interface ZonePayloadDiffuser {
   faceHeightIn: number;
   /** Return grille that opens into the ceiling plenum (no duct is routed to it). */
   plenumReturn?: boolean;
+  /** 'plenum' on a plenum-return grille: no association line to the unit is drawn. */
+  returnPath?: 'plenum';
 }
 
 export interface ZonePayloadServiceZone {
@@ -763,6 +960,18 @@ export interface ZonePayload {
   catalogEsp: string;
   /** 'plenum': return grilles open into the ceiling void, one short return box per unit; 'ducted': return mains routed. */
   returnStrategy: ReturnStrategy;
+  /** 'plenum' when the returns open into the ceiling void (draw no per-grille association lines); 'ducted' otherwise. */
+  returnPath: 'plenum' | 'ducted';
+  /** System type label of the design ('vrf', 'ahu', ...). */
+  systemType: string;
+  /** 'refrigerant': outdoor units; 'chilled-water': `chwStubs` and no outdoor units; 'self-contained': neither. */
+  plantConnection: PlantConnection;
+  /** Chilled-water supply / return stub endpoints (canvas px) at the indoor units; empty unless chilled-water. */
+  chwStubs: ChwStub[];
+  /** VRF: the outdoor module model; `catalogModel` is then the indoor unit model. */
+  outdoorModel?: string;
+  /** ASHRAE 62.1 zone outdoor air Voz (CFM) for the fresh-air callout. */
+  outdoorAirCfm: number;
 }
 
 /**
@@ -812,7 +1021,7 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
       serviceZoneId: t.unitId,
       unitTag: tagOf.get(t.unitId) ?? t.unitId,
       ...faceIn(t.faceDimension),
-      ...(design.returnStrategy === 'plenum' ? { plenumReturn: true } : {})
+      ...(design.returnStrategy === 'plenum' ? { plenumReturn: true, returnPath: 'plenum' as const } : {})
     }))
   ];
 
@@ -857,13 +1066,13 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
 
   const unitPos = pt(design.serviceZones[0]?.equipmentPosition || { x: 25, y: 15 });
   const unitPositions = design.serviceZones.map((sz) => pt(sz.equipmentPosition));
-  const oduFt = design.outdoorUnitPositions?.length
-    ? design.outdoorUnitPositions
+  const oduFt = design.outdoorUnitPositions?.length || (design.plantConnection && design.plantConnection !== 'refrigerant')
+    ? (design.outdoorUnitPositions ?? [])
     : design.serviceZones.map((sz) => ({ x: sz.equipmentPosition.x, y: sz.equipmentPosition.y }));
   const outdoorUnitPositions = oduFt.map(pt);
   const oduIndexOf = (zoneId: string, i: number): number => {
     const idx = design.outdoorUnitPositions?.findIndex((o) => o.serves?.includes(zoneId)) ?? -1;
-    return idx >= 0 ? idx : Math.min(i, Math.max(0, outdoorUnitPositions.length - 1));
+    return idx >= 0 ? idx : outdoorUnitPositions.length === 0 ? -1 : Math.min(i, outdoorUnitPositions.length - 1);
   };
   const unitServiceZones: ZonePayloadServiceZone[] = design.serviceZones.map((sz, i) => ({
     id: sz.id,
@@ -900,6 +1109,12 @@ export function convertDesignResultToZonePayload(design: AirDistributionDesignRe
     catalogQty: design.selectedOption.unitCount,
     catalogModel: design.selectedOption.unitModel,
     catalogEsp: `${design.selectedOption.availableEspInWg} in.wg`,
-    returnStrategy: design.returnStrategy ?? 'ducted'
+    returnStrategy: design.returnStrategy ?? 'ducted',
+    returnPath: design.returnStrategy === 'plenum' ? 'plenum' : 'ducted',
+    systemType: design.systemType ?? 'concealed',
+    plantConnection: design.plantConnection ?? 'refrigerant',
+    chwStubs: (design.chwStubs ?? []).map((c) => ({ ...c, ...pt(c) })),
+    ...(design.outdoorModel ? { outdoorModel: design.outdoorModel } : {}),
+    outdoorAirCfm: design.outdoorAirCfm ?? design.massBalance?.outdoorAirCfm ?? 0
   };
 }

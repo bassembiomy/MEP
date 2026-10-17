@@ -8,8 +8,16 @@ import {
   evaluateSizing,
   SizingCheck,
   AIRFLOW_RATIO_MIN,
-  AIRFLOW_RATIO_MAX
+  AIRFLOW_RATIO_MAX,
+  VRF_COMBINATION_MIN,
+  VRF_COMBINATION_MAX,
+  VRF_COMBINATION_TARGET_MIN,
+  VRF_COMBINATION_TARGET_MAX,
+  ambientDerateFactor
 } from './equipmentSelector';
+import { getEquipmentCatalog } from '../hvacCatalogs';
+import type { EquipmentCatalogItem } from '../types';
+import { formatAirflow, formatLoad } from '../../format/units';
 
 export interface MultiUnitCandidate {
   optionId: string;
@@ -45,6 +53,34 @@ export interface MultiUnitCandidate {
   capacityRatio?: number;
   /** Ceiling void needed: unit height + minimum clearance + duct connection protrusion. */
   requiredCeilingVoidIn?: number;
+  /** VRF only: the shared outdoor module (the indoor model is `unitModel`). */
+  outdoorModel?: string;
+  outdoorCapacityBtu?: number;
+  /** VRF only: sum of indoor rated capacity / outdoor capacity (allowed 0.5-1.3, target 1.0-1.1). */
+  combinationRatio?: number;
+}
+
+/** VRF designs select ducted indoor units (the layout routes a duct network) and a separate outdoor module. */
+export function eligibleItemsFor(systemType: string): EquipmentCatalogItem[] {
+  return catalogCandidatesForType(systemType === 'vrf' ? 'concealed' : systemType);
+}
+
+/**
+ * Smallest-error outdoor module for `indoorBtu` of connected indoor capacity: combination ratio inside 0.5-1.3 (target
+ * 1.0-1.1) and derated capacity covering the load. Null when no module fits.
+ */
+export function selectVrfOutdoor(indoorBtu: number, loadBtu: number): { item: EquipmentCatalogItem; ratio: number } | null {
+  const outs = getEquipmentCatalog().filter((e) => e.systemType === 'vrf');
+  const derate = ambientDerateFactor();
+  const mid = (VRF_COMBINATION_TARGET_MIN + VRF_COMBINATION_TARGET_MAX) / 2;
+  let best: { item: EquipmentCatalogItem; ratio: number } | null = null;
+  for (const o of outs) {
+    const ratio = indoorBtu / o.totalCapacityBtuPerHour;
+    if (ratio < VRF_COMBINATION_MIN - 1e-9 || ratio > VRF_COMBINATION_MAX + 1e-9) continue;
+    if (o.totalCapacityBtuPerHour * derate < loadBtu - 1e-9) continue;
+    if (!best || Math.abs(ratio - mid) < Math.abs(best.ratio - mid) - 1e-9) best = { item: o, ratio };
+  }
+  return best;
 }
 
 export interface OptimizationInput {
@@ -56,6 +92,8 @@ export interface OptimizationInput {
   maxAvailableCeilingDepthIn?: number;
   systemType?: string;
   profile?: StandardsProfile;
+  /** Project unit system for user-facing messages (default imperial). */
+  units?: 'imperial' | 'metric';
 }
 
 export interface OptimizationResult {
@@ -115,10 +153,11 @@ export function evaluateUnitCountOption(
     requiredCfm,
     roomAreaSqFt,
     maxAvailableCeilingDepthIn = 14,
-    systemType = 'concealed'
+    systemType = 'concealed',
+    units = 'imperial'
   } = input;
   if (!Number.isInteger(n) || n < 1 || n > MAX_UNIT_COUNT) return null;
-  const eligible = eligibleItems ?? catalogCandidatesForType(systemType);
+  const eligible = eligibleItems ?? eligibleItemsFor(systemType);
   // Evaluate every single model at n units. Prefer a fully valid model (lowest capacity ratio);
   // otherwise the least-bad one, ranking capacity-deficit / sensible failures last (slight oversize beats deficit).
   let selection: SelectedEquipmentResult | null = null;
@@ -140,19 +179,24 @@ export function evaluateUnitCountOption(
   const sizing: SizingCheck = evaluateSizing(selection.catalogItem, n, totalLoadBtu, sensibleLoadBtu, requiredCfm);
   const violations: string[] = [];
   if (sizing.failures.includes('DEFICIT')) {
-    violations.push(`delivered ${Math.round(deliveredBtu)} Btu/h < load ${Math.round(totalLoadBtu)} Btu/h`);
+    violations.push(`delivered ${formatLoad(deliveredBtu, units)} < load ${formatLoad(totalLoadBtu, units)}`);
   }
   if (sizing.failures.includes('OVERSIZE')) {
-    violations.push(`capacity ratio ${sizing.capacityRatio.toFixed(2)} > ${sizing.maxCapacityRatio.toFixed(2)}`);
+    violations.push(`capacity ratio ${Math.round(sizing.capacityRatio * 100)}% > ${Math.round(sizing.maxCapacityRatio * 100)}%`);
   }
   if (sizing.failures.includes('SENSIBLE')) {
-    violations.push(`sensible capacity below ${Math.round(sensibleLoadBtu)} Btu/h`);
+    violations.push(`sensible capacity below ${formatLoad(sensibleLoadBtu, units)}`);
   }
   if (sizing.failures.includes('AIRFLOW_LOW')) {
-    violations.push(`delivered ${deliveredCfm} CFM < ${AIRFLOW_RATIO_MIN} x ${Math.round(requiredCfm)} CFM`);
+    violations.push(`delivered ${formatAirflow(deliveredCfm, units)} < ${AIRFLOW_RATIO_MIN} x ${formatAirflow(requiredCfm, units)}`);
   }
   if (sizing.failures.includes('AIRFLOW_HIGH')) {
-    violations.push(`delivered ${deliveredCfm} CFM > ${AIRFLOW_RATIO_MAX} x ${Math.round(requiredCfm)} CFM`);
+    violations.push(`delivered ${formatAirflow(deliveredCfm, units)} > ${AIRFLOW_RATIO_MAX} x ${formatAirflow(requiredCfm, units)}`);
+  }
+  let outdoor: { item: EquipmentCatalogItem; ratio: number } | null = null;
+  if (systemType === 'vrf') {
+    outdoor = selectVrfOutdoor(deliveredBtu, totalLoadBtu);
+    if (!outdoor) violations.push(`no VRF outdoor module gives a ${Math.round(VRF_COMBINATION_MIN * 100)}-${Math.round(VRF_COMBINATION_MAX * 100)}% combination ratio for ${formatLoad(deliveredBtu, units)} of indoor capacity`);
   }
   const isValid = violations.length === 0;
 
@@ -212,7 +256,7 @@ export function evaluateUnitCountOption(
     (capScore + distScore + acousticScore + espScore + ductScore + ceilingScore + redundancyScore - unitPenalty).toFixed(1)
   );
 
-  const rationale = `${n} × ${selection.model} (${selection.nominalTons} TR, ${selection.supplyCfm} CFM each) -> Total ${deliveredCfm} CFM, Score: ${totalScore}${isValid ? '' : ' [INVALID: ' + violations.join('; ') + ']'}`;
+  const rationale = `${n} × ${selection.model} (${selection.nominalTons} TR, ${formatAirflow(selection.supplyCfm, units)} each) -> Total ${formatAirflow(deliveredCfm, units)}, Score: ${totalScore}${isValid ? '' : ' [INVALID: ' + violations.join('; ') + ']'}`;
 
   const option: MultiUnitCandidate = {
     optionId: `option-${n}-unit`,
@@ -242,7 +286,8 @@ export function evaluateUnitCountOption(
     violations,
     warnings: [...sizing.warnings],
     capacityRatio: parseFloat(capRatio.toFixed(3)),
-    requiredCeilingVoidIn: parseFloat(voidNeeded.toFixed(1))
+    requiredCeilingVoidIn: parseFloat(voidNeeded.toFixed(1)),
+    ...(outdoor ? { outdoorModel: `${outdoor.item.manufacturer} ${outdoor.item.model}`, outdoorCapacityBtu: outdoor.item.totalCapacityBtuPerHour, combinationRatio: parseFloat(outdoor.ratio.toFixed(3)) } : {})
   };
   return option;
 }
@@ -260,7 +305,7 @@ export function optimizeMultiUnitCandidates(input: OptimizationInput): Optimizat
   const validCandidates: MultiUnitCandidate[] = [];
   const invalidCandidates: MultiUnitCandidate[] = [];
   const testUnitCounts = Array.from({ length: MAX_UNIT_COUNT }, (_, i) => i + 1);
-  const eligible = catalogCandidatesForType(systemType);
+  const eligible = eligibleItemsFor(systemType);
 
   for (const n of testUnitCounts) {
     const option = evaluateUnitCountOption(n, input, eligible);
