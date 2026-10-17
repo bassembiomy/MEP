@@ -2,6 +2,8 @@
 import { uprightAngle } from './drawingGeometry';
 
 export interface Rect { x: number; y: number; w: number; h: number }
+/** An obstacle may carry a tag so a label can ignore obstacles that belong to its own symbol (e.g. its duct section). */
+export interface Obstacle extends Rect { tag?: string }
 export interface LabelCandidate { x: number; y: number; angleDeg?: number }
 
 export interface LabelRequest {
@@ -19,6 +21,8 @@ export interface LabelRequest {
   gap?: number;
   /** Explicit label centres (screen px), tried in order; default = compass positions around the anchor. */
   candidates?: LabelCandidate[];
+  /** Obstacles with these tags are ignored for this label. */
+  ignoreTags?: string[];
 }
 
 export interface PlacedLabel {
@@ -118,7 +122,7 @@ export function ductTagCandidates(
  */
 export function layoutLabels(
   requests: LabelRequest[],
-  obstacles: Rect[],
+  obstacles: Obstacle[],
   opts: { margin?: number } = {}
 ): Map<string, PlacedLabel> {
   const margin = opts.margin ?? 1;
@@ -127,14 +131,14 @@ export function layoutLabels(
   const sorted = requests
     .slice()
     .sort((a, b) => b.priority - a.priority || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const blocked = (r: Rect): boolean => {
-    for (const o of obstacles) if (rectsOverlap(r, o, margin)) return true;
+  const blocked = (r: Rect, ign?: string[]): boolean => {
+    for (const o of obstacles) if (!(ign && o.tag && ign.includes(o.tag)) && rectsOverlap(r, o, margin)) return true;
     for (const p of placed) if (rectsOverlap(r, p, margin)) return true;
     return false;
   };
-  const cost = (r: Rect): number => {
+  const cost = (r: Rect, ign?: string[]): number => {
     let c = 0;
-    for (const o of obstacles) c += overlapArea(r, o);
+    for (const o of obstacles) if (!(ign && o.tag && ign.includes(o.tag))) c += overlapArea(r, o);
     for (const p of placed) c += overlapArea(r, p);
     return c;
   };
@@ -145,9 +149,9 @@ export function layoutLabels(
     let best: { c: LabelCandidate; rect: Rect; cost: number } | null = null;
     for (const c of cands) {
       const rect = rotatedAabb(c.x, c.y, size.w, size.h, c.angleDeg ?? 0);
-      if (!blocked(rect)) { chosen = { c, rect }; break; }
+      if (!blocked(rect, req.ignoreTags)) { chosen = { c, rect }; break; }
       if (req.mandatory) {
-        const cc = cost(rect);
+        const cc = cost(rect, req.ignoreTags);
         if (!best || cc < best.cost - 1e-9) best = { c, rect, cost: cc };
       }
     }
