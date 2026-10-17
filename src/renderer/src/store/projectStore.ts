@@ -582,8 +582,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const demoZones: Zone[] = [
       mk(z1Id, 'Concealed Ducted Split', rect(60, 60, 18, 12), 'office', 9, 4, 'concealed'),
       mk('zone-demo-highwall', 'High Wall DX Split', rect(360, 60, 18, 12), 'office', 9, 2, 'high-wall'),
-      mk('zone-demo-packaged', 'Packaged Rooftop Unit', rect(60, 270, 18, 12), 'retail', 10, 8, 'packaged'),
-      mk('zone-demo-cassette', 'Cassette Split System', rect(360, 270, 18, 12), 'conference', 10, 8, 'cassette')
+      // A rooftop unit only makes sense for a larger single space (smallest RTU ≈ 3 TR), so the demo store is 40×30 ft.
+      mk('zone-demo-packaged', 'Packaged Rooftop Unit', rect(60, 270, 40, 30), 'retail', 10, 0, 'packaged'),
+      mk('zone-demo-cassette', 'Cassette Split System', rect(560, 270, 18, 12), 'conference', 10, 8, 'cassette')
     ];
     const designed = demoZones.map((z) => ({
       ...z,
