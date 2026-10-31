@@ -577,7 +577,7 @@ const BuildingSection: React.FC<{
             className={`border-t border-neutral-850 ${fl.isRoof ? 'bg-neutral-950/60' : ''}`}
           >
             <td className="px-0.5 py-0.5">
-              <TextCell value={fl.name} width="84px" onChange={(v) => patch(i, { name: v })} />
+              <TextCell value={fl.name} width="72px" onChange={(v) => patch(i, { name: v })} />
             </td>
             <td className="px-0.5 py-0.5">
               <NumCell
@@ -601,7 +601,7 @@ const BuildingSection: React.FC<{
               )}
             </td>
             <td className="px-0.5 py-0.5">
-              <TextCell value={fl.usage} width="92px" onChange={(v) => patch(i, { usage: v })} />
+              <TextCell value={fl.usage} width="68px" onChange={(v) => patch(i, { usage: v })} />
             </td>
             <td className="px-0.5 py-0.5">
               <NumCell
@@ -716,7 +716,7 @@ const StandpipeDesignSection: React.FC<{
             <td className="px-0.5 py-0.5">
               <TextCell
                 value={l.location}
-                width="104px"
+                width="92px"
                 onChange={(v) => patch(i, { location: v })}
               />
             </td>
