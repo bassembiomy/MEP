@@ -1,5 +1,5 @@
 /**
- * Fire pump room & tank drawing set (FP-101 … FP-105) — A1 sheets laid out left to right.
+ * Fire pump room & tank drawing set (FP-101 … FP-105, plus FP-106 / FP-107 when a standpipe design exists) — A1 sheets laid out left to right.
  */
 import type { FireDesignResult } from '../fpTypes';
 import { DrawingBuilder } from './drawingBuilder';
@@ -11,6 +11,8 @@ import { drawSectionSheet, pickSectionScale } from './sheetSection';
 import { drawTankSheet, pickTankScale } from './sheetTank';
 import { drawSchematicSheet } from './sheetSchematic';
 import { drawScheduleSheet } from './sheetSchedules';
+import { drawStandpipeDetailSheet } from './sheetStandpipeDetail';
+import { drawStandpipeRiserSheet, pickStandpipeScale } from './sheetStandpipe';
 
 const GAP = 5000;
 const DATE = '2026-10-31';
@@ -55,5 +57,12 @@ export function generateFireDrawings(result: FireDesignResult): Drawing {
   drawSchematicSheet(frame(s4, 'NTS'));
   const s5 = add('FP-105', 'SCHEDULES & HYDRAULIC CALCULATIONS', 10);
   drawScheduleSheet(frame(s5, 'NTS'));
+  if (result.standpipe) {
+    const spScale = pickStandpipeScale({ r: result });
+    const s6 = add('FP-106', 'STANDPIPE RISER DIAGRAM - ELEVATION', spScale);
+    drawStandpipeRiserSheet(frame(s6, `1:${spScale}`));
+    const s7 = add('FP-107', 'STANDPIPE FLOOR CONNECTION - DETAILS & SCHEDULE', 20);
+    drawStandpipeDetailSheet(frame(s7, '1:20 (DETAILS)'));
+  }
   return b.build(sheets);
 }
