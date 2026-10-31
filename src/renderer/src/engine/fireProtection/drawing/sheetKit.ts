@@ -43,7 +43,9 @@ export const PX = (c: Ctx, v: number): number => c.sheet.originX + v * c.sheet.s
 export const PY = (c: Ctx, v: number): number => c.sheet.originY + v * c.sheet.scale;
 
 /** Approximate text width, identical to the estimate used by the bounding-box tests. */
-export const textWidth = (h: number, s: string): number => h * 0.6 * s.length;
+/** Layout width estimate (upper-case CAD text renders ~0.8 h per character in the SVG preview). */
+export const CW = 0.78;
+export const textWidth = (h: number, s: string): number => h * CW * s.length;
 
 export function textBox(x: number, y: number, h: number, s: string, align: TextAlign, vAlign: TextVAlign, rot = 0): Box {
   const w = textWidth(h, s);
@@ -120,7 +122,7 @@ export class Placer {
   tag(anchor: Pt, text: string, prefer: number[] = [90, 270, 0, 180, 45, 135, 225, 315, 60, 120, 240, 300, 20, 160, 200, 340]): Pt {
     const { b, sheet } = this.c;
     const s = sheet.scale;
-    const hw = (text.length <= 4 ? 6 : Math.max(6, text.length * 1.25 + 3)) * s / 2;
+    const hw = (text.length <= 4 ? 6 : Math.max(6, text.length * 1.6 + 3)) * s / 2;
     const hh = 3 * s;
     const radii = [6, 8, 10.5, 13, 16, 20, 25, 31, 38, 46, 56].map((k) => k * s);
     for (const rad of radii) {
@@ -164,6 +166,24 @@ export class Placer {
     this.fallbacks.push(text);
     drawTag(b, anchor[0], anchor[1] + 5 * s, text, s);
     return anchor;
+  }
+
+  /** Centered multi-line text block at the first free candidate centre; returns true when placed. */
+  block(lines: string[], hPaper: number, centres: Pt[], align: TextAlign = 'center'): boolean {
+    const { sheet } = this.c;
+    const h = hPaper * sheet.scale;
+    const pitch = h * 1.45;
+    const w = Math.max(...lines.map((l) => textWidth(h, l)));
+    const bh = lines.length * pitch;
+    for (const [cx, cy] of centres) {
+      const x0 = align === 'center' ? cx - w / 2 : align === 'left' ? cx : cx - w;
+      const box: Box = { x0, y0: cy - bh / 2, x1: x0 + w, y1: cy + bh / 2 };
+      if (!this.free(box, 0.4 * sheet.scale, false)) continue;
+      lines.forEach((t, i) => this.text('FP-ANNO', cx, cy + bh / 2 - pitch * (i + 0.5), hPaper, t, { align, vAlign: 'middle', register: false }));
+      this.hard.push(box);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -215,12 +235,36 @@ export class Placer {
   }
 }
 
+/** Collision boxes (text + dimension line) of a linear dimension drawn with DrawingBuilder.dimLinear. */
+export function dimBoxes(s: number, x1: number, y1: number, x2: number, y2: number, offPaper: number, text: string): Box[] {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const l = Math.hypot(dx, dy) || 1;
+  const nx = -dy / l;
+  const ny = dx / l;
+  const off = offPaper * s;
+  const ax = x1 + nx * off;
+  const ay = y1 + ny * off;
+  const bx = x2 + nx * off;
+  const by = y2 + ny * off;
+  const hw = textWidth(2.5 * s, text) / 2 + 0.5 * s;
+  const th = 3.4 * s;
+  const horizontal = Math.abs(dx) >= Math.abs(dy);
+  const cx = (ax + bx) / 2;
+  const cy = (ay + by) / 2;
+  const t: Box = horizontal
+    ? { x0: cx - hw, x1: cx + hw, y0: cy - th * 0.3, y1: cy + th }
+    : { x0: cx - th, x1: cx + th * 0.3, y0: cy - hw, y1: cy + hw };
+  const ln: Box = { x0: Math.min(ax, bx) - 0.5 * s, x1: Math.max(ax, bx) + 0.5 * s, y0: Math.min(ay, by) - 0.5 * s, y1: Math.max(ay, by) + 0.5 * s };
+  return [t, ln];
+}
+
 /** Compact tag: 6 mm circle (or stadium for long text) with 2 mm text (paper). */
 export function drawTag(b: DrawingBuilder, x: number, y: number, text: string, s: number): void {
   const layer = 'FP-ANNO';
   if (text.length <= 4) b.circle(layer, x, y, 3 * s);
   else {
-    const w = Math.max(6, text.length * 1.25 + 3) * s;
+    const w = Math.max(6, text.length * 1.6 + 3) * s;
     const r = 3 * s;
     const hw = w / 2 - r;
     b.line(layer, x - hw, y + r, x + hw, y + r);
@@ -297,9 +341,18 @@ export function autoCols(rows: string[][], th: number, minCols: number[] = []): 
   for (let i = 0; i < n; i++) {
     let m = 0;
     for (const r of rows) for (const ln of (r[i] ?? '').split('\n')) m = Math.max(m, ln.length);
-    cols.push(Math.max(minCols[i] ?? 0, m * 0.6 * th + 3.2));
+    cols.push(Math.max(minCols[i] ?? 0, m * CW * th + 3.2));
   }
   return cols;
+}
+
+/** Paper size of a table without drawing it (same metrics as drawTable). */
+export function measureTable(cols: number[], rows: string[][], o: TableOpts = {}): { w: number; h: number } {
+  const th = o.th ?? 2.5;
+  const lineH = th * 1.3;
+  const pad = 1.4;
+  const h = rows.reduce((a, r) => a + Math.max(1, ...r.map((cell) => cell.split('\n').length)) * lineH + pad * 2, 0) + (o.title ? th * 2.6 : 0);
+  return { w: cols.reduce((a, v) => a + v, 0), h };
 }
 
 /**
@@ -357,19 +410,26 @@ export function drawTable(c: Ctx, xP: number, yTopP: number, cols: number[], row
   return { w: totalW, h: totalH };
 }
 
+/** Longest line (characters) that keeps the symmetric text box inside the drawing frame for a given anchor. */
+export function maxCharsAt(xAnchor: number, th: number): number {
+  const left = Math.floor((xAnchor - (FRAME.x0 + 1.5)) / (0.6 * th));
+  const right = Math.floor(((FRAME.x1 - 1.5) - xAnchor) / (0.6 * th));
+  return Math.max(8, Math.min(left, right));
+}
+
 /** Numbered, wrapped notes block (paper coordinates). Returns paper height. */
-export function drawNotes(c: Ctx, xP: number, yTopP: number, widthP: number, title: string, notes: string[], th = 2.5): number {
+export function drawNotes(c: Ctx, xP: number, yTopP: number, widthP: number, title: string, notes: string[], th = 2.5, startNo = 0): number {
   const { b } = c;
-  const maxChars = Math.floor((widthP - 8) / (0.6 * th));
+  const maxChars = Math.min(Math.floor((widthP - 8) / (CW * th)), maxCharsAt(xP + 7, th));
   const X = (v: number): number => PX(c, v);
   const Y = (v: number): number => PY(c, v);
   b.text('FP-ANNO', X(xP), Y(yTopP - th), th * 1.35, title, { vAlign: 'middle' });
-  b.line('FP-ANNO', X(xP), Y(yTopP - th * 2), X(xP + Math.min(widthP, title.length * th * 1.35 * 0.6 + 6)), Y(yTopP - th * 2));
+  b.line('FP-ANNO', X(xP), Y(yTopP - th * 2), X(xP + Math.min(widthP, title.length * th * 1.35 * CW + 6)), Y(yTopP - th * 2));
   let y = yTopP - th * 3.2;
   const lh = th * 1.45;
   notes.forEach((n, i) => {
     const lines = wrapText(n, maxChars);
-    b.text('FP-ANNO', X(xP), Y(y), th, `${i + 1}.`, { vAlign: 'middle' });
+    b.text('FP-ANNO', X(xP), Y(y), th, `${startNo + i + 1}.`, { vAlign: 'middle' });
     lines.forEach((ln, li) => {
       b.text('FP-ANNO', X(xP + 7), Y(y - li * lh), th, ln, { vAlign: 'middle' });
     });
@@ -378,17 +438,55 @@ export function drawNotes(c: Ctx, xP: number, yTopP: number, widthP: number, tit
   return yTopP - y;
 }
 
+/**
+ * Sheet / view title with a sub-title and an underline. Both strings are placed as close to `xLeft` as the
+ * symmetric text-box rule allows (centre-aligned so that the box stays inside the drawing frame).
+ */
+export function sheetTitle(c: Ctx, xLeft: number, yP: number, title: string, sub: string): void {
+  const { b } = c;
+  const hT = 7;
+  const hS = 3.5;
+  const centre = (str: string, h: number): number => {
+    const wAct = CW * h * str.length;
+    const wBox = 0.6 * h * str.length;
+    return Math.max(xLeft + wAct / 2, FRAME.x0 + 2 + wBox, 0);
+  };
+  const cT = centre(title, hT);
+  const cS = centre(sub, hS);
+  b.text('FP-ANNO', PX(c, cT), PY(c, yP), hT, title, { align: 'center', vAlign: 'middle' });
+  b.text('FP-ANNO', PX(c, cS), PY(c, yP - 9), hS, sub, { align: 'center', vAlign: 'middle' });
+  const x0 = Math.min(cT - (CW * hT * title.length) / 2, cS - (CW * hS * sub.length) / 2);
+  const x1 = Math.max(cT + (CW * hT * title.length) / 2, cS + (CW * hS * sub.length) / 2);
+  b.line('FP-ANNO', PX(c, x0), PY(c, yP - 4.5), PX(c, x1), PY(c, yP - 4.5));
+}
+
 /** Predicted height of drawNotes (paper mm). */
-export function notesHeight(widthP: number, notes: string[], th = 2.5): number {
-  const maxChars = Math.floor((widthP - 8) / (0.6 * th));
+export function notesHeight(xP: number, widthP: number, notes: string[], th = 2.5): number {
+  const maxChars = Math.min(Math.floor((widthP - 8) / (CW * th)), maxCharsAt(xP + 7, th));
   const lh = th * 1.45;
   let y = th * 3.2;
   for (const n of notes) y += wrapText(n, maxChars).length * lh + 0.6 * th;
   return y;
 }
 
+/** Smallest table x (paper mm) at which every left-aligned cell keeps its symmetric text box inside the frame. */
+export function tableMinX(cols: number[], rows: string[][], th: number): number {
+  let xMin = FRAME.x0 + 1.5;
+  let off = 0;
+  cols.forEach((w, ci) => {
+    for (const r of rows) {
+      for (const ln of (r[ci] ?? '').split('\n')) {
+        // left-aligned anchor = x0 + off + 1.4
+        xMin = Math.max(xMin, FRAME.x0 + 1.5 + 0.6 * th * ln.length - off - 1.4);
+      }
+    }
+    off += w;
+  });
+  return xMin;
+}
+
 /** Symbol legend (valves, fittings and line types) in a framed box. Returns paper size. */
-export function drawSymbolLegend(c: Ctx, xP: number, yTopP: number, colW = 92): { w: number; h: number } {
+export function drawSymbolLegend(c: Ctx, xP: number, yTopP: number, colW = 100): { w: number; h: number } {
   const { b, sheet } = c;
   const s = sheet.scale;
   const X = (v: number): number => PX(c, v);
@@ -442,7 +540,7 @@ export function drawSymbolLegend(c: Ctx, xP: number, yTopP: number, colW = 92): 
     const x0 = xP + 2 + col * colW;
     const y = yTopP - 9 - rowH * (row + 0.5);
     it.draw(X(x0 + 10), Y(y));
-    b.text('FP-ANNO', X(x0 + 22), Y(y), th, it.label, { vAlign: 'middle' });
+    b.text('FP-ANNO', X(x0 + 20), Y(y), th, it.label, { vAlign: 'middle' });
   });
   return { w, h };
 }

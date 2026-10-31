@@ -40,15 +40,11 @@ if len(sys.argv) > 2:
         pts = [v.dxf.location for v in e.vertices]
         xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
         frames.append((min(xs), min(ys), max(xs), max(ys)))
-    frames.sort(key=lambda f: -(f[2] - f[0]) * (f[3] - f[1]))
-    big = frames[0]
-    area = (big[2] - big[0]) * (big[3] - big[1])
-    sheets = sorted({f for f in frames if (f[2]-f[0])*(f[3]-f[1]) > 0.9 * area * 0.25 and (f[2]-f[0]) > (big[2]-big[0]) * 0.5}, key=lambda f: f[0])
-    # keep outermost frame per x-position
-    outer = []
-    for f in sheets:
-        if not any(o[0] <= f[0] and o[2] >= f[2] and o != f for o in sheets):
-            outer.append(f)
+    # sheet frames = outermost FP-TBLK rectangles (not contained in any other frame)
+    frames = list({f for f in frames if (f[2]-f[0]) > 0 and (f[3]-f[1]) > 0})
+    outer = sorted([f for f in frames if not any(o != f and o[0] <= f[0] and o[1] <= f[1] and o[2] >= f[2] and o[3] >= f[3] for o in frames)], key=lambda f: f[0])
+    # ignore small stand-alone rectangles (e.g. detail boxes) — a sheet frame has A-series aspect ratio
+    outer = [f for f in outer if abs((f[2]-f[0])/(f[3]-f[1]) - 841/594) < 0.02]
     cfg = Configuration(background_policy=BackgroundPolicy.WHITE, color_policy=ColorPolicy.COLOR)
     fig = plt.figure(figsize=(33.1, 23.4), dpi=60)
     ax = fig.add_axes([0, 0, 1, 1])

@@ -7,6 +7,10 @@ import type { Drawing, SheetInfo } from './drawingTypes';
 import { titleBlock } from './symbols';
 import type { Ctx } from './sheetKit';
 import { drawPlanSheet, pickPlanScale } from './sheetPlan';
+import { drawSectionSheet, pickSectionScale } from './sheetSection';
+import { drawTankSheet, pickTankScale } from './sheetTank';
+import { drawSchematicSheet } from './sheetSchematic';
+import { drawScheduleSheet } from './sheetSchedules';
 
 const GAP = 5000;
 const DATE = '2026-10-31';
@@ -41,5 +45,15 @@ export function generateFireDrawings(result: FireDesignResult): Drawing {
   const planScale = pickPlanScale({ r: result });
   const s1 = add('FP-101', 'FIRE PUMP ROOM - PLAN', planScale);
   drawPlanSheet(frame(s1, `1:${planScale}`));
+  const secScale = pickSectionScale({ r: result });
+  const s2 = add('FP-102', 'SECTION A-A - SUCTION TRAIN AND SUMP', secScale);
+  drawSectionSheet(frame(s2, `1:${secScale}`));
+  const tankScale = pickTankScale({ r: result });
+  const s3 = add('FP-103', 'FIRE WATER TANK - PLAN, SECTION B-B & SUMP DETAIL', tankScale);
+  drawTankSheet(frame(s3, `1:${tankScale}`));
+  const s4 = add('FP-104', 'FIRE PUMP SCHEMATIC', 10);
+  drawSchematicSheet(frame(s4, 'NTS'));
+  const s5 = add('FP-105', 'SCHEDULES & HYDRAULIC CALCULATIONS', 10);
+  drawScheduleSheet(frame(s5, 'NTS'));
   return b.build(sheets);
 }

@@ -21,7 +21,7 @@ import {
   pumpPlan,
   reliefValve
 } from './symbols';
-import { type Box, type Ctx, FRAME, Placer, PX, PY, TBLK, autoCols, drawNotes, drawSymbolLegend, drawTable, notesHeight, splitInterval, textWidth, wrapText } from './sheetKit';
+import { type Box, type Ctx, FRAME, Placer, PX, PY, TBLK, autoCols, drawNotes, drawSymbolLegend, drawTable, sheetTitle, splitInterval, textWidth, wrapText } from './sheetKit';
 import { type PipeDraw, drawPipeNetwork, layerOfService, odOf, tankLayout, westWallMm } from './sheetGeom';
 
 /** Extents (room mm) and paper footprint needed by the plan at scale `s`. */
@@ -147,6 +147,7 @@ export function drawPlanSheet(c: Ctx): void {
   const segLine = (layer: string, x1: number, y1: number, x2: number, y2: number): void => b.line(layer, X(x1), Y(y1), X(x2), Y(y2));
   const hatched = (x: number, y: number, w: number, h: number, layer = 'FP-WALL'): void => {
     if (w <= 0 || h <= 0) return;
+    P.addRect(X(x), Y(y), w, h);
     b.rect(layer, X(x), Y(y), w, h);
     b.hatchRect(X(x), Y(y), w, h, 1.6);
   };
@@ -210,7 +211,6 @@ export function drawPlanSheet(c: Ctx): void {
     }
     b.polyline('FP-TANK', pts, false);
   }
-  P.addRect(X(xs), Y(tl.yLo - tl.tw), stripW, tl.yHi - tl.yLo + 2 * tl.tw);
   // water level (dashed) – compartment fill outline
   tl.comps.forEach((cp) => {
     b.rect('FP-WATR', X(xs + 150), Y(cp.y0 + 150), stripW - 150 - 150, cp.y1 - cp.y0 - 300);
@@ -223,6 +223,7 @@ export function drawPlanSheet(c: Ctx): void {
     b.rect('FP-HIDN', X(pcx - sp.vortexPlateMm / 2), Y(sm.y - sp.vortexPlateMm / 2), sp.vortexPlateMm, sp.vortexPlateMm);
     b.line('FP-HIDN', X(pcx - sp.vortexPlateMm / 2), Y(sm.y - sp.vortexPlateMm / 2), X(pcx + sp.vortexPlateMm / 2), Y(sm.y + sp.vortexPlateMm / 2));
     b.line('FP-HIDN', X(pcx - sp.vortexPlateMm / 2), Y(sm.y + sp.vortexPlateMm / 2), X(pcx + sp.vortexPlateMm / 2), Y(sm.y - sp.vortexPlateMm / 2));
+    P.addRect(X(-wW - sp.pitLengthMm), Y(sm.y - sp.pitWidthMm / 2), sp.pitLengthMm, sp.pitWidthMm);
   });
 
   // ───────────────────────── trench ─────────────────────────
@@ -360,8 +361,12 @@ export function drawPlanSheet(c: Ctx): void {
       if (kind && textWidth(1.8 * s, kind) < q.h * 0.42) b.text('FP-ANNO', X(q.x + q.w / 2), Y(q.y + 0.74 * q.h), 1.8, kind, { rotationDeg: 90, align: 'center', vAlign: 'middle' });
       // NEC 110.26 working space (dashed) in front of the controller
       b.rect('FP-HIDN', X(q.x - 1000), Y(q.y), 1000, q.h);
-      b.text('FP-ANNO', X(q.x - 500), Y(q.y + 0.18 * q.h), 1.8, '1000 CLEAR', { align: 'center', vAlign: 'middle' });
-      b.text('FP-ANNO', X(q.x - 500), Y(q.y + 0.18 * q.h - 2.6 * s), 1.8, 'WORKING SPACE', { align: 'center', vAlign: 'middle' });
+      if (q.h >= 700) {
+        b.text('FP-ANNO', X(q.x - 1000 + 170), Y(q.y + q.h / 2), 1.8, '1000 CLEAR', { rotationDeg: 90, align: 'center', vAlign: 'middle' });
+        b.text('FP-ANNO', X(q.x - 1000 + 350), Y(q.y + q.h / 2), 1.8, 'WORK SPACE', { rotationDeg: 90, align: 'center', vAlign: 'middle' });
+      } else {
+        b.text('FP-ANNO', X(q.x - 1000 + 250), Y(q.y + q.h / 2), 1.8, '1000', { align: 'center', vAlign: 'middle' });
+      }
       P.addRect(X(q.x - 1000), Y(q.y), 1000 + q.w, q.h);
     }
   }
@@ -407,12 +412,28 @@ export function drawPlanSheet(c: Ctx): void {
   // ───────────────────────── section mark A-A ─────────────────────────
   const yCut = room.suctionLineY[0];
   const secX1 = xs + 350;
-  const secX2 = L + wT + 700;
+  const secX2 = L + wT + 300;
   b.sectionMark(X(secX1), Y(yCut), X(secX2), Y(yCut), 'A');
   P.addRect(X(secX1), Y(yCut), secX2 - secX1, 12 * s + 4 * s);
 
   // ───────────────────────── dimensions ─────────────────────────
-  const dimPts = (x1: number, y1: number, x2: number, y2: number, off: number, txt?: string): void => b.dimLinear(X(x1), Y(y1), X(x2), Y(y2), off, txt);
+  const dimPts = (x1: number, y1: number, x2: number, y2: number, off: number, txt?: string): void => {
+    b.dimLinear(X(x1), Y(y1), X(x2), Y(y2), off, txt);
+    const len = Math.round(Math.hypot(x2 - x1, y2 - y1));
+    const t = txt ?? String(len);
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const l = Math.hypot(dx, dy) || 1;
+    const nx = -dy / l;
+    const ny = dx / l;
+    const cx = X((x1 + x2) / 2) + nx * off * s;
+    const cy = Y((y1 + y2) / 2) + ny * off * s;
+    const hw = textWidth(2.5 * s, t) / 2 + 0.5 * s;
+    const hh = 2.5 * s + 0.5 * s;
+    const horizontal = Math.abs(dx) > Math.abs(dy);
+    dimBoxes.push(horizontal ? { x0: cx - hw, y0: cy - 0.5 * s, x1: cx + hw, y1: cy + hh } : { x0: cx - hh, y0: cy - hw, x1: cx + 0.5 * s, y1: cy + hw });
+  };
+  const dimBoxes: Box[] = [];
   // south: header offset chain, internal length, overall
   dimPts(0, -wT, L, -wT, -33);
   dimPts(-wW, -wT, L + wT, -wT, -42);
@@ -463,8 +484,16 @@ export function drawPlanSheet(c: Ctx): void {
   }
   P.setBounds(outerBounds);
 
+  // dimension text and the sheet title are now off-limits for callouts
+  for (const bx of dimBoxes) P.addHard(bx);
+  P.addRect(X(-wW), Y(-wT - 44 * s), wW + L + wT, 44 * s);
+  P.addRect(X(L + wT), Y(-wT - 3 * s), 38 * s, W + 2 * wT + 6 * s);
+  P.addRect(PX(c, 28), PY(c, 17), 105 * s, 20 * s);
+  const fallbackTags = P.fallbacks.length;
+  void fallbackTags;
+
   // ───────────────────────── labels & callouts ─────────────────────────
-  P.setBounds(outerBounds);
+  P.setBounds({ x0: frameBounds.x0, y0: PY(c, 40), x1: frameBounds.x1, y1: frameBounds.y1 });
   const inRoom: Box = { x0: X(40), y0: Y(40), x1: X(L - 40), y1: Y(W - 40) };
   // pump callouts
   for (const e of room.equipment) {
@@ -504,25 +533,26 @@ export function drawPlanSheet(c: Ctx): void {
   // tank callouts (inside the strip)
   P.setBounds({ x0: X(xs) + 2 * s, y0: Y(tl.yLo), x1: X(-wW) - 2 * s, y1: Y(tl.yHi) });
   tl.comps.forEach((cp, i) => {
-    const my = (cp.y0 + cp.y1) / 2 + (i === 0 ? 1500 : -1500);
     const vol = (Math.round(tl.compLen) / 1000) * tank.internalWidthM * tank.effectiveDepthM;
-    const lines = [`TANK COMPARTMENT ${i + 1}`, `${(Math.round(tl.compLen) / 1000).toFixed(1)} x ${tank.internalWidthM.toFixed(1)} m`, `${vol.toFixed(0)} m3 EFFECTIVE`, '(PARTIAL VIEW - SEE FP-103)'];
-    lines.forEach((t, k) => P.text('FP-ANNO', X(xs + stripW / 2), Y(my) - k * 3.4 * s, 2.2, t, { align: 'center', vAlign: 'middle' }));
+    const lines = [`TANK COMPARTMENT ${i + 1}`, `${(Math.round(tl.compLen) / 1000).toFixed(1)} x ${tank.internalWidthM.toFixed(1)} m`, `${vol.toFixed(0)} m3 EFFECTIVE`, '(PARTIAL - SEE FP-103)'];
+    const mid = (cp.y0 + cp.y1) / 2;
+    const cx = X(xs + stripW / 2 + 60);
+    const cands: [number, number][] = [];
+    for (const d of [0, 900, -900, 1500, -1500, 2100, -2100, 2700, -2700]) cands.push([cx, Y(mid + d)]);
+    P.block(lines, 2.0, cands);
   });
   tl.sumps.forEach((sm, i) => {
-    P.callout([X(-wW - sp.plateCentreFromWallMm), Y(sm.y + sp.pitWidthMm / 2)], [`SUMP PIT ${i + 1} (BELOW FLOOR)`, `ANTI-VORTEX PLATE ${sp.vortexPlateMm} SQ`], 2.0, [90, 135, 180]);
+    P.callout([X(-wW - sp.plateCentreFromWallMm), Y(sm.y + sp.pitWidthMm / 2)], [`SUMP PIT ${i + 1} (BELOW FLOOR)`, `ANTI-VORTEX PLATE ${sp.vortexPlateMm} SQ`], 2.0, [90, 135, 45, 180, 270]);
   });
+  P.block(['SECTION A-A', '(SEE FP-102)'], 2.0, [[X(xs + 1100), Y(yCut - 1100)], [X(xs + 1100), Y(yCut + 1100)], [X(xs + 1100), Y(yCut - 1700)]]);
   P.setBounds(outerBounds);
 
   // ───────────────────────── titles, north arrow ─────────────────────────
-  b.text('FP-ANNO', PX(c, 32), PY(c, 30), 7, 'FIRE PUMP ROOM - PLAN', { vAlign: 'middle' });
-  b.text('FP-ANNO', PX(c, 32), PY(c, 21), 3.5, `SCALE 1:${s}`, { vAlign: 'middle' });
-  b.line('FP-ANNO', PX(c, 32), PY(c, 25.5), PX(c, 32 + 21 * 4.2), PY(c, 25.5));
-  b.text('FP-ANNO', X(L + wT + 700 + 1.5 * s), Y(yCut + 13 * s), 2.2, 'SECTION A-A (FP-102)', { align: 'left', vAlign: 'middle' });
-  northArrow(b, X(L + wT) + 56 * s, Y(W + wT) + 4 * s);
+  sheetTitle(c, 32, 30, 'FIRE PUMP ROOM - PLAN', `SCALE 1:${s}`);
+  northArrow(b, X(xs + 1200), Y(yMax) + 12 * s);
 
   // ───────────────────────── right-hand zone: schedules / keys / notes ─────────────────────────
-  const zx = Math.ceil(32 + (wW + stripW + L + wT) / s + 50 + 8);
+  const zx = Math.ceil(32 + (wW + stripW + L + wT) / s + 40 + 6);
   const th = 2.5;
   let yTop = 574;
   // equipment key
@@ -530,10 +560,9 @@ export function drawPlanSheet(c: Ctx): void {
     const rows: string[][] = [['TAG', 'EQUIPMENT']];
     for (const e of room.equipment) {
       const tagEnd = e.label.indexOf(' ');
-      const desc = e.label.slice(tagEnd + 1);
-      rows.push([e.tag, wrapText(desc, 42).join('\n')]);
+      rows.push([e.tag, wrapText(e.label.slice(tagEnd + 1), 36).join('\n')]);
     }
-    const cols = autoCols(rows, th, [18, 60]);
+    const cols = autoCols(rows, th, [16, 60]);
     const t = drawTable(c, zx, yTop, cols, rows, { title: 'EQUIPMENT KEY', th });
     yTop -= t.h + 8;
   }
@@ -542,17 +571,48 @@ export function drawPlanSheet(c: Ctx): void {
     const rows: string[][] = [['TAG', 'DESCRIPTION', 'SIZE', 'SERVICE']];
     for (const v of room.valves) rows.push([v.tag, KIND_NAME[v.kind], formatPipeSize(v.sizeIn), v.service.toUpperCase()]);
     const cols = autoCols(rows, th, [14, 62, 14, 22]);
-    const t = drawTable(c, zx, yTop, cols, rows, { title: 'VALVE KEY', th });
-    // second column block beside the first if it fits vertically
-    void t;
+    drawTable(c, zx, yTop, cols, rows, { title: 'VALVE KEY', th });
   }
-  // legend + room notes in the third column
-  const lx = 655;
+  // legend, pump summary and room notes
+  const lx = zx + 172;
   const lg = drawSymbolLegend(c, lx, 574);
-  const notes = roomNotes(c);
-  drawNotes(c, lx, 574 - lg.h - 8, 831 - lx - 4, 'ROOM NOTES', notes);
-  void notesHeight;
+  let y2 = 574 - lg.h - 8;
+  {
+    const rows: string[][] = [['TAG', 'DRIVER', 'PUMP TYPE', 'RATED', 'NET PSI', 'CHURN', '150 %', 'HP', 'RPM']];
+    for (const p of r.pumps.mainPumps) {
+      rows.push([
+        p.tag,
+        p.driver === 'diesel' ? 'DIESEL' : 'ELECTRIC',
+        p.pumpType === 'horizontal-split-case' ? 'HSC' : p.pumpType === 'end-suction' ? 'END-SUCT.' : p.pumpType === 'vertical-inline' ? 'V-INLINE' : 'V-TURBINE',
+        `${p.ratedFlowGpm} GPM`,
+        String(Math.round(p.ratedNetPressurePsi)),
+        `${Math.round(p.churnPressurePsi)} PSI`,
+        `${Math.round(p.pressureAt150Psi)} PSI`,
+        String(p.driverHp),
+        String(p.speedRpm)
+      ]);
+    }
+    const j = r.pumps.jockey;
+    rows.push([j.tag, 'ELECTRIC', 'JOCKEY', `${j.ratedFlowGpm} GPM`, String(j.ratedNetPressurePsi), '-', '-', String(j.motorHp), '-']);
+    const t = drawTable(c, lx, y2, autoCols(rows, 2.2), rows, { title: 'FIRE PUMP SET SUMMARY (SEE FP-105)', th: 2.2 });
+    y2 -= t.h + 8;
+  }
+  // room notes + plan key notes below the keys (centre zone)
+  drawNotes(c, lx, y2, 831 - lx - 6, 'ROOM NOTES', roomNotes(c));
+  drawNotes(c, zx + 4, 262, 360, 'PLAN KEY NOTES', planNotes(c), 2.5);
   void butterflyValveLengthMm;
+}
+
+function planNotes(c: Ctx): string[] {
+  const { r } = c;
+  const room = r.room;
+  return [
+    `Pipe sizes: suction ${formatPipeSize(room.pipes.find((p) => p.service === 'suction')?.sizeIn ?? 6)}, discharge header ${formatPipeSize(room.pipes.find((p) => p.id === 'HDR-1')?.sizeIn ?? 6)}, test return ${formatPipeSize(room.pipes.find((p) => p.id === 'TST-1')?.sizeIn ?? 5)}; piping is drawn at true outside diameter.`,
+    'Valve and equipment tags are keyed in the Equipment Key and Valve Key; the schedules and hydraulic calculations are on FP-105.',
+    'Section A-A (FP-102) cuts through the FP-1 suction centre-line; Tank plan, Section B-B and the sump pit detail are on FP-103; the pump schematic is on FP-104.',
+    'Dimensions in mm. Pump pads extend 150 mm beyond the skid; clear access of 900 mm minimum around pumps and 1000 mm in front of controllers.',
+    'Louvres and the exterior door are shown in their coordinated positions clear of pipe penetrations; door leaves swing outward.'
+  ];
 }
 
 function roomNotes(c: Ctx): string[] {
