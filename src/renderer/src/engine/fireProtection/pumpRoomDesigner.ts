@@ -27,6 +27,12 @@ import {
 } from './standards/pipeData';
 
 const PAD_MARGIN = 150;
+
+/** Pump centre-line height above the pump-room floor, m: 150 mm pad + 450 mm (≤ 1500 gpm) / 600 mm centre-line. */
+export function pumpCenterlineHeightM(ratedGpm: number): number {
+  return Math.round((0.15 + (ratedGpm <= 1500 ? 0.45 : 0.6)) * 1000) / 1000;
+}
+
 const ceilN = (v: number, n: number): number => Math.ceil(v / n - 1e-9) * n;
 const r3 = (v: number): number => Math.round(v * 1000) / 1000;
 
@@ -289,7 +295,7 @@ export function designPumpRoom(input: FireDesignInput, pumps: PumpSetSelection, 
 
   // ── Elevations ──
   const padTop = 0.15;
-  const pumpCL = r3(padTop + (rated <= 1500 ? 0.45 : 0.6));
+  const pumpCL = pumpCenterlineHeightM(rated);
   const highLevel = 2.4;
   const roofSoffit = Math.max(3.5, r3(highLevel + 0.9));
   const elevations: PumpRoomLayout['elevations'] = {
@@ -300,7 +306,10 @@ export function designPumpRoom(input: FireDesignInput, pumps: PumpSetSelection, 
     highLevelPipeM: highLevel,
     roofSoffitM: roofSoffit
   };
-  const rating: 1 | 2 = input.riser.elevationRiseFt > 75 ? 2 : 1;
+  const habove = input.building
+    ? Math.max(...input.building.floors.filter((f) => !f.isRoof).map((f) => f.elevationM)) - input.building.fireDeptAccessElevationM
+    : 0;
+  const rating: 1 | 2 = input.building ? (habove > 22.86 ? 2 : 1) : input.riser.elevationRiseFt > 75 ? 2 : 1;
 
   // ── Checks ──
   const checks: DesignCheck[] = [];
@@ -337,7 +346,7 @@ export function designPumpRoom(input: FireDesignInput, pumps: PumpSetSelection, 
     title: 'Pump room fire separation',
     reference: 'IBC 2021 §913.2.1 / NFPA 20-2019 §4.12.1',
     status: 'pass',
-    detail: `Riser rise ${input.riser.elevationRiseFt} ft ${rating === 2 ? '> 75 ft (high-rise): 2 h' : '≤ 75 ft: 1 h'} fire-resistance rated separation; exterior access door ${doors[0].widthMm} mm`
+    detail: `${input.building ? `Highest occupied floor ${(habove / 0.3048).toFixed(1)} ft above fire department access` : `Riser rise ${input.riser.elevationRiseFt} ft`} ${rating === 2 ? '> 75 ft (high-rise): 2 h' : '≤ 75 ft: 1 h'} fire-resistance rated separation; exterior access door ${doors[0].widthMm} mm`
   });
   checks.push({
     id: 'room-heating',

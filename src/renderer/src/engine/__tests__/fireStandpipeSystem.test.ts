@@ -115,7 +115,7 @@ const result = designFireProtectionSystem(DEFAULT_FIRE_INPUT);
   const st2 = sp.risers.find((r) => r.tag === 'ST-2')!;
   const b1 = st1.outlets[0];
   near(b1.staticPsi, 207.70, 0.05, 'B1 outlet static');
-  near(st1.outlets[7].staticPsi, 175.17, 0.05, 'L5 outlet static');
+  near(st1.outlets[6].staticPsi, 175.17, 0.05, 'L5 outlet static');
   near(st1.outlets[10].staticPsi, 154.71, 0.05, 'roof outlet static');
   const prvFloors = (r: typeof st1): string[] => r.outlets.filter((o) => o.prvRequired).map((o) => o.floorId);
   assert(JSON.stringify(prvFloors(st1)) === JSON.stringify(['B1', 'GF', 'L1', 'L2', 'L3', 'L4', 'L5']), `ST-1 PRV floors ${prvFloors(st1)}`);

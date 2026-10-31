@@ -67,7 +67,8 @@ const FITTING_ABBR: [FittingType, string][] = [
   ['butterfly-valve', 'BV'],
   ['gate-valve', 'GV'],
   ['swing-check', 'CV'],
-  ['alarm-check', 'AC']
+  ['alarm-check', 'AC'],
+  ['angle-hose-valve', 'HV']
 ];
 
 /**
@@ -302,10 +303,10 @@ export function calculateStandpipeDemand(input: FireDesignInput): StandpipeDeman
  * Governing system demand at the pump flange and required storage
  * (NFPA 13-2019 §19.3.3.1.2 hose allowance & duration; NFPA 14-2019 §7.10; NFPA 22-2018 capacity).
  */
-export function calculateSystemDemand(input: FireDesignInput): SystemDemand {
+export function calculateSystemDemand(input: FireDesignInput, overrides?: { standpipe?: StandpipeDemandResult }): SystemDemand {
   const hz = HAZARD_DESIGN[input.hazard];
   const sprinkler = calculateSprinklerDemand(input);
-  const standpipe = calculateStandpipeDemand(input);
+  const standpipe = overrides?.standpipe ?? calculateStandpipeDemand(input);
   const hoseInside = input.insideHoseGpm;
   const hoseTotal = input.totalHoseAllowanceGpm ?? hz.hoseTotalGpm;
   const duration = input.durationMin ?? hz.durationMin[1];

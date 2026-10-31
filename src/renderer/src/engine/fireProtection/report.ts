@@ -34,6 +34,48 @@ function nodeTable(rows: HydraulicNodeRow[]): string[] {
   return out;
 }
 
+function standpipeSection(result: FireDesignResult): string[] {
+  const sp = result.standpipe!;
+  const L: string[] = [...section('STANDPIPE SYSTEM (NFPA 14)')];
+  L.push(
+    `Design basis            : Class ${sp.standpipeClass}, ${sp.systemType}, ${sp.combined ? 'combined with sprinklers' : 'standpipe only'}, ${sp.risers.length} standpipe(s)`,
+    `Demand                  : ${num(sp.demandFlowGpm, 0)} gpm, ${num(sp.topOutletResidualPsi, 0)} psi at the topmost outlet of the governing standpipe ${sp.governingRiserTag}`,
+    `Pressure at pump        : ${num(sp.pressureAtPumpDischargePsi, 1)} psi (pump centre-line at ${num(sp.pumpCLElevationM, 2)} m)`,
+    `Riser / supply main     : ${formatPipeSize(sp.riserSizeIn)} (minimum ${formatPipeSize(sp.minRiserSizeIn)}) / ${formatPipeSize(sp.supplyMainSizeIn)}`,
+    `Hose valve height       : ${sp.hoseValveHeightMm} mm above floor`,
+    `Building height         : ${num(sp.buildingHeightFt, 1)} ft above fire department access - ${sp.highRise ? 'HIGH-RISE (> 75 ft)' : 'not high-rise'}`,
+    '',
+    'Standpipe riser table:',
+    pad('Tag', 8) + pad('Location', 24) + lpad('Size', 6) + lpad('Outlets', 9) + lpad('Run m', 8) + lpad('Top el m', 10) + lpad('Req. psi', 10) + '  Roof  FCV floors'
+  );
+  for (const r of sp.risers) {
+    L.push(
+      pad(r.tag, 8) + pad(r.location, 24) + lpad(`${r.sizeIn}"`, 6) + lpad(String(r.outlets.length), 9) + lpad(num(r.horizontalRunToPumpM, 1), 8) +
+        lpad(num(r.topElevationM, 2), 10) + lpad(num(r.requiredPressureAtPumpPsi, 1), 10) + `  ${r.hasRoofOutlet ? 'yes ' : 'no  '}  ${r.floorControlValveFloors.length}`
+    );
+  }
+  L.push('', `Governing node calculation - ${sp.governingRiserTag}`);
+  L.push(...nodeTable(sp.rows));
+  L.push('', 'Floor-by-floor outlet table (top to bottom):');
+  L.push(pad('Standpipe', 11) + pad('Floor', 16) + lpad('Elev m', 9) + lpad('Size', 7) + lpad('Flow gpm', 10) + lpad('Static', 9) + lpad('Resid.', 9) + '  PRV');
+  for (const r of sp.risers) {
+    for (const o of [...r.outlets].reverse()) {
+      L.push(
+        pad(o.standpipeTag, 11) + pad(o.floorName, 16) + lpad(num(o.elevationM, 2), 9) + lpad(`${o.sizeIn}"`, 7) + lpad(num(o.flowGpm, 0), 10) +
+          lpad(num(o.staticPsi, 1), 9) + lpad(num(o.residualPsi, 1), 9) + `  ${o.prvRequired ? `PRV set ${o.prvSetPsi} psi` : '-'}`
+      );
+    }
+  }
+  L.push(
+    '',
+    `Fire department connection: ${sp.fdc.inlets} x ${sp.fdc.inletSizeIn}" inlets, ${sp.fdc.pipeSizeIn}" pipe, ${sp.fdc.heightAboveGradeMm} mm above grade, ${num(sp.fdc.distanceToHydrantM, 1)} m to hydrant`,
+    `Drains: ${sp.drainRiserIn ? `${sp.drainRiserIn}" drain riser at each standpipe with PRVs` : 'no drain riser (no PRVs)'}; ${sp.mainDrainIn}" main drain at the base of each riser`,
+    'Standpipe checks:'
+  );
+  for (const c of sp.checks) L.push(`   [${c.status.toUpperCase()}] ${pad(c.id, 22)} ${c.title} - ${c.detail}`);
+  return L;
+}
+
 /** Build the full text calculation report (project header, standards, hydraulics, pumps, tank, room, checks). */
 export function buildFireCalcReport(result: FireDesignResult): string {
   const { input, demand, pumps, tank, room } = result;
@@ -143,6 +185,8 @@ export function buildFireCalcReport(result: FireDesignResult): string {
     'Equipment:'
   );
   for (const q of room.equipment) L.push(`   ${pad(q.tag, 8)} ${q.label}  [x ${num(q.rect.x, 0)}, y ${num(q.rect.y, 0)}, ${num(q.rect.w, 0)} x ${num(q.rect.h, 0)}]`);
+
+  if (result.standpipe) L.push(...standpipeSection(result));
 
   L.push(...section('Design checks'));
   for (const c of result.checks) {

@@ -1,10 +1,10 @@
 /**
  * Default design input for the fire pump room & tank module (plan §3.4).
  */
-import { FireDesignInput } from './fpTypes';
+import { BuildingInput, FireDesignInput, FloorLevel, StandpipeDesignInput } from './fpTypes';
 
-/** Default project input: OH2 sprinklers, Class I standpipes, electric + diesel pumps, underground RC tank. */
-export const DEFAULT_FIRE_INPUT: FireDesignInput = {
+/** Simple project input (no building data): OH2 sprinklers, Class I standpipes, electric + diesel pumps, underground RC tank. */
+export const SIMPLE_FIRE_INPUT: FireDesignInput = {
   projectName: 'Fire Pump Room & Tank',
   projectNumber: 'FP-2026-001',
   designer: 'MEP Designer',
@@ -46,4 +46,47 @@ export const DEFAULT_FIRE_INPUT: FireDesignInput = {
   twoCompartments: true,
   tankFloorToPumpCLm: 0.5,
   refillFlowGpm: 250
+};
+
+const r3 = (v: number): number => Math.round(v * 1000) / 1000;
+
+function defaultFloors(): FloorLevel[] {
+  const floors: FloorLevel[] = [
+    { id: 'B1', name: 'Basement 1', elevationM: -4.0, floorToFloorM: 4.0, usage: 'Parking / Plant', areaM2: 1200, sprinklered: true, hoseConnection: true, isRoof: false },
+    { id: 'GF', name: 'Ground Floor', elevationM: 0.0, floorToFloorM: 4.5, usage: 'Lobby / Retail', areaM2: 1200, sprinklered: true, hoseConnection: true, isRoof: false }
+  ];
+  for (let n = 1; n <= 8; n++) {
+    floors.push({ id: `L${n}`, name: `Level ${n}`, elevationM: r3(4.5 + 3.6 * (n - 1)), floorToFloorM: 3.6, usage: 'Office', areaM2: 1200, sprinklered: true, hoseConnection: true, isRoof: false });
+  }
+  floors.push({ id: 'RF', name: 'Roof', elevationM: 33.3, floorToFloorM: 0, usage: 'Roof', areaM2: 1200, sprinklered: false, hoseConnection: false, isRoof: true });
+  return floors;
+}
+
+const DEFAULT_BUILDING: BuildingInput = {
+  floors: defaultFloors(),
+  pumpRoomFloorElevationM: -4.5,
+  roofSlopeLessThan4in12: true,
+  fireDeptAccessElevationM: 0
+};
+
+const DEFAULT_STANDPIPE_DESIGN: StandpipeDesignInput = {
+  systemType: 'automatic-wet',
+  combinedWithSprinklers: true,
+  locations: [
+    { tag: 'ST-1', location: 'Stair 1', horizontalRunToPumpM: 25, servesRoof: true },
+    { tag: 'ST-2', location: 'Stair 2', horizontalRunToPumpM: 40, servesRoof: false }
+  ],
+  riserSizeIn: undefined,
+  pipe: { schedule: 'sch40', c: 120 },
+  hoseValveHeightMm: 1200,
+  fdcDistanceToHydrantM: 20,
+  fdcInlets: undefined
+};
+
+/** Default project input: 11-level building with two Class I combined standpipes, 300 psi components. */
+export const DEFAULT_FIRE_INPUT: FireDesignInput = {
+  ...SIMPLE_FIRE_INPUT,
+  systemComponentRatingPsi: 300,
+  building: DEFAULT_BUILDING,
+  standpipeDesign: DEFAULT_STANDPIPE_DESIGN
 };

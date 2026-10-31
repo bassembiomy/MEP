@@ -26,3 +26,27 @@ export function standpipeResidualPsi(cls: StandpipeClass): number {
   if (cls === 'II') return 65;
   return 0;
 }
+
+/** Maximum working pressure anywhere in a standpipe system, psi (NFPA 14-2019 §7.2.1). */
+export const STANDPIPE_MAX_PRESSURE_PSI = 350;
+/** Static pressure above which a 2½" outlet needs a pressure-regulating device, psi (NFPA 14-2019 §7.2.3). */
+export const HOSE_OUTLET_STATIC_LIMIT_PSI = 175;
+/** Pressure limit at 1½" hose stations, psi (NFPA 14-2019 §7.2.3). */
+export const HOSE_1_5_LIMIT_PSI = 100;
+/** Maximum height of a standpipe zone, ft (NFPA 14-2019 §7.9). */
+export const MAX_ZONE_HEIGHT_FT = 275;
+/** High-rise threshold above fire department access, ft (IBC §202 / §403). */
+export const HIGH_RISE_FT = 75;
+/** Hose valve height range above the floor, mm (NFPA 14-2019 §7.3.1.1: 3 ft – 5 ft). */
+export const HOSE_VALVE_HEIGHT_RANGE_MM: [number, number] = [900, 1500];
+
+/** Minimum riser size, in (NFPA 14-2019 §7.6): Class II 2", combined with sprinklers 6", otherwise 4". */
+export function standpipeMinRiserSizeIn(cls: StandpipeClass, combined: boolean): number {
+  if (cls === 'II') return 2;
+  return combined ? 6 : 4;
+}
+
+/** Hose outlet size, in (NFPA 14-2019 §7.3.1): Class II 1½", Class I/III 2½". */
+export function standpipeOutletSizeIn(cls: StandpipeClass): number {
+  return cls === 'II' ? 1.5 : 2.5;
+}

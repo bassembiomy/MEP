@@ -117,6 +117,12 @@ export function cMultiplier(c: number): number {
 export function equivalentLengthFt(type: FittingType, nominalIn: number, c: number, schedule: PipeSchedule): number {
   const row = EQUIVALENT_LENGTH_FT[nominalIn];
   if (!row) throw new Error(`Unsupported nominal pipe size: ${nominalIn}"`);
+  if (type === 'angle-hose-valve') {
+    // 2½" angle hose valve: L/D = 150 (Crane TP-410), not in the NFPA 13 table
+    const id40 = internalDiameterIn(nominalIn, 'sch40');
+    const ratio = internalDiameterIn(nominalIn, schedule) / id40;
+    return ((150 * id40) / 12) * cMultiplier(c) * Math.pow(ratio, 4.87);
+  }
   const key: keyof EqRow = type === 'alarm-check' ? 'swing-check' : type;
   const base = row[key];
   if (base === null) throw new Error(`No equivalent length for ${type} at ${nominalIn}"`);
