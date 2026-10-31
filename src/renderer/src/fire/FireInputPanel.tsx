@@ -1,8 +1,13 @@
 import React, { useState } from 'react'
-import { ChevronDown, ChevronRight, RotateCcw } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { useFireProtectionStore } from '../store/fireProtectionStore'
 import type {
+  BuildingInput,
   FireDesignInput,
+  FloorLevel,
+  StandpipeDesignInput,
+  StandpipeLocation,
+  StandpipeSystemType,
   HazardClass,
   PipeRun,
   PipeSchedule,
@@ -13,6 +18,7 @@ import type {
   TankMaterial,
   TankPlacement
 } from '../engine/fireProtection/fpTypes'
+import { DEFAULT_FIRE_INPUT } from '../engine/fireProtection/defaults'
 import { NOMINAL_SIZES_IN, formatPipeSize } from '../engine/fireProtection/standards/pipeData'
 
 const inputCls =
@@ -276,9 +282,553 @@ const RunFields: React.FC<{
   </>
 )
 
+// ───────────────────────── Building & standpipe design ─────────────────────────
+
+const cellCls =
+  'w-full bg-neutral-950 border border-neutral-800 rounded px-1.5 py-0.5 text-[10px] text-neutral-200 font-mono focus:outline-none focus:border-red-600'
+
+/** Compact numeric table cell; tolerates blank / partial text (blank keeps the previous value). */
+const NumCell: React.FC<{
+  value: number
+  onChange: (v: number) => void
+  step?: number
+  min?: number
+  width?: string
+}> = ({ value, onChange, step, min, width }) => {
+  const [text, setText] = useState(String(value))
+  const [prev, setPrev] = useState(value)
+  if (value !== prev) {
+    setPrev(value)
+    if (parseFloat(text) !== value && text.trim() !== '') setText(String(value))
+  }
+  return (
+    <input
+      type="number"
+      inputMode="decimal"
+      value={text}
+      step={step}
+      min={min}
+      style={{ width }}
+      onChange={(e) => {
+        const t = e.target.value
+        setText(t)
+        const n = parseFloat(t)
+        if (t.trim() !== '' && Number.isFinite(n)) onChange(n)
+      }}
+      onBlur={() => {
+        if (text.trim() === '' || !Number.isFinite(parseFloat(text))) setText(String(value))
+      }}
+      className={cellCls}
+    />
+  )
+}
+
+const TextCell: React.FC<{ value: string; onChange: (v: string) => void; width?: string }> = ({
+  value,
+  onChange,
+  width
+}) => (
+  <input
+    type="text"
+    value={value}
+    style={{ width }}
+    onChange={(e) => onChange(e.target.value)}
+    className={cellCls}
+  />
+)
+
+const MiniTable: React.FC<{ head: string[]; children: React.ReactNode }> = ({ head, children }) => (
+  <div className="col-span-2 overflow-x-auto">
+    <table className="w-full text-left">
+      <thead>
+        <tr className="text-[8px] font-bold text-neutral-500 uppercase tracking-wide">
+          {head.map((h, i) => (
+            <th key={i} className="px-1 py-1 whitespace-nowrap">
+              {h}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>{children}</tbody>
+    </table>
+  </div>
+)
+
+const IconBtn: React.FC<{
+  title: string
+  onClick: () => void
+  disabled?: boolean
+  children: React.ReactNode
+}> = ({ title, onClick, disabled, children }) => (
+  <button
+    type="button"
+    title={title}
+    aria-label={title}
+    disabled={disabled}
+    onClick={onClick}
+    className="p-0.5 rounded text-neutral-500 hover:text-red-400 disabled:opacity-30 disabled:hover:text-neutral-500 cursor-pointer disabled:cursor-default"
+  >
+    {children}
+  </button>
+)
+
+const round3 = (v: number): number => Math.round(v * 1000) / 1000
+
+/** Rebuild the level elevations from floor-to-floor heights, anchored at the ground floor (the level nearest 0.000). */
+function recalcLevels(floors: FloorLevel[]): FloorLevel[] {
+  if (floors.length === 0) return floors
+  let a = 0
+  floors.forEach((fl, i) => {
+    if (Math.abs(fl.elevationM) < Math.abs(floors[a].elevationM)) a = i
+  })
+  const el = floors.map((fl) => fl.elevationM)
+  for (let i = a + 1; i < floors.length; i++)
+    el[i] = round3(el[i - 1] + floors[i - 1].floorToFloorM)
+  for (let i = a - 1; i >= 0; i--) el[i] = round3(el[i + 1] - floors[i].floorToFloorM)
+  return floors.map((fl, i) => ({ ...fl, elevationM: el[i] }))
+}
+
+interface GenParams {
+  basements: number
+  basementH: number
+  groundH: number
+  upper: number
+  typicalH: number
+}
+
+function generateFloors(g: GenParams, prev: FloorLevel[]): FloorLevel[] {
+  const area = prev.find((x) => x.isRoof)?.areaM2 ?? prev[0]?.areaM2 ?? 1000
+  const make = (
+    id: string,
+    name: string,
+    elevationM: number,
+    floorToFloorM: number,
+    usage: string,
+    isRoof = false
+  ): FloorLevel => ({
+    id,
+    name,
+    elevationM: round3(elevationM),
+    floorToFloorM,
+    usage,
+    areaM2: area,
+    sprinklered: !isRoof,
+    hoseConnection: !isRoof,
+    isRoof
+  })
+  const out: FloorLevel[] = []
+  for (let k = g.basements; k >= 1; k--)
+    out.push(make(`B${k}`, `Basement ${k}`, -k * g.basementH, g.basementH, 'Parking / Plant'))
+  out.push(make('GF', 'Ground Floor', 0, g.groundH, 'Lobby / Retail'))
+  for (let n = 1; n <= g.upper; n++)
+    out.push(make(`L${n}`, `Level ${n}`, g.groundH + (n - 1) * g.typicalH, g.typicalH, 'Office'))
+  out.push(make('RF', 'Roof', g.groundH + g.upper * g.typicalH, 0, 'Roof', true))
+  return out
+}
+
+function genFromFloors(floors: FloorLevel[]): GenParams {
+  const nonRoof = floors.filter((x) => !x.isRoof)
+  const base = nonRoof.filter((x) => x.elevationM < -1e-6)
+  const above = nonRoof.filter((x) => x.elevationM > 1e-6)
+  const gf = nonRoof.find((x) => Math.abs(x.elevationM) < 1e-6)
+  return {
+    basements: base.length,
+    basementH: base.length ? base[base.length - 1].floorToFloorM : 4,
+    groundH: gf?.floorToFloorM ?? 4.5,
+    upper: above.length,
+    typicalH: above.length ? above[above.length - 1].floorToFloorM : 3.6
+  }
+}
+
+const FloorGenerator: React.FC<{
+  floors: FloorLevel[]
+  onGenerate: (f: FloorLevel[]) => void
+}> = ({ floors, onGenerate }) => {
+  const [g, setG] = useState<GenParams>(() => genFromFloors(floors))
+  const upd = (p: Partial<GenParams>): void => setG({ ...g, ...p })
+  return (
+    <>
+      <div className="col-span-2 text-[10px] font-bold text-orange-500 uppercase">
+        Floor generator
+      </div>
+      <NumField
+        label="Basements (no.)"
+        value={g.basements}
+        min={0}
+        step={1}
+        onChange={(v) => v !== undefined && upd({ basements: Math.max(0, Math.round(v)) })}
+      />
+      <NumField
+        label="Basement height (m)"
+        value={g.basementH}
+        min={0.5}
+        step={0.1}
+        onChange={(v) => v !== undefined && v > 0 && upd({ basementH: v })}
+      />
+      <NumField
+        label="Ground floor height (m)"
+        value={g.groundH}
+        min={0.5}
+        step={0.1}
+        onChange={(v) => v !== undefined && v > 0 && upd({ groundH: v })}
+      />
+      <NumField
+        label="Upper floors (no.)"
+        value={g.upper}
+        min={0}
+        step={1}
+        onChange={(v) =>
+          v !== undefined && upd({ upper: Math.max(0, Math.min(200, Math.round(v))) })
+        }
+      />
+      <NumField
+        label="Typical floor height (m)"
+        value={g.typicalH}
+        min={0.5}
+        step={0.1}
+        onChange={(v) => v !== undefined && v > 0 && upd({ typicalH: v })}
+      />
+      <div className="flex items-end">
+        <button
+          type="button"
+          onClick={() => onGenerate(generateFloors(g, floors))}
+          className="w-full px-2 py-1 rounded-lg bg-red-600/90 hover:bg-red-600 text-white text-[10px] font-bold cursor-pointer"
+        >
+          Regenerate floors
+        </button>
+      </div>
+    </>
+  )
+}
+
+const BuildingSection: React.FC<{
+  building: BuildingInput
+  onChange: (b: BuildingInput) => void
+}> = ({ building, onChange }) => {
+  const floors = building.floors
+  const setFloors = (f: FloorLevel[]): void => onChange({ ...building, floors: f })
+  const patch = (i: number, p: Partial<FloorLevel>): void =>
+    setFloors(floors.map((fl, k) => (k === i ? { ...fl, ...p } : fl)))
+  const uniqueId = (): string => {
+    let n = floors.length + 1
+    while (floors.some((x) => x.id === `F${n}`)) n++
+    return `F${n}`
+  }
+  const newFloor = (elevationM: number): FloorLevel => ({
+    id: uniqueId(),
+    name: 'New floor',
+    elevationM,
+    floorToFloorM: 3.6,
+    usage: 'Office',
+    areaM2: floors.find((x) => !x.isRoof)?.areaM2 ?? 1000,
+    sprinklered: true,
+    hoseConnection: true,
+    isRoof: false
+  })
+  const addAbove = (i: number): void => {
+    const f = floors[i]
+    const next = [...floors]
+    next.splice(i + 1, 0, newFloor(round3(f.elevationM + f.floorToFloorM)))
+    setFloors(recalcLevels(next))
+  }
+  const addBelow = (i: number): void => {
+    const next = [...floors]
+    next.splice(i, 0, newFloor(round3(floors[i].elevationM - 3.6)))
+    setFloors(recalcLevels(next))
+  }
+  const remove = (i: number): void => setFloors(floors.filter((_, k) => k !== i))
+
+  return (
+    <>
+      <NumField
+        label="Pump room FFL (m)"
+        step={0.1}
+        value={building.pumpRoomFloorElevationM}
+        onChange={(v) => v !== undefined && onChange({ ...building, pumpRoomFloorElevationM: v })}
+      />
+      <NumField
+        label="FD access level (m)"
+        step={0.1}
+        value={building.fireDeptAccessElevationM}
+        onChange={(v) => v !== undefined && onChange({ ...building, fireDeptAccessElevationM: v })}
+      />
+      <Check
+        label="Roof slope < 4:12 (roof hose connection required)"
+        value={building.roofSlopeLessThan4in12}
+        onChange={(v) => onChange({ ...building, roofSlopeLessThan4in12: v })}
+      />
+      <FloorGenerator floors={floors} onGenerate={setFloors} />
+      <div className="col-span-2 flex items-center justify-between">
+        <span className="text-[10px] font-bold text-orange-500 uppercase">
+          Floors ({floors.length}, bottom to top)
+        </span>
+        <button
+          type="button"
+          onClick={() => setFloors(recalcLevels(floors))}
+          className="px-2 py-0.5 rounded-lg bg-neutral-950 border border-neutral-800 text-[10px] font-bold text-neutral-300 hover:text-red-400 cursor-pointer"
+        >
+          Recalculate levels from heights
+        </button>
+      </div>
+      <MiniTable head={['Name', 'FFL m', 'F-F m', 'Usage', 'Area m²', 'Spr', 'Hose', '']}>
+        {floors.map((fl, i) => (
+          <tr
+            key={fl.id}
+            className={`border-t border-neutral-850 ${fl.isRoof ? 'bg-neutral-950/60' : ''}`}
+          >
+            <td className="px-0.5 py-0.5">
+              <TextCell value={fl.name} width="84px" onChange={(v) => patch(i, { name: v })} />
+            </td>
+            <td className="px-0.5 py-0.5">
+              <NumCell
+                value={fl.elevationM}
+                step={0.1}
+                width="56px"
+                onChange={(v) => patch(i, { elevationM: v })}
+              />
+            </td>
+            <td className="px-0.5 py-0.5">
+              {fl.isRoof ? (
+                <span className="text-[10px] text-neutral-600 px-1">-</span>
+              ) : (
+                <NumCell
+                  value={fl.floorToFloorM}
+                  step={0.1}
+                  min={0}
+                  width="50px"
+                  onChange={(v) => patch(i, { floorToFloorM: v })}
+                />
+              )}
+            </td>
+            <td className="px-0.5 py-0.5">
+              <TextCell value={fl.usage} width="92px" onChange={(v) => patch(i, { usage: v })} />
+            </td>
+            <td className="px-0.5 py-0.5">
+              <NumCell
+                value={fl.areaM2}
+                min={0}
+                width="56px"
+                onChange={(v) => patch(i, { areaM2: v })}
+              />
+            </td>
+            <td className="px-1 py-0.5 text-center">
+              <input
+                type="checkbox"
+                aria-label={`${fl.name} sprinklered`}
+                checked={fl.sprinklered}
+                onChange={(e) => patch(i, { sprinklered: e.target.checked })}
+                className="accent-red-600"
+              />
+            </td>
+            <td className="px-1 py-0.5 text-center">
+              <input
+                type="checkbox"
+                aria-label={`${fl.name} hose connection`}
+                checked={fl.hoseConnection}
+                onChange={(e) => patch(i, { hoseConnection: e.target.checked })}
+                className="accent-red-600"
+              />
+            </td>
+            <td className="px-0.5 py-0.5 whitespace-nowrap">
+              {!fl.isRoof && (
+                <IconBtn title={`Add floor above ${fl.name}`} onClick={() => addAbove(i)}>
+                  <Plus size={11} className="rotate-0" />
+                </IconBtn>
+              )}
+              <IconBtn title={`Add floor below ${fl.name}`} onClick={() => addBelow(i)}>
+                <ChevronDown size={11} />
+              </IconBtn>
+              <IconBtn
+                title={`Delete ${fl.name}`}
+                disabled={fl.isRoof || floors.length <= 2}
+                onClick={() => remove(i)}
+              >
+                <Trash2 size={11} />
+              </IconBtn>
+            </td>
+          </tr>
+        ))}
+      </MiniTable>
+      <div className="col-span-2 text-[9px] text-neutral-600">
+        + adds a floor above the row, chevron adds one below (levels are recalculated); the roof row
+        is fixed last. Elevations are relative to the ground floor FFL.
+      </div>
+    </>
+  )
+}
+
+const SYSTEM_TYPES: { value: StandpipeSystemType; label: string }[] = [
+  { value: 'automatic-wet', label: 'Automatic wet' },
+  { value: 'automatic-dry', label: 'Automatic dry' },
+  { value: 'semiautomatic-dry', label: 'Semiautomatic dry' },
+  { value: 'manual-wet', label: 'Manual wet' },
+  { value: 'manual-dry', label: 'Manual dry' }
+]
+const RISER_OPTIONS = [
+  { value: 'auto', label: 'Auto (NFPA 14 §7.6)' },
+  { value: '4', label: '4 in' },
+  { value: '6', label: '6 in' },
+  { value: '8', label: '8 in' }
+]
+
+const StandpipeDesignSection: React.FC<{
+  design: StandpipeDesignInput
+  onChange: (d: StandpipeDesignInput) => void
+}> = ({ design, onChange }) => {
+  const locs = design.locations
+  const setLocs = (l: StandpipeLocation[]): void => onChange({ ...design, locations: l })
+  const patch = (i: number, p: Partial<StandpipeLocation>): void =>
+    setLocs(locs.map((l, k) => (k === i ? { ...l, ...p } : l)))
+  const addLoc = (): void => {
+    let n = locs.length + 1
+    while (locs.some((l) => l.tag === `ST-${n}`)) n++
+    setLocs([
+      ...locs,
+      { tag: `ST-${n}`, location: `Stair ${n}`, horizontalRunToPumpM: 30, servesRoof: false }
+    ])
+  }
+  const hv = design.hoseValveHeightMm
+  const hvBad = hv < 900 || hv > 1500
+  return (
+    <>
+      <div className="col-span-2">
+        <Select
+          label="System type"
+          value={design.systemType}
+          options={SYSTEM_TYPES}
+          onChange={(v) => onChange({ ...design, systemType: v })}
+        />
+      </div>
+      <Check
+        label="Combined with sprinklers"
+        value={design.combinedWithSprinklers}
+        onChange={(v) => onChange({ ...design, combinedWithSprinklers: v })}
+      />
+      <div className="col-span-2 text-[10px] font-bold text-orange-500 uppercase">
+        Standpipe locations ({locs.length})
+      </div>
+      <MiniTable head={['Tag', 'Location', 'Run m', 'Roof', '']}>
+        {locs.map((l, i) => (
+          <tr key={i} className="border-t border-neutral-850">
+            <td className="px-0.5 py-0.5">
+              <TextCell value={l.tag} width="52px" onChange={(v) => patch(i, { tag: v })} />
+            </td>
+            <td className="px-0.5 py-0.5">
+              <TextCell
+                value={l.location}
+                width="104px"
+                onChange={(v) => patch(i, { location: v })}
+              />
+            </td>
+            <td className="px-0.5 py-0.5">
+              <NumCell
+                value={l.horizontalRunToPumpM}
+                min={0}
+                width="52px"
+                onChange={(v) => patch(i, { horizontalRunToPumpM: v })}
+              />
+            </td>
+            <td className="px-1 py-0.5 text-center">
+              <input
+                type="checkbox"
+                aria-label={`${l.tag} serves roof`}
+                checked={l.servesRoof}
+                onChange={(e) => patch(i, { servesRoof: e.target.checked })}
+                className="accent-red-600"
+              />
+            </td>
+            <td className="px-0.5 py-0.5">
+              <IconBtn
+                title={`Remove ${l.tag}`}
+                disabled={locs.length <= 1}
+                onClick={() => setLocs(locs.filter((_, k) => k !== i))}
+              >
+                <Trash2 size={11} />
+              </IconBtn>
+            </td>
+          </tr>
+        ))}
+      </MiniTable>
+      <div className="col-span-2">
+        <button
+          type="button"
+          onClick={addLoc}
+          className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-neutral-950 border border-neutral-800 text-[10px] font-bold text-neutral-300 hover:text-red-400 cursor-pointer"
+        >
+          <Plus size={11} /> Add standpipe
+        </button>
+      </div>
+      <Select
+        label="Riser size"
+        value={design.riserSizeIn === undefined ? 'auto' : String(design.riserSizeIn)}
+        options={RISER_OPTIONS}
+        onChange={(v) => onChange({ ...design, riserSizeIn: v === 'auto' ? undefined : Number(v) })}
+      />
+      <Select
+        label="Schedule"
+        value={design.pipe.schedule}
+        options={SCHED_OPTIONS}
+        onChange={(v) => onChange({ ...design, pipe: { ...design.pipe, schedule: v } })}
+      />
+      <NumField
+        label="Hazen-Williams C"
+        value={design.pipe.c}
+        onChange={(v) =>
+          v !== undefined && v > 0 && onChange({ ...design, pipe: { ...design.pipe, c: v } })
+        }
+      />
+      <NumField
+        label="Hose valve height (mm)"
+        value={design.hoseValveHeightMm}
+        onChange={(v) => v !== undefined && onChange({ ...design, hoseValveHeightMm: v })}
+      />
+      {hvBad && (
+        <div className="col-span-2 text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2 py-1">
+          Hose valve height should be 900-1500 mm (3-5 ft) above the floor, NFPA 14 §7.3.1.1.
+        </div>
+      )}
+      <NumField
+        label="FDC to hydrant (m)"
+        min={0}
+        value={design.fdcDistanceToHydrantM}
+        onChange={(v) => v !== undefined && onChange({ ...design, fdcDistanceToHydrantM: v })}
+      />
+      <NumField
+        label="FDC inlets (override)"
+        optional
+        min={1}
+        step={1}
+        placeholder="Auto"
+        value={design.fdcInlets}
+        onChange={(v) =>
+          onChange({
+            ...design,
+            fdcInlets: v === undefined ? undefined : Math.max(1, Math.round(v))
+          })
+        }
+      />
+    </>
+  )
+}
+
 export const FireInputPanel: React.FC = () => {
   const { input, setInput, reset } = useFireProtectionStore()
   const set = (p: Partial<FireDesignInput>): void => setInput(p)
+  const detailed = !!(input.building && input.standpipeDesign)
+  const toggleDetailed = (on: boolean): void => {
+    if (!on) {
+      set({ building: undefined, standpipeDesign: undefined })
+      return
+    }
+    const b = DEFAULT_FIRE_INPUT.building
+    const d = DEFAULT_FIRE_INPUT.standpipeDesign
+    if (!b || !d) return
+    set({
+      building: structuredClone(b),
+      standpipeDesign: structuredClone(d),
+      standpipeCount: d.locations.length
+    })
+  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -411,29 +961,70 @@ export const FireInputPanel: React.FC = () => {
             onChange={(v) => set({ standpipeClass: v })}
           />
         </div>
-        <NumField
-          label="Standpipes (no.)"
-          value={input.standpipeCount}
-          min={1}
-          step={1}
-          onChange={(v) => v !== undefined && set({ standpipeCount: Math.round(v) })}
-        />
-        <NumField
-          label="Top outlet height (ft)"
-          value={input.standpipeTopOutletHeightFt}
-          onChange={(v) => v !== undefined && set({ standpipeTopOutletHeightFt: v })}
-        />
-        <NumField
-          label="Friction loss (psi)"
-          value={input.standpipeFrictionPsi}
-          onChange={(v) => v !== undefined && set({ standpipeFrictionPsi: v })}
-        />
+        {detailed ? (
+          <Label text="Standpipes (no.)" hint="From the locations table">
+            <input
+              type="text"
+              readOnly
+              value={String(input.standpipeDesign?.locations.length ?? 0)}
+              className={`${inputCls} opacity-60`}
+            />
+          </Label>
+        ) : (
+          <NumField
+            label="Standpipes (no.)"
+            value={input.standpipeCount}
+            min={1}
+            step={1}
+            onChange={(v) => v !== undefined && set({ standpipeCount: Math.round(v) })}
+          />
+        )}
+        {!detailed && (
+          <>
+            <NumField
+              label="Top outlet height (ft)"
+              value={input.standpipeTopOutletHeightFt}
+              onChange={(v) => v !== undefined && set({ standpipeTopOutletHeightFt: v })}
+            />
+            <NumField
+              label="Friction loss (psi)"
+              value={input.standpipeFrictionPsi}
+              onChange={(v) => v !== undefined && set({ standpipeFrictionPsi: v })}
+            />
+          </>
+        )}
         <Check
           label="Building fully sprinklered"
           value={input.buildingSprinklered}
           onChange={(v) => set({ buildingSprinklered: v })}
         />
       </Section>
+
+      <Section title="Building & Floors">
+        <Check
+          label="Detailed floor-by-floor standpipe design"
+          value={detailed}
+          onChange={toggleDetailed}
+        />
+        {input.building && (
+          <BuildingSection building={input.building} onChange={(b) => set({ building: b })} />
+        )}
+        {!input.building && (
+          <div className="col-span-2 text-[10px] text-neutral-500">
+            Enable the detailed design to enter floors, levels and standpipe locations. The simple
+            top-outlet height / friction inputs are used otherwise.
+          </div>
+        )}
+      </Section>
+
+      {input.standpipeDesign && (
+        <Section title="Standpipe Design">
+          <StandpipeDesignSection
+            design={input.standpipeDesign}
+            onChange={(d) => set({ standpipeDesign: d, standpipeCount: d.locations.length })}
+          />
+        </Section>
+      )}
 
       <Section title="Pump Set (NFPA 20)">
         <div className="col-span-2">

@@ -6,7 +6,8 @@ import { generateFireDrawings } from '../engine/fireProtection/drawing/sheets'
 import type { Drawing } from '../engine/fireProtection/drawing/drawingTypes'
 
 export type Discipline = 'hvac' | 'fire'
-export type FireView = 'drawings' | 'calc' | 'pumps' | 'tank' | 'room' | 'checks' | 'report'
+export type FireView =
+  'drawings' | 'calc' | 'standpipe' | 'pumps' | 'tank' | 'room' | 'checks' | 'report'
 
 interface Computed {
   result: FireDesignResult | null

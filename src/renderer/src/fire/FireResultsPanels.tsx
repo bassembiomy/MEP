@@ -32,11 +32,12 @@ const KV: React.FC<{ rows: [string, React.ReactNode][] }> = ({ rows }) => (
   </dl>
 )
 
-const Table: React.FC<{ head: string[]; rows: React.ReactNode[][]; dense?: boolean }> = ({
-  head,
-  rows,
-  dense
-}) => (
+const Table: React.FC<{
+  head: string[]
+  rows: React.ReactNode[][]
+  dense?: boolean
+  rowCls?: (i: number) => string
+}> = ({ head, rows, dense, rowCls }) => (
   <div className="overflow-x-auto">
     <table className={`w-full text-left ${dense ? 'text-[10px]' : 'text-xs'}`}>
       <thead>
@@ -50,7 +51,10 @@ const Table: React.FC<{ head: string[]; rows: React.ReactNode[][]; dense?: boole
       </thead>
       <tbody>
         {rows.map((r, i) => (
-          <tr key={i} className="border-b border-neutral-850 hover:bg-neutral-850/60">
+          <tr
+            key={i}
+            className={`border-b border-neutral-850 hover:bg-neutral-850/60 ${rowCls ? rowCls(i) : ''}`}
+          >
             {r.map((c, j) => (
               <td key={j} className="py-1.5 px-2 font-mono text-neutral-300 whitespace-nowrap">
                 {c}
@@ -160,6 +164,163 @@ export const HydraulicCalcPanel: React.FC<R> = ({ result }) => {
       </Card>
       <Card title="Hydraulic node calculation - sprinkler path to pump discharge">
         <Table head={nodeHead} rows={s.rows.map(nodeRow)} dense />
+      </Card>
+    </div>
+  )
+}
+
+// ───────────────────────── Standpipe (NFPA 14) ─────────────────────────
+
+export const StandpipePanel: React.FC<R> = ({ result }) => {
+  const sp = result.standpipe
+  if (!sp) {
+    return (
+      <Card title="Standpipe system (NFPA 14)">
+        <div className="text-xs text-neutral-400">
+          No detailed standpipe design. Enable{' '}
+          <strong>Detailed floor-by-floor standpipe design</strong> under{' '}
+          <em>Building &amp; Floors</em> in the input panel to enter the floors and standpipe
+          locations and calculate every riser node-to-node.
+        </div>
+      </Card>
+    )
+  }
+  const gov = sp.risers.find((r) => r.tag === sp.governingRiserTag)
+  const q = sp.demandFlowGpm
+  const p = sp.pressureAtPumpDischargePsi
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <Card title="Design basis">
+          <KV
+            rows={[
+              [
+                'Governing riser',
+                <span key="g" className="text-orange-400 font-bold">
+                  {sp.governingRiserTag}
+                </span>
+              ],
+              [
+                'Q @ P at pump',
+                <span key="q" className="text-orange-400 font-bold">
+                  {f(q, 0)} gpm @ {f(p, 1)} psi
+                </span>
+              ],
+              ['', `${f(gpmToLpm(q), 0)} L/min @ ${f(psiToBar(p), 1)} bar`],
+              ['System', `${sp.systemType}${sp.combined ? ' (combined)' : ''}`],
+              ['Class', sp.standpipeClass],
+              ['Top outlet residual', `${f(sp.topOutletResidualPsi, 0)} psi`]
+            ]}
+          />
+        </Card>
+        <Card title="Pipe sizes & building">
+          <KV
+            rows={[
+              [
+                'Riser size',
+                `${formatPipeSize(sp.riserSizeIn)} (min ${formatPipeSize(sp.minRiserSizeIn)})`
+              ],
+              ['Supply main', formatPipeSize(sp.supplyMainSizeIn)],
+              [
+                'Building height (above FD access)',
+                `${f(sp.buildingHeightFt, 1)} ft / ${f(sp.buildingHeightFt * 0.3048, 1)} m`
+              ],
+              ['High-rise (> 75 ft)', sp.highRise ? 'Yes' : 'No'],
+              ['Pump centre-line', `${f(sp.pumpCLElevationM, 2)} m`],
+              ['Hose valve height', `${f(sp.hoseValveHeightMm, 0)} mm`]
+            ]}
+          />
+        </Card>
+        <Card title="FDC & drains">
+          <KV
+            rows={[
+              ['FDC inlets', `${sp.fdc.inlets} x ${formatPipeSize(sp.fdc.inletSizeIn)}`],
+              ['FDC pipe', formatPipeSize(sp.fdc.pipeSizeIn)],
+              ['FDC height above grade', `${f(sp.fdc.heightAboveGradeMm, 0)} mm`],
+              ['Hydrant distance', `${f(sp.fdc.distanceToHydrantM, 1)} m`],
+              ['Drain riser', sp.drainRiserIn ? formatPipeSize(sp.drainRiserIn) : 'Not required'],
+              ['Main drain', formatPipeSize(sp.mainDrainIn)]
+            ]}
+          />
+        </Card>
+      </div>
+
+      {sp.risers.map((r) => (
+        <Card
+          key={r.tag}
+          title={`${r.tag} - ${r.location} (${formatPipeSize(r.sizeIn)} riser${r.tag === sp.governingRiserTag ? ', governing' : ''})`}
+        >
+          <div className="text-[10px] text-neutral-500 font-mono">
+            Base {f(r.bottomElevationM, 2)} m · top outlet {f(r.topElevationM, 2)} m · run to pump{' '}
+            {f(r.horizontalRunToPumpM, 1)} m · required at pump {f(r.requiredPressureAtPumpPsi, 1)}{' '}
+            psi ({f(psiToBar(r.requiredPressureAtPumpPsi), 1)} bar)
+            {r.floorControlValveFloors.length > 0 &&
+              ` · floor control valves on ${r.floorControlValveFloors.length} floors`}
+          </div>
+          <Table
+            dense
+            head={[
+              'Floor',
+              'FFL m',
+              'Outlet el. m',
+              'Size',
+              'Flowing gpm',
+              'Static psi',
+              'Residual psi',
+              'PRV',
+              'PRV set psi'
+            ]}
+            rows={[...r.outlets]
+              .reverse()
+              .map((o) => [
+                o.isRoofOutlet ? `${o.floorName} (roof)` : o.floorName,
+                f(o.elevationM - sp.hoseValveHeightMm / 1000, 2),
+                f(o.elevationM, 2),
+                formatPipeSize(o.sizeIn),
+                o.flowing ? f(o.flowGpm, 0) : '-',
+                f(o.staticPsi, 1),
+                f(o.residualPsi, 1),
+                o.prvRequired ? 'Yes' : '-',
+                o.prvSetPsi !== null ? f(o.prvSetPsi, 0) : '-'
+              ])}
+            rowCls={(i) => {
+              const o = [...r.outlets].reverse()[i]
+              if (o.prvRequired) return 'bg-amber-500/10 text-amber-300'
+              if (o.flowing) return 'bg-sky-500/10'
+              return ''
+            }}
+          />
+        </Card>
+      ))}
+      {gov && (
+        <div className="text-[10px] text-neutral-600 -mt-3">
+          Amber rows need a pressure-regulating device; blue rows are the flowing outlets of the
+          hydraulic design (top of the floors listed first).
+        </div>
+      )}
+
+      <Card title={`Hydraulic node calculation - ${sp.governingRiserTag} to pump discharge`}>
+        <Table head={nodeHead} rows={sp.rows.map(nodeRow)} dense />
+      </Card>
+
+      <Card title="Standpipe checks">
+        <div className="flex flex-col divide-y divide-neutral-850">
+          {sp.checks.length === 0 && (
+            <div className="text-xs text-neutral-500 py-2">No checks.</div>
+          )}
+          {sp.checks.map((c) => (
+            <div key={c.id} className="py-2.5 flex gap-3 items-start">
+              <div className="pt-0.5 w-16 shrink-0">
+                <StatusChip status={c.status} />
+              </div>
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <div className="text-xs font-semibold text-neutral-200">{c.title}</div>
+                <div className="text-[10px] text-orange-400/80 font-mono">{c.reference}</div>
+                <div className="text-[11px] text-neutral-400 leading-relaxed">{c.detail}</div>
+              </div>
+            </div>
+          ))}
+        </div>
       </Card>
     </div>
   )

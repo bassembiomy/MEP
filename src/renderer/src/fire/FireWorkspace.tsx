@@ -6,6 +6,7 @@ import {
   Cylinder,
   DraftingCompass,
   FileText,
+  Building2,
   Flame,
   Droplets,
   Warehouse
@@ -18,6 +19,7 @@ import {
   HydraulicCalcPanel,
   PumpRoomPanel,
   PumpsPanel,
+  StandpipePanel,
   ReportPanel,
   StatusChip,
   TankPanel
@@ -27,6 +29,7 @@ import { gpmToLpm, psiToBar } from '../engine/fireProtection/hydraulics'
 const TABS: { id: FireView; label: string; icon: React.ReactNode }[] = [
   { id: 'drawings', label: 'Drawings', icon: <DraftingCompass size={14} /> },
   { id: 'calc', label: 'Hydraulic Calc', icon: <Droplets size={14} /> },
+  { id: 'standpipe', label: 'Standpipe', icon: <Building2 size={14} /> },
   { id: 'pumps', label: 'Pumps', icon: <Cylinder size={14} /> },
   { id: 'tank', label: 'Tank & Sump', icon: <Warehouse size={14} /> },
   { id: 'room', label: 'Pump Room', icon: <BarChart3 size={14} /> },
@@ -58,7 +61,9 @@ export const FireWorkspace: React.FC = () => {
       const overall = failing > 0 ? 'fail' : warns > 0 ? 'warn' : 'pass'
       const t = result.tank
       return (
-        <div className="bg-neutral-900 border border-neutral-850 rounded-2xl p-5 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4 shadow-xl">
+        <div
+          className={`bg-neutral-900 border border-neutral-850 rounded-2xl p-5 grid grid-cols-2 md:grid-cols-4 ${result.standpipe ? 'xl:grid-cols-8' : 'xl:grid-cols-7'} gap-4 shadow-xl`}
+        >
           <Stat
             label="Pump rated"
             value={`${main.ratedFlowGpm.toFixed(0)} gpm @ ${main.ratedNetPressurePsi.toFixed(0)} psi`}
@@ -84,6 +89,19 @@ export const FireWorkspace: React.FC = () => {
             value={`${(result.room.lengthMm / 1000).toFixed(1)} x ${(result.room.widthMm / 1000).toFixed(1)} m`}
             sub={`H ${(result.room.clearHeightMm / 1000).toFixed(1)} m`}
           />
+          {result.standpipe &&
+            (() => {
+              const sp = result.standpipe
+              const gov = sp.risers.find((r) => r.tag === sp.governingRiserTag)
+              const prv = gov ? gov.outlets.filter((o) => o.prvRequired).length : 0
+              return (
+                <Stat
+                  label="Standpipe"
+                  value={`${sp.governingRiserTag} governs`}
+                  sub={`${prv} PRV/riser${sp.highRise ? ' · high-rise' : ''}`}
+                />
+              )
+            })()}
           <Stat label="Overall" value={<StatusChip status={overall} />} />
           <Stat
             label="Failing / warnings"
@@ -136,6 +154,7 @@ export const FireWorkspace: React.FC = () => {
             </div>
             {activeView === 'drawings' && <DrawingPreview />}
             {activeView === 'calc' && <HydraulicCalcPanel result={result} />}
+            {activeView === 'standpipe' && <StandpipePanel result={result} />}
             {activeView === 'pumps' && <PumpsPanel result={result} />}
             {activeView === 'tank' && <TankPanel result={result} />}
             {activeView === 'room' && <PumpRoomPanel result={result} />}
