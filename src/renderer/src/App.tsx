@@ -9,10 +9,14 @@ import { LoadSummaryPanel } from './panels/LoadSummaryPanel';
 import { AirDistributionSchedulePanel } from './panels/AirDistributionSchedulePanel';
 import { useProjectStore } from './store/projectStore';
 import Versions from './components/Versions';
-import { Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table, FileSpreadsheet } from 'lucide-react';
+import { useFireProtectionStore } from './store/fireProtectionStore';
+import { FireWorkspace } from './fire/FireWorkspace';
+import { Flame, Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table, FileSpreadsheet } from 'lucide-react';
 
 function App(): React.JSX.Element {
   const { project, setProject, activeTab, setActiveTab } = useProjectStore();
+  const { discipline, setDiscipline } = useFireProtectionStore();
+  const isFire = discipline === 'fire';
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans selection:bg-blue-600/30 selection:text-blue-200">
@@ -23,16 +27,45 @@ function App(): React.JSX.Element {
       {/* Main Header */}
       <header className="relative z-10 bg-neutral-900/60 backdrop-blur-md border-b border-neutral-850 px-8 py-4 flex flex-wrap justify-between items-center gap-4">
         <div className="flex items-center gap-3">
-          <div className="bg-gradient-to-tr from-blue-600 to-teal-500 p-2 rounded-xl shadow-lg shadow-blue-500/10">
-            <Wind size={20} className="text-white" />
+          <div
+            className={`bg-gradient-to-tr ${isFire ? 'from-red-600 to-orange-500 shadow-red-500/10' : 'from-blue-600 to-teal-500 shadow-blue-500/10'} p-2 rounded-xl shadow-lg`}
+          >
+            {isFire ? <Flame size={20} className="text-white" /> : <Wind size={20} className="text-white" />}
           </div>
           <div>
-            <h1 className="text-base font-bold tracking-wider text-neutral-100 uppercase">MEP HVAC Designer</h1>
-            <p className="text-[10px] text-neutral-500 font-medium">Deterministic System Optimizer & Aerodynamic Static Pressure Solver</p>
+            <h1 className="text-base font-bold tracking-wider text-neutral-100 uppercase">
+              {isFire ? 'MEP Fire Fighting Designer' : 'MEP HVAC Designer'}
+            </h1>
+            <p className="text-[10px] text-neutral-500 font-medium">
+              {isFire
+                ? 'NFPA 13 / 14 / 20 / 22 Fire Pump Room & Water Tank Design'
+                : 'Deterministic System Optimizer & Aerodynamic Static Pressure Solver'}
+            </p>
           </div>
         </div>
 
+        {/* Discipline switch */}
+        <div className="flex bg-neutral-950 border border-neutral-800 rounded-xl p-1 gap-1">
+          <button
+            onClick={() => setDiscipline('hvac')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all ${
+              !isFire ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-neutral-200'
+            }`}
+          >
+            <Wind size={14} /> HVAC
+          </button>
+          <button
+            onClick={() => setDiscipline('fire')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all ${
+              isFire ? 'bg-gradient-to-r from-red-600 to-orange-500 text-white' : 'text-neutral-400 hover:text-neutral-200'
+            }`}
+          >
+            <Flame size={14} /> Fire Fighting
+          </button>
+        </div>
+
         {/* Global Design Conditions */}
+        {!isFire && (
         <div className="flex flex-wrap gap-4 text-xs">
           <div className="flex flex-col">
             <span className="text-[9px] font-bold text-neutral-500 uppercase">Project Name</span>
@@ -70,9 +103,12 @@ function App(): React.JSX.Element {
             </div>
           </div>
         </div>
+        )}
       </header>
 
-      {/* Main Workspace Layout */}
+      {isFire ? (
+        <FireWorkspace />
+      ) : (
       <main className="relative z-10 flex-1 grid grid-cols-1 xl:grid-cols-4 gap-6 p-6">
         {/* Draw Board Workspace (Left Column - Spans 3/4) */}
         <div className="xl:col-span-3 flex flex-col gap-6">
@@ -184,6 +220,7 @@ function App(): React.JSX.Element {
           </div>
         </div>
       </main>
+      )}
     </div>
   );
 }
