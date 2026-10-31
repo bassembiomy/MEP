@@ -1,0 +1,459 @@
+/**
+ * Fire Protection (Fire Fighting) — Pump Room & Fire Water Tank Design
+ * ---------------------------------------------------------------------
+ * Shared type contract for the fire-protection engine, drawing kernel and UI.
+ *
+ * Unit conventions
+ *   - Hydraulics are computed in US customary units (gpm, psi, ft, in) because
+ *     NFPA 13/14/20/22 tables are published in those units. Every result that is
+ *     shown to the user also carries the SI equivalent (L/min, bar, m, mm).
+ *   - All drawing geometry is in millimetres (model space, 1 unit = 1 mm).
+ */
+
+// ─────────────────────────────── Enumerations ───────────────────────────────
+
+/** NFPA 13 occupancy hazard classification (NFPA 13-2022 §4.3). */
+export type HazardClass = 'light' | 'ordinary-1' | 'ordinary-2' | 'extra-1' | 'extra-2';
+
+/** NFPA 14 standpipe class (NFPA 14-2019 §5.3). */
+export type StandpipeClass = 'none' | 'I' | 'II' | 'III';
+
+export type PumpDriver = 'electric' | 'diesel';
+
+/** Fire pump configurations offered by the designer. */
+export type PumpArrangement =
+  | 'electric+diesel' // duty electric + standby diesel (recommended, no single power dependency)
+  | 'electric+electric' // duty + standby electric (requires reliable 2nd source / generator)
+  | 'diesel+diesel'
+  | 'electric-only'
+  | 'diesel-only';
+
+/** NFPA 20 pump types. Vertical turbine is the only type permitted with suction lift (NFPA 20 §7.1). */
+export type FirePumpType = 'horizontal-split-case' | 'end-suction' | 'vertical-inline' | 'vertical-turbine';
+
+export type TankMaterial = 'reinforced-concrete' | 'grp-sectional' | 'steel-bolted';
+
+export type TankPlacement = 'underground' | 'ground' | 'elevated-roof';
+
+export type PipeSchedule = 'sch40' | 'sch10';
+
+export type FittingType =
+  | 'elbow-90'
+  | 'elbow-45'
+  | 'long-turn-elbow-90'
+  | 'tee-branch' // tee or cross, flow turned 90°
+  | 'butterfly-valve'
+  | 'gate-valve'
+  | 'swing-check'
+  | 'alarm-check';
+
+export type CheckStatus = 'pass' | 'warn' | 'fail';
+
+// ─────────────────────────────── Inputs ───────────────────────────────
+
+export interface PipeSpec {
+  /** Nominal pipe size, inches (1, 1.25, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 8, 10, 12, 14, 16). */
+  nominalIn: number;
+  schedule: PipeSchedule;
+  /** Hazen-Williams C. NFPA 13 Table 28.2.4.8.1: black steel wet = 120, dry = 100, CPVC/copper/SS = 150. */
+  c: number;
+}
+
+export interface PipeRun {
+  pipe: PipeSpec;
+  lengthFt: number;
+  /** Positive = flow travels upward from the downstream (remote) end toward the source. */
+  elevationRiseFt: number;
+  fittings: Partial<Record<FittingType, number>>;
+}
+
+export interface FireDesignInput {
+  projectName: string;
+  projectNumber: string;
+  designer: string;
+
+  // ── Sprinkler system (NFPA 13 density/area method) ──
+  hazard: HazardClass;
+  /** Optional overrides; when undefined the NFPA 13 Fig. 19.3.3.1.1 curve design point is used. */
+  densityGpmFt2?: number;
+  designAreaFt2?: number;
+  sprinklerK: number; // K-factor gpm/psi^0.5 (5.6, 8.0, 11.2, 14.0, 16.8, 25.2)
+  /** Max coverage per sprinkler; undefined = NFPA 13 maximum for the hazard. */
+  sprinklerCoverageFt2?: number;
+  branchLinePipe: PipeSpec;
+  crossMainPipe: PipeSpec;
+  /** Riser from the floor cross-main down to the pump room floor (vertical). */
+  riser: PipeRun;
+  /** Horizontal feed / bulk main from the riser base to the pump discharge header. */
+  feedMain: PipeRun;
+  /** Inside hose stream allowance added to the pump flow (NFPA 13 Table 19.3.3.1.2). */
+  insideHoseGpm: number;
+  /** Total hose allowance (inside + outside) used for water storage; undefined = table value. */
+  totalHoseAllowanceGpm?: number;
+  /** Water supply duration, minutes; undefined = upper value of the NFPA 13 range. */
+  durationMin?: number;
+
+  // ── Standpipe system (NFPA 14) ──
+  standpipeClass: StandpipeClass;
+  standpipeCount: number;
+  buildingSprinklered: boolean;
+  /** Height from pump centre-line to the hydraulically most remote hose outlet, ft. */
+  standpipeTopOutletHeightFt: number;
+  /** Friction loss pump → most remote hose outlet at standpipe demand flow, psi. */
+  standpipeFrictionPsi: number;
+
+  // ── Pump set ──
+  arrangement: PumpArrangement;
+  pumpTypePreference: FirePumpType | 'auto';
+  /** Rated pressure of system components (175 psi standard, 300 psi high-pressure). */
+  systemComponentRatingPsi: number;
+  siteElevationFt: number; // for diesel derate
+  ambientTempF: number; // for diesel derate
+  electricalSupply: { voltage: number; phases: 3; hz: 50 | 60 };
+
+  // ── Water storage tank (NFPA 22) ──
+  tankMaterial: TankMaterial;
+  tankPlacement: TankPlacement;
+  /** Effective water depth above the tank floor (anti-vortex plate level), m. */
+  tankEffectiveDepthM: number;
+  /** Split the storage into two equal compartments with independent suction (maintenance). */
+  twoCompartments: boolean;
+  /** Elevation of the tank floor relative to the pump centre-line, m (negative = below pump). */
+  tankFloorToPumpCLm: number;
+  /** Available refill flow (city/well), gpm — NFPA 22 §14.1.1 requires refill within 8 h. */
+  refillFlowGpm: number;
+}
+
+// ─────────────────────────────── Hydraulic results ───────────────────────────────
+
+/** One row of an Elite/HASS style node-to-node hydraulic calculation report. */
+export interface HydraulicNodeRow {
+  fromNode: string;
+  toNode: string;
+  description: string;
+  kFactor?: number;
+  /** Flow discharged at the fromNode (sprinkler or branch line). */
+  flowAddedGpm: number;
+  /** Flow in the pipe segment fromNode → toNode. */
+  totalFlowGpm: number;
+  nominalIn: number;
+  idIn: number;
+  c: number;
+  lengthFt: number;
+  fittingsDesc: string;
+  fittingsEqFt: number;
+  totalLengthFt: number;
+  pfPerFt: number;
+  pfPsi: number;
+  elevationFt: number;
+  pePsi: number;
+  /** Total pressure at the fromNode (start of the segment). */
+  ptStartPsi: number;
+  /** Total pressure at the toNode (end of the segment) = start + Pf + Pe. */
+  ptEndPsi: number;
+  /** Velocity in the segment, ft/s. */
+  velocityFps: number;
+}
+
+export interface BranchLineResult {
+  headCount: number;
+  headFlowsGpm: number[];
+  headPressuresPsi: number[];
+  totalFlowGpm: number;
+  /** Pressure at the branch line inlet (junction with cross-main). */
+  inletPressurePsi: number;
+  /** Equivalent K of the whole line = Q / √P at inlet. */
+  equivalentK: number;
+  rows: HydraulicNodeRow[];
+}
+
+export interface SprinklerDemandResult {
+  densityGpmFt2: number;
+  designAreaFt2: number;
+  coverageFt2: number;
+  spacingFt: number; // S (along branch) = L (between branches)
+  sprinklersInArea: number;
+  headsPerBranch: number;
+  branchLines: number;
+  minHeadFlowGpm: number;
+  remoteHeadPressurePsi: number;
+  sprinklerFlowGpm: number;
+  /** Pressure required at the pump discharge flange for the sprinkler demand. */
+  pressureAtPumpDischargePsi: number;
+  rows: HydraulicNodeRow[];
+}
+
+export interface StandpipeDemandResult {
+  applicable: boolean;
+  flowGpm: number;
+  residualPressurePsi: number; // 100 psi Class I/III, 65 psi Class II
+  pressureAtPumpDischargePsi: number;
+  durationMin: number; // 30
+}
+
+export interface SystemDemand {
+  sprinkler: SprinklerDemandResult;
+  standpipe: StandpipeDemandResult;
+  hoseAllowanceInsideGpm: number;
+  hoseAllowanceTotalGpm: number;
+  durationMin: number;
+  /** Governing demand at the pump discharge flange. */
+  pumpDemandFlowGpm: number;
+  pumpDemandPressurePsi: number;
+  governingCase: 'sprinkler' | 'standpipe';
+  /** Required effective storage, US gal. */
+  requiredStorageGal: number;
+}
+
+// ─────────────────────────────── Pump selection ───────────────────────────────
+
+export interface PumpCurvePoint {
+  percentFlow: number;
+  flowGpm: number;
+  netPressurePsi: number;
+  bhp: number;
+  efficiency: number;
+}
+
+export interface PumpSizeTableRow {
+  ratedGpm: number;
+  suctionIn: number;
+  dischargeIn: number;
+  reliefValveIn: number;
+  reliefDischargeIn: number;
+  meterDeviceIn: number;
+  hoseValves: number; // number of 2½" hose valves on test header
+  hoseHeaderSupplyIn: number;
+}
+
+export interface FirePumpSelection {
+  tag: string; // FP-1, FP-2
+  driver: PumpDriver;
+  role: 'duty' | 'standby';
+  pumpType: FirePumpType;
+  ratedFlowGpm: number;
+  ratedNetPressurePsi: number;
+  ratedHeadFt: number;
+  speedRpm: number;
+  churnPressurePsi: number;
+  pressureAt150Psi: number;
+  curve: PumpCurvePoint[];
+  maxBhp: number;
+  /** Electric: NEMA motor nameplate HP. Diesel: listed engine HP after derate. */
+  driverHp: number;
+  driverKw: number;
+  dieselDeratePercent?: number;
+  fuelTankGal?: number;
+  fuelTankLiters?: number;
+  sizes: PumpSizeTableRow;
+  circulationReliefIn: number | null; // null when not required
+  controller: ControlPanelSpec;
+}
+
+export interface JockeyPumpSelection {
+  tag: string; // JP-1
+  ratedFlowGpm: number;
+  ratedNetPressurePsi: number;
+  motorHp: number;
+  pipeSizeIn: number;
+  controller: ControlPanelSpec;
+}
+
+export interface PressureSetpoints {
+  jockeyStopPsi: number;
+  jockeyStartPsi: number;
+  dutyStartPsi: number;
+  standbyStartPsi: number;
+  minRunTimerElectricMin: number; // 10
+  minRunTimerDieselMin: number; // 30
+}
+
+export interface ControlPanelSpec {
+  tag: string; // FPC-1, FPC-2, JPC-1, ATS-1
+  kind: 'electric-fire-pump-controller' | 'diesel-fire-pump-controller' | 'jockey-pump-controller' | 'transfer-switch';
+  description: string;
+  startingMethod?: string;
+  listing: string; // e.g. "UL 218 / FM 1321"
+  widthMm: number;
+  depthMm: number;
+  heightMm: number;
+  mounting: 'floor' | 'wall';
+}
+
+export interface ReliefValveSpec {
+  required: boolean;
+  sizeIn: number;
+  dischargeIn: number;
+  setPressurePsi: number;
+  reason: string;
+}
+
+export interface PumpSetSelection {
+  mainPumps: FirePumpSelection[];
+  jockey: JockeyPumpSelection;
+  setpoints: PressureSetpoints;
+  mainReliefValve: ReliefValveSpec;
+  suctionPressureMinPsi: number; // at 150 % flow, at low water level
+  maxStaticSuctionPsi: number;
+  suctionVelocityAt150Fps: number;
+  maxSystemPressurePsi: number; // churn + max static suction
+  testHeaderIn: number;
+  testHeaderHoseValves: number;
+  flowMeterIn: number;
+  checks: DesignCheck[];
+}
+
+// ─────────────────────────────── Tank ───────────────────────────────
+
+export interface SumpPitDesign {
+  suctionPipeIn: number;
+  suctionPipeOdMm: number;
+  vortexPlateMm: number; // square plate side (≥ 2D)
+  inletAboveSumpFloorMm: number; // D/2, min 150 mm
+  pitLengthMm: number;
+  pitWidthMm: number;
+  pitDepthMm: number; // below tank floor
+  /** Drop of the turned-down suction elbow: pipe CL → open end (≈ 1.0 × OD). */
+  elbowDropMm: number;
+  /** Horizontal distance from the inner face of the tank wall to the plate / inlet centre. */
+  plateCentreFromWallMm: number;
+  /** Suction pipe centre-line below the tank floor (= tankFloorToPumpCLm × 1000). */
+  suctionCLBelowTankFloorMm: number;
+}
+
+export interface TankDesign {
+  material: TankMaterial;
+  placement: TankPlacement;
+  requiredEffectiveGal: number;
+  requiredEffectiveM3: number;
+  providedEffectiveM3: number;
+  compartments: number;
+  /** Internal clear dimensions. */
+  internalLengthM: number;
+  internalWidthM: number;
+  effectiveDepthM: number;
+  freeboardM: number; // overflow invert → underside of roof
+  overflowAboveEffectiveM: number; // TWL margin between effective level and overflow
+  totalInternalHeightM: number;
+  wallThicknessMm: number;
+  floorThicknessMm: number;
+  roofThicknessMm: number;
+  /** Levels relative to tank internal floor (m). */
+  levels: { lowWaterM: number; effectiveTopM: number; overflowM: number; topWaterM: number; roofSoffitM: number };
+  sump: SumpPitDesign;
+  connections: { name: string; sizeIn: number; note: string }[];
+  materialSpec: string[];
+  refillHours: number;
+  checks: DesignCheck[];
+}
+
+// ─────────────────────────────── Pump room layout ───────────────────────────────
+
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface PlacedEquipment {
+  tag: string;
+  kind: 'fire-pump' | 'jockey-pump' | 'controller' | 'fuel-tank' | 'transfer-switch' | 'drain-pit';
+  /** Plan footprint in room coordinates (mm, origin = inner corner at tank-side wall, south). */
+  rect: Rect;
+  /** Concrete housekeeping pad (fire pumps only). */
+  pad?: Rect;
+  suctionNozzle?: { x: number; y: number; sizeIn: number };
+  dischargeNozzle?: { x: number; y: number; sizeIn: number };
+  label: string;
+}
+
+export interface PipeSegment2D {
+  id: string;
+  service: 'suction' | 'discharge' | 'test' | 'relief' | 'jockey' | 'drain' | 'sensing' | 'fuel' | 'exhaust';
+  sizeIn: number;
+  points: [number, number][];
+}
+
+export type ValveKind =
+  | 'os&y-gate'
+  | 'butterfly'
+  | 'check'
+  | 'relief'
+  | 'circulation-relief'
+  | 'flow-meter'
+  | 'pressure-gauge'
+  | 'eccentric-reducer'
+  | 'concentric-increaser'
+  | 'hose-valve'
+  | 'ball-valve'
+  | 'flexible-coupling'
+  | 'tamper-switch';
+
+export interface PlacedValve {
+  tag: string;
+  kind: ValveKind;
+  sizeIn: number;
+  x: number;
+  y: number;
+  /** Direction of the pipe run through the valve, degrees (0 = +x). */
+  angleDeg: number;
+  service: PipeSegment2D['service'];
+}
+
+export interface TrenchDesign {
+  widthMm: number;
+  depthStartMm: number;
+  depthEndMm: number;
+  slopePercent: number;
+  lengthMm: number;
+  path: [number, number][];
+  capacityGpm: number;
+  designInflowGpm: number;
+  grating: string;
+  outlet: { x: number; y: number; pitMm: number; drainIn: number };
+}
+
+export interface PumpRoomLayout {
+  /** Internal clear room size. */
+  lengthMm: number; // along x (away from tank wall)
+  widthMm: number; // along y
+  clearHeightMm: number;
+  wallThicknessMm: number;
+  fireRatingHours: 1 | 2;
+  equipment: PlacedEquipment[];
+  pipes: PipeSegment2D[];
+  valves: PlacedValve[];
+  trench: TrenchDesign;
+  doors: { x: number; y: number; widthMm: number; wall: 'east' | 'north' | 'south' }[];
+  louvers: { x: number; y: number; widthMm: number; wall: 'east' | 'north' | 'south'; purpose: string }[];
+  /** Elevations in metres relative to pump-room finished floor level (FFL ±0.00). */
+  elevations: { roomFloorM: number; padTopM: number; pumpCLM: number; tankFloorM: number; highLevelPipeM: number; roofSoffitM: number };
+  /** Y coordinate (room mm) of the suction centre-line of each main pump, in mainPumps order. */
+  suctionLineY: number[];
+  /** X coordinate (room mm) of the discharge header centre-line. */
+  headerX: number;
+  /** Point where the system discharge main leaves the room. */
+  systemOutlet: { x: number; y: number; sizeIn: number };
+  checks: DesignCheck[];
+}
+
+// ─────────────────────────────── Checks & aggregate ───────────────────────────────
+
+export interface DesignCheck {
+  id: string;
+  title: string;
+  reference: string; // e.g. "NFPA 20-2022 §4.14.3.1"
+  status: CheckStatus;
+  detail: string;
+}
+
+export interface FireDesignResult {
+  input: FireDesignInput;
+  demand: SystemDemand;
+  pumps: PumpSetSelection;
+  tank: TankDesign;
+  room: PumpRoomLayout;
+  checks: DesignCheck[]; // all checks concatenated
+  standardsReferences: { code: string; edition: string; scope: string }[];
+}
