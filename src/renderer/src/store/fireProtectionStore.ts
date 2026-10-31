@@ -1,13 +1,14 @@
 import { create } from 'zustand'
 import type { FireDesignInput, FireDesignResult } from '../engine/fireProtection/fpTypes'
 import { DEFAULT_FIRE_INPUT } from '../engine/fireProtection/defaults'
+import { LEARNING_EXAMPLE_INPUT } from '../engine/fireProtection/learningExample'
 import { designFireProtectionSystem } from '../engine/fireProtection/fireProtectionEngine'
 import { generateFireDrawings } from '../engine/fireProtection/drawing/sheets'
 import type { Drawing } from '../engine/fireProtection/drawing/drawingTypes'
 
 export type Discipline = 'hvac' | 'fire'
 export type FireView =
-  'drawings' | 'calc' | 'standpipe' | 'pumps' | 'tank' | 'room' | 'checks' | 'report'
+  'learning' | 'drawings' | 'calc' | 'standpipe' | 'pumps' | 'tank' | 'room' | 'checks' | 'report'
 
 interface Computed {
   result: FireDesignResult | null
@@ -35,6 +36,11 @@ interface FireProtectionState extends Computed {
   setActiveView: (v: FireView) => void
   setActiveSheet: (i: number) => void
   reset: () => void
+  /** Learning tab: current tutorial step (0-based). */
+  learningStep: number
+  setLearningStep: (i: number) => void
+  /** Replace the current design with the learning example project. */
+  loadLearningExample: () => void
 }
 
 export const useFireProtectionStore = create<FireProtectionState>((set, get) => ({
@@ -57,5 +63,9 @@ export const useFireProtectionStore = create<FireProtectionState>((set, get) => 
   },
   setActiveView: (activeView) => set({ activeView }),
   setActiveSheet: (activeSheet) => set({ activeSheet }),
-  reset: () => set({ input: DEFAULT_FIRE_INPUT, ...compute(DEFAULT_FIRE_INPUT), activeSheet: 0 })
+  reset: () => set({ input: DEFAULT_FIRE_INPUT, ...compute(DEFAULT_FIRE_INPUT), activeSheet: 0 }),
+  learningStep: 0,
+  setLearningStep: (learningStep) => set({ learningStep }),
+  loadLearningExample: () =>
+    set({ input: LEARNING_EXAMPLE_INPUT, ...compute(LEARNING_EXAMPLE_INPUT), activeSheet: 0 })
 }))

@@ -9,11 +9,13 @@ import {
   Building2,
   Flame,
   Droplets,
+  GraduationCap,
   Warehouse
 } from 'lucide-react'
 import { useFireProtectionStore, type FireView } from '../store/fireProtectionStore'
 import { FireInputPanel } from './FireInputPanel'
 import { DrawingPreview } from './DrawingPreview'
+import { LearningPanel } from './LearningPanel'
 import {
   ChecksPanel,
   HydraulicCalcPanel,
@@ -27,6 +29,7 @@ import {
 import { gpmToLpm, psiToBar } from '../engine/fireProtection/hydraulics'
 
 const TABS: { id: FireView; label: string; icon: React.ReactNode }[] = [
+  { id: 'learning', label: 'Learning', icon: <GraduationCap size={14} /> },
   { id: 'drawings', label: 'Drawings', icon: <DraftingCompass size={14} /> },
   { id: 'calc', label: 'Hydraulic Calc', icon: <Droplets size={14} /> },
   { id: 'standpipe', label: 'Standpipe', icon: <Building2 size={14} /> },
@@ -152,6 +155,7 @@ export const FireWorkspace: React.FC = () => {
                 </button>
               ))}
             </div>
+            {activeView === 'learning' && <LearningPanel />}
             {activeView === 'drawings' && <DrawingPreview />}
             {activeView === 'calc' && <HydraulicCalcPanel result={result} />}
             {activeView === 'standpipe' && <StandpipePanel result={result} />}
