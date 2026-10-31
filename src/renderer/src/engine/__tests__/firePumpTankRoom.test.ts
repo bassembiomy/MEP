@@ -8,7 +8,7 @@ import { designPumpRoom } from '../fireProtection/pumpRoomDesigner';
 import { designFireProtectionSystem } from '../fireProtection/fireProtectionEngine';
 import { buildFireCalcReport } from '../fireProtection/report';
 import { calculateSystemDemand } from '../fireProtection/hydraulics';
-import { DEFAULT_FIRE_INPUT } from '../fireProtection/defaults';
+import { SIMPLE_FIRE_INPUT as DEFAULT_FIRE_INPUT } from '../fireProtection/defaults';
 import { FireDesignInput, Rect, DesignCheck } from '../fireProtection/fpTypes';
 
 function assert(condition: boolean, message: string): void {

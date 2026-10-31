@@ -35,10 +35,12 @@ const drawing = generateFireDrawings(result);
 // 1. Sheets
 {
   const nums = drawing.sheets.map((s) => s.number);
-  assert(JSON.stringify(nums) === JSON.stringify(['FP-101', 'FP-102', 'FP-103', 'FP-104', 'FP-105']), `sheet numbers ${nums}`);
+  const expected = ['FP-101', 'FP-102', 'FP-103', 'FP-104', 'FP-105', ...(result.standpipe ? ['FP-106', 'FP-107'] : [])];
+  assert(result.standpipe !== null, 'default design includes the standpipe system');
+  assert(JSON.stringify(nums) === JSON.stringify(expected), `sheet numbers ${nums}`);
   for (const s of drawing.sheets) {
     assert(s.paper === 'A1' && s.paperWidthMm === 841 && s.paperHeightMm === 594, `${s.number} A1`);
-    assert([1, 10, 20, 25, 50, 75, 100].includes(s.scale), `${s.number} standard scale, got ${s.scale}`);
+    assert([1, 10, 20, 25, 50, 75, 100, 150, 200, 250, 500].includes(s.scale), `${s.number} standard scale, got ${s.scale}`);
   }
   for (let i = 1; i < drawing.sheets.length; i++) {
     const a = frameOf(drawing.sheets[i - 1]);
@@ -46,7 +48,7 @@ const drawing = generateFireDrawings(result);
     assert(b.x0 >= a.x1, `sheet ${drawing.sheets[i].number} does not overlap previous`);
   }
   assert(drawing.sheets[0].scale <= 50, `plan scale ≤ 1:50 for readability, got 1:${drawing.sheets[0].scale}`);
-  console.log(`✓ 5 A1 sheets, scales ${drawing.sheets.map((s) => '1:' + s.scale).join(', ')}`);
+  console.log(`✓ ${drawing.sheets.length} A1 sheets, scales ${drawing.sheets.map((s) => '1:' + s.scale).join(', ')}`);
 }
 
 // 2. Containment: every entity lies entirely inside exactly one sheet frame
@@ -98,6 +100,21 @@ const drawing = generateFireDrawings(result);
   assert(texts.some((t) => t.includes(lv(result.room.elevations.tankFloorM + result.tank.levels.topWaterM))), 'TWL level value shown');
   // Hydraulic table rows
   for (const r of result.demand.sprinkler.rows.slice(-3)) assert(texts.includes(r.toNode), `calc table node ${r.toNode}`);
+  // Standpipe sheets (FP-106 riser elevation every floor, FP-107 side view / details / floor schedule)
+  const sp = result.standpipe!;
+  for (const s of ['STANDPIPE RISER DIAGRAM', 'TYPICAL FLOOR CONNECTION', 'SIDE VIEW', 'FLOOR SCHEDULE', 'FIRE DEPARTMENT CONNECTION', 'FLOOR CONTROL VALVE', 'AUTOMATIC AIR RELEASE', 'DRAIN RISER', 'PRV', 'TO FLOOR SPRINKLERS', 'FLOWING', 'STANDPIPE NOTES', 'NFPA 14', 'STANDPIPE HYDRAULIC CALCULATION']) {
+    assert(has(s), `standpipe drawing text contains "${s}"`);
+  }
+  for (const f of DEFAULT_FIRE_INPUT.building!.floors) {
+    assert(texts.filter((t) => t.toUpperCase().includes(f.name.toUpperCase())).length >= 2, `floor ${f.name} on riser diagram and schedule`);
+    const mark = f.elevationM === 0 ? '%%p0.000' : lv(f.elevationM);
+    assert(texts.some((t) => t.includes(mark)), `level mark ${mark} for ${f.name}`);
+  }
+  for (const r of sp.risers) assert(texts.some((t) => t.includes(r.tag)), `riser ${r.tag} labelled`);
+  for (const r of sp.rows) assert(texts.includes(r.fromNode), `standpipe calc node ${r.fromNode}`);
+  const prvCount = sp.risers.reduce((n, r) => n + r.outlets.filter((o) => o.prvRequired).length, 0);
+  assert(texts.filter((t) => /PRV SET 175 PSI/i.test(t)).length >= prvCount, `≥ ${prvCount} PRV labels on the riser diagram`);
+  assert(dims.includes(String(DEFAULT_FIRE_INPUT.standpipeDesign!.hoseValveHeightMm)), 'hose valve height dimensioned');
   console.log('✓ annotations, dimensions, levels, tables');
 }
 
@@ -123,7 +140,7 @@ const drawing = generateFireDrawings(result);
     { arrangement: 'diesel+diesel' as const, tankMaterial: 'steel-bolted' as const }
   ]) {
     const d = generateFireDrawings(designFireProtectionSystem({ ...DEFAULT_FIRE_INPUT, ...v }));
-    assert(d.sheets.length === 5 && d.entities.length > 1000, `variant ${JSON.stringify(v)} generates`);
+    assert(d.sheets.length >= 5 && d.entities.length > 1000, `variant ${JSON.stringify(v)} generates`);
     const frames = d.sheets.map(frameOf);
     for (const e of d.entities) {
       const pts = entityPoints(e);

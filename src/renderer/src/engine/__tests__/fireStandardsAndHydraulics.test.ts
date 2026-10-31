@@ -26,7 +26,7 @@ import {
 } from '../fireProtection/standards/nfpa20';
 import { internalDiameterIn, outsideDiameterMm, formatPipeSize, nextLargerSize } from '../fireProtection/standards/pipeData';
 import { STANDARDS_REFERENCES } from '../fireProtection/standards/codeReferences';
-import { DEFAULT_FIRE_INPUT } from '../fireProtection/defaults';
+import { SIMPLE_FIRE_INPUT as DEFAULT_FIRE_INPUT } from '../fireProtection/defaults';
 import { FireDesignInput } from '../fireProtection/fpTypes';
 
 function assert(condition: boolean, message: string): void {

@@ -45,11 +45,66 @@ export type FittingType =
   | 'butterfly-valve'
   | 'gate-valve'
   | 'swing-check'
-  | 'alarm-check';
+  | 'alarm-check'
+  /** 2½" angle hose valve — equivalent length L/D = 150 (Crane TP-410), not in NFPA 13 table. */
+  | 'angle-hose-valve';
+
+/** NFPA 14-2019 §3.3.20 / §5.4 standpipe system types. */
+export type StandpipeSystemType = 'automatic-wet' | 'automatic-dry' | 'semiautomatic-dry' | 'manual-wet' | 'manual-dry';
 
 export type CheckStatus = 'pass' | 'warn' | 'fail';
 
 // ─────────────────────────────── Inputs ───────────────────────────────
+
+/** One building level. Elevations in metres relative to ground-floor FFL (±0.000). */
+export interface FloorLevel {
+  id: string;
+  name: string; // "B1", "Ground Floor", "Level 1", "Roof"
+  elevationM: number; // finished floor level
+  floorToFloorM: number; // height to the next level (roof: parapet / 0)
+  usage: string; // occupancy description (for the floor schedule)
+  areaM2: number;
+  sprinklered: boolean;
+  /** Hose connection at this level's main stair landing (NFPA 14 §7.3.2.1). */
+  hoseConnection: boolean;
+  isRoof: boolean;
+}
+
+export interface StandpipeLocation {
+  tag: string; // ST-1
+  location: string; // "Stair 1 (north core)"
+  /** Horizontal run from the riser base to the pump room discharge header, m. */
+  horizontalRunToPumpM: number;
+  /** The stair served by this standpipe gives access to the roof (roof outlet placed here, NFPA 14 §7.3.2.2). */
+  servesRoof: boolean;
+}
+
+export interface BuildingInput {
+  /** Ordered bottom → top; exactly one `isRoof` level, last. */
+  floors: FloorLevel[];
+  /** Pump-room FFL relative to ground-floor FFL, m (basement pump room → negative). */
+  pumpRoomFloorElevationM: number;
+  /** Roof slope < 4 in 12 → roof hose connection required (NFPA 14 §7.3.2.2). */
+  roofSlopeLessThan4in12: boolean;
+  /** Lowest level of fire-department vehicle access, m (IBC §202 high-rise definition, 75 ft). */
+  fireDeptAccessElevationM: number;
+}
+
+export interface StandpipeDesignInput {
+  systemType: StandpipeSystemType;
+  /** Standpipes also supply the floor sprinkler systems (combined system, NFPA 14 §3.3.20.1). */
+  combinedWithSprinklers: boolean;
+  locations: StandpipeLocation[];
+  /** Override riser size (in); undefined = NFPA 14 §7.6 minimum. */
+  riserSizeIn?: number;
+  pipe: { schedule: PipeSchedule; c: number };
+  /** Hose valve centre above landing, mm — NFPA 14 §7.3.1.1 requires 900–1500 mm (3–5 ft). */
+  hoseValveHeightMm: number;
+  /** Distance from the fire department connection to the nearest hydrant, m (NFPA 14 §6.4.5 / IFC §912: ≤ 30.5 m). */
+  fdcDistanceToHydrantM: number;
+  /** Override number of 2½" FDC inlets; undefined = ⌈demand / 250 gpm⌉, min 2. */
+  fdcInlets?: number;
+}
 
 export interface PipeSpec {
   /** Nominal pipe size, inches (1, 1.25, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 8, 10, 12, 14, 16). */
@@ -122,6 +177,12 @@ export interface FireDesignInput {
   tankFloorToPumpCLm: number;
   /** Available refill flow (city/well), gpm — NFPA 22 §14.1.1 requires refill within 8 h. */
   refillFlowGpm: number;
+
+  // ── Building & detailed standpipe design (optional; when both are present the standpipe is
+  //    calculated node-to-node per floor and replaces standpipeTopOutletHeightFt / standpipeFrictionPsi,
+  //    and the sprinkler riser rise/length is derived from the top sprinklered floor) ──
+  building?: BuildingInput;
+  standpipeDesign?: StandpipeDesignInput;
 }
 
 // ─────────────────────────────── Hydraulic results ───────────────────────────────
@@ -189,6 +250,66 @@ export interface StandpipeDemandResult {
   residualPressurePsi: number; // 100 psi Class I/III, 65 psi Class II
   pressureAtPumpDischargePsi: number;
   durationMin: number; // 30
+}
+
+export interface StandpipeOutlet {
+  standpipeTag: string;
+  floorId: string;
+  floorName: string;
+  /** Hose valve centre elevation (m, relative to ground FFL). */
+  elevationM: number;
+  sizeIn: number; // 2.5 or 1.5
+  isRoofOutlet: boolean;
+  /** Flowing in the hydraulic design (two topmost outlets of the governing standpipe). */
+  flowing: boolean;
+  flowGpm: number;
+  /** Static pressure with pumps at churn + max static suction, psi. */
+  staticPsi: number;
+  /** Residual pressure available at the outlet with the system at demand flow, psi. */
+  residualPsi: number;
+  prvRequired: boolean;
+  /** Outlet pressure setting of the pressure-regulating device, psi (175 for 2½", 100 for 1½"). */
+  prvSetPsi: number | null;
+}
+
+export interface StandpipeRiserDesign {
+  tag: string;
+  location: string;
+  sizeIn: number;
+  bottomElevationM: number; // riser base (lowest floor FFL)
+  topElevationM: number; // highest outlet elevation
+  horizontalRunToPumpM: number;
+  hasRoofOutlet: boolean;
+  outlets: StandpipeOutlet[]; // ordered bottom → top
+  /** Floor ids with a floor control valve assembly (combined systems, sprinklered floors). */
+  floorControlValveFloors: string[];
+  /** Pressure required at the pump discharge if this riser were the remote one, psi. */
+  requiredPressureAtPumpPsi: number;
+}
+
+export interface StandpipeSystemDesign {
+  applicable: boolean;
+  systemType: StandpipeSystemType;
+  standpipeClass: StandpipeClass;
+  combined: boolean;
+  riserSizeIn: number;
+  minRiserSizeIn: number;
+  supplyMainSizeIn: number;
+  risers: StandpipeRiserDesign[];
+  governingRiserTag: string;
+  demandFlowGpm: number;
+  topOutletResidualPsi: number; // 100 (I/III) or 65 (II)
+  pressureAtPumpDischargePsi: number;
+  /** Governing riser node-to-node calculation (H → S… → SB → PD). */
+  rows: HydraulicNodeRow[];
+  pumpCLElevationM: number; // absolute (relative to ground FFL)
+  buildingHeightFt: number; // highest occupied floor above FD access
+  highRise: boolean; // > 75 ft (IBC §202)
+  fdc: { inlets: number; inletSizeIn: number; pipeSizeIn: number; heightAboveGradeMm: number; distanceToHydrantM: number };
+  drainRiserIn: number | null; // 3" when PRVs are installed
+  mainDrainIn: number; // 2"
+  hoseValveHeightMm: number;
+  checks: DesignCheck[];
 }
 
 export interface SystemDemand {
@@ -454,6 +575,8 @@ export interface FireDesignResult {
   pumps: PumpSetSelection;
   tank: TankDesign;
   room: PumpRoomLayout;
+  /** Present when input.building and input.standpipeDesign are given and standpipeClass !== 'none'. */
+  standpipe: StandpipeSystemDesign | null;
   checks: DesignCheck[]; // all checks concatenated
   standardsReferences: { code: string; edition: string; scope: string }[];
 }
