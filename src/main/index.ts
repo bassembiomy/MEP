@@ -4,6 +4,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import * as fs from 'fs'
 import * as XLSX from 'xlsx'
+import { exportDwg, findDwgConverter } from './dwgExport'
 
 interface DecorativeUnit {
   spaceName: string
@@ -231,6 +232,24 @@ app.whenReady().then(() => {
     }
 
     return result
+  })
+
+  // DWG export: which converter is installed (ODA File Converter / AutoCAD / LibreDWG)
+  ipcMain.handle('cad:dwg-converter', async () => findDwgConverter())
+
+  // DWG export: ask for a file name, then convert the application's DXF with the installed converter
+  ipcMain.handle('cad:export-dwg', async (event, payload: { dxf: string; suggestedName: string }) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const converter = findDwgConverter()
+    if (!converter) return await exportDwg(payload.dxf, '', null)
+    const opts = {
+      title: 'Export DWG',
+      defaultPath: payload.suggestedName.replace(/\.dwg$/i, '') + '.dwg',
+      filters: [{ name: 'AutoCAD Drawing', extensions: ['dwg'] }]
+    }
+    const res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (res.canceled || !res.filePath) return { ok: false, error: 'cancelled' }
+    return await exportDwg(payload.dxf, res.filePath, converter)
   })
 
   ipcMain.handle('hvac:load-catalogs-custom', async (_, type: 'decorative' | 'ducted') => {

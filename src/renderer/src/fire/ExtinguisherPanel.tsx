@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react'
+import React, { useMemo, useState } from 'react'
 import { Download } from 'lucide-react'
 import type {
   DesignCheck,
@@ -17,6 +17,7 @@ import {
   scheduleRows
 } from './extinguisherReportHtml'
 import { downloadText, safeFileName } from './download'
+import { exportDwgFromApp, type DwgExportStatus } from './dwgExport'
 
 const HAZARD_LABEL = {
   light: 'Light (Low) Hazard',
@@ -86,6 +87,7 @@ const btnCls = 'flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-
 
 export const ExtinguisherPanel: React.FC<{ result: FireDesignResult }> = ({ result }) => {
   const drawing = useFireProtectionStore((s) => s.drawing)
+  const [dwg, setDwg] = useState<DwgExportStatus | null>(null)
   const fe = result.extinguishers
   const rows = useMemo(() => (fe ? scheduleRows(fe) : []), [fe])
 
@@ -120,6 +122,16 @@ export const ExtinguisherPanel: React.FC<{ result: FireDesignResult }> = ({ resu
       `FP_Extinguishers_${base}.dxf`,
       writeDxf(subsetDrawing(drawing, nums)),
       'application/dxf'
+    )
+  }
+
+  const exportDwg = async (): Promise<void> => {
+    if (!drawing) return
+    const nums = extinguisherSheetNumbers(drawing)
+    if (nums.length === 0) return
+    setDwg({ ok: true, message: 'Converting to DWG...' })
+    setDwg(
+      await exportDwgFromApp(writeDxf(subsetDrawing(drawing, nums)), `FP_Extinguishers_${base}.dwg`)
     )
   }
 
@@ -161,7 +173,21 @@ export const ExtinguisherPanel: React.FC<{ result: FireDesignResult }> = ({ resu
           >
             <Download size={13} /> Extinguisher drawings (.dxf)
           </button>
+          <button
+            onClick={exportDwg}
+            disabled={!drawing}
+            className={`${btnCls} bg-neutral-100 text-neutral-900 hover:bg-white`}
+          >
+            <Download size={13} /> Extinguisher drawings (.dwg)
+          </button>
         </div>
+        {dwg && (
+          <div
+            className={`mt-3 text-[11px] rounded-lg px-3 py-2 border ${dwg.ok ? 'border-emerald-800 text-emerald-300 bg-emerald-950/30' : 'border-amber-800 text-amber-200 bg-amber-950/30'}`}
+          >
+            {dwg.message}
+          </div>
+        )}
       </Card>
 
       {fe.zones.map((z) => {

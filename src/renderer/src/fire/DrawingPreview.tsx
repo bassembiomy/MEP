@@ -5,6 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { renderSvg } from '../engine/fireProtection/drawing/svgRenderer'
 import { writeDxf } from '../engine/fireProtection/drawing/dxfWriter'
 import { downloadText, safeFileName } from './download'
+import { exportDwgFromApp, type DwgExportStatus } from './dwgExport'
 
 const BASE_WIDTH = 1200
 
@@ -38,13 +39,18 @@ export const DrawingPreview: React.FC = () => {
   const [rasterW, setRasterW] = useState(BASE_WIDTH)
   const rasterRef = useRef(BASE_WIDTH)
   const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null)
+  const [dwg, setDwg] = useState<DwgExportStatus | null>(null)
+  const [dwgBusy, setDwgBusy] = useState(false)
   const frame = useRef(0)
   const settle = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // The SVG is shown as an <img> (rasterised once, GPU-composited) instead of thousands of live DOM nodes.
   // A data: URL is used because the app's Content-Security-Policy (img-src 'self' data:) blocks blob:
   // images when the renderer is loaded from file:// in the packaged Electron app.
-  const imgUrl = useMemo(() => (svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}` : ''), [svg])
+  const imgUrl = useMemo(
+    () => (svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}` : ''),
+    [svg]
+  )
 
   const apply = useCallback(() => {
     frame.current = 0
@@ -162,7 +168,26 @@ export const DrawingPreview: React.FC = () => {
         >
           <Download size={13} /> Export DXF
         </button>
+        <button
+          disabled={dwgBusy}
+          onClick={async () => {
+            setDwgBusy(true)
+            setDwg({ ok: true, message: 'Converting to DWG...' })
+            setDwg(await exportDwgFromApp(writeDxf(drawing), `FP_${base}.dwg`))
+            setDwgBusy(false)
+          }}
+          className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-neutral-100 text-neutral-900 hover:bg-white cursor-pointer disabled:opacity-50"
+        >
+          <Download size={13} /> Export DWG
+        </button>
       </div>
+      {dwg && (
+        <div
+          className={`text-[11px] rounded-lg px-3 py-2 border ${dwg.ok ? 'border-emerald-800 text-emerald-300 bg-emerald-950/30' : 'border-amber-800 text-amber-200 bg-amber-950/30'}`}
+        >
+          {dwg.message}
+        </div>
+      )}
       {sheet && (
         <div className="text-[10px] text-neutral-500">
           {sheet.number} - {sheet.title} | {sheet.paper} | 1:{sheet.scale} | scroll to zoom, drag to

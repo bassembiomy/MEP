@@ -10,6 +10,11 @@ declare global {
         errors: string[]
       }>
       selectCustomCatalog: (type: 'decorative' | 'ducted') => Promise<any>
+      dwgConverter?: () => Promise<{ kind: 'oda' | 'autocad' | 'libredwg'; path: string } | null>
+      exportDwg?: (
+        dxf: string,
+        suggestedName: string
+      ) => Promise<{ ok: boolean; converter?: string; converterPath?: string; outputPath?: string; error?: string }>
     }
   }
 }
