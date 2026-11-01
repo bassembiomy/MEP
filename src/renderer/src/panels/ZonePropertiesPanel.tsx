@@ -32,7 +32,7 @@ export const ZonePropertiesPanel: React.FC = () => {
 
   if (!selectedZone) {
     return (
-      <div className="flex flex-col items-center justify-center bg-neutral-900 border border-neutral-800 p-8 rounded-2xl w-80 text-center backdrop-blur-md">
+      <div className="flex flex-col items-center justify-center bg-neutral-900 border border-neutral-800 p-8 rounded-2xl w-full text-center backdrop-blur-md">
         <Settings size={28} className="text-neutral-600 animate-pulse" />
         <p className="text-sm font-medium text-neutral-400 mt-3">No Zone Selected</p>
         <p className="text-xs text-neutral-600 mt-1 max-w-[200px]">
@@ -296,7 +296,7 @@ export const ZonePropertiesPanel: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col gap-5 bg-neutral-900 border border-neutral-800 p-5 rounded-2xl w-80 max-h-[85vh] overflow-y-auto backdrop-blur-md shadow-2xl">
+    <div className="flex flex-col gap-5 bg-neutral-900 border border-neutral-800 p-5 rounded-2xl w-full max-h-[85vh] overflow-y-auto backdrop-blur-md shadow-2xl">
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b border-neutral-800 pb-3">
         <div className="flex items-center gap-2">

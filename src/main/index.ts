@@ -151,9 +151,12 @@ function parseDuctedFile(filePath: string): DuctedUnit[] {
 
 function createWindow(): void {
   // Create the browser window.
+  // The engineering workspaces need room: open large (maximised) with a sensible minimum size.
   const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width: 1600,
+    height: 1000,
+    minWidth: 1280,
+    minHeight: 760,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -164,6 +167,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
+    mainWindow.maximize()
     mainWindow.show()
   })
 

@@ -30,6 +30,22 @@ export const FloorPlanCanvas: React.FC = () => {
   } = useProjectStore();
 
   const stageRef = useRef<Konva.Stage>(null);
+  // The Konva stage is sized to its container (was a fixed 900 × 500 px that overflowed smaller panels).
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [stageSize, setStageSize] = useState<{ width: number; height: number }>({ width: 900, height: 500 });
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => {
+      const width = Math.max(200, Math.floor(el.clientWidth));
+      const height = Math.max(200, Math.floor(el.clientHeight));
+      setStageSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const [mousePos, setMousePos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [stageScale, setStageScale] = useState<number>(1);
   const [stagePos, setStagePos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -55,8 +71,8 @@ export const FloorPlanCanvas: React.FC = () => {
 
   // Fit view to entire design
   const handleFitDesign = useCallback(() => {
-    const stageWidth = 900;
-    const stageHeight = 500;
+    const stageWidth = stageSize.width;
+    const stageHeight = stageSize.height;
 
     if (dxfBoundingBox) {
       const dxfWidth = dxfBoundingBox.maxX - dxfBoundingBox.minX;
@@ -115,7 +131,7 @@ export const FloorPlanCanvas: React.FC = () => {
         y: stageHeight / 2 - centerY * newScale
       });
     }
-  }, [dxfBoundingBox, zones]);
+  }, [dxfBoundingBox, zones, stageSize]);
 
   // Fit view to selected zone
   const handleFitSelection = useCallback(() => {
@@ -125,8 +141,8 @@ export const FloorPlanCanvas: React.FC = () => {
       return;
     }
 
-    const stageWidth = 900;
-    const stageHeight = 500;
+    const stageWidth = stageSize.width;
+    const stageHeight = stageSize.height;
 
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     const numPoints = selectedZone.points.length / 2;
@@ -154,7 +170,7 @@ export const FloorPlanCanvas: React.FC = () => {
       x: stageWidth / 2 - centerX * newScale,
       y: stageHeight / 2 - centerY * newScale
     });
-  }, [selectedZoneId, zones, handleFitDesign]);
+  }, [selectedZoneId, zones, handleFitDesign, stageSize]);
 
   const hasAutoFittedRef = useRef<boolean>(false);
 
@@ -303,8 +319,8 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   const handleZoomBtn = (factor: number) => {
-    const stageWidth = 900;
-    const stageHeight = 500;
+    const stageWidth = stageSize.width;
+    const stageHeight = stageSize.height;
     const centerPoint = {
       x: (stageWidth / 2 - stagePos.x) / stageScale,
       y: (stageHeight / 2 - stagePos.y) / stageScale
@@ -434,11 +450,12 @@ export const FloorPlanCanvas: React.FC = () => {
   const isPanActive = drawMode === 'pan' || isSpacePressed;
 
   return (
-    <div className="relative w-full h-[65vh] bg-[#0c0c0c] border border-neutral-800 rounded-3xl overflow-hidden shadow-inner flex flex-col">
+    <div ref={containerRef} className="relative w-full h-[65vh] bg-[#0c0c0c] border border-neutral-800 rounded-3xl overflow-hidden shadow-inner flex flex-col">
+      <div className="absolute inset-0">
       <Stage
         ref={stageRef}
-        width={900}
-        height={500}
+        width={stageSize.width}
+        height={stageSize.height}
         scaleX={stageScale}
         scaleY={stageScale}
         x={stagePos.x}
@@ -1332,6 +1349,7 @@ export const FloorPlanCanvas: React.FC = () => {
           )}
         </Layer>
       </Stage>
+      </div>
 
       {/* Top HUD Info Overlay */}
       <div className="absolute top-4 left-4 flex items-center gap-2">

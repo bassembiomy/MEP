@@ -114,12 +114,12 @@ function App(): React.JSX.Element {
         </ErrorBoundary>
       ) : (
       <ErrorBoundary area="HVAC workspace">
-      <main className="relative z-10 flex-1 grid grid-cols-1 xl:grid-cols-4 gap-6 p-6">
+      <main className="relative z-10 flex-1 grid grid-cols-1 2xl:grid-cols-4 gap-6 p-6">
         {/* Draw Board Workspace (Left Column - Spans 3/4) */}
-        <div className="xl:col-span-3 flex flex-col gap-6">
+        <div className="2xl:col-span-3 min-w-0 flex flex-col gap-6">
           <div className="flex gap-4 items-start">
             <Toolbar />
-            <div className="flex-1 flex flex-col gap-4">
+            <div className="flex-1 min-w-0 flex flex-col gap-4">
               <FloorPlanCanvas />
               {/* Short Tip banner */}
               <div className="bg-neutral-900/40 border border-neutral-850 px-4 py-3 rounded-2xl flex items-center gap-2.5 text-xs text-neutral-400">
@@ -132,7 +132,7 @@ function App(): React.JSX.Element {
           </div>
 
           {/* Lower Workspace Tab Selector */}
-          <div className="flex items-center gap-2 border-b border-neutral-850 pb-2">
+          <div className="flex flex-wrap items-center gap-2 border-b border-neutral-850 pb-2">
             <button
               onClick={() => setActiveTab('optimizer')}
               className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
