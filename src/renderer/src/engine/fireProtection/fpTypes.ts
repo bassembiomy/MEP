@@ -230,6 +230,15 @@ export interface FireDesignInput {
   building?: BuildingInput;
   standpipeDesign?: StandpipeDesignInput;
 
+  /**
+   * Explicit pump set (replaces `arrangement` when present): number of electric-motor centrifugal fire pumps,
+   * diesel-engine centrifugal fire pumps (main pumps 1–4 in total; the first is duty, the rest standby — electric
+   * pumps first) and jockey (pressure-maintenance) pumps 1–2.
+   */
+  pumpCounts?: { electric: number; diesel: number; jockey: number };
+  /** Fire water tank personnel access: roof manholes with internal ladders ('top', default) or bolted side manways ('side'). */
+  tankAccess?: 'top' | 'side';
+
   /** Portable fire extinguisher design (NFPA 10). Optional; when absent result.extinguishers is null. */
   extinguishers?: ExtinguisherDesignInput;
 }
@@ -548,7 +557,10 @@ export interface ReliefValveSpec {
 
 export interface PumpSetSelection {
   mainPumps: FirePumpSelection[];
+  /** First jockey pump (kept for compatibility) — same object as jockeys[0]. */
   jockey: JockeyPumpSelection;
+  /** All jockey pumps (1–2): JP-1 duty, JP-2 standby. */
+  jockeys: JockeyPumpSelection[];
   setpoints: PressureSetpoints;
   mainReliefValve: ReliefValveSpec;
   suctionPressureMinPsi: number; // at 150 % flow, at low water level
@@ -602,6 +614,7 @@ export interface TankDesign {
   connections: { name: string; sizeIn: number; note: string }[];
   materialSpec: string[];
   refillHours: number;
+  access: TankAccessDesign;
   checks: DesignCheck[];
 }
 
@@ -646,7 +659,9 @@ export type ValveKind =
   | 'hose-valve'
   | 'ball-valve'
   | 'flexible-coupling'
-  | 'tamper-switch';
+  | 'tamper-switch'
+  /** NFPA 20 sensing-line check valve with 3/32" orifice in the clapper. */
+  | 'sensing-check';
 
 export interface PlacedValve {
   tag: string;
@@ -672,6 +687,65 @@ export interface TrenchDesign {
   outlet: { x: number; y: number; pitMm: number; drainIn: number };
 }
 
+/** A pipe passing through a wall: puddle flange in the water-retaining tank wall, sleeve + seal elsewhere. */
+export interface WallPenetration {
+  tag: string; // PF-01 (puddle flange) / WS-01 (wall sleeve)
+  service: PipeSegment2D['service'];
+  sizeIn: number;
+  /** 'west' = common wall with the fire water tank. */
+  wall: 'west' | 'north' | 'south' | 'east';
+  /** Centre of the penetration on the wall centre-line (room coordinates, mm). */
+  x: number;
+  y: number;
+  /** Pipe centre-line elevation above pump-room FFL, m. */
+  elevationM: number;
+  kind: 'puddle-flange' | 'sleeve-seal';
+  /** Puddle flange outside diameter = pipe OD + 200 mm (rounded up to 10 mm); 0 for sleeves. */
+  puddleFlangeOdMm: number;
+  /** Sleeve inside diameter = pipe OD + 50 mm (rounded up to 10 mm); 0 for puddle flanges. */
+  sleeveIdMm: number;
+  note: string;
+}
+
+/** NFPA 20 pressure sensing line: one per controller, ½" brass / copper / SS, two check valves with 3/32" orifice ≥ 1.5 m apart. */
+export interface SensingLine {
+  pumpTag: string; // FP-1 / JP-1
+  controllerTag: string; // FPC-1 / JPC-1
+  sizeIn: number; // 0.5
+  material: string;
+  /** From the tap (between the pump discharge check valve and the discharge isolation valve) to the controller. */
+  points: [number, number][];
+  checkValves: { x: number; y: number }[]; // exactly 2
+  checkValveSpacingMm: number; // along the line, ≥ 1500
+  lengthMm: number;
+}
+
+/** Pump-room drainage sump pit with duplex submersible sump pumps (IPC §712). */
+export interface DrainageSumpDesign {
+  required: boolean; // pump-room floor below grade → pumped; at grade → gravity drain
+  tag: string; // DS-1
+  rect: Rect; // pit plan (room coordinates)
+  pitDepthMm: number;
+  inflowGpm: number;
+  pumps: { tag: string; flowGpm: number; headFt: number; motorHp: number; type: string }[]; // SP-1 duty, SP-2 standby
+  dischargeSizeIn: number;
+  /** Levels above pit floor, mm: pumps off, lead on, lag on, high-level alarm. */
+  levels: { offMm: number; leadOnMm: number; lagOnMm: number; alarmMm: number };
+  workingVolumeGal: number;
+  cycleMinutes: number;
+  dischargeTo: string;
+  controls: string[];
+  checks: DesignCheck[];
+}
+
+export interface TankAccessDesign {
+  kind: 'top' | 'side';
+  /** One per compartment; tank-internal coordinates (mm) from the internal corner at the pump-room wall / south. */
+  openings: { compartment: number; x: number; y: number; sizeMm: number; label: string }[];
+  ladder: 'internal' | 'none';
+  note: string;
+}
+
 export interface PumpRoomLayout {
   /** Internal clear room size. */
   lengthMm: number; // along x (away from tank wall)
@@ -693,6 +767,9 @@ export interface PumpRoomLayout {
   headerX: number;
   /** Point where the system discharge main leaves the room. */
   systemOutlet: { x: number; y: number; sizeIn: number };
+  penetrations: WallPenetration[];
+  sensingLines: SensingLine[];
+  drainageSump: DrainageSumpDesign;
   checks: DesignCheck[];
 }
 

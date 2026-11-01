@@ -38,7 +38,8 @@ const drawing = generateFireDrawings(result);
   const expected = [
     'FP-101', 'FP-102', 'FP-103', 'FP-104', 'FP-105',
     ...(result.standpipe ? ['FP-106', 'FP-107'] : []),
-    ...(result.extinguishers ? ['FP-108', 'FP-109'] : [])
+    ...(result.extinguishers ? ['FP-108', 'FP-109'] : []),
+    'FP-110'
   ];
   assert(result.extinguishers !== null, 'default design includes portable extinguishers');
   assert(result.standpipe !== null, 'default design includes the standpipe system');
