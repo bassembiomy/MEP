@@ -42,16 +42,9 @@ export const DrawingPreview: React.FC = () => {
   const settle = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // The SVG is shown as an <img> (rasterised once, GPU-composited) instead of thousands of live DOM nodes.
-  const imgUrl = useMemo(
-    () => (svg ? URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' })) : ''),
-    [svg]
-  )
-  useEffect(
-    () => () => {
-      if (imgUrl) URL.revokeObjectURL(imgUrl)
-    },
-    [imgUrl]
-  )
+  // A data: URL is used because the app's Content-Security-Policy (img-src 'self' data:) blocks blob:
+  // images when the renderer is loaded from file:// in the packaged Electron app.
+  const imgUrl = useMemo(() => (svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}` : ''), [svg])
 
   const apply = useCallback(() => {
     frame.current = 0
