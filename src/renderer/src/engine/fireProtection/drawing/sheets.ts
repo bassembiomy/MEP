@@ -11,6 +11,7 @@ import { drawSectionSheet, pickSectionScale } from './sheetSection';
 import { drawTankSheet, pickTankScale } from './sheetTank';
 import { drawSchematicSheet } from './sheetSchematic';
 import { drawScheduleSheet } from './sheetSchedules';
+import { drawPumpRoomDetailsSheet } from './sheetPumpRoomDetails';
 import { drawStandpipeDetailSheet } from './sheetStandpipeDetail';
 import { drawStandpipeRiserSheet, pickStandpipeScale } from './sheetStandpipe';
 import { drawExtinguisherDetailSheet, drawExtinguisherLayoutSheet, extinguisherSheetNumber, planExtinguisherLayout } from './sheetExtinguishers';
@@ -75,5 +76,7 @@ export function generateFireDrawings(result: FireDesignResult): Drawing {
     const s9 = add('FP-109', 'EXTINGUISHER DETAILS, SCHEDULE & SPECIFICATIONS', 20);
     drawExtinguisherDetailSheet(frame(s9, '1:20 (DETAILS)', feStandards));
   }
+  const s10 = add('FP-110', 'PUMP ROOM DETAILS - PUDDLE FLANGE, SLEEVE, SENSING LINE, SUMP & TRENCH', 20);
+  drawPumpRoomDetailsSheet(frame(s10, '1:10 / 1:20 (DETAILS)'));
   return b.build(sheets);
 }

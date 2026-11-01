@@ -58,7 +58,8 @@ const KIND_NAME: Record<ValveKind, string> = {
   'hose-valve': 'HOSE VALVE 2-1/2" (TEST HEADER)',
   'ball-valve': 'BALL VALVE',
   'flexible-coupling': 'FLEXIBLE COUPLING',
-  'tamper-switch': 'TAMPER SWITCH (VALVE SUPERVISION)'
+  'tamper-switch': 'TAMPER SWITCH (VALVE SUPERVISION)',
+  'sensing-check': 'SENSING-LINE CHECK VALVE, 3/32" ORIFICE'
 };
 export const valveKindName = (k: ValveKind): string => KIND_NAME[k];
 
@@ -105,6 +106,13 @@ export function drawValveSymbol(c: Ctx, v: PlacedValve, x: number, y: number): n
     case 'flexible-coupling':
       flexibleCoupling(b, x, y, a, d);
       break;
+    case 'sensing-check': {
+      // 1/2" line: symbol enlarged to stay readable, with the 3/32" orifice dot on the clapper
+      const ds = Math.max(d, 220);
+      checkValve(b, x, y, a, ds);
+      b.circle('FP-VALV', x, y, 0.07 * ds);
+      return 1.25 * ds;
+    }
     case 'tamper-switch': {
       // limit switch box on the valve yoke
       const w = 0.32 * d;
@@ -129,7 +137,7 @@ export function drawPlanSheet(c: Ctx): void {
   const L = room.lengthMm;
   const W = room.widthMm;
   const wW = westWallMm(r);
-  const wT = 250;
+  const wT = room.wallThicknessMm;
   const tl = tankLayout(r);
   const yMin = Math.min(-wT, tl.yLo - tl.tw);
   const yMax = Math.max(W + wT, tl.yHi + tl.tw);
@@ -165,6 +173,12 @@ export function drawPlanSheet(c: Ctx): void {
       if (Math.abs(q[1] + wT) < 2) holesSouth.push([q[0] - h, q[0] + h]);
       if (Math.abs(q[1] - (W + wT)) < 2) holesNorth.push([q[0] - h, q[0] + h]);
     }
+  }
+  for (const pen of room.penetrations) {
+    const half = (pen.kind === 'puddle-flange' ? pipeDia(pen.sizeIn) : pen.sleeveIdMm + 120) / 2;
+    if (pen.wall === 'west') holesWest.push([pen.y - half, pen.y + half]);
+    else if (pen.wall === 'south') holesSouth.push([pen.x - half, pen.x + half]);
+    else if (pen.wall === 'north') holesNorth.push([pen.x - half, pen.x + half]);
   }
   // door / louvres: shift along the wall to clear pipe openings
   const clear = (x0: number, w: number, holes: [number, number][], lo: number, hi: number): number => {
