@@ -30,12 +30,12 @@ export function drawSchematicSheet(c: Ctx): void {
   const size = (n: number): string => formatPipeSize(n);
 
   const nMain = pumps.mainPumps.length;
-  const rowY = [235, 370];
+  const rowY = nMain <= 1 ? [235] : nMain === 2 ? [235, 370] : Array.from({ length: nMain }, (_, k) => 225 + (k * 190) / (nMain - 1));
   const yJ = 480;
   const yT = 120;
   const xHdr = 440;
   const xPump = 230;
-  const sideOf = [-1, 1]; // tags / labels below (-1) for FP-1, above (+1) for FP-2
+  const sideOf = Array.from({ length: Math.max(nMain, 2) }, (_, k) => (k % 2 ? 1 : -1)); // tags / labels below (-1) for FP-1, above (+1) for FP-2
   const valveSym = (kind: ValveKind, x: number, y: number, ang: number, dp = D): void => {
     const X = P(x);
     const Y = Q(y);
@@ -221,7 +221,7 @@ export function drawSchematicSheet(c: Ctx): void {
       // fuel tank + exhaust
       const fx = 140;
       rc('FP-EQPM', fx, dyc - 8, 36, 16);
-      txt(fx + 18, dyc, 2.2, 'FT-1', { align: 'center' });
+      txt(fx + 18, dyc, 2.2, room.equipment.filter((e) => e.kind === 'fuel-tank')[pumps.mainPumps.filter((q, qi) => q.driver === 'diesel' && qi <= k).length - 1]?.tag ?? 'FT-1', { align: 'center' });
       txt(fx + 18, dyc + opp * 11, 2, `FUEL ${mp.fuelTankLiters ? Math.round(mp.fuelTankLiters) + ' L' : 'TANK'}`, { align: 'center' });
       line('FP-FUEL', [[fx + 36, dyc], [xPump - 12, dyc]]);
       line('FP-FUEL', [[xPump + 12, dyc + opp * 5], [xPump + 36, dyc + opp * 5], [xPump + 36, dyc + opp * 26]]);
@@ -246,6 +246,7 @@ export function drawSchematicSheet(c: Ctx): void {
     ci('FP-EQPM', jx, yJ - 22, 6);
     txt(jx, yJ - 22, 3, 'M', { align: 'center' });
     line('FP-EQPM', [[jx, yJ - 9], [jx, yJ - 16]]);
+    if (pumps.jockeys.length > 1) txt(jx, yJ - 36.5, 2, `${pumps.jockeys.slice(1).map((q) => q.tag).join(', ')}: IDENTICAL STANDBY JOCKEY, PIPED IN PARALLEL (SEE FP-101)`, { align: 'center' });
     txt(jx, yJ - 32, 2.2, `${pumps.jockey.tag} JOCKEY PUMP ${pumps.jockey.ratedFlowGpm} GPM @ ${pumps.jockey.ratedNetPressurePsi} PSI, ${pumps.jockey.motorHp} HP`, { align: 'center' });
     const xs = [185, 275, 305];
     jv.forEach((v, i) => item(v, v.tag, xs[i] ?? 185 + i * 30, yJ, 1, 0));

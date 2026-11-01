@@ -2,7 +2,7 @@
  * FP-101 — Fire pump room plan: walls, partial tank, pumps, controllers, double-line piping at true OD,
  * valves with tags, trench, doors/louvres, dimension strings, equipment/valve keys and room notes.
  */
-import type { PlacedValve, ValveKind } from '../fpTypes';
+import type { PlacedEquipment, PlacedValve, ValveKind } from '../fpTypes';
 import { butterflyValveLengthMm, formatPipeSize, gateValveLengthMm } from '../standards/pipeData';
 import {
   ballValve,
@@ -21,7 +21,7 @@ import {
   pumpPlan,
   reliefValve
 } from './symbols';
-import { type Box, type Ctx, FRAME, Placer, PX, PY, TBLK, autoCols, drawNotes, drawSymbolLegend, drawTable, sheetTitle, splitInterval, textWidth, wrapText } from './sheetKit';
+import { type Box, type Ctx, FRAME, Placer, PX, PY, TBLK, autoCols, drawNotes, drawSymbolLegend, drawTable, drawTag, sheetTitle, splitInterval, textWidth, wrapText } from './sheetKit';
 import { type PipeDraw, drawPipeNetwork, layerOfService, odOf, tankLayout, westWallMm } from './sheetGeom';
 
 /** Extents (room mm) and paper footprint needed by the plan at scale `s`. */
@@ -165,17 +165,21 @@ export function drawPlanSheet(c: Ctx): void {
   const holesSouth: [number, number][] = [];
   const holesNorth: [number, number][] = [];
   const holesWest: [number, number][] = [];
+  // a pipe that has a penetration record gets its opening from that record
+  const penAt = (wall: string, pos: number): boolean => room.penetrations.some((pn) => pn.wall === wall && Math.abs((wall === 'west' ? pn.y : pn.x) - pos) < 5);
   for (const p of room.pipes) {
     if (p.service === 'sensing' || p.service === 'fuel') continue;
     const h = pipeDia(p.sizeIn) / 2;
     for (const q of [p.points[0], p.points[p.points.length - 1]]) {
-      if (Math.abs(q[0] + wW) < 2) holesWest.push([q[1] - h, q[1] + h]);
-      if (Math.abs(q[1] + wT) < 2) holesSouth.push([q[0] - h, q[0] + h]);
-      if (Math.abs(q[1] - (W + wT)) < 2) holesNorth.push([q[0] - h, q[0] + h]);
+      if (Math.abs(q[0] + wW) < 2 && !penAt('west', q[1])) holesWest.push([q[1] - h, q[1] + h]);
+      if (Math.abs(q[1] + wT) < 2 && !penAt('south', q[0])) holesSouth.push([q[0] - h, q[0] + h]);
+      if (Math.abs(q[1] - (W + wT)) < 2 && !penAt('north', q[0])) holesNorth.push([q[0] - h, q[0] + h]);
     }
   }
+  // puddle flange: concrete cast tight round the pipe; sleeve: wall opening = sleeve OD (ID + 2 x 10 mm steel)
+  const SLV_T = 10;
   for (const pen of room.penetrations) {
-    const half = (pen.kind === 'puddle-flange' ? pipeDia(pen.sizeIn) : pen.sleeveIdMm + 120) / 2;
+    const half = (pen.kind === 'puddle-flange' ? odOf(pen.sizeIn) + 60 : pen.sleeveIdMm + 2 * SLV_T) / 2;
     if (pen.wall === 'west') holesWest.push([pen.y - half, pen.y + half]);
     else if (pen.wall === 'south') holesSouth.push([pen.x - half, pen.x + half]);
     else if (pen.wall === 'north') holesNorth.push([pen.x - half, pen.x + half]);
@@ -237,7 +241,7 @@ export function drawPlanSheet(c: Ctx): void {
     b.rect('FP-HIDN', X(pcx - sp.vortexPlateMm / 2), Y(sm.y - sp.vortexPlateMm / 2), sp.vortexPlateMm, sp.vortexPlateMm);
     b.line('FP-HIDN', X(pcx - sp.vortexPlateMm / 2), Y(sm.y - sp.vortexPlateMm / 2), X(pcx + sp.vortexPlateMm / 2), Y(sm.y + sp.vortexPlateMm / 2));
     b.line('FP-HIDN', X(pcx - sp.vortexPlateMm / 2), Y(sm.y + sp.vortexPlateMm / 2), X(pcx + sp.vortexPlateMm / 2), Y(sm.y - sp.vortexPlateMm / 2));
-    P.addRect(X(-wW - sp.pitLengthMm), Y(sm.y - sp.pitWidthMm / 2), sp.pitLengthMm, sp.pitWidthMm);
+    P.addRect(X(-wW - sp.pitLengthMm), Y(sm.y - sp.pitWidthMm / 2), sp.pitLengthMm, sp.pitWidthMm, true);
   });
 
   // ───────────────────────── trench ─────────────────────────
@@ -312,11 +316,34 @@ export function drawPlanSheet(c: Ctx): void {
       for (let x = x0 + 100; x < x0 + w; x += 200) segLine('FP-TRCH', x, y0, x, y0 + h);
     }
   }
+  const sump = room.drainageSump;
   if (pit) {
-    b.rect('FP-TRCH', X(pit.rect.x), Y(pit.rect.y), pit.rect.w, pit.rect.h);
-    b.line('FP-TRCH', X(pit.rect.x), Y(pit.rect.y), X(pit.rect.x + pit.rect.w), Y(pit.rect.y + pit.rect.h));
-    b.line('FP-TRCH', X(pit.rect.x), Y(pit.rect.y + pit.rect.h), X(pit.rect.x + pit.rect.w), Y(pit.rect.y));
-    P.addRect(X(pit.rect.x), Y(pit.rect.y), pit.rect.w, pit.rect.h);
+    const q = pit.rect;
+    b.rect('FP-TRCH', X(q.x), Y(q.y), q.w, q.h);
+    P.addRect(X(q.x), Y(q.y), q.w, q.h);
+    if (!sump.pumps.length) {
+      b.line('FP-TRCH', X(q.x), Y(q.y), X(q.x + q.w), Y(q.y + q.h));
+      b.line('FP-TRCH', X(q.x), Y(q.y + q.h), X(q.x + q.w), Y(q.y));
+    } else {
+      // duplex submersible sump pumps SP-n (low in the pit), riser with check + gate valve each, common header, discharge
+      const n = sump.pumps.length;
+      const pr = Math.min(0.14 * q.h, q.w / (2 * n + 1));
+      const od = odOf(sump.dischargeSizeIn);
+      const hy = q.y + 0.86 * q.h;
+      const cx = q.x + q.w / 2;
+      const vs = Math.max(od * 1.6, 130);
+      sump.pumps.forEach((sp_, i) => {
+        const px = q.x + (q.w * (i + 0.5)) / n;
+        const py = q.y + 0.17 * q.h;
+        b.circle('FP-EQPM', X(px), Y(py), pr);
+        b.text('FP-ANNO', X(px), Y(py), 1.5, sp_.tag, { align: 'center', vAlign: 'middle' });
+        b.pipe('FP-PIPE-DRAN', [[X(px), Y(py + pr)], [X(px), Y(hy)]], od, false);
+        checkValve(b, X(px), Y(q.y + 0.6 * q.h), 90, vs);
+        gateValve(b, X(px), Y(q.y + 0.76 * q.h), 90, vs);
+      });
+      b.pipe('FP-PIPE-DRAN', [[X(q.x + q.w / (2 * n)), Y(hy)], [X(q.x + q.w - q.w / (2 * n)), Y(hy)]], od, false);
+      b.pipe('FP-PIPE-DRAN', [[X(cx), Y(hy)], [X(cx), Y(q.y + q.h / 2)]], od, false);
+    }
   }
   {
     const tx = tr.path[0][0];
@@ -423,6 +450,28 @@ export function drawPlanSheet(c: Ctx): void {
     valveAnchors.push({ v, pos: [X(v.x), Y(v.y)] });
   }
 
+  // ───────────────────────── wall penetrations: puddle flanges (tank wall) and sleeves + seals ─────────────────────────
+  for (const pen of room.penetrations) {
+    if (pen.kind === 'puddle-flange') {
+      const fo = pen.puddleFlangeOdMm;
+      // cast-in flange plate across the pipe, centred in the wall (10 mm plate drawn 60 mm for visibility)
+      b.solid('FP-WALL', [[X(pen.x - 30), Y(pen.y - fo / 2)], [X(pen.x + 30), Y(pen.y - fo / 2)], [X(pen.x + 30), Y(pen.y + fo / 2)], [X(pen.x - 30), Y(pen.y + fo / 2)]]);
+    } else {
+      const idh = pen.sleeveIdMm / 2;
+      const od = odOf(pen.sizeIn);
+      const hz = pen.wall === 'north' || pen.wall === 'south';
+      if (hz) {
+        b.rect('FP-WALL', X(pen.x - idh - SLV_T), Y(pen.y - wT / 2), 2 * (idh + SLV_T), wT);
+        for (const sx of [-idh, idh]) segLine('FP-WALL', pen.x + sx, pen.y - wT / 2, pen.x + sx, pen.y + wT / 2);
+        // link seals at both wall faces
+        for (const yy of [pen.y - wT / 2 + 40, pen.y + wT / 2 - 40]) {
+          segLine('FP-ANNO', pen.x - idh, yy, pen.x - od / 2, yy);
+          segLine('FP-ANNO', pen.x + od / 2, yy, pen.x + idh, yy);
+        }
+      }
+    }
+  }
+
   // ───────────────────────── section mark A-A ─────────────────────────
   const yCut = room.suctionLineY[0];
   const secX1 = xs + 350;
@@ -448,22 +497,52 @@ export function drawPlanSheet(c: Ctx): void {
     dimBoxes.push(horizontal ? { x0: cx - hw, y0: cy - 0.5 * s, x1: cx + hw, y1: cy + hh } : { x0: cx - hh, y0: cy - hw, x1: cx + 0.5 * s, y1: cy + hw });
   };
   const dimBoxes: Box[] = [];
-  // south: header offset chain, internal length, overall
-  dimPts(0, -wT, L, -wT, -33);
-  dimPts(-wW, -wT, L + wT, -wT, -42);
-  // east: pump CL chain, internal width, overall
+  // south: chain along x (tank wall, suction run, pad, header, controllers, east wall), internal length, overall
+  const uniq = (vals: number[]): number[] => {
+    const out: number[] = [];
+    for (const v of [...vals].sort((p, q) => p - q)) if (!out.length || v - out[out.length - 1] > 1) out.push(v);
+    return out;
+  };
+  const padOf = (e: PlacedEquipment): { x: number; y: number; w: number; h: number } => e.pad ?? e.rect;
+  const mains = room.equipment.filter((e) => e.kind === 'fire-pump');
+  const ctrlEq = room.equipment.filter((e) => e.kind === 'controller');
+  const padL = mains.length ? Math.min(...mains.map((e) => padOf(e).x)) : 0;
+  const padR = mains.length ? Math.max(...mains.map((e) => padOf(e).x + padOf(e).w)) : 0;
+  const ctrlX = ctrlEq.length ? Math.min(...ctrlEq.map((e) => e.rect.x)) : room.headerX + 600;
+  const xBreaks = uniq([-wW, 0, padL, padR, room.headerX, ctrlX, L, L + wT]);
+  for (let i = 0; i + 1 < xBreaks.length; i++) dimPts(xBreaks[i], -wT, xBreaks[i + 1], -wT, -13);
+  dimPts(0, -wT, L, -wT, -22);
+  dimPts(-wW, -wT, L + wT, -wT, -31);
+  // east: chain along y (south wall, every pad / bund row, north wall), pump centre-lines, internal width, overall
   const sy = room.suctionLineY;
+  const rows = room.equipment.filter((e) => e.kind === 'fire-pump' || e.kind === 'jockey-pump' || e.kind === 'fuel-tank').map((e) => padOf(e));
+  const yBreaks = uniq([0, ...rows.flatMap((q) => [q.y, q.y + q.h]), W]);
+  for (let i = 0; i + 1 < yBreaks.length; i++) dimPts(L + wT, yBreaks[i], L + wT, yBreaks[i + 1], -9);
   const eastChain = [0, ...sy, W];
-  for (let i = 0; i + 1 < eastChain.length; i++) dimPts(L + wT, eastChain[i], L + wT, eastChain[i + 1], -16);
+  for (let i = 0; i + 1 < eastChain.length; i++) dimPts(L + wT, eastChain[i], L + wT, eastChain[i + 1], -17);
   dimPts(L + wT, 0, L + wT, W, -25);
   dimPts(L + wT, -wT, L + wT, W + wT, -34);
-  // header offset (inside the room, in the corridor between the pumps)
-  if (sy.length >= 2) {
-    const yD = (room.equipment.find((e) => e.tag === 'FP-1')!.pad!.y + room.equipment.find((e) => e.tag === 'FP-1')!.pad!.h + room.equipment.find((e) => e.tag === 'FP-2')!.pad!.y) / 2 + 200;
+  // header offset (inside the room, in the corridor above the first pump pad)
+  if (mains.length) {
+    const top1 = padOf(mains[0]).y + padOf(mains[0]).h;
+    const next = yBreaks.find((v) => v > top1 + 1) ?? W;
+    const yD = (top1 + next) / 2 + 200;
     dimPts(0, yD, room.headerX, yD, 0);
     P.addRect(X(0), Y(yD) - 1 * s, room.headerX, 6 * s);
-  } else {
-    dimPts(0, 4300, room.headerX, 4300, 0);
+  }
+  // sump pit (vertical, west of the pit) and trench width (near its far end)
+  if (pit) {
+    dimPts(pit.rect.x, pit.rect.y, pit.rect.x, pit.rect.y + pit.rect.h, 6);
+    P.addRect(X(pit.rect.x) - 9 * s, Y(pit.rect.y), 9 * s, pit.rect.h);
+  }
+  for (const q of rows) {
+    const yy = q.y + q.h + 330;
+    dimPts(q.x, yy, q.x + q.w, yy, 0);
+    P.addRect(X(q.x), Y(yy) - 1 * s, q.w, 5 * s);
+  }
+  {
+    const ty = tr.path[0][1] - 400;
+    dimPts(tr.path[0][0] - tr.widthMm / 2, ty, tr.path[0][0] + tr.widthMm / 2, ty, 5);
   }
   // suction straight run (after the OS&Y gate valve to the eccentric reducer)
   {
@@ -479,10 +558,13 @@ export function drawPlanSheet(c: Ctx): void {
   }
   // pump pad and header-to-controller dims are shown through the layout checks on FP-105
 
+  // dimension text and the sheet title are off-limits for tags and callouts
+  for (const bx of dimBoxes) P.addHard(bx);
+
   // ───────────────────────── valve tags ─────────────────────────
   // group valves that share a location
   const groups: { tag: string; pos: [number, number] }[] = [];
-  for (const va of [...valveAnchors].sort((p, q) => p.pos[0] - q.pos[0] || p.pos[1] - q.pos[1])) {
+  for (const va of [...valveAnchors].filter((q) => q.v.kind !== 'sensing-check').sort((p, q) => p.pos[0] - q.pos[0] || p.pos[1] - q.pos[1])) {
     const g = groups.find((q) => Math.hypot(q.pos[0] - va.pos[0], q.pos[1] - va.pos[1]) < 80);
     if (g) g.tag = g.tag + '/' + va.v.tag.replace('V-', '');
     else groups.push({ tag: va.v.tag, pos: va.pos });
@@ -497,52 +579,58 @@ export function drawPlanSheet(c: Ctx): void {
     P.tag(g.pos, g.tag, prefer);
   }
   P.setBounds(outerBounds);
+  // penetration tags: PF-nn (puddle flange, tank wall) / WS-nn (wall sleeve + seal)
+  const pfTagY: number[] = [];
+  for (const pen of room.penetrations) {
+    if (pen.kind === 'puddle-flange') {
+      // tag in the tank strip beyond the suction pit; leader from the top end of the flange plate
+      let ty = pen.y;
+      while (pfTagY.some((v) => Math.abs(v - ty) < 7 * s) || Math.abs(ty - yCut) < 6 * s) ty += 7 * s;
+      pfTagY.push(ty);
+      const tx = -wW - sp.pitLengthMm - 275;
+      const anchor: [number, number] = [X(pen.x), Y(pen.y + pen.puddleFlangeOdMm / 2)];
+      const hw = 5.5 * s;
+      b.line('FP-ANNO', anchor[0], anchor[1], X(tx) + hw, Y(ty));
+      b.circle('FP-ANNO', anchor[0], anchor[1], 0.45 * s);
+      drawTag(b, X(tx), Y(ty), pen.tag, s);
+      P.addHard({ x0: X(tx) - hw, y0: Y(ty) - 3 * s, x1: X(tx) + hw, y1: Y(ty) + 3 * s });
+    } else P.tag([X(pen.x), Y(pen.y)], pen.tag, pen.wall === 'north' ? [90, 45, 135, 0, 180, 270] : [270, 225, 315, 90, 45, 135, 0, 180]);
+  }
 
-  // dimension text and the sheet title are now off-limits for callouts
-  for (const bx of dimBoxes) P.addHard(bx);
-  P.addRect(X(-wW), Y(-wT - 44 * s), wW + L + wT, 44 * s);
+
+  // the dimension strings and the sheet title are off-limits for callouts
+  P.addRect(X(-wW), Y(-wT - 36 * s), wW + L + wT, 36 * s);
   P.addRect(X(L + wT), Y(-wT - 3 * s), 38 * s, W + 2 * wT + 6 * s);
   P.addRect(PX(c, 28), PY(c, 17), 105 * s, 20 * s);
-  const fallbackTags = P.fallbacks.length;
-  void fallbackTags;
-
   // ───────────────────────── labels & callouts ─────────────────────────
+  const co = (anchor: [number, number], lines: string[], hP = 2.5, prefer?: number[]): void => {
+    if (!P.callout(anchor, lines, hP, prefer) && process.env.FIRE_DEBUG) console.warn('FP-101 callout failed:', lines[0]);
+  };
   P.setBounds({ x0: frameBounds.x0, y0: PY(c, 40), x1: frameBounds.x1, y1: frameBounds.y1 });
-  const inRoom: Box = { x0: X(40), y0: Y(40), x1: X(L - 40), y1: Y(W - 40) };
-  // pump callouts
-  for (const e of room.equipment) {
-    if (e.kind !== 'fire-pump' && e.kind !== 'jockey-pump') continue;
-    const mp = r.pumps.mainPumps.find((m) => m.tag === e.tag);
-    const lines = mp
-      ? [`${e.tag} ${mp.driver === 'diesel' ? 'DIESEL' : 'ELECTRIC'} ${mp.role === 'duty' ? 'DUTY' : 'STANDBY'}`, `${mp.ratedFlowGpm} GPM @ ${mp.ratedNetPressurePsi} PSI`, `${mp.driverHp} HP ${mp.pumpType === 'horizontal-split-case' ? 'HORIZ. SPLIT-CASE' : 'END-SUCTION'}`]
-      : [`${e.tag} JOCKEY PUMP`, `${r.pumps.jockey.ratedFlowGpm} GPM @ ${r.pumps.jockey.ratedNetPressurePsi} PSI`, `${r.pumps.jockey.motorHp} HP`];
-    P.setBounds(inRoom);
-    const rc = e.rect;
-    P.callout([X(rc.x + rc.w), Y(rc.y + rc.h * 0.75)], lines, 2.2, [0, 30, 330, 60, 300]);
+  // keynote tags (text in the KEYNOTES table, right zone): K1 sensing lines, K2 pump drains, K3 drainage sump
+  P.setBounds(outerBounds);
+  for (const sl of room.sensingLines) {
+    const seg = sl.points.slice(1).map((q, i) => [sl.points[i], q]).sort((a, q) => Math.abs(q[1][0] - q[0][0]) - Math.abs(a[1][0] - a[0][0]))[0];
+    P.tag([X((seg[0][0] + seg[1][0]) / 2), Y((seg[0][1] + seg[1][1]) / 2)], 'K1', [90, 270, 45, 135, 315, 225]);
   }
-  P.setBounds(inRoom);
-  const ft = room.equipment.find((e) => e.kind === 'fuel-tank');
-  if (ft) {
-    const fuelL = r.pumps.mainPumps.find((m) => m.fuelTankLiters)?.fuelTankLiters;
-    P.callout([X(ft.rect.x + ft.rect.w), Y(ft.rect.y + ft.rect.h * 0.5)], [`${ft.tag} DIESEL FUEL TANK${fuelL ? ' ' + Math.round(fuelL) + ' L' : ''}`, 'WITH BUND (110 % CAPACITY)'], 2.2, [0, 30, 330, 60]);
+  for (const dr of room.pipes.filter((q) => q.service === 'drain' && q.id !== 'DRN-1').slice(-1)) {
+    const [a, q] = [dr.points[0], dr.points[dr.points.length - 1]];
+    P.tag([X((a[0] + q[0]) / 2), Y((a[1] + q[1]) / 2)], 'K2', [90, 270, 45, 135, 315, 225]);
   }
-  if (pit) P.callout([X(pit.rect.x + pit.rect.w / 2), Y(pit.rect.y + pit.rect.h)], [`${pit.tag} DRAIN PIT ${pit.rect.w} x ${pit.rect.h}`, `${tr.outlet.drainIn}" DRAIN TO INDIRECT WASTE`], 2.2, [90, 135, 45, 180, 0]);
+  if (pit) P.tag([X(pit.rect.x + pit.rect.w), Y(pit.rect.y + pit.rect.h)], 'K3', [45, 0, 90, 135, 315]);
+  const hoseV = room.valves.filter((v) => v.kind === 'hose-valve');
+  if (hoseV.length) P.tag([X(hoseV[0].x), Y(hoseV[0].y) - 1.6 * s], 'K4', [270, 225, 315, 180, 0]);
 
   // exterior / outside callouts
   P.setBounds(outerBounds);
   const out = room.systemOutlet;
-  P.callout([X(out.x), Y(out.y)], [`SYSTEM OUTLET ${formatPipeSize(out.sizeIn)}`, 'TO BUILDING RISER / FEED MAIN'], 2.2, [90, 45, 135, 0]);
-  const hose = room.valves.filter((v) => v.kind === 'hose-valve');
-  if (hose.length) {
-    const hx = hose.reduce((a, v) => a + v.x, 0) / hose.length;
-    P.callout([X(hx), Y(hose[0].y) - 1.6 * s], [`TEST HEADER - ${hose.length} x 2-1/2" HOSE VALVES`, 'ON EXTERIOR WALL (NFPA 20 / FLOW TEST)'], 2.2, [270, 225, 315, 180, 0]);
-  }
+  co([X(out.x), Y(out.y)], [`SYSTEM OUTLET ${formatPipeSize(out.sizeIn)}`, 'TO BUILDING RISER / FEED MAIN'], 2.2, [90, 45, 135, 0]);
   for (const d of doors) {
-    if (d.wall === 'south') P.callout([X(d.x + d.widthMm * 0.5), Y(-wT - d.widthMm * 0.5)], [`DOUBLE DOOR ${d.widthMm} - OUTWARD SWING`, 'EXTERIOR ACCESS (IBC 913.2 / NFPA 20)'], 2.2, [270, 225, 315, 180]);
+    if (d.wall === 'south') co([X(d.x + d.widthMm * 0.5), Y(-wT - d.widthMm * 0.5)], [`DOUBLE DOOR ${d.widthMm} - OUTWARD SWING`, 'EXTERIOR ACCESS (IBC 913.2 / NFPA 20)'], 2.2, [270, 225, 315, 180]);
   }
   for (const lv of louvers) {
     const north = lv.wall === 'north';
-    P.callout([X(lv.x + lv.widthMm / 2), Y(north ? W + wT : -wT)], [`LOUVRE ${lv.widthMm} WIDE`, lv.purpose.length > 44 ? lv.purpose.slice(0, 44).replace(/\s+\S*$/, '') : lv.purpose], 2.2, north ? [90, 45, 135] : [270, 225, 315]);
+    co([X(lv.x + lv.widthMm / 2), Y(north ? W + wT : -wT)], [`LOUVRE ${lv.widthMm} WIDE`, lv.purpose.length > 44 ? lv.purpose.slice(0, 44).replace(/\s+\S*$/, '') : lv.purpose], 2.2, north ? [90, 45, 135] : [270, 225, 315]);
   }
   // tank callouts (inside the strip)
   P.setBounds({ x0: X(xs) + 2 * s, y0: Y(tl.yLo), x1: X(-wW) - 2 * s, y1: Y(tl.yHi) });
@@ -556,11 +644,21 @@ export function drawPlanSheet(c: Ctx): void {
     P.block(lines, 2.0, cands);
   });
   tl.sumps.forEach((sm, i) => {
-    P.callout([X(-wW - sp.plateCentreFromWallMm), Y(sm.y + sp.pitWidthMm / 2)], [`SUMP PIT ${i + 1} (BELOW FLOOR)`, `ANTI-VORTEX PLATE ${sp.vortexPlateMm} SQ`], 2.0, [90, 135, 45, 180, 270]);
+    const cx = X(-wW - sp.pitLengthMm / 2);
+    P.block([`SUCTION PIT ${i + 1}`, `${sp.pitLengthMm} x ${sp.pitWidthMm} x ${sp.pitDepthMm}`], 1.9, [[cx, Y(sm.y + sp.pitWidthMm / 2 + 330)], [cx, Y(sm.y - sp.pitWidthMm / 2 - 330)], [cx, Y(sm.y + sp.pitWidthMm / 2 + 700)], [cx, Y(sm.y - sp.pitWidthMm / 2 - 700)]]);
   });
+  {
+    const tH = Math.round(tank.totalInternalHeightM * 1000);
+    const tLb = Math.round(tank.internalLengthM * 1000);
+    const tWb = Math.round(tank.internalWidthM * 1000);
+    const cands: [number, number][] = [];
+    for (const d of [0, 700, -700, 1400, -1400, 2200, -2200, 3000, -3000, 4000, -4000, 5000, -5000]) cands.push([X(xs + stripW / 2 + 60), Y(tl.yLo + (tl.yHi - tl.yLo) / 2 + d)]);
+    P.block(['TANK INTERNAL', `${tLb} x ${tWb} x ${tH}`, '(SEE FP-103)'], 2.0, cands);
+  }
   P.block(['SECTION A-A', '(SEE FP-102)'], 2.0, [[X(xs + 1100), Y(yCut - 1100)], [X(xs + 1100), Y(yCut + 1100)], [X(xs + 1100), Y(yCut - 1700)]]);
   P.setBounds(outerBounds);
 
+  if (process.env.FIRE_DEBUG && P.fallbacks.length) console.warn('FP-101 tag fallbacks:', P.fallbacks);
   // ───────────────────────── titles, north arrow ─────────────────────────
   sheetTitle(c, 32, 30, 'FIRE PUMP ROOM - PLAN', `SCALE 1:${s}`);
   northArrow(b, X(xs + 1200), Y(yMax) + 12 * s);
@@ -583,7 +681,9 @@ export function drawPlanSheet(c: Ctx): void {
   // valve key
   {
     const rows: string[][] = [['TAG', 'DESCRIPTION', 'SIZE', 'SERVICE']];
-    for (const v of room.valves) rows.push([v.tag, KIND_NAME[v.kind], formatPipeSize(v.sizeIn), v.service.toUpperCase()]);
+    for (const v of room.valves.filter((q) => q.kind !== 'sensing-check')) rows.push([v.tag, KIND_NAME[v.kind], formatPipeSize(v.sizeIn), v.service.toUpperCase()]);
+    const sc = room.valves.filter((q) => q.kind === 'sensing-check');
+    if (sc.length) rows.push([`${sc[0].tag}-${sc[sc.length - 1].tag.replace('V-', '')}`, KIND_NAME['sensing-check'] + ' (2 PER LINE)', formatPipeSize(0.5), 'SENSING']);
     const cols = autoCols(rows, th, [14, 62, 14, 22]);
     drawTable(c, zx, yTop, cols, rows, { title: 'VALVE KEY', th });
   }
@@ -606,14 +706,30 @@ export function drawPlanSheet(c: Ctx): void {
         String(p.speedRpm)
       ]);
     }
-    const j = r.pumps.jockey;
-    rows.push([j.tag, 'ELECTRIC', 'JOCKEY', `${j.ratedFlowGpm} GPM`, String(j.ratedNetPressurePsi), '-', '-', String(j.motorHp), '-']);
+    for (const j of r.pumps.jockeys) rows.push([j.tag, 'ELECTRIC', 'JOCKEY', `${j.ratedFlowGpm} GPM`, String(j.ratedNetPressurePsi), '-', '-', String(j.motorHp), '-']);
     const t = drawTable(c, lx, y2, autoCols(rows, 2.2), rows, { title: 'FIRE PUMP SET SUMMARY (SEE FP-105)', th: 2.2 });
     y2 -= t.h + 8;
   }
   // room notes + plan key notes below the keys (centre zone)
-  drawNotes(c, lx, y2, 831 - lx - 6, 'ROOM NOTES', roomNotes(c));
-  drawNotes(c, zx + 4, 262, 360, 'PLAN KEY NOTES', planNotes(c), 2.5);
+  const hRoom = drawNotes(c, lx, y2, 831 - lx - 6, 'ROOM NOTES', roomNotes(c));
+  const hPlan = drawNotes(c, lx, y2 - hRoom - 8, 831 - lx - 6, 'PLAN KEY NOTES', planNotes(c), 2.5);
+  y2 -= hRoom + hPlan + 16;
+  {
+    const sl = room.sensingLines;
+    const sp0 = sump.pumps[0];
+    const kn: string[][] = [['KEY', 'KEYNOTE']];
+    kn.push(['K1', ['1/2" SENSING LINE - 2 CHECK VALVES 3/32" ORIFICE 1.5 M APART (NFPA 20)', `ONE PER CONTROLLER (${sl.length} NO.): ${sl.map((q) => q.controllerTag).join(', ')} - SEE FP-110 DETAIL 4`].join('\n')]);
+    kn.push(['K2', ['3/4" PUMP DRAIN LINES TO TRENCH: CASING DRAIN, GLAND DRIP AND', 'CIRCULATION RELIEF (NFPA 20 4.12, IPC 802 INDIRECT WASTE)'].join('\n')]);
+    kn.push(['K3', sump.pumps.length ? [`${sump.tag} SUMP PIT ${sump.rect.w} x ${sump.rect.h} x ${sump.pitDepthMm} DEEP, DUPLEX SUMP PUMPS ${sump.pumps.map((q) => q.tag).join(' / ')}`, `${sp0.flowGpm} GPM @ ${sp0.headFt} FT, ${sp0.motorHp} HP EACH; DISCHARGE ${sump.dischargeSizeIn}" + CHECK + GATE VALVE EACH`, 'ALTERNATOR + HIGH-LEVEL ALARM (IPC 712) - SEE FP-110 DETAIL 5'].join('\n') : `${sump.tag} SUMP PIT ${sump.rect.w} x ${sump.rect.h} x ${sump.pitDepthMm} DEEP - GRAVITY DRAIN TO BUILDING DRAIN (IPC 802)`]);
+    kn.push(['K4', `TEST HEADER - ${room.valves.filter((v) => v.kind === 'hose-valve').length} x 2-1/2" HOSE VALVES ON THE EXTERIOR WALL (NFPA 20 / FLOW TEST)`]);
+    const kt = drawTable(c, lx, y2, autoCols(kn, 2.3, [10, 120]), kn, { title: 'KEYNOTES', th: 2.3 });
+    y2 -= kt.h + 8;
+    const pr: string[][] = [['TAG', 'SERVICE', 'SIZE', 'WALL', 'EL (m)', 'DETAIL']];
+    for (const q of room.penetrations) {
+      pr.push([q.tag, q.service.toUpperCase(), formatPipeSize(q.sizeIn), q.wall === 'west' ? 'TANK WALL' : q.wall.toUpperCase(), (q.elevationM >= 0 ? '+' : '-') + Math.abs(q.elevationM).toFixed(3), q.kind === 'puddle-flange' ? `PUDDLE FLANGE OD ${q.puddleFlangeOdMm} x 10 THK (FP-110 / 1)` : `SLEEVE ID ${q.sleeveIdMm} + LINK SEAL + FIRESTOP (FP-110 / 2)`]);
+    }
+    drawTable(c, lx, y2, autoCols(pr, 2.3, [12, 18, 14, 22, 14, 70]), pr, { title: 'WALL PENETRATION SCHEDULE', th: 2.3 });
+  }
   void butterflyValveLengthMm;
 }
 

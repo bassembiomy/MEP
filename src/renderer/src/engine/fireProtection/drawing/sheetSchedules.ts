@@ -68,18 +68,21 @@ export function drawScheduleSheet(c: Ctx): void {
     ps.push([p.tag, p.driver === 'diesel' ? 'DIESEL' : 'ELECTRIC', p.role.toUpperCase(), p.pumpType.replace(/-/g, ' ').toUpperCase(), `${p.ratedFlowGpm} GPM`, String(p.ratedNetPressurePsi), `${f(p.churnPressurePsi, 0)} PSI`, `${f(p.pressureAt150Psi, 0)} PSI`, `${p.driverHp} / ${f(p.driverKw, 0)}`, String(p.speedRpm), p.controller.tag, `${formatPipeSize(p.sizes.suctionIn)} / ${formatPipeSize(p.sizes.dischargeIn)}`]);
   }
   const j = r.pumps.jockey;
-  ps.push([j.tag, 'ELECTRIC', 'JOCKEY', 'MULTISTAGE', `${j.ratedFlowGpm} GPM`, String(j.ratedNetPressurePsi), '-', '-', `${j.motorHp} HP`, '-', j.controller.tag, formatPipeSize(j.pipeSizeIn)]);
+  for (const jk of r.pumps.jockeys) ps.push([jk.tag, 'ELECTRIC', jk.tag === j.tag ? 'JOCKEY DUTY' : 'JOCKEY STBY', 'MULTISTAGE', `${jk.ratedFlowGpm} GPM`, String(jk.ratedNetPressurePsi), '-', '-', `${jk.motorHp} HP`, '-', jk.controller.tag, formatPipeSize(jk.pipeSizeIn)]);
   const tPump = mk('PUMP SCHEDULE (NFPA 20)', ps, th);
 
   // ───────── setpoints ─────────
   const sp = r.pumps.setpoints;
   const spRows: string[][] = [['DEVICE', 'FUNCTION', 'SETPOINT'], [j.controller.tag, 'JOCKEY STOP', `${sp.jockeyStopPsi} PSI`], [j.controller.tag, 'JOCKEY START', `${sp.jockeyStartPsi} PSI`]];
   r.pumps.mainPumps.forEach((p, i) => spRows.push([p.controller.tag, i === 0 ? 'DUTY START' : 'STANDBY START', `${i === 0 ? sp.dutyStartPsi : sp.standbyStartPsi} PSI`]));
+  r.pumps.jockeys.slice(1).forEach((jk) => spRows.push([jk.controller.tag, 'JOCKEY STBY START', `${sp.jockeyStartPsi} PSI`]));
   spRows.push(['TIMER', 'MIN RUN ELECTRIC', `${sp.minRunTimerElectricMin} MIN`], ['TIMER', 'MIN RUN DIESEL', `${sp.minRunTimerDieselMin} MIN`], ['SYSTEM', 'MAX PRESSURE', `${f(r.pumps.maxSystemPressurePsi, 0)} PSI`]);
   const tSet = mk('JOCKEY & PRESSURE SETPOINTS', spRows, th);
 
   // ───────── valve schedule ─────────
-  const vrows = r.room.valves.map((v) => [v.tag, valveKindName(v.kind), formatPipeSize(v.sizeIn), v.service.toUpperCase()]);
+  const vrows = r.room.valves.filter((v) => v.kind !== 'sensing-check').map((v) => [v.tag, valveKindName(v.kind), formatPipeSize(v.sizeIn), v.service.toUpperCase()]);
+  const scv = r.room.valves.filter((v) => v.kind === 'sensing-check');
+  if (scv.length) vrows.push([`${scv[0].tag}-${scv[scv.length - 1].tag.replace('V-', '')}`, `${valveKindName('sensing-check')} (2 PER LINE)`, formatPipeSize(0.5), 'SENSING']);
   const half = Math.ceil(vrows.length / 2);
   const vh: string[] = ['TAG', 'DESCRIPTION', 'SIZE', 'SERVICE'];
   const tV1 = mk('VALVE SCHEDULE (1)', [vh, ...vrows.slice(0, half)], th);
@@ -115,9 +118,16 @@ export function drawScheduleSheet(c: Ctx): void {
   const zoneChecks = new Set(r.extinguishers ? [...r.extinguishers.zones.flatMap((z) => z.checks), ...r.extinguishers.checks] : []);
   const chkAll = r.checks.filter((k) => !zoneChecks.has(k)).map((k) => [k.status.toUpperCase(), k.title, wrapText(k.reference, 46).join('\n'), wrapText(k.detail, 52).join('\n')]);
   const ch = ['STATUS', 'CHECK', 'REFERENCE', 'DETAIL'];
-  const hc = Math.ceil(chkAll.length / 2);
-  const tC1 = mk('COMPLIANCE CHECKS (1)', [ch, ...chkAll.slice(0, hc).map((row) => [row[0], wrapText(row[1], 34).join('\n'), row[2], row[3]])], 2.5);
-  const tC2 = chkAll.length > hc ? mk('COMPLIANCE CHECKS (2)', [ch, ...chkAll.slice(hc).map((row) => [row[0], wrapText(row[1], 34).join('\n'), row[2], row[3]])], 2.5) : null;
+  const n3 = Math.ceil(chkAll.length / 4);
+  const chkTbl = (k: number): Tbl | null => {
+    const part = chkAll.slice(k * n3, (k + 1) * n3);
+    if (!part.length) return null;
+    return mk(`COMPLIANCE CHECKS (${k + 1})`, [ch, ...part.map((row) => [row[0], wrapText(row[1], 30).join('\n'), wrapText(row[2].replace(/\n/g, ' '), 40).join('\n'), wrapText(row[3].replace(/\n/g, ' '), 52).join('\n')])], 2.2);
+  };
+  const tC1 = chkTbl(0)!;
+  const tC2 = chkTbl(1);
+  const tC3 = chkTbl(2);
+  const tC4 = chkTbl(3);
 
   // ───────── standards references ─────────
   const refRows: string[][] = [['CODE', 'ED.', 'SCOPE USED IN THIS DESIGN']];
@@ -131,11 +141,11 @@ export function drawScheduleSheet(c: Ctx): void {
   const X0 = 28;
   const X1 = 829;
   const gap = 6;
-  const all: Tbl[] = [tHyd, tPump, tSet, tBasis, tV1, ...(tV2 ? [tV2] : []), tTank, tRoom, tC1, ...(tC2 ? [tC2] : []), tRef, tPl];
+  const all: Tbl[] = [tHyd, tPump, tSet, tBasis, tV1, ...(tV2 ? [tV2] : []), tTank, tRoom, tC1, ...(tC2 ? [tC2] : []), ...(tC3 ? [tC3] : []), ...(tC4 ? [tC4] : []), tRef, tPl];
   const info = all.map((t) => ({ t, m: measureTable(t.cols, t.rows, { title: t.title, th: t.th }), xMin: Math.max(X0, tableMinX(t.cols, t.rows, t.th)) }));
   let y = 574;
   const placed: { t: Tbl; x: number; y: number }[] = [];
-  let remaining = info.slice();
+  let remaining = info.slice().sort((p, q) => q.m.h - p.m.h);
   let lastBottom = y;
   while (remaining.length) {
     let x = X0;
@@ -167,21 +177,23 @@ export function drawScheduleSheet(c: Ctx): void {
 
   // general notes: three columns below the tables
   const notes = generalNotes(c);
-  const nth = 2.6;
+  const nth = 2.3;
   const cuts: number[] = [];
   {
     const heights = notes.map((n) => notesHeight(130, 190, [n], nth));
     const total = heights.reduce((a, v) => a + v, 0);
     let acc = 0;
-    let colEnd = total / 3;
+    const share = total * 0.37;
+    let colEnd = share;
     heights.forEach((h, i) => {
       acc += h;
       if (acc >= colEnd && cuts.length < 2) {
         cuts.push(i + 1);
-        colEnd += total / 3;
+        colEnd += share;
       }
     });
   }
+  if (process.env.FIRE_DEBUG) console.log("FP105 lastBottom", lastBottom, "cuts", cuts);
   const groups = [notes.slice(0, cuts[0] ?? notes.length), notes.slice(cuts[0] ?? notes.length, cuts[1] ?? notes.length), notes.slice(cuts[1] ?? notes.length)];
   const colX = [128, 350, 572];
   let num = 0;
