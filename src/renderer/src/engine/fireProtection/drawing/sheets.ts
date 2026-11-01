@@ -13,6 +13,7 @@ import { drawSchematicSheet } from './sheetSchematic';
 import { drawScheduleSheet } from './sheetSchedules';
 import { drawStandpipeDetailSheet } from './sheetStandpipeDetail';
 import { drawStandpipeRiserSheet, pickStandpipeScale } from './sheetStandpipe';
+import { drawExtinguisherDetailSheet, drawExtinguisherLayoutSheet, extinguisherSheetNumber, planExtinguisherLayout } from './sheetExtinguishers';
 
 const GAP = 5000;
 const DATE = '2026-10-31';
@@ -29,7 +30,7 @@ export function generateFireDrawings(result: FireDesignResult): Drawing {
     return sh;
   };
   const standards = 'NFPA 20 / NFPA 22 / NFPA 13 / NFPA 14 / NFPA 24 / NFPA 25 / NFPA 70 ART. 695 / IBC 913 / IPC / UPC';
-  const frame = (sh: SheetInfo, scaleText: string): Ctx => {
+  const frame = (sh: SheetInfo, scaleText: string, stds: string = standards): Ctx => {
     titleBlock(b, sh, {
       project: result.input.projectName,
       projectNumber: result.input.projectNumber,
@@ -39,7 +40,7 @@ export function generateFireDrawings(result: FireDesignResult): Drawing {
       date: DATE,
       drawnBy: result.input.designer,
       checkedBy: 'CHECKER',
-      standards
+      standards: stds
     });
     return { b, sheet: sh, r: result };
   };
@@ -63,6 +64,16 @@ export function generateFireDrawings(result: FireDesignResult): Drawing {
     drawStandpipeRiserSheet(frame(s6, `1:${spScale}`));
     const s7 = add('FP-107', 'STANDPIPE FLOOR CONNECTION - DETAILS & SCHEDULE', 20);
     drawStandpipeDetailSheet(frame(s7, '1:20 (DETAILS)'));
+  }
+  if (result.extinguishers) {
+    const feStandards = 'NFPA 10-2022 / IFC 906 / IBC 1003.3.3';
+    const lay = planExtinguisherLayout(result);
+    lay.pages.forEach((_, i) => {
+      const sh = add(extinguisherSheetNumber(i), 'FIRE EXTINGUISHER LAYOUT - SCHEMATIC FLOOR PLANS', lay.scale);
+      drawExtinguisherLayoutSheet(frame(sh, `1:${lay.scale}`, feStandards), lay, i);
+    });
+    const s9 = add('FP-109', 'EXTINGUISHER DETAILS, SCHEDULE & SPECIFICATIONS', 20);
+    drawExtinguisherDetailSheet(frame(s9, '1:20 (DETAILS)', feStandards));
   }
   return b.build(sheets);
 }

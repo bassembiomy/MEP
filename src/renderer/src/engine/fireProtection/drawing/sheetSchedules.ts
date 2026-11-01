@@ -111,7 +111,9 @@ export function drawScheduleSheet(c: Ctx): void {
   const tRoom = mk('PUMP ROOM DATA', roomRows, th, [46, 70]);
 
   // ───────── checks ─────────
-  const chkAll = r.checks.map((k) => [k.status.toUpperCase(), k.title, wrapText(k.reference, 46).join('\n'), wrapText(k.detail, 52).join('\n')]);
+  // extinguisher checks (per zone and system) are reported on the extinguisher report / FP-108..109, not on this sheet
+  const zoneChecks = new Set(r.extinguishers ? [...r.extinguishers.zones.flatMap((z) => z.checks), ...r.extinguishers.checks] : []);
+  const chkAll = r.checks.filter((k) => !zoneChecks.has(k)).map((k) => [k.status.toUpperCase(), k.title, wrapText(k.reference, 46).join('\n'), wrapText(k.detail, 52).join('\n')]);
   const ch = ['STATUS', 'CHECK', 'REFERENCE', 'DETAIL'];
   const hc = Math.ceil(chkAll.length / 2);
   const tC1 = mk('COMPLIANCE CHECKS (1)', [ch, ...chkAll.slice(0, hc).map((row) => [row[0], wrapText(row[1], 34).join('\n'), row[2], row[3]])], 2.5);
