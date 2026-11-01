@@ -6,6 +6,7 @@ import {
   Cylinder,
   DraftingCompass,
   FileText,
+  FlameKindling,
   Building2,
   Flame,
   Droplets,
@@ -26,6 +27,7 @@ import {
   StatusChip,
   TankPanel
 } from './FireResultsPanels'
+import { ExtinguisherPanel } from './ExtinguisherPanel'
 import { gpmToLpm, psiToBar } from '../engine/fireProtection/hydraulics'
 
 const TABS: { id: FireView; label: string; icon: React.ReactNode }[] = [
@@ -33,12 +35,19 @@ const TABS: { id: FireView; label: string; icon: React.ReactNode }[] = [
   { id: 'drawings', label: 'Drawings', icon: <DraftingCompass size={14} /> },
   { id: 'calc', label: 'Hydraulic Calc', icon: <Droplets size={14} /> },
   { id: 'standpipe', label: 'Standpipe', icon: <Building2 size={14} /> },
+  { id: 'extinguishers', label: 'Extinguishers', icon: <FlameKindling size={14} /> },
   { id: 'pumps', label: 'Pumps', icon: <Cylinder size={14} /> },
   { id: 'tank', label: 'Tank & Sump', icon: <Warehouse size={14} /> },
   { id: 'room', label: 'Pump Room', icon: <BarChart3 size={14} /> },
   { id: 'checks', label: 'Checks', icon: <ClipboardCheck size={14} /> },
   { id: 'report', label: 'Report', icon: <FileText size={14} /> }
 ]
+
+const XL_COLS: Record<number, string> = {
+  7: 'xl:grid-cols-7',
+  8: 'xl:grid-cols-8',
+  9: 'xl:grid-cols-9'
+}
 
 const Stat: React.FC<{ label: string; value: React.ReactNode; sub?: React.ReactNode }> = ({
   label,
@@ -65,7 +74,7 @@ export const FireWorkspace: React.FC = () => {
       const t = result.tank
       return (
         <div
-          className={`bg-neutral-900 border border-neutral-850 rounded-2xl p-5 grid grid-cols-2 md:grid-cols-4 ${result.standpipe ? 'xl:grid-cols-8' : 'xl:grid-cols-7'} gap-4 shadow-xl`}
+          className={`bg-neutral-900 border border-neutral-850 rounded-2xl p-5 grid grid-cols-2 md:grid-cols-4 ${XL_COLS[7 + (result.standpipe ? 1 : 0) + (result.extinguishers ? 1 : 0)]} gap-4 shadow-xl`}
         >
           <Stat
             label="Pump rated"
@@ -105,6 +114,13 @@ export const FireWorkspace: React.FC = () => {
                 />
               )
             })()}
+          {result.extinguishers && (
+            <Stat
+              label="Extinguishers"
+              value={result.extinguishers.totalCount}
+              sub={`${result.extinguishers.zones.length} zones`}
+            />
+          )}
           <Stat label="Overall" value={<StatusChip status={overall} />} />
           <Stat
             label="Failing / warnings"
@@ -159,6 +175,7 @@ export const FireWorkspace: React.FC = () => {
             {activeView === 'drawings' && <DrawingPreview />}
             {activeView === 'calc' && <HydraulicCalcPanel result={result} />}
             {activeView === 'standpipe' && <StandpipePanel result={result} />}
+            {activeView === 'extinguishers' && <ExtinguisherPanel result={result} />}
             {activeView === 'pumps' && <PumpsPanel result={result} />}
             {activeView === 'tank' && <TankPanel result={result} />}
             {activeView === 'room' && <PumpRoomPanel result={result} />}

@@ -22,6 +22,8 @@ interface LearningApi {
   setInput: (partial: Partial<FireDesignInput>) => void
   setActiveView: (v: FireView) => void
   setActiveSheet: (i: number) => void
+  /** Show the drawing sheet whose number starts with the given prefix (e.g. "FP-108"). */
+  showSheet: (numberPrefix: string) => void
   loadExample: () => void
   input: FireDesignInput
 }
@@ -58,6 +60,7 @@ const VIEW_LABEL: Record<FireView, string> = {
   drawings: 'Drawings',
   calc: 'Hydraulic Calc',
   standpipe: 'Standpipe',
+  extinguishers: 'Extinguishers',
   pumps: 'Pumps',
   tank: 'Tank & Sump',
   room: 'Pump Room',
@@ -354,10 +357,7 @@ const STEPS: LearningStep[] = [
       open('room'),
       {
         label: 'Show drawing FP-101',
-        run: (a) => {
-          a.setActiveSheet(0)
-          a.setActiveView('drawings')
-        }
+        run: (a) => a.showSheet('FP-101')
       }
     ]
   },
@@ -410,7 +410,7 @@ const STEPS: LearningStep[] = [
     title: 'Step 10 - The drawing set & DXF export',
     where: 'Drawings tab',
     body: [
-      'The drawings are generated from the same results: FP-101 pump room plan, FP-102 section A-A through the suction and sump, FP-103 tank plan / section / sump detail, FP-104 pump schematic, FP-105 schedules & hydraulic calculations, FP-106 standpipe riser diagram (every floor, true levels), FP-107 typical floor connection side view, FDC and floor schedule.',
+      'The drawings are generated from the same results: FP-101 pump room plan, FP-102 section A-A through the suction and sump, FP-103 tank plan / section / sump detail, FP-104 pump schematic, FP-105 schedules & hydraulic calculations, FP-106 standpipe riser diagram (every floor, true levels), FP-107 typical floor connection side view, FDC and floor schedule. When extinguishers are enabled, FP-108 (portable extinguisher layout, schematic floor plans per floor, more pages FP-108.2 … if needed) and FP-109 (extinguisher schedule, specifications and notes) follow.',
       'Use the mouse wheel to zoom and drag to pan, "Fit" to reset. "Export DXF" saves all sheets in one AutoCAD R12 DXF (millimetres, layers prefixed FP-), which opens in AutoCAD, BricsCAD, LibreCAD, etc.'
     ],
     live: () => {
@@ -423,22 +423,79 @@ const STEPS: LearningStep[] = [
     actions: [
       {
         label: 'Show FP-106 riser diagram',
-        run: (a) => {
-          a.setActiveSheet(5)
-          a.setActiveView('drawings')
-        }
+        run: (a) => a.showSheet('FP-106')
       },
       {
         label: 'Show FP-107 floor connection',
-        run: (a) => {
-          a.setActiveSheet(6)
-          a.setActiveView('drawings')
-        }
+        run: (a) => a.showSheet('FP-107')
+      },
+      {
+        label: 'Show FP-108 extinguisher layout',
+        run: (a) => a.showSheet('FP-108')
       }
     ]
   },
   {
-    title: 'Step 11 - Report & your own project',
+    title: 'Step 12 - Portable fire extinguishers (NFPA 10)',
+    where: 'Inputs → FIRE EXTINGUISHERS (NFPA 10), then the Extinguishers tab and drawing FP-108',
+    body: [
+      'Portable extinguishers are the first line of defence. Each protected area (zone) gets an occupancy hazard - light (low), ordinary (moderate) or extra (high) - and the fire classes present: A ordinary combustibles, B flammable liquids, C energized electrical, D combustible metals, K cooking oils and fats.',
+      'Class A (Table 6.2.1.1): the unit rating sets how much floor it protects - e.g. a 2-A unit covers 3 000 ft² in light hazard but only 1 500 ft² in ordinary hazard - capped at 11 250 ft² per extinguisher, and nobody may be more than 75 ft (23 m) from a unit. Class B: 30 ft for spills (50 ft with a high-rated unit), 50 ft and 20-B per ft² of surface for liquid deeper than ¼ in. Class K: a 1.5 gal wet-chemical unit within 30 ft of the fryers. Class D: a unit for the specific metal within 75 ft.',
+      'The engine tries every unit in the catalog, finds the smallest uniform grid (nx × ny) that meets both the area and the travel limit, and picks the candidate with the fewest units (lighter unit on ties). Dry chemical is not used for delicate electronics - CO2 or a clean agent is selected instead.',
+      'Mounting (§6.1.3.8): units up to 40 lb with the top at most 5 ft above the floor, heavier units at most 3.5 ft, and the bottom at least 4 in off the floor; use a cabinet where protection from damage or weather is needed.'
+    ],
+    live: (r) => {
+      const e = r.extinguishers
+      if (!e)
+        return [['Extinguishers', 'OFF - tick "Enable portable fire extinguishers" in the inputs']]
+      return [
+        ['Total extinguishers', String(e.totalCount)],
+        [
+          'Per type',
+          e.totals.map((t) => `${t.qty} × ${t.unitId} (${t.ratingText})`).join(' · ') || '-'
+        ],
+        ['Zones', e.zones.map((z) => `${z.zoneName}: ${z.count}`).join(' · ')],
+        ['Floors without units', e.floorsMissing.length ? e.floorsMissing.join(', ') : 'none']
+      ]
+    },
+    actions: [
+      open('extinguishers'),
+      { label: 'Show FP-108 extinguisher layout', run: (a) => a.showSheet('FP-108') },
+      {
+        label: 'Try: Parking / B1 zone extra hazard',
+        run: (a) => {
+          const ex = a.input.extinguishers
+          if (!ex) return
+          const isParking = (z: { name: string; floorId: string }): boolean =>
+            /park/i.test(z.name) || z.floorId === 'B1'
+          const target = ex.zones.find(isParking)
+          if (!target) return
+          a.setInput({
+            extinguishers: {
+              zones: ex.zones.map((z) => (z === target ? { ...z, hazard: 'extra' as const } : z))
+            }
+          })
+        }
+      },
+      {
+        label: 'Back to ordinary hazard',
+        run: (a) => {
+          const ex = a.input.extinguishers
+          if (!ex) return
+          const target = ex.zones.find((z) => /park/i.test(z.name) || z.floorId === 'B1')
+          if (!target) return
+          a.setInput({
+            extinguishers: {
+              zones: ex.zones.map((z) => (z === target ? { ...z, hazard: 'ordinary' as const } : z))
+            }
+          })
+        }
+      }
+    ],
+    tip: 'Extra hazard needs at least a 4-A unit and lowers the area per A-rating from 1 500 to 1 000 ft², so the parking zone usually needs more or larger extinguishers - watch the total and the Extinguishers tab change.'
+  },
+  {
+    title: 'Step 13 - Report & your own project',
     where: 'Report tab',
     body: [
       'The Report tab contains the full calculation in text form (design basis, node tables, pumps, tank, pump room, standpipe floor schedule and all checks) - download it and attach it to the drawings.',
@@ -482,6 +539,12 @@ export const LearningPanel: React.FC = () => {
     setInput,
     setActiveView,
     setActiveSheet,
+    showSheet: (prefix) => {
+      const d = useFireProtectionStore.getState().drawing
+      const idx = d ? d.sheets.findIndex((sh) => sh.number.startsWith(prefix)) : -1
+      if (idx >= 0) setActiveSheet(idx)
+      setActiveView('drawings')
+    },
     loadExample: loadLearningExample,
     input
   }

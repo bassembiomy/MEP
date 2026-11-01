@@ -1,9 +1,11 @@
 import React, { useState } from 'react'
-import { ChevronDown, ChevronRight, Plus, RotateCcw, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Copy, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { useFireProtectionStore } from '../store/fireProtectionStore'
 import type {
   BuildingInput,
   FireDesignInput,
+  ExtinguisherHazard,
+  ExtinguisherZoneInput,
   FloorLevel,
   StandpipeDesignInput,
   StandpipeLocation,
@@ -19,6 +21,7 @@ import type {
   TankPlacement
 } from '../engine/fireProtection/fpTypes'
 import { DEFAULT_FIRE_INPUT } from '../engine/fireProtection/defaults'
+import { generateExtinguisherZonesFromFloors } from '../engine/fireProtection/extinguisherDesigner'
 import { NOMINAL_SIZES_IN, formatPipeSize } from '../engine/fireProtection/standards/pipeData'
 
 const inputCls =
@@ -811,6 +814,220 @@ const StandpipeDesignSection: React.FC<{
   )
 }
 
+// ───────────────────────── Portable fire extinguishers (NFPA 10) ─────────────────────────
+
+const FE_HAZARD_OPTIONS: { value: ExtinguisherHazard; label: string }[] = [
+  { value: 'light', label: 'Light (Low) Hazard' },
+  { value: 'ordinary', label: 'Ordinary (Moderate) Hazard' },
+  { value: 'extra', label: 'Extra (High) Hazard' }
+]
+const FE_B_OPTIONS: { value: ExtinguisherZoneInput['classB']; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'spill', label: 'Spill / shallow (≤ ¼ in)' },
+  { value: 'deep', label: 'Deep (> ¼ in)' }
+]
+const FE_MOUNT_OPTIONS: { value: ExtinguisherZoneInput['mounting']; label: string }[] = [
+  { value: 'bracket', label: 'Wall bracket' },
+  { value: 'cabinet', label: 'Cabinet' }
+]
+
+const FE_NEW_ZONE: Omit<ExtinguisherZoneInput, 'id' | 'floorId' | 'name'> = {
+  hazard: 'ordinary',
+  lengthM: 10,
+  widthM: 8,
+  classA: true,
+  classB: 'none',
+  deepLayerSurfaceM2: 0,
+  classC: false,
+  sensitiveElectronics: false,
+  classD: false,
+  dMetal: '',
+  fryers: 0,
+  maxFryerOilLb: 0,
+  mounting: 'bracket'
+}
+
+const FireExtinguisherSection: React.FC<{
+  zones: ExtinguisherZoneInput[]
+  building: BuildingInput | undefined
+  onChange: (zones: ExtinguisherZoneInput[]) => void
+}> = ({ zones, building, onChange }) => {
+  const floors = building?.floors.filter((f) => !f.isRoof) ?? []
+  const patch = (i: number, p: Partial<ExtinguisherZoneInput>): void =>
+    onChange(zones.map((z, k) => (k === i ? { ...z, ...p } : z)))
+  const nextId = (): string => {
+    let n = zones.length + 1
+    while (zones.some((z) => z.id === `Z${n}`)) n++
+    return `Z${n}`
+  }
+  const add = (): void =>
+    onChange([
+      ...zones,
+      { ...FE_NEW_ZONE, id: nextId(), name: 'New zone', floorId: floors[0]?.id ?? 'GF' }
+    ])
+  const dup = (i: number): void => {
+    const z = zones[i]
+    const copy = { ...z, id: nextId(), name: `${z.name} copy` }
+    onChange([...zones.slice(0, i + 1), copy, ...zones.slice(i + 1)])
+  }
+  const generate = (): void => {
+    if (building) onChange(generateExtinguisherZonesFromFloors(building))
+  }
+  return (
+    <>
+      <div className="col-span-2 text-[10px] text-neutral-500 leading-relaxed bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1.5">
+        NFPA 10 rules: Class A travel ≤ 75 ft (23 m); Class B 30 ft (9 m) for spills / 50 ft (15 m)
+        for deep liquid; Class K ≤ 30 ft (9 m) from cooking; Class D ≤ 75 ft. Mount units ≤ 5 ft
+        (1.5 m) to the top when ≤ 40 lb, ≤ 3.5 ft (1.1 m) when heavier; bottom ≥ 4 in (100 mm) above
+        the floor.
+      </div>
+      <div className="col-span-2 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={generate}
+          disabled={!building}
+          title={building ? undefined : 'Enable the detailed building first'}
+          className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-neutral-950 border border-neutral-800 text-[10px] font-bold text-neutral-300 hover:text-red-400 cursor-pointer disabled:opacity-40 disabled:cursor-default"
+        >
+          <RotateCcw size={11} /> Generate zones from building floors
+        </button>
+        <button
+          type="button"
+          onClick={add}
+          className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-neutral-950 border border-neutral-800 text-[10px] font-bold text-neutral-300 hover:text-red-400 cursor-pointer"
+        >
+          <Plus size={11} /> Add zone
+        </button>
+      </div>
+      <div className="col-span-2 text-[10px] font-bold text-orange-500 uppercase">
+        Zones ({zones.length})
+      </div>
+      {zones.map((z, i) => {
+        const floorKnown = floors.some((f) => f.id === z.floorId)
+        return (
+          <div
+            key={z.id}
+            className="col-span-2 grid grid-cols-2 gap-2 border border-neutral-800 rounded-xl p-2.5 bg-neutral-950/40"
+          >
+            <div className="col-span-2 flex items-center gap-1.5">
+              <span className="text-[10px] font-bold text-red-400 font-mono">{z.id}</span>
+              <div className="flex-1 min-w-0">
+                <TextCell value={z.name} onChange={(v) => patch(i, { name: v })} />
+              </div>
+              <IconBtn title={`Duplicate ${z.id}`} onClick={() => dup(i)}>
+                <Copy size={11} />
+              </IconBtn>
+              <IconBtn
+                title={`Delete ${z.id}`}
+                disabled={zones.length <= 1}
+                onClick={() => onChange(zones.filter((_, k) => k !== i))}
+              >
+                <Trash2 size={11} />
+              </IconBtn>
+            </div>
+            {floors.length > 0 ? (
+              <Select
+                label="Floor"
+                value={z.floorId}
+                options={[
+                  ...floors.map((f) => ({ value: f.id, label: `${f.id} - ${f.name}` })),
+                  ...(floorKnown ? [] : [{ value: z.floorId, label: `${z.floorId} (custom)` }])
+                ]}
+                onChange={(v) => patch(i, { floorId: v })}
+              />
+            ) : (
+              <TextField
+                label="Floor / level"
+                value={z.floorId}
+                onChange={(v) => patch(i, { floorId: v })}
+              />
+            )}
+            <Select
+              label="Hazard"
+              value={z.hazard}
+              options={FE_HAZARD_OPTIONS}
+              onChange={(v) => patch(i, { hazard: v })}
+            />
+            <NumField
+              label="Length (m)"
+              value={z.lengthM}
+              min={0.1}
+              step={0.5}
+              onChange={(v) => v !== undefined && v > 0 && patch(i, { lengthM: v })}
+            />
+            <NumField
+              label="Width (m)"
+              value={z.widthM}
+              min={0.1}
+              step={0.5}
+              onChange={(v) => v !== undefined && v > 0 && patch(i, { widthM: v })}
+            />
+            <div className="col-span-2 grid grid-cols-2 gap-x-3 gap-y-1">
+              <Check
+                label="Class A (ordinary combustibles)"
+                value={z.classA}
+                onChange={(v) => patch(i, { classA: v })}
+              />
+              <Check
+                label="Class C (energized electrical)"
+                value={z.classC}
+                onChange={(v) => patch(i, { classC: v })}
+              />
+              <Check
+                label="Sensitive electronics (no dry chemical)"
+                value={z.sensitiveElectronics}
+                onChange={(v) => patch(i, { sensitiveElectronics: v })}
+              />
+              <Check
+                label="Class D (combustible metals)"
+                value={z.classD}
+                onChange={(v) => patch(i, { classD: v })}
+              />
+            </div>
+            <Select
+              label="Class B (flammable liquids)"
+              value={z.classB}
+              options={FE_B_OPTIONS}
+              onChange={(v) => patch(i, { classB: v })}
+            />
+            {z.classB === 'deep' && (
+              <NumField
+                label="Deep surface (m²)"
+                value={z.deepLayerSurfaceM2}
+                min={0}
+                step={0.1}
+                onChange={(v) => v !== undefined && v >= 0 && patch(i, { deepLayerSurfaceM2: v })}
+              />
+            )}
+            {z.classD && (
+              <TextField label="Metal" value={z.dMetal} onChange={(v) => patch(i, { dMetal: v })} />
+            )}
+            <NumField
+              label="Fryers (Class K)"
+              value={z.fryers}
+              min={0}
+              step={1}
+              onChange={(v) => v !== undefined && v >= 0 && patch(i, { fryers: Math.round(v) })}
+            />
+            <NumField
+              label="Max oil (lb)"
+              value={z.maxFryerOilLb}
+              min={0}
+              onChange={(v) => v !== undefined && v >= 0 && patch(i, { maxFryerOilLb: v })}
+            />
+            <Select
+              label="Mounting"
+              value={z.mounting}
+              options={FE_MOUNT_OPTIONS}
+              onChange={(v) => patch(i, { mounting: v })}
+            />
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
 export const FireInputPanel: React.FC = () => {
   const { input, setInput, reset } = useFireProtectionStore()
   const set = (p: Partial<FireDesignInput>): void => setInput(p)
@@ -828,6 +1045,21 @@ export const FireInputPanel: React.FC = () => {
       standpipeDesign: structuredClone(d),
       standpipeCount: d.locations.length
     })
+  }
+
+  const toggleExtinguishers = (on: boolean): void => {
+    if (!on) {
+      set({ extinguishers: undefined })
+      return
+    }
+    const def = DEFAULT_FIRE_INPUT.extinguishers
+    const usingDefaultBuilding =
+      JSON.stringify(input.building) === JSON.stringify(DEFAULT_FIRE_INPUT.building)
+    if (def && (usingDefaultBuilding || !input.building)) {
+      set({ extinguishers: structuredClone(def) })
+    } else if (input.building) {
+      set({ extinguishers: { zones: generateExtinguisherZonesFromFloors(input.building) } })
+    }
   }
 
   return (
@@ -1025,6 +1257,21 @@ export const FireInputPanel: React.FC = () => {
           />
         </Section>
       )}
+
+      <Section title="FIRE EXTINGUISHERS (NFPA 10)">
+        <Check
+          label="Enable portable fire extinguishers"
+          value={!!input.extinguishers}
+          onChange={toggleExtinguishers}
+        />
+        {input.extinguishers && (
+          <FireExtinguisherSection
+            zones={input.extinguishers.zones}
+            building={input.building}
+            onChange={(zones) => set({ extinguishers: { zones } })}
+          />
+        )}
+      </Section>
 
       <Section title="Pump Set (NFPA 20)">
         <div className="col-span-2">

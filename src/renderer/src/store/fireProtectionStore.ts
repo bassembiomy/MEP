@@ -8,7 +8,16 @@ import type { Drawing } from '../engine/fireProtection/drawing/drawingTypes'
 
 export type Discipline = 'hvac' | 'fire'
 export type FireView =
-  'learning' | 'drawings' | 'calc' | 'standpipe' | 'pumps' | 'tank' | 'room' | 'checks' | 'report'
+  | 'learning'
+  | 'drawings'
+  | 'calc'
+  | 'standpipe'
+  | 'extinguishers'
+  | 'pumps'
+  | 'tank'
+  | 'room'
+  | 'checks'
+  | 'report'
 
 interface Computed {
   result: FireDesignResult | null
