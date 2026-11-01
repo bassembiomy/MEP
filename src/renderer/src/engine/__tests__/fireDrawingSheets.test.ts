@@ -35,12 +35,17 @@ const drawing = generateFireDrawings(result);
 // 1. Sheets
 {
   const nums = drawing.sheets.map((s) => s.number);
-  const expected = ['FP-101', 'FP-102', 'FP-103', 'FP-104', 'FP-105', ...(result.standpipe ? ['FP-106', 'FP-107'] : [])];
+  const expected = [
+    'FP-101', 'FP-102', 'FP-103', 'FP-104', 'FP-105',
+    ...(result.standpipe ? ['FP-106', 'FP-107'] : []),
+    ...(result.extinguishers ? ['FP-108', 'FP-109'] : [])
+  ];
+  assert(result.extinguishers !== null, 'default design includes portable extinguishers');
   assert(result.standpipe !== null, 'default design includes the standpipe system');
   assert(JSON.stringify(nums) === JSON.stringify(expected), `sheet numbers ${nums}`);
   for (const s of drawing.sheets) {
     assert(s.paper === 'A1' && s.paperWidthMm === 841 && s.paperHeightMm === 594, `${s.number} A1`);
-    assert([1, 10, 20, 25, 50, 75, 100, 150, 200, 250, 500].includes(s.scale), `${s.number} standard scale, got ${s.scale}`);
+    assert([1, 10, 20, 25, 50, 75, 100, 150, 200, 250, 500, 1000].includes(s.scale), `${s.number} standard scale, got ${s.scale}`);
   }
   for (let i = 1; i < drawing.sheets.length; i++) {
     const a = frameOf(drawing.sheets[i - 1]);
@@ -115,6 +120,19 @@ const drawing = generateFireDrawings(result);
   const prvCount = sp.risers.reduce((n, r) => n + r.outlets.filter((o) => o.prvRequired).length, 0);
   assert(texts.filter((t) => /PRV SET 175 PSI/i.test(t)).length >= prvCount, `≥ ${prvCount} PRV labels on the riser diagram`);
   assert(dims.includes(String(DEFAULT_FIRE_INPUT.standpipeDesign!.hoseValveHeightMm)), 'hose valve height dimensioned');
+  // Extinguisher sheets (FP-108 schematic layouts, FP-109 details / schedule / specifications)
+  const fe = result.extinguishers!;
+  for (const s of ['PORTABLE FIRE EXTINGUISHER LAYOUT', 'MOUNTING DETAIL', 'SEMI-RECESSED CABINET', 'SIGN DETAIL', 'EXTINGUISHER SCHEDULE', 'QUANTITY SUMMARY', 'SELECTION MATRIX', 'INSPECTION & MAINTENANCE', 'EXTINGUISHER SPECIFICATIONS', 'NFPA 10', 'IFC', 'CLASS K', 'TRAVEL']) {
+    assert(has(s), `extinguisher drawing text contains "${s}"`);
+  }
+  for (const z of fe.zones) {
+    for (const e of z.extinguishers) assert(texts.filter((t) => t === e.tag).length >= 2, `${e.tag} on the plan and in the schedule`);
+    assert(texts.some((t) => t.toUpperCase().includes(z.zoneName.toUpperCase())), `zone ${z.zoneName} labelled`);
+  }
+  for (const t of fe.totals) assert(texts.some((x) => x.includes(t.ratingText)), `rating ${t.ratingText} in schedule`);
+  assert(dims.includes('1200') && dims.includes('1000'), 'mounting heights dimensioned');
+  const coverage = drawing.entities.filter((e) => e.kind === 'circle' && e.layer === 'FP-HIDN');
+  assert(coverage.length >= fe.totalCount, `coverage circles for every unit (${coverage.length} ≥ ${fe.totalCount})`);
   console.log('✓ annotations, dimensions, levels, tables');
 }
 

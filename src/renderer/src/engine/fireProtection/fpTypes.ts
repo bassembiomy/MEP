@@ -90,6 +90,52 @@ export interface BuildingInput {
   fireDeptAccessElevationM: number;
 }
 
+// ── Portable fire extinguishers (NFPA 10-2022) ──
+
+/** NFPA 10 §5.4 occupancy hazard (light = low, ordinary = moderate, extra = high). */
+export type ExtinguisherHazard = 'light' | 'ordinary' | 'extra';
+
+export type ExtinguisherAgent =
+  | 'dry-chemical-abc'
+  | 'co2'
+  | 'water'
+  | 'afff'
+  | 'clean-agent'
+  | 'wet-chemical'
+  | 'dry-powder-d';
+
+/** One protected area (room / zone) on a floor. Geometry is a rectangle used for coverage & the schematic plan. */
+export interface ExtinguisherZoneInput {
+  id: string; // Z1
+  name: string; // "Parking", "Electrical Room"
+  /** Building floor id (BuildingInput.floors[].id) or a free level label when no building is defined. */
+  floorId: string;
+  hazard: ExtinguisherHazard;
+  lengthM: number;
+  widthM: number;
+  /** Ordinary combustibles (Class A). */
+  classA: boolean;
+  /** Flammable liquids: none, spill / shallow (≤ ¼ in) or appreciable depth (> ¼ in, NFPA 10 §6.3.2). */
+  classB: 'none' | 'spill' | 'deep';
+  /** Largest liquid surface for 'deep', m². */
+  deepLayerSurfaceM2: number;
+  /** Energized electrical equipment (Class C, §6.4). */
+  classC: boolean;
+  /** Delicate electronics — dry chemical not used (§5.5 / Annex); CO2 or clean agent only. */
+  sensitiveElectronics: boolean;
+  /** Combustible metals (Class D, §6.5). */
+  classD: boolean;
+  dMetal: string;
+  /** Class K cooking: number of deep-fat fryers and the largest fry-pot capacity (lb of cooking medium), §6.6. */
+  fryers: number;
+  maxFryerOilLb: number;
+  mounting: 'bracket' | 'cabinet';
+}
+
+export interface ExtinguisherDesignInput {
+  zones: ExtinguisherZoneInput[];
+}
+
 export interface StandpipeDesignInput {
   systemType: StandpipeSystemType;
   /** Standpipes also supply the floor sprinkler systems (combined system, NFPA 14 §3.3.20.1). */
@@ -183,6 +229,9 @@ export interface FireDesignInput {
   //    and the sprinkler riser rise/length is derived from the top sprinklered floor) ──
   building?: BuildingInput;
   standpipeDesign?: StandpipeDesignInput;
+
+  /** Portable fire extinguisher design (NFPA 10). Optional; when absent result.extinguishers is null. */
+  extinguishers?: ExtinguisherDesignInput;
 }
 
 // ─────────────────────────────── Hydraulic results ───────────────────────────────
@@ -309,6 +358,94 @@ export interface StandpipeSystemDesign {
   drainRiserIn: number | null; // 3" when PRVs are installed
   mainDrainIn: number; // 2"
   hoseValveHeightMm: number;
+  checks: DesignCheck[];
+}
+
+export interface ExtinguisherUnitType {
+  id: string; // ABC-10
+  label: string; // "Multipurpose dry chemical ABC, 10 lb (4.5 kg)"
+  agent: ExtinguisherAgent;
+  aRating: number; // 0 when not A-rated
+  bRating: number; // 0 when not B-rated
+  cRated: boolean;
+  kRated: boolean;
+  dRated: boolean;
+  ratingText: string; // "4-A:60-B:C"
+  capacity: string; // "10 lb (4.5 kg)"
+  grossWeightLb: number;
+  heightMm: number;
+  wheeled: boolean;
+  /** NFPA 10 Table 8.3.1 hydrostatic test interval, years. */
+  hydroTestYears: number;
+  /** NFPA 10 §7.3.3 internal examination interval (stored-pressure dry chemical: 6 yr), null if n/a. */
+  internalExamYears: number | null;
+}
+
+export interface PlacedExtinguisher {
+  tag: string; // FE-B1-01
+  zoneId: string;
+  floorId: string;
+  unitId: string;
+  purpose: 'general' | 'class-k' | 'class-d';
+  /** Coverage point relative to the zone origin (lower-left), m. */
+  xM: number;
+  yM: number;
+  /** Max travel distance this unit is placed for, ft (radius drawn on the plan). */
+  coverageRadiusFt: number;
+  mounting: 'bracket' | 'cabinet' | 'wheeled';
+  /** Height of the extinguisher top above floor, mm (NFPA 10 §6.1.3.8). */
+  mountingTopMm: number;
+  bottomClearanceMm: number;
+}
+
+export interface ExtinguisherCandidate {
+  unitId: string;
+  count: number;
+  nx: number;
+  ny: number;
+  maxTravelFt: number;
+}
+
+export interface ExtinguisherZoneDesign {
+  zoneId: string;
+  zoneName: string;
+  floorId: string;
+  hazard: ExtinguisherHazard;
+  lengthFt: number;
+  widthFt: number;
+  areaFt2: number;
+  /** Class A requirement (null when classA false). */
+  minARating: number | null;
+  areaPerAFt2: number | null;
+  /** Floor area covered by one selected unit = min(rating × areaPerA, 11 250 ft²). */
+  maxAreaPerUnitFt2: number | null;
+  /** Class B requirement text, e.g. "20-B @ 50 ft or 10-B @ 30 ft (spill)". */
+  bRequirement: string | null;
+  minBRating: number | null;
+  /** Governing max travel distance for the general units, ft. */
+  maxTravelFt: number;
+  selectedUnitId: string | null;
+  count: number;
+  grid: { nx: number; ny: number };
+  /** Worst direct distance from any point of the zone to the nearest unit, ft (= half cell diagonal). */
+  maxTravelActualFt: number;
+  kUnits: number;
+  dUnits: number;
+  candidates: ExtinguisherCandidate[];
+  extinguishers: PlacedExtinguisher[];
+  notes: string[];
+  checks: DesignCheck[];
+}
+
+export interface ExtinguisherSystemDesign {
+  catalog: ExtinguisherUnitType[];
+  zones: ExtinguisherZoneDesign[];
+  /** Quantity per unit type (only types used), ordered by catalog order. */
+  totals: { unitId: string; label: string; ratingText: string; qty: number }[];
+  totalCount: number;
+  floorsCovered: string[];
+  /** Occupied (non-roof) building floors without any extinguisher. */
+  floorsMissing: string[];
   checks: DesignCheck[];
 }
 
@@ -577,6 +714,8 @@ export interface FireDesignResult {
   room: PumpRoomLayout;
   /** Present when input.building and input.standpipeDesign are given and standpipeClass !== 'none'. */
   standpipe: StandpipeSystemDesign | null;
+  /** Present when input.extinguishers is given. */
+  extinguishers: ExtinguisherSystemDesign | null;
   checks: DesignCheck[]; // all checks concatenated
   standardsReferences: { code: string; edition: string; scope: string }[];
 }
