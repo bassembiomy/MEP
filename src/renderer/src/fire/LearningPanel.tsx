@@ -436,7 +436,7 @@ const STEPS: LearningStep[] = [
     ]
   },
   {
-    title: 'Step 12 - Portable fire extinguishers (NFPA 10)',
+    title: 'Step 11 - Portable fire extinguishers (NFPA 10)',
     where: 'Inputs → FIRE EXTINGUISHERS (NFPA 10), then the Extinguishers tab and drawing FP-108',
     body: [
       'Portable extinguishers are the first line of defence. Each protected area (zone) gets an occupancy hazard - light (low), ordinary (moderate) or extra (high) - and the fire classes present: A ordinary combustibles, B flammable liquids, C energized electrical, D combustible metals, K cooking oils and fats.',
@@ -495,7 +495,7 @@ const STEPS: LearningStep[] = [
     tip: 'Extra hazard needs at least a 4-A unit and lowers the area per A-rating from 1 500 to 1 000 ft², so the parking zone usually needs more or larger extinguishers - watch the total and the Extinguishers tab change.'
   },
   {
-    title: 'Step 13 - Report & your own project',
+    title: 'Step 12 - Report & your own project',
     where: 'Report tab',
     body: [
       'The Report tab contains the full calculation in text form (design basis, node tables, pumps, tank, pump room, standpipe floor schedule and all checks) - download it and attach it to the drawings.',
