@@ -57,6 +57,7 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
       ...pumps.checks,
       ...tank.checks,
       ...room.checks,
+      ...room.drainageSump.checks,
       ...(standpipe ? standpipe.checks : []),
       ...(extinguishers ? [...extinguishers.zones.flatMap((z) => z.checks), ...extinguishers.checks] : [])
     ],

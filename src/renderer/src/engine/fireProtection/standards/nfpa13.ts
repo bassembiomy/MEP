@@ -70,6 +70,7 @@ const KEYS: (keyof EqRow)[] = ['elbow-45', 'elbow-90', 'long-turn-elbow-90', 'te
 export const EQUIVALENT_LENGTH_FT: Record<number, EqRow> = (() => {
   const out: Record<number, EqRow> = {};
   for (const size of NOMINAL_SIZES_IN) {
+    if (!EQ_RAW[size]) continue; // 1/2 in sensing-line tube has no NFPA 13 equivalent-length data
     const r = {} as EqRow;
     KEYS.forEach((k, i) => {
       let v = EQ_RAW[size][i];

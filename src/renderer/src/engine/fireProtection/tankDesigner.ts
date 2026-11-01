@@ -2,7 +2,7 @@
  * Fire water storage tank & suction sump design (NFPA 22): plan size from effective volume,
  * water levels, thicknesses, anti-vortex sump pit, connections and checks.
  */
-import { DesignCheck, FireDesignInput, PumpSetSelection, SumpPitDesign, SystemDemand, TankDesign, TankMaterial } from './fpTypes';
+import { DesignCheck, FireDesignInput, PumpSetSelection, SumpPitDesign, SystemDemand, TankAccessDesign, TankDesign, TankMaterial } from './fpTypes';
 import { galToM3, velocityFps } from './hydraulics';
 import { NOMINAL_SIZES_IN, internalDiameterIn, nextLargerSize, outsideDiameterMm } from './standards/pipeData';
 
@@ -119,8 +119,43 @@ export function designTank(input: FireDesignInput, demand: SystemDemand, pumps: 
     connections.push({ name: 'Relief return', sizeIn: pumps.mainReliefValve.dischargeIn, note: 'Pressure relief valve discharge return' });
   }
   connections.push({ name: 'Level indicator', sizeIn: 1, note: 'Low / high level alarms and gauge (NFPA 22-2018 Ch. 14)' });
-  connections.push({ name: 'Manhole', sizeIn: 0, note: 'Ø 800 mm (≥ 600) each compartment' });
+  const accessKind = input.tankAccess ?? 'top';
+  connections.push({
+    name: 'Manhole',
+    sizeIn: 0,
+    note: accessKind === 'top' ? 'Ø 800 mm roof manhole (≥ 600) each compartment, internal ladder' : 'Ø 600 mm bolted side manway each compartment, drain tank before opening'
+  });
   // Manhole is dimensional, not a pipe: size 0 means "not a pipe".
+
+  // ── Access (NFPA 22: manholes >= 600 mm; roof manholes with ladders or bolted side manways) ──
+  const dividerM = divider / 1000;
+  const openings: TankAccessDesign['openings'] = Array.from({ length: n }, (_, c) => {
+    const start = c * (Lc + dividerM);
+    return accessKind === 'top'
+      ? {
+          compartment: c + 1,
+          x: Math.round((start + Lc) * 1000 - 700),
+          y: Math.round(W * 1000 - 700),
+          sizeMm: 800,
+          label: 'D800 ROOF MANHOLE + INTERNAL LADDER'
+        }
+      : {
+          compartment: c + 1,
+          x: Math.round((start + Lc / 2) * 1000),
+          y: Math.round(W * 1000),
+          sizeMm: 600,
+          label: 'D600 BOLTED SIDE MANWAY, INVERT 300 ABOVE TANK FLOOR'
+        };
+  });
+  const access: TankAccessDesign = {
+    kind: accessKind,
+    openings,
+    ladder: accessKind === 'top' ? 'internal' : 'none',
+    note:
+      accessKind === 'top'
+        ? `${n} x D800 roof manhole(s) with lockable cover and internal ladder, one per compartment (NFPA 22; minimum 600 mm / 24 in)`
+        : `${n} x D600 bolted side manway(s) on the north wall, invert 300 mm above tank floor, one per compartment; the tank must be drained before a side manway is opened (NFPA 22; minimum 600 mm / 24 in)`
+  };
 
   const refillHours = requiredGal / input.refillFlowGpm / 60;
 
@@ -159,6 +194,16 @@ export function designTank(input: FireDesignInput, demand: SystemDemand, pumps: 
       reference: 'NFPA 22-2018 Ch. 14 (tank connections: overflow, vent)',
       status: overflowSize >= fill ? 'pass' : 'fail',
       detail: `Overflow ${overflowSize}" vs fill ${fill}" at ${input.refillFlowGpm} gpm; overflow invert at ${overflow.toFixed(2)} m above floor`
+    },
+    {
+      id: 'tank-access',
+      title: 'Tank access openings (manholes / manways)',
+      reference: 'NFPA 22 (tank access: openings >= 600 mm / 24 in; roof manholes with ladders or bolted side manways)',
+      status: accessKind === 'side' && material === 'reinforced-concrete' ? 'warn' : 'pass',
+      detail:
+        accessKind === 'side' && material === 'reinforced-concrete'
+          ? `${n} x D600 side manway(s) on a reinforced-concrete tank: side manways suit sectional GRP / steel tanks - a cast-in opening in a ${wall} mm RC wall needs a special puddle-flange frame; consider roof manholes`
+          : `${n} x ${openings[0].sizeMm} mm ${accessKind === 'top' ? 'roof manhole(s) with internal ladder' : 'bolted side manway(s), invert 300 mm above tank floor'} (one per compartment, minimum 600 mm)`
     }
   ];
 
@@ -183,6 +228,7 @@ export function designTank(input: FireDesignInput, demand: SystemDemand, pumps: 
     connections,
     materialSpec: MATERIAL_SPEC[material],
     refillHours,
+    access,
     checks
   };
 }

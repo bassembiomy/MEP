@@ -229,6 +229,11 @@ const TANK_MATERIALS: { value: TankMaterial; label: string }[] = [
   { value: 'grp-sectional', label: 'GRP sectional' },
   { value: 'steel-bolted', label: 'Bolted steel' }
 ]
+const TANK_ACCESS: { value: 'top' | 'side'; label: string }[] = [
+  { value: 'top', label: 'Top manholes' },
+  { value: 'side', label: 'Side manways' }
+]
+
 const TANK_PLACEMENTS: { value: TankPlacement; label: string }[] = [
   { value: 'underground', label: 'Underground' },
   { value: 'ground', label: 'Ground level' },
@@ -1277,14 +1282,74 @@ export const FireInputPanel: React.FC = () => {
       </Section>
 
       <Section title="Pump Set (NFPA 20)">
-        <div className="col-span-2">
-          <Select
-            label="Arrangement"
-            value={input.arrangement}
-            options={ARRANGEMENTS}
-            onChange={(v) => set({ arrangement: v })}
-          />
-        </div>
+        <Check
+          label="Custom pump set"
+          value={input.pumpCounts !== undefined}
+          onChange={(v) =>
+            set({ pumpCounts: v ? { electric: 1, diesel: 1, jockey: 1 } : undefined })
+          }
+        />
+        {input.pumpCounts ? (
+          <>
+            <NumField
+              label="Electric pumps (0-3)"
+              min={0}
+              step={1}
+              value={input.pumpCounts.electric}
+              onChange={(v) =>
+                v !== undefined &&
+                input.pumpCounts &&
+                set({
+                  pumpCounts: {
+                    ...input.pumpCounts,
+                    electric: Math.min(3, Math.max(0, Math.round(v)))
+                  }
+                })
+              }
+            />
+            <NumField
+              label="Diesel pumps (0-3)"
+              min={0}
+              step={1}
+              value={input.pumpCounts.diesel}
+              onChange={(v) =>
+                v !== undefined &&
+                input.pumpCounts &&
+                set({
+                  pumpCounts: {
+                    ...input.pumpCounts,
+                    diesel: Math.min(3, Math.max(0, Math.round(v)))
+                  }
+                })
+              }
+            />
+            <NumField
+              label="Jockey pumps (1-2)"
+              min={1}
+              step={1}
+              value={input.pumpCounts.jockey}
+              onChange={(v) =>
+                v !== undefined &&
+                input.pumpCounts &&
+                set({
+                  pumpCounts: {
+                    ...input.pumpCounts,
+                    jockey: Math.min(2, Math.max(1, Math.round(v)))
+                  }
+                })
+              }
+            />
+          </>
+        ) : (
+          <div className="col-span-2">
+            <Select
+              label="Arrangement"
+              value={input.arrangement}
+              options={ARRANGEMENTS}
+              onChange={(v) => set({ arrangement: v })}
+            />
+          </div>
+        )}
         <div className="col-span-2">
           <Select
             label="Pump type"
@@ -1344,6 +1409,12 @@ export const FireInputPanel: React.FC = () => {
           value={input.refillFlowGpm}
           min={0}
           onChange={(v) => v !== undefined && set({ refillFlowGpm: v })}
+        />
+        <Select
+          label="Access"
+          value={input.tankAccess ?? 'top'}
+          options={TANK_ACCESS}
+          onChange={(v) => set({ tankAccess: v })}
         />
         <Check
           label="Two compartments (independent suction)"

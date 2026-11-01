@@ -312,10 +312,11 @@ export function buildFireCalcReport(result: FireDesignResult): string {
   );
 
   L.push(...section('Jockey pump & pressure setpoints'));
-  const j = pumps.jockey;
   const s = pumps.setpoints;
+  for (const j of pumps.jockeys) {
+    L.push(`${j.tag}: ${j.ratedFlowGpm} gpm @ ${j.ratedNetPressurePsi} psi, ${j.motorHp} HP, ${j.pipeSizeIn}" pipe, controller ${j.controller.tag} (${j.controller.listing})`);
+  }
   L.push(
-    `JP-1: ${j.ratedFlowGpm} gpm @ ${j.ratedNetPressurePsi} psi, ${j.motorHp} HP, ${j.pipeSizeIn}" pipe, controller ${j.controller.tag} (${j.controller.listing})`,
     `Jockey stop ${s.jockeyStopPsi} psi | jockey start ${s.jockeyStartPsi} psi | duty pump start ${s.dutyStartPsi} psi | standby pump start ${s.standbyStartPsi} psi`,
     `Minimum run timers: electric ${s.minRunTimerElectricMin} min, diesel ${s.minRunTimerDieselMin} min`
   );
@@ -332,6 +333,10 @@ export function buildFireCalcReport(result: FireDesignResult): string {
   for (const c of tank.connections) L.push(`   ${pad(c.name, 28)} ${c.sizeIn > 0 ? lpad(`${c.sizeIn}"`, 6) : lpad('-', 6)}  ${c.note}`);
   L.push('Material specification:');
   for (const m of tank.materialSpec) L.push(`   - ${m}`);
+
+  L.push(...section('Tank access - NFPA 22'));
+  L.push(`${tank.access.kind === 'top' ? 'Roof manholes with internal ladder' : 'Bolted side manways (no ladder)'}: ${tank.access.note}`);
+  for (const o of tank.access.openings) L.push(`   Compartment ${o.compartment}: ${o.label}  [x ${o.x} mm, y ${o.y} mm, D${o.sizeMm}]`);
 
   L.push(...section('Suction sump pit'));
   const sm = tank.sump;
@@ -351,6 +356,33 @@ export function buildFireCalcReport(result: FireDesignResult): string {
     'Equipment:'
   );
   for (const q of room.equipment) L.push(`   ${pad(q.tag, 8)} ${q.label}  [x ${num(q.rect.x, 0)}, y ${num(q.rect.y, 0)}, ${num(q.rect.w, 0)} x ${num(q.rect.h, 0)}]`);
+
+  L.push(...section('Wall penetrations - puddle flanges and sleeves'));
+  L.push(pad('Tag', 8) + pad('Service', 11) + lpad('Size', 7) + pad('  Wall', 8) + lpad('x mm', 8) + lpad('y mm', 8) + lpad('El. m', 7) + '  Detail');
+  for (const q of room.penetrations) {
+    L.push(pad(q.tag, 8) + pad(q.service, 11) + lpad(`${q.sizeIn}"`, 7) + pad(`  ${q.wall}`, 8) + lpad(num(q.x, 0), 8) + lpad(num(q.y, 0), 8) + lpad(num(q.elevationM, 2), 7) + `  ${q.note}`);
+  }
+
+  L.push(...section('Pressure sensing lines - NFPA 20 / drains'));
+  for (const sl of room.sensingLines) {
+    L.push(
+      `${pad(sl.pumpTag, 6)} -> ${pad(sl.controllerTag, 7)} ${sl.sizeIn}" ${sl.material}, length ${num(sl.lengthMm, 0)} mm, check valves (3/32" orifice) at ` +
+        `${sl.checkValves.map((c) => `(${c.x}, ${c.y})`).join(' and ')}, ${sl.checkValveSpacingMm} mm apart`
+    );
+  }
+  L.push(`Pump drains: ${room.pipes.filter((p) => p.service === 'drain' && p.id !== 'DRN-1').map((p) => p.id.replace('DRN-', '')).join(', ')} - casing drain, packing-gland drip and circulation relief to the floor trench (NFPA 20 4.12, IPC 802)`);
+
+  L.push(...section('Drainage sump - IPC 712'));
+  const ds = room.drainageSump;
+  L.push(
+    `${ds.tag}: pit ${ds.rect.w} x ${ds.rect.h} x ${ds.pitDepthMm} mm deep at (${num(ds.rect.x, 0)}, ${num(ds.rect.y, 0)}); ${ds.required ? 'PUMPED (floor below grade)' : 'GRAVITY drain (floor at grade)'}; inflow ${num(ds.inflowGpm, 0)} gpm`
+  );
+  for (const p of ds.pumps) L.push(`   ${p.tag}: ${p.type}, ${p.flowGpm} gpm @ ${p.headFt} ft, ${p.motorHp} HP`);
+  L.push(
+    `Discharge ${ds.dischargeSizeIn}" to ${ds.dischargeTo}`,
+    `Float levels above pit floor: off ${ds.levels.offMm}, lead ${ds.levels.leadOnMm}, lag ${ds.levels.lagOnMm}, alarm ${ds.levels.alarmMm} mm; working volume ${num(ds.workingVolumeGal, 1)} gal, cycle ${num(ds.cycleMinutes, 2)} min`
+  );
+  for (const c of ds.controls) L.push(`   - ${c}`);
 
   if (result.standpipe) L.push(...standpipeSection(result));
   if (result.extinguishers) L.push(...extinguisherSection(result));

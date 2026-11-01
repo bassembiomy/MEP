@@ -41,6 +41,7 @@ const KW_PER_HP = 0.7457;
 
 const f1 = (v: number): string => v.toFixed(1);
 const f2 = (v: number): string => v.toFixed(2);
+const pcText = (pc: FireDesignInput['pumpCounts']): string => (pc ? `${pc.electric} electric / ${pc.diesel} diesel / ${pc.jockey} jockey` : '-');
 
 function smallestAtLeast(list: number[], v: number, what: string): number {
   const r = list.find((x) => x >= v - 1e-9);
@@ -62,6 +63,21 @@ function driversFor(arrangement: FireDesignInput['arrangement']): PumpDriver[] {
     case 'diesel-only':
       return ['diesel'];
   }
+}
+
+/** Clamp a custom pump set: electric / diesel 0-3 each, 1-4 main pumps in total, 1-2 jockey pumps (NFPA 20 Ch. 4, 9, 11). */
+function clampPumpCounts(
+  pc: FireDesignInput['pumpCounts']
+): { electric: number; diesel: number; jockey: number; clamped: boolean } | null {
+  if (!pc) return null;
+  const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, Math.round(Number.isFinite(v) ? v : lo)));
+  const electric = clamp(pc.electric, 0, 3);
+  let diesel = clamp(pc.diesel, 0, 3);
+  let e = electric;
+  if (e + diesel > 4) diesel = 4 - e;
+  if (e + diesel === 0) e = 1;
+  const jockey = clamp(pc.jockey, 1, 2);
+  return { electric: e, diesel, jockey, clamped: e !== pc.electric || diesel !== pc.diesel || jockey !== pc.jockey };
 }
 
 /**
@@ -124,7 +140,10 @@ export function selectPumpSet(input: FireDesignInput, demand: SystemDemand): Pum
           : 'horizontal-split-case';
 
   // 8-10. Drivers and controllers
-  const drivers = driversFor(input.arrangement);
+  const counts = clampPumpCounts(input.pumpCounts);
+  const drivers = counts
+    ? [...Array<PumpDriver>(counts.electric).fill('electric'), ...Array<PumpDriver>(counts.diesel).fill('diesel')]
+    : driversFor(input.arrangement);
   const mainPumps: FirePumpSelection[] = drivers.map((driver, i) => {
     const tag = `FP-${i + 1}`;
     const ctrlTag = `FPC-${i + 1}`;
@@ -217,14 +236,15 @@ export function selectPumpSet(input: FireDesignInput, demand: SystemDemand): Pum
   const standbyStart = dutyStart - 10;
   const jockeyNet = Math.ceil((stop - staticFloor + 10) / 5 - 1e-9) * 5;
   const jockeyHp = smallestAtLeast(NEMA_MOTOR_HP, (jockeyFlow * jockeyNet * PSI_TO_FT) / (3960 * 0.4), 'jockey motor');
-  const jockey: JockeyPumpSelection = {
-    tag: 'JP-1',
+  const nJockeys = counts ? counts.jockey : 1;
+  const jockeys: JockeyPumpSelection[] = Array.from({ length: nJockeys }, (_, i) => ({
+    tag: `JP-${i + 1}`,
     ratedFlowGpm: jockeyFlow,
     ratedNetPressurePsi: jockeyNet,
     motorHp: jockeyHp,
     pipeSizeIn: jockeyFlow <= 10 ? 1 : jockeyFlow <= 25 ? 1.5 : 2,
     controller: {
-      tag: 'JPC-1',
+      tag: `JPC-${i + 1}`,
       kind: 'jockey-pump-controller',
       description: `Jockey pump controller, ${jockeyHp} HP, pressure-switch operated`,
       listing: 'UL 508A',
@@ -233,7 +253,8 @@ export function selectPumpSet(input: FireDesignInput, demand: SystemDemand): Pum
       heightMm: 700,
       mounting: 'wall'
     }
-  };
+  }));
+  const jockey = jockeys[0];
 
   // 14. Checks
   const checks: DesignCheck[] = [];
@@ -309,9 +330,22 @@ export function selectPumpSet(input: FireDesignInput, demand: SystemDemand): Pum
       : mainReliefValve.reason
   });
 
+  if (counts) {
+    const nE = mainPumps.filter((p) => p.driver === 'electric').length;
+    const nD = mainPumps.length - nE;
+    checks.push({
+      id: 'pump-count',
+      title: 'Pump set configuration (duty, standby and jockey pumps)',
+      reference: 'NFPA 20-2019 Ch. 6, 9, 11 (electric / diesel pumps); §4.26 / A.4.26 (pressure maintenance pumps)',
+      status: counts.clamped ? 'warn' : 'pass',
+      detail: `${nE} electric + ${nD} diesel main pump(s) (${mainPumps.map((p) => `${p.tag} ${p.driver} ${p.role}`).join(', ')}) and ${nJockeys} jockey pump(s) (${jockeys.map((j) => j.tag).join(', ')}) each with its own controller; ${nD} diesel fuel tank(s), one per engine (NFPA 20 §11.4.1)${counts.clamped ? `; requested counts ${pcText(input.pumpCounts)} were limited to 0-3 per driver type, 1-4 main pumps and 1-2 jockey pumps` : ''}`
+    });
+  }
+
   return {
     mainPumps,
     jockey,
+    jockeys,
     setpoints: {
       jockeyStopPsi: stop,
       jockeyStartPsi: start,

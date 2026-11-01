@@ -6,7 +6,7 @@
 import { PipeSchedule } from '../fpTypes';
 
 /** Standard nominal pipe sizes, inches (NFPA 13-2019 Table 28.2.3.1.1 range). */
-export const NOMINAL_SIZES_IN = [0.75, 1, 1.25, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 8, 10, 12, 14, 16] as const;
+export const NOMINAL_SIZES_IN = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 8, 10, 12, 14, 16] as const;
 
 export interface PipeDataRow {
   dn: number;
@@ -17,6 +17,7 @@ export interface PipeDataRow {
 
 /** Pipe dimensions by nominal size (inches). */
 export const PIPE_DATA: Record<number, PipeDataRow> = {
+  0.5: { dn: 15, odIn: 0.84, idSch40: 0.622, idSch10: 0.674 },
   0.75: { dn: 20, odIn: 1.05, idSch40: 0.824, idSch10: 0.884 },
   1: { dn: 25, odIn: 1.315, idSch40: 1.049, idSch10: 1.097 },
   1.25: { dn: 32, odIn: 1.66, idSch40: 1.38, idSch10: 1.442 },
@@ -65,7 +66,7 @@ export function nextLargerSize(nominalIn: number): number {
   return NOMINAL_SIZES_IN[i + 1];
 }
 
-const FRACTIONS: Record<number, string> = { 0.75: '¾', 1.25: '1¼', 1.5: '1½', 2.5: '2½', 3.5: '3½' };
+const FRACTIONS: Record<number, string> = { 0.5: '½', 0.75: '¾', 1.25: '1¼', 1.5: '1½', 2.5: '2½', 3.5: '3½' };
 
 /** Display label such as `DN150 (6")` or `DN65 (2½")`. */
 export function formatPipeSize(nominalIn: number): string {
