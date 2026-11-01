@@ -193,7 +193,6 @@ export function drawScheduleSheet(c: Ctx): void {
       }
     });
   }
-  if (process.env.FIRE_DEBUG) console.log("FP105 lastBottom", lastBottom, "cuts", cuts);
   const groups = [notes.slice(0, cuts[0] ?? notes.length), notes.slice(cuts[0] ?? notes.length, cuts[1] ?? notes.length), notes.slice(cuts[1] ?? notes.length)];
   const colX = [128, 350, 572];
   let num = 0;

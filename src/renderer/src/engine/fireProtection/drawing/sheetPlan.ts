@@ -594,7 +594,30 @@ export function drawPlanSheet(c: Ctx): void {
       b.circle('FP-ANNO', anchor[0], anchor[1], 0.45 * s);
       drawTag(b, X(tx), Y(ty), pen.tag, s);
       P.addHard({ x0: X(tx) - hw, y0: Y(ty) - 3 * s, x1: X(tx) + hw, y1: Y(ty) + 3 * s });
-    } else P.tag([X(pen.x), Y(pen.y)], pen.tag, pen.wall === 'north' ? [90, 45, 135, 0, 180, 270] : [270, 225, 315, 90, 45, 135, 0, 180]);
+    } else {
+      // sleeve tag: nearest free spot (the leader may cross the congested wall zone)
+      const an: [number, number] = [X(pen.x), Y(pen.y)];
+      const angs = pen.wall === 'north' ? [90, 45, 135, 0, 180, 270] : [270, 225, 315, 90, 45, 135, 0, 180];
+      const hwT = 5.5 * s;
+      let done = false;
+      for (const rad of [8, 11, 14, 18, 23, 29, 36, 44].map((k) => k * s)) {
+        for (const ang of angs) {
+          const cx = an[0] + Math.cos((ang * Math.PI) / 180) * rad;
+          const cy = an[1] + Math.sin((ang * Math.PI) / 180) * rad;
+          const bx: Box = { x0: cx - hwT, y0: cy - 3 * s, x1: cx + hwT, y1: cy + 3 * s };
+          if (!P.free(bx, 0.6 * s)) continue;
+          const dl = Math.hypot(cx - an[0], cy - an[1]);
+          b.line('FP-ANNO', an[0], an[1], cx - ((cx - an[0]) / dl) * 3 * s, cy - ((cy - an[1]) / dl) * 3 * s);
+          b.circle('FP-ANNO', an[0], an[1], 0.45 * s);
+          drawTag(b, cx, cy, pen.tag, s);
+          P.addHard(bx);
+          done = true;
+          break;
+        }
+        if (done) break;
+      }
+      if (!done) P.tag(an, pen.tag, angs);
+    }
   }
 
 
@@ -613,7 +636,7 @@ export function drawPlanSheet(c: Ctx): void {
     const seg = sl.points.slice(1).map((q, i) => [sl.points[i], q]).sort((a, q) => Math.abs(q[1][0] - q[0][0]) - Math.abs(a[1][0] - a[0][0]))[0];
     P.tag([X((seg[0][0] + seg[1][0]) / 2), Y((seg[0][1] + seg[1][1]) / 2)], 'K1', [90, 270, 45, 135, 315, 225]);
   }
-  for (const dr of room.pipes.filter((q) => q.service === 'drain' && q.id !== 'DRN-1').slice(-1)) {
+  for (const dr of room.pipes.filter((q) => q.service === 'drain' && q.id.startsWith('DRN-FP')).slice(-1)) {
     const [a, q] = [dr.points[0], dr.points[dr.points.length - 1]];
     P.tag([X((a[0] + q[0]) / 2), Y((a[1] + q[1]) / 2)], 'K2', [90, 270, 45, 135, 315, 225]);
   }

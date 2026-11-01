@@ -4,8 +4,8 @@
  * (1:10 or 1:20) on the 1:20 sheet; every dimension carries the TRUE value (override text).
  */
 import { formatPipeSize } from '../standards/pipeData';
-import { ballValve, butterflyValve, checkValve, pressureGauge } from './symbols';
-import { type Box, type Ctx, FRAME, Placer, PX, PY, TBLK, arrowLine, dimBoxes, drawNotes, textWidth } from './sheetKit';
+import { ballValve, butterflyValve, checkValve, gateValve, pressureGauge } from './symbols';
+import { type Box, type Ctx, FRAME, Placer, PX, PY, TBLK, arrowLine, dimBoxes, drawNotes, drawTag, textWidth } from './sheetKit';
 import { odOf, westWallMm } from './sheetGeom';
 
 type Pt = [number, number];
@@ -121,6 +121,7 @@ export function pumpRoomDetailNotes(c: Ctx): string[] {
 
 export function drawPumpRoomDetailsSheet(c: Ctx): void {
   const { b, sheet, r } = c;
+  const firstEntity = b.entities.length;
   const s = sheet.scale;
   const room = r.room;
   const tank = r.tank;
@@ -194,7 +195,7 @@ export function drawPumpRoomDetailsSheet(c: Ctx): void {
     fv.line('FP-CNTR', 0, -fod / 2 - 60, 0, fod / 2 + 60);
     fv.reg(-fod / 2 - 60, -fod / 2 - 60, fod / 2 + 60, fod / 2 + 60);
     fv.dim(-fod / 2, -fod / 2, fod / 2, -fod / 2, -9, String(fod));
-    sk.text(-stub - 270, -hh - 560, 2.2, 'VIEW ON FLANGE FROM TANK SIDE', { align: 'left' });
+    P.text('FP-ANNO', PX(c, x0 + 52), PY(c, ROW1.y0 + ROW1.h - 160 - 36), 2.2, 'VIEW ON FLANGE FROM TANK SIDE', { align: 'center', vAlign: 'middle' });
     // callouts
     P.setBounds({ x0: PX(c, x0 + 3), y0: PY(c, ROW1.y0 + 3), x1: PX(c, x0 + w - 3), y1: PY(c, ROW1.y0 + ROW1.h - 12) });
     sk.callout(t / 2, fod / 2 - 50, ['CAST-IN PUDDLE FLANGE', `${fod} OD x 10 THK, CENTRED IN WALL`], [90, 45, 135]);
@@ -255,7 +256,7 @@ export function drawPumpRoomDetailsSheet(c: Ctx): void {
     sk.callout(12, od / 2 + gap / 2, ['MECHANICAL LINK SEAL', 'BOTH FACES'], [90, 45, 135]);
     sk.callout(t / 2, od / 2 + gap / 2, ['FIRESTOP: MINERAL WOOL +', 'INTUMESCENT SEALANT (IBC 714)'], [270, 315, 225]);
     sk.callout(t / 2, id / 2 + sleeveT / 2, ['STEEL SLEEVE ID ' + id, '(PIPE OD + 50, ROUND UP 10)'], [90, 45, 135]);
-    sk.callout(0, -hh + 200, ['FIRE-RATED WALL', `${wRoom} THK`], [180, 225, 135]);
+    sk.callout(0, -hh + 200, ['FIRE-RATED WALL', `${wRoom} THK`], [225, 180, 270]);
     const spec = [`PIPE ${formatPipeSize(pipeIn)} (OD ${Math.round(od)}) - TAG WS-nn`, 'SLEEVE PROJECTS 20 BOTH FACES', 'FIRESTOP TESTED TO UL 1479 / ASTM E814', 'F-RATING NOT LESS THAN THE WALL RATING'];
     spec.forEach((ln, i) => P.text('FP-ANNO', PX(c, x0 + 22), PY(c, ROW1.y0 + 56 - i * 4.6), 2.2, ln, { vAlign: 'middle' }));
   }
@@ -269,9 +270,15 @@ export function drawPumpRoomDetailsSheet(c: Ctx): void {
     const pl = sp.vortexPlateMm;
     const D = sp.suctionPipeOdMm;
     const inlet = sp.inletAboveSumpFloorMm;
+    const num = (sk: Sk, n: string, x: number, y: number, ax: number, ay: number): void => {
+      const a = sk.m(ax, ay);
+      const t = sk.m(x, y);
+      arrowLine(b, a, t, s);
+      drawTag(b, t[0], t[1], n, s);
+    };
     // plan (left)
-    const pk = new Sk(c, P, s / 10, PX(c, x0 + 58), PY(c, ROW1.y0 + ROW1.h - 72));
-    pk.text(-pl / 2 - 140, pl / 2 + 520, 2.4, 'PLAN', { align: 'left' });
+    const pk = new Sk(c, P, s / 10, PX(c, x0 + 66), PY(c, ROW1.y0 + ROW1.h - 78));
+    pk.text(-pl / 2 - 100, pl / 2 + 330, 2.6, 'PLAN', { align: 'left' });
     pk.rect('FP-TANK', -pl / 2, -pl / 2, pl, pl);
     pk.circle('FP-PIPE-SUCT', 0, 0, D / 2);
     pk.circle('FP-PIPE-SUCT', 0, 0, D / 2 - 7);
@@ -281,34 +288,35 @@ export function drawPumpRoomDetailsSheet(c: Ctx): void {
     pk.reg(-pl / 2 - 80, -pl / 2 - 80, pl / 2 + 80, pl / 2 + 80);
     pk.dim(-pl / 2, -pl / 2, pl / 2, -pl / 2, -9, String(pl));
     pk.dim(pl / 2, -pl / 2, pl / 2, pl / 2, -9, String(pl));
-    pk.dim(-D / 2, 0, D / 2, 0, 0, `D=${Math.round(D)}`);
+    pk.dim(-pl / 2, pl / 2, -pl / 2 + 2 * D, pl / 2, 6, `2D=${Math.round(2 * D)}`);
+    num(pk, '1', -pl / 2 - 330, -pl / 2 + 60, -pl / 2 + 20, -pl / 2 + 60);
+    num(pk, '2', 330, 330, D / 2 * 0.7, D / 2 * 0.7);
     // section (right)
-    const q = new Sk(c, P, s / 10, PX(c, x0 + 168), PY(c, ROW1.y0 + 118));
-    const fl = 100; // floor slab thickness drawn
-    q.conc(-pl / 2 - 420, -fl, pl + 840, fl);
-    q.text(-pl / 2 - 420, 2.6 * 190, 2.4, 'SECTION', { align: 'left' });
-    // water level
-    q.line('FP-WATR', -pl / 2 - 420, inlet + D + 330, pl / 2 + 420, inlet + D + 330);
-    q.text(pl / 2 + 400, inlet + D + 330 + 90, 2.2, 'LWL', { align: 'right', vAlign: 'bottom' });
-    // plate on legs
-    const legH = Math.max(40, Math.min(60, inlet / 3));
+    const q = new Sk(c, P, s / 10, PX(c, x0 + 176), PY(c, ROW1.y0 + 128));
+    const hw = pl / 2 + 300;
+    const legH = 45;
+    q.text(-hw, 900, 2.6, 'SECTION', { align: 'left' });
+    q.conc(-hw, -100, 2 * hw, 100);
+    q.line('FP-WATR', -hw, inlet + D + 560, hw, inlet + D + 560);
+    q.text(hw, inlet + D + 640, 2.2, 'LWL', { align: 'right', vAlign: 'bottom' });
     q.rect('FP-TANK', -pl / 2, legH, pl, 12);
-    q.hatch(-pl / 2, legH, pl, 12, 0.6);
+    q.hatch(-pl / 2, legH, pl, 12, 0.5);
     for (const sx of [-1, 1]) q.line('FP-TANK', sx * (pl / 2 - 40), 0, sx * (pl / 2 - 40), legH);
-    // suction pipe + turned-down elbow
-    const zEl = inlet + D / 2 + 90;
-    q.pipe('FP-PIPE-SUCT', [[-pl / 2 - 360, zEl + 340], [0, zEl + 340], [0, inlet]], D, true);
-    q.reg(-pl / 2 - 420, 0, pl / 2 + 420, zEl + 340 + D / 2);
-    // dims
-    q.dim(pl / 2 + 20, 0, pl / 2 + 20, inlet, -10, String(inlet));
-    q.dim(-pl / 2, legH + 12, pl / 2, legH + 12, 0, String(pl));
-    q.dim(-D / 2, inlet - 30, D / 2, inlet - 30, 0, `D=${Math.round(D)}`);
-    P.setBounds({ x0: PX(c, x0 + 3), y0: PY(c, ROW1.y0 + 3), x1: PX(c, x0 + w - 3), y1: PY(c, ROW1.y0 + ROW1.h - 12) });
-    q.callout(-pl / 2 + 80, legH + 12, ['ANTI-VORTEX PLATE', `${pl} SQ x 10 THK (>= 2D)`], [270, 225, 315]);
-    q.callout(0, inlet + 20, ['PIPE INLET D/2 ABOVE FLOOR', `(${inlet} MIN. 150)`], [0, 45, 315]);
-    q.callout(-pl / 2 + 40, 20, ['LEGS (SS 316 / GRP)', 'ANCHORED TO PIT FLOOR'], [270, 225, 180]);
-    const spec = [`SUCTION PIPE ${formatPipeSize(sp.suctionPipeIn)} TURNED DOWN`, `PLATE SIDE ${pl} = 2D MINIMUM`, `INLET ${inlet} = D/2 ABOVE SUMP FLOOR`, 'NFPA 22 / NFPA 20 4.14 (VORTEX CONTROL)'];
-    spec.forEach((ln, i) => P.text('FP-ANNO', PX(c, x0 + 6), PY(c, ROW1.y0 + 52 - i * 4.6), 2.2, ln, { vAlign: 'middle' }));
+    const zEl = inlet + D / 2 + 400;
+    q.pipe('FP-PIPE-SUCT', [[-hw, zEl], [0, zEl], [0, inlet]], D, true);
+    q.reg(-hw, 0, hw, zEl + D / 2);
+    q.dim(pl / 2 + 40, 0, pl / 2 + 40, inlet, -9, String(inlet));
+    q.dim(-pl / 2, -100, pl / 2, -100, -9, String(pl));
+    num(q, '1', -pl / 2 - 140, legH + 430, -pl / 2 + 80, legH + 12);
+    num(q, '2', pl / 2 + 160, inlet + 420, D / 2 * 0.2, inlet + 40);
+    num(q, '3', -pl / 2 - 140, 330, -pl / 2 + 40, legH / 2);
+    const spec = [
+      `1  ANTI-VORTEX PLATE ${pl} x ${pl} x 10 THK (>= 2D), GRP / SS 316`,
+      `2  SUCTION ${formatPipeSize(sp.suctionPipeIn)} TURNED DOWN, INLET ${inlet} ABOVE SUMP FLOOR (D/2)`,
+      '3  LEGS, ANCHORED TO THE PIT FLOOR',
+      'NFPA 22 / NFPA 20 4.14 (VORTEX CONTROL)'
+    ];
+    spec.forEach((ln, i) => P.text('FP-ANNO', PX(c, x0 + 6), PY(c, ROW1.y0 + 56 - i * 4.8), 2.2, ln, { vAlign: 'middle' }));
   }
 
   // ═════════════════════ 6. TRENCH SECTION DETAIL (1:10) ═════════════════════
@@ -346,14 +354,11 @@ export function drawPumpRoomDetailsSheet(c: Ctx): void {
     const yTopP = ROW1.y0 + 108;
     b.text('FP-ANNO', PX(c, x0 + 6), PY(c, yTopP + 22), 2.6, 'LONGITUDINAL SECTION (NTS)', { vAlign: 'middle' });
     b.line('FP-TRCH', L0, PY(c, yTopP + 8), L1, PY(c, yTopP + 8)); // floor level
-    b.line('FP-TRCH', L0, PY(c, yTopP - 4), L1, PY(c, yTopP - 22));
-    b.line('FP-TRCH', L0, PY(c, yTopP + 8), L0, PY(c, yTopP - 4));
-    b.line('FP-TRCH', L1, PY(c, yTopP + 8), L1, PY(c, yTopP - 22));
-    arrowLine(b, [L1 - 4 * s, PY(c, yTopP - 24)], [L0 + 40 * s, PY(c, yTopP - 14)], s);
-    b.text('FP-ANNO', (L0 + L1) / 2, PY(c, yTopP - 29), 2.4, `${tr.slopePercent} % FALL (1:${Math.round(100 / Math.max(tr.slopePercent, 0.1))}) TO SUMP ${ds.tag}`, { align: 'center', vAlign: 'middle' });
+    b.polyline('FP-TRCH', [[L0, PY(c, yTopP + 8)], [L0, PY(c, yTopP - 2)], [L1, PY(c, yTopP - 18)], [L1, PY(c, yTopP + 8)]], false);
     b.text('FP-ANNO', L0 + 1 * s, PY(c, yTopP + 3), 2.2, 'START', { vAlign: 'middle' });
-    b.text('FP-ANNO', L0 + 1 * s, PY(c, yTopP - 9), 2.2, `INVERT ${d0}`, { vAlign: 'middle' });
-    b.text('FP-ANNO', L1 - 1 * s, PY(c, yTopP - 27 + 0), 2.2, `END ${d1}`, { align: 'right', vAlign: 'middle' });
+    b.text('FP-ANNO', L0 + 1 * s, PY(c, yTopP - 6), 2.2, `INVERT ${d0}`, { vAlign: 'middle' });
+    b.text('FP-ANNO', L1 - 1 * s, PY(c, yTopP + 3), 2.2, `END ${d1}`, { align: 'right', vAlign: 'middle' });
+    b.text('FP-ANNO', (L0 + L1) / 2, PY(c, yTopP - 25), 2.4, `${tr.slopePercent} % FALL (1:${Math.round(100 / Math.max(tr.slopePercent, 0.1))}) TO SUMP ${ds.tag}`, { align: 'center', vAlign: 'middle' });
     const spec = [`CHANNEL ${tw} WIDE x ${d0}-${d1} DEEP`, `LENGTH ${tr.lengthMm} (TO ${ds.tag})`, `GRATING: ${tr.grating}`];
     spec.forEach((ln, i) => {
       for (const [k, part] of wrapLines(ln, 30).entries()) P.text('FP-ANNO', PX(c, x0 + 6), PY(c, ROW1.y0 + 36 - i * 8.6 - k * 3.8), 2.1, part, { vAlign: 'middle' });
@@ -366,89 +371,86 @@ export function drawPumpRoomDetailsSheet(c: Ctx): void {
     const w = 276;
     const bounds = panel(c, x0, ROW2.y0, w, ROW2.h, 4, 'PRESSURE SENSING LINE DETAIL', 'SCALE 1:20 (VALVES ENLARGED)');
     const P = new Placer(c, bounds);
-    const sk = new Sk(c, P, s / 20, PX(c, x0 + 40), PY(c, ROW2.y0 + 70));
+    const sk = new Sk(c, P, s / 20, PX(c, x0 + 28), PY(c, ROW2.y0 + 105));
     const sl = room.sensingLines[0];
-    const dIn = 4;
-    const dOd = Math.max(odOf(r.pumps.mainPumps[0]?.sizes.dischargeIn ?? dIn), 100);
-    const sym = 110; // enlarged symbol size (mm at detail scale)
-    // discharge pipe (left → right) with check valve, tap, butterfly valve
-    sk.pipe('FP-PIPE-DISC', [[-700, 0], [2100, 0]], dOd, true);
-    checkValve(b, sk.m(-250, 0)[0], sk.m(-250, 0)[1], 0, sym * 3.4 * sk.f);
-    butterflyValve(b, sk.m(1200, 0)[0], sk.m(1200, 0)[1], 0, sym * 3.4 * sk.f);
-    sk.text(-250, -380, 2.2, 'DISCHARGE CHECK VALVE', { align: 'center' });
-    sk.text(1200, -380, 2.2, 'DISCHARGE ISOLATION VALVE', { align: 'center' });
-    sk.reg(-700, -dOd / 2 - 20, 2100, dOd / 2 + 20);
-    sk.text(-700, dOd / 2 + 140, 2.2, 'PUMP', { align: 'left' });
-    arrowLine(b, sk.m(-600, dOd / 2 + 140 - 140), sk.m(-480, dOd / 2 + 140 - 140), s);
-    // tap
-    const tapX = 480;
-    sk.reg(tapX - 30, dOd / 2, tapX + 30, 480, true);
-    // sensing route: up 400 → east 2100 total length (300 + 1500 + 300)
-    const upLeg = 600;
-    const cv1 = 300;
+    const dOd = Math.max(odOf(r.pumps.mainPumps[0]?.sizes.dischargeIn ?? 4), 100);
+    const sym = 330;
+    // discharge pipe with check valve, tap and isolation valve
+    sk.pipe('FP-PIPE-DISC', [[-300, 0], [2700, 0]], dOd, true);
+    checkValve(b, sk.m(0, 0)[0], sk.m(0, 0)[1], 0, sym * sk.f);
+    butterflyValve(b, sk.m(1900, 0)[0], sk.m(1900, 0)[1], 0, sym * sk.f);
+    sk.text(0, -420, 2.2, 'DISCHARGE CHECK VALVE', { align: 'center' });
+    sk.text(1900, -420, 2.2, 'DISCHARGE ISOLATION VALVE', { align: 'center' });
+    sk.reg(-300, -dOd / 2 - 20, 2700, dOd / 2 + 20);
+    sk.text(-300, 330, 2.2, 'FROM PUMP', { align: 'left' });
+    arrowLine(b, sk.m(-300, 190), sk.m(-100, 190), s);
+    // sensing route: 400 north of the tap, then east; check valves 300 and 1800 beyond the corner (1500 apart)
+    const tapX = 800;
+    const up = 400 + dOd / 2;
+    const cv1 = tapX + 300;
     const cv2 = cv1 + (sl?.checkValveSpacingMm ?? 1500);
-    const routeEnd = cv2 + 700;
-    const pts: Pt[] = [[tapX, dOd / 2], [tapX, upLeg], [tapX + (routeEnd - (upLeg - dOd / 2)), upLeg]];
-    sk.poly('FP-PIPE-SENS', pts, false);
-    const along = (d: number): Pt => (d <= upLeg - dOd / 2 ? [tapX, dOd / 2 + d] : [tapX + (d - (upLeg - dOd / 2)), upLeg]);
-    const mkCheck = (d: number, tag: string): Pt => {
-      const p = along(d);
-      const ang = d <= upLeg - dOd / 2 ? 90 : 0;
-      const m = sk.m(p[0], p[1]);
-      checkValve(b, m[0], m[1], ang, 150 * sk.f);
-      b.circle('FP-VALV', m[0], m[1], 12 * sk.f); // 3/32" orifice marker (clapper)
-      sk.reg(p[0] - 140, p[1] - 140, p[0] + 140, p[1] + 140);
-      return [p[0], p[1] + (ang === 90 ? 0 : 0) + tag.length * 0];
+    const endX = cv2 + 700;
+    sk.poly('FP-PIPE-SENS', [[tapX, dOd / 2], [tapX, up], [endX, up]], false);
+    sk.reg(tapX - 40, dOd / 2, tapX + 40, up, true);
+    const mkCheck = (xx: number): void => {
+      const m = sk.m(xx, up);
+      checkValve(b, m[0], m[1], 0, 220 * sk.f);
+      b.circle('FP-VALV', m[0], m[1], 14 * sk.f);
+      sk.reg(xx - 150, up - 150, xx + 150, up + 150);
     };
-    const p1 = mkCheck(cv1, 'CV-1');
-    const p2 = mkCheck(cv2, 'CV-2');
-    // orifice enlarged inset
-    const endX = tapX + (routeEnd - (upLeg - dOd / 2));
-    // controller box at the end
-    const cb = { x: endX, y: upLeg - 380, w: 520, h: 900 };
+    mkCheck(cv1);
+    mkCheck(cv2);
+    // controller box
+    const cb = { x: endX, y: up - 500, w: 500, h: 1000 };
     sk.rect('FP-ELEC', cb.x, cb.y, cb.w, cb.h);
     sk.line('FP-ELEC', cb.x, cb.y, cb.x + cb.w, cb.y + cb.h);
     sk.reg(cb.x, cb.y, cb.x + cb.w, cb.y + cb.h);
-    sk.text(cb.x + cb.w / 2, cb.y + cb.h + 100, 2.2, 'CONTROLLER', { align: 'center', vAlign: 'bottom' });
-    // gauge + test valve on a tee before the controller
-    const gx = endX - 330;
-    sk.line('FP-PIPE-SENS', gx, upLeg, gx, upLeg + 380);
-    const gm = sk.m(gx, upLeg + 470);
-    pressureGauge(b, gm[0], gm[1], 0, 200 * sk.f);
-    sk.reg(gx - 160, upLeg + 300, gx + 160, upLeg + 700);
-    const tx = endX - 130;
-    sk.line('FP-PIPE-SENS', tx, upLeg, tx, upLeg - 380);
-    const tm = sk.m(tx, upLeg - 190);
-    ballValve(b, tm[0], tm[1], 90, 150 * sk.f);
-    sk.reg(tx - 130, upLeg - 420, tx + 130, upLeg - 90);
-    // dims
-    sk.dim(p1[0], p1[1], p2[0], p2[1], 8, String(sl?.checkValveSpacingMm ?? 1500));
-    sk.dim(tapX, dOd / 2, tapX, upLeg, 14, String(Math.round(upLeg - dOd / 2)));
-    P.setBounds({ x0: PX(c, x0 + 3), y0: PY(c, ROW2.y0 + 3), x1: PX(c, x0 + w - 3), y1: PY(c, ROW2.y0 + ROW2.h - 12) });
-    sk.callout(tapX, dOd / 2 + 60, ['TAP BETWEEN DISCHARGE CHECK', 'VALVE AND ISOLATION VALVE'], [315, 0, 270]);
-    sk.callout(p1[0], p1[1] + 40, ['CHECK VALVE 1', '3/32" ORIFICE IN CLAPPER'], [180, 135, 225]);
-    sk.callout(p2[0], p2[1] + 140, ['CHECK VALVE 2', '3/32" ORIFICE IN CLAPPER'], [90, 45, 135]);
-    sk.callout(gx, upLeg + 700, ['PRESSURE GAUGE'], [90, 45, 135]);
-    sk.callout(tx, upLeg - 400, ['TEST CONNECTION', '(BALL VALVE)'], [270, 315, 225]);
-    sk.callout(endX + 300, cb.y + 20, ['TO CONTROLLER PRESSURE', 'SWITCH / TRANSDUCER'], [270, 315, 225]);
-    // enlarged orifice check valve inset
-    const ix = x0 + 190;
-    const iy = ROW2.y0 + 116;
-    b.circle('FP-ANNO', PX(c, ix), PY(c, iy), 22 * s);
-    const im = [PX(c, ix), PY(c, iy)];
-    checkValve(b, im[0], im[1], 0, 26 * s);
-    b.circle('FP-VALV', im[0] + 3.5 * s, im[1] + 2.5 * s, 1.0 * s);
-    arrowLine(b, [im[0] + 3.5 * s, im[1] + 2.5 * s + 1 * s], [im[0] + 12 * s, im[1] + 12 * s], s);
-    b.text('FP-ANNO', PX(c, ix + 12.5), PY(c, iy + 12.5), 2.2, '3/32" ORIFICE', { vAlign: 'middle' });
-    b.text('FP-ANNO', PX(c, ix), PY(c, iy - 25), 2.4, 'ENLARGED CHECK VALVE (NTS)', { align: 'center', vAlign: 'middle' });
-    P.addRect(PX(c, ix - 24), PY(c, iy - 28), 70 * s, 56 * s);
+    sk.text(cb.x + cb.w / 2, cb.y - 150, 2.2, 'CONTROLLER', { align: 'center' });
+    // gauge and test connection tees between the second check valve and the controller
+    const gx = endX - 420;
+    sk.line('FP-PIPE-SENS', gx, up, gx, up + 380);
+    const gm = sk.m(gx, up + 480);
+    pressureGauge(b, gm[0], gm[1], 0, 240 * sk.f);
+    sk.reg(gx - 170, up + 300, gx + 170, up + 700);
+    const tx = endX - 160;
+    sk.line('FP-PIPE-SENS', tx, up, tx, up - 380);
+    const tm = sk.m(tx, up - 200);
+    ballValve(b, tm[0], tm[1], 90, 180 * sk.f);
+    sk.reg(tx - 130, up - 420, tx + 130, up - 80);
+    // dimensions (true values)
+    sk.dim(cv1, up, cv2, up, 12, String(sl?.checkValveSpacingMm ?? 1500));
+    sk.dim(tapX, dOd / 2, tapX, up, 10, '400');
+    // numbered keys
+    const num = (n: string, x: number, y: number, ax: number, ay: number): void => {
+      const a = sk.m(ax, ay);
+      const t = sk.m(x, y);
+      arrowLine(b, a, t, s);
+      drawTag(b, t[0], t[1], n, s);
+      P.addHard({ x0: t[0] - 3 * s, y0: t[1] - 3 * s, x1: t[0] + 3 * s, y1: t[1] + 3 * s });
+    };
+    num('1', tapX - 450, up + 330, tapX, dOd / 2 + 60);
+    num('2', cv1, up + 420, cv1, up + 110);
+    num('3', cv2, up + 420, cv2, up + 110);
+    num('4', gx + 480, up + 780, gx + 140, up + 560);
+    num('5', tx - 250, up - 720, tx - 60, up - 280);
+    // enlarged orifice check valve inset (not to scale)
+    const ix = x0 + 208;
+    const iy = ROW2.y0 + 66;
+    b.circle('FP-ANNO', PX(c, ix), PY(c, iy), 24 * s);
+    checkValve(b, PX(c, ix), PY(c, iy), 0, 28 * s);
+    b.circle('FP-VALV', PX(c, ix + 1), PY(c, iy), 1.3 * s);
+    b.text('FP-ANNO', PX(c, ix + 28), PY(c, iy + 5), 2.2, '3/32" ORIFICE', { vAlign: 'middle' });
+    b.text('FP-ANNO', PX(c, ix + 28), PY(c, iy - 1), 2.2, 'IN CLAPPER', { vAlign: 'middle' });
+    b.text('FP-ANNO', PX(c, ix), PY(c, iy - 27), 2.4, 'ENLARGED CHECK VALVE (NTS)', { align: 'center', vAlign: 'middle' });
     const spec = [
-      `SENSING LINE 1/2" ${sl?.material ?? 'BRASS / COPPER / SS 316'}`,
-      'ONE LINE PER CONTROLLER (NFPA 20-2019 4.32)',
-      'TWO CHECK VALVES >= 5 FT (1.5 M) APART'
+      `1  TAP BETWEEN DISCHARGE CHECK VALVE AND ISOLATION VALVE - 1/2" ${sl?.material ?? 'BRASS / COPPER / SS'}`,
+      '2  CHECK VALVE 1 WITH 3/32" ORIFICE IN THE CLAPPER',
+      '3  CHECK VALVE 2 WITH 3/32" ORIFICE, 1500 (5 FT) MINIMUM FROM CHECK VALVE 1',
+      '4  PRESSURE GAUGE AT THE CONTROLLER',
+      '5  TEST CONNECTION (BALL VALVE) AT THE CONTROLLER',
+      'ONE SENSING LINE PER CONTROLLER (NFPA 20-2019 4.32 / 10.5.2.1)'
     ];
-    spec.forEach((ln, i) => P.text('FP-ANNO', PX(c, x0 + 6), PY(c, ROW2.y0 + 22 - i * 4.8), 2.2, ln, { vAlign: 'middle' }));
-    void ballValve;
+    spec.forEach((ln, i) => P.text('FP-ANNO', PX(c, x0 + w / 2), PY(c, ROW2.y0 + 28 - i * 4.6), 2.2, ln, { align: 'center', vAlign: 'middle' }));
   }
 
   // ═════════════════════ 5. DRAINAGE SUMP PIT DETAIL (1:10) ═════════════════════
@@ -461,7 +463,7 @@ export function drawPumpRoomDetailsSheet(c: Ctx): void {
     const dep = ds.pitDepthMm;
     const wall = 150;
     // origin: pit inner floor-left corner; z up (0 = pit floor)
-    const sk = new Sk(c, P, s / 10, PX(c, x0 + 48), PY(c, ROW2.y0 + 20));
+    const sk = new Sk(c, P, s / 10, PX(c, x0 + 48), PY(c, ROW2.y0 + 36));
     // slab: FFL at z = dep
     sk.conc(-wall, -wall, pitW + 2 * wall, wall); // pit floor slab
     sk.conc(-wall - 300, -wall, 300, dep + wall); // left wall + floor slab
@@ -505,7 +507,7 @@ export function drawPumpRoomDetailsSheet(c: Ctx): void {
       sk.pipe('FP-PIPE-DRAN', [[dx, 40 + ph], [dx, dep + 520], [pitW / 2 + (i ? 1 : -1) * 0 + 0, dep + 520]], dOd, false);
       const vm = (z: number): Pt => sk.m(dx, z);
       checkValve(b, vm(dep + 170)[0], vm(dep + 170)[1], 90, Math.max(dOd, 70) * 1.4 * sk.f);
-      butterflyValve(b, vm(dep + 360)[0], vm(dep + 360)[1], 90, Math.max(dOd, 70) * 1.4 * sk.f);
+      gateValve(b, vm(dep + 360)[0], vm(dep + 360)[1], 90, Math.max(dOd, 70) * 1.4 * sk.f);
       sk.reg(dx - 140, dep, dx + 140, dep + 560);
     });
     if (!pumps.length) {
@@ -525,14 +527,13 @@ export function drawPumpRoomDetailsSheet(c: Ctx): void {
     sk.dim(xr, 0, xr, dep, -22, String(dep));
     sk.dim(0, 0, pitW, 0, -26, String(pitW));
     sk.dim(-wall - 300, dep - dTr, -wall - 300, dep, 8, String(dTr));
-    // level labels
-    levels.forEach(([lab, z]) => {
-      sk.text(pitW + wall + 1100, z, 2.2, `${lab}  +${z}`, { align: 'left' });
-    });
+    // level labels inside the pit, right-aligned above each float level
+    levels.forEach(([lab, z]) => sk.text(pitW - 40, z + 45, 2.2, `${lab}  +${z}`, { align: 'right', vAlign: 'bottom' }));
+    sk.text(pitW + wall + 300, dep + 650, 2.2, `TO BUILDING DRAIN, AIR GAP (IPC 802)`, { align: 'right', vAlign: 'bottom' });
     P.setBounds({ x0: PX(c, x0 + 3), y0: PY(c, ROW2.y0 + 3), x1: PX(c, x0 + w - 3), y1: PY(c, ROW2.y0 + ROW2.h - 12) });
     sk.callout(pitW / 2, dep + 15, ['GAS-TIGHT COVER / GRATING', '(IPC 712)'], [90, 45, 135]);
-    sk.callout(-wall - 150, dep - dTr / 2, ['TRENCH INLET'], [180, 135, 225]);
-    sk.callout(pitW / 2, 10, [`PIT FLOOR (${pitW} x ${ds.rect.h} PLAN)`], [270, 315, 225]);
+    sk.text(-225, dep - dTr / 2 + 60, 2.1, 'TRENCH', { align: 'center' });
+    sk.text(-225, dep - dTr / 2 - 60, 2.1, 'INLET', { align: 'center' });
     const spec = [
       `${ds.tag}: ${ds.pumps.length ? ds.pumps.length + ' x SUBMERSIBLE PUMPS' : 'GRAVITY'}${ds.pumps[0] ? ` ${ds.pumps[0].flowGpm} GPM @ ${ds.pumps[0].headFt} FT` : ''}`,
       `DISCHARGE ${formatPipeSize(ds.dischargeSizeIn)} + CHECK + FULL-OPEN VALVE EACH`,
@@ -549,6 +550,16 @@ export function drawPumpRoomDetailsSheet(c: Ctx): void {
     drawNotes(c, x0 + 3, ROW2.y0 + ROW2.h - 12, w - 6, 'GENERAL NOTES', pumpRoomDetailNotes(c), th);
   }
   void textWidth;
+  // keep every text's symmetric box (+/- 0.6 h per character) inside the drawing frame
+  const fx0 = PX(c, FRAME.x0) + 1;
+  const fx1 = PX(c, FRAME.x1) - 1;
+  for (let i = firstEntity; i < b.entities.length; i++) {
+    const e = b.entities[i];
+    if (e.kind !== 'text' || e.rotationDeg % 180 !== 0) continue;
+    const w = e.height * 0.6 * e.text.length;
+    if (e.x - w < fx0) e.x = fx0 + w;
+    if (e.x + w > fx1) e.x = fx1 - w;
+  }
 }
 
 function wrapLines(sv: string, n: number): string[] {

@@ -43,6 +43,7 @@ export function drawTankSheet(c: Ctx): void {
   const th = 2.5;
   const SH = 55; // vertical shift of the drawing zone (paper mm)
   const nComp = tank.compartments;
+  const acc = tank.access;
   const conn = (name: string): { sizeIn: number; note: string } | undefined => tank.connections.find((q) => q.name.toLowerCase().startsWith(name));
   const fill = conn('fill');
   const ovf = conn('overflow');
@@ -72,18 +73,29 @@ export function drawTankSheet(c: Ctx): void {
     const y0 = cp.y0 - tl.yLo;
     const mid = y0 + lc / 2;
     b.rect('FP-WATR', X(120), Y(y0 + 120), Wt - 240, lc - 240);
-    // manholes (2 per compartment) with ladder rails in the first
-    const mx = Wt * 0.62;
-    [y0 + lc * 0.2, y0 + lc * 0.8].forEach((my, k) => {
-      b.circle('FP-TANK', X(mx), Y(my), 400);
-      b.circle('FP-TANK', X(mx), Y(my), 470);
-      P.addRect(X(mx - 470), Y(my - 470), 940, 940);
-      if (k === 0) {
-        const h = Math.sqrt(400 * 400 - 200 * 200);
-        for (const dx of [-200, 200]) b.line('FP-TANK', X(mx + dx), Y(my - h), X(mx + dx), Y(my + h));
-        for (let yy = my - h + 90; yy < my + h - 40; yy += 110) b.line('FP-TANK', X(mx - 200), Y(yy), X(mx + 200), Y(yy));
+    // personnel access per tank.access: roof manholes with internal ladders, or a bolted side manway in the far wall
+    for (const o of acc.openings.filter((q) => q.compartment === i + 1)) {
+      if (acc.kind === 'top') {
+        const mx = Wt - o.y;
+        const my = o.x - 0;
+        const rr = o.sizeMm / 2;
+        b.circle('FP-TANK', X(mx), Y(my), rr);
+        b.circle('FP-TANK', X(mx), Y(my), rr + 70);
+        P.addRect(X(mx - rr - 70), Y(my - rr - 70), 2 * rr + 140, 2 * rr + 140);
+        if (acc.ladder === 'internal') {
+          const h = Math.sqrt(rr * rr - 200 * 200);
+          for (const dx of [-200, 200]) b.line('FP-TANK', X(mx + dx), Y(my - h), X(mx + dx), Y(my + h));
+          for (let yy = my - h + 90; yy < my + h - 40; yy += 110) b.line('FP-TANK', X(mx - 200), Y(yy), X(mx + 200), Y(yy));
+        }
+      } else {
+        const my = o.x;
+        const rr = o.sizeMm / 2;
+        b.rect('FP-TANK', X(-tw - 60), Y(my - rr), tw + 120, 2 * rr);
+        b.line('FP-TANK', X(-tw - 60), Y(my - rr), X(0 + 60), Y(my + rr));
+        b.line('FP-TANK', X(-tw - 60), Y(my + rr), X(0 + 60), Y(my - rr));
+        P.addRect(X(-tw - 60), Y(my - rr), tw + 120, 2 * rr);
       }
-    });
+    }
     // vent (roof, near the west wall) and level indicator
     const vOd = odOf(vent?.sizeIn ?? 4);
     const yv = mid + 900;
@@ -190,11 +202,18 @@ export function drawTankSheet(c: Ctx): void {
     P.setBounds({ x0: X(-tw) - 44 * s, y0: Y(-tw) - 44 * s, x1: PX(c, 308), y1: Y(Lt + tw) + 30 * s });
     P.callout([X(500), Y(mid + 900)], [`VENT ${formatPipeSize(vent?.sizeIn ?? 4)} + INSECT SCREEN`], 2.2, [90, 135, 45]);
     P.callout([X(1100), Y(mid + 1700)], ['LEVEL INDICATOR', 'LOW / HIGH ALARM'], 2.2, side.map((a) => a - 90).concat([45]));
-    P.callout([X(Wt * 0.62), Y(y0 + lc * 0.2 + 400)], ['MANHOLE O800 (2 PER', 'COMPARTMENT) + LADDER'], 2.2, [135, 45, 90]);
+    for (const o of acc.openings.filter((q) => q.compartment === i + 1)) {
+      const parts = o.label.split(',').map((q) => q.trim());
+      const anchor: [number, number] = acc.kind === 'top' ? [X(Wt - o.y), Y(o.x + o.sizeMm / 2 + 70)] : [X(0), Y(o.x)];
+      if (acc.kind === 'side') P.setBounds({ x0: X(0), y0: Y(y0), x1: X(Wt), y1: Y(y0 + lc) });
+      const ok = P.callout(anchor, [parts[0], ...(parts.slice(1).length ? [parts.slice(1).join(', ')] : []), `COMPARTMENT ${i + 1}`], 2.2, acc.kind === 'top' ? [90, 45, 135, 0] : [0, 45, 315, 90, 270]);
+      if (!ok && process.env.FIRE_DEBUG) console.warn('FP-103 access callout failed', o.label);
+      P.setBounds({ x0: X(-tw) - 44 * s, y0: Y(-tw) - 44 * s, x1: PX(c, 308), y1: Y(Lt + tw) + 30 * s });
+    }
   });
   tl.sumps.forEach((sm, i) => {
     const sy = sm.y - tl.yLo;
-    P.callout([X(Wt - sp.pitLengthMm / 2), Y(sy)], [`SUMP PIT ${i + 1} ${sp.pitLengthMm} x ${sp.pitWidthMm} x ${sp.pitDepthMm}`, `SUCTION ${formatPipeSize(sp.suctionPipeIn)} TO ${r.pumps.mainPumps[i]?.tag ?? 'FP'}`], 2.2, [135, 180, 225]);
+    P.callout([X(Wt - sp.pitLengthMm / 2), Y(sy)], [`SUCTION PIT ${i + 1} ${sp.pitLengthMm} x ${sp.pitWidthMm} x ${sp.pitDepthMm}`, `SUCTION ${formatPipeSize(sp.suctionPipeIn)} TO ${r.pumps.mainPumps[i]?.tag ?? 'FP'}`], 2.2, [135, 180, 225]);
   });
   P.callout([X(Wt + wW), Y(r.room.pipes.find((p) => p.id === 'TST-1')?.points[0][1] ? (r.room.pipes.find((p) => p.id === 'TST-1')?.points[0][1] ?? 600) - tl.yLo : 600)], [`TEST RETURN ${formatPipeSize(tret?.sizeIn ?? 5)}`, 'DISCHARGES ABOVE TWL'], 2.2, [0, 45, 315]);
   P.setBounds(fullBounds);
@@ -225,14 +244,27 @@ export function drawTankSheet(c: Ctx): void {
       seg('FP-WATR', xx, zTWL - 120, xx + 350, zTWL - 120);
       seg('FP-WATR', xx + 200, zTWL - 240, xx + 550, zTWL - 240);
     }
-    // manhole neck + cover, ladder
-    const mx = Wt * 0.62;
-    b.rect('FP-TANK', bx(mx - 470), bz(zTR + tRoof), 940, 180);
-    b.rect('FP-TANK', bx(mx - 520), bz(zTR + tRoof + 180), 1040, 50);
-    b.line('FP-TANK', bx(mx - 400), bz(zTR), bx(mx - 400), bz(zTR + tRoof));
-    b.line('FP-TANK', bx(mx + 400), bz(zTR), bx(mx + 400), bz(zTR + tRoof));
-    for (const dx of [-200, 200]) b.line('FP-TANK', bx(mx + dx), bz(zTF), bx(mx + dx), bz(zTR + tRoof + 500));
-    for (let zz = zTF + 150; zz < zTR + tRoof + 400; zz += 300) b.line('FP-TANK', bx(mx - 200), bz(zz), bx(mx + 200), bz(zz));
+    // access: roof manhole neck + cover + internal ladder (top) or bolted side manway in the west wall (side)
+    const o1 = acc.openings[0];
+    const mx = acc.kind === 'top' && o1 ? Wt - o1.y : Wt * 0.62;
+    if (acc.kind === 'top') {
+      const rr = (o1?.sizeMm ?? 800) / 2;
+      b.rect('FP-TANK', bx(mx - rr - 70), bz(zTR + tRoof), 2 * rr + 140, 180);
+      b.rect('FP-TANK', bx(mx - rr - 120), bz(zTR + tRoof + 180), 2 * rr + 240, 50);
+      b.line('FP-TANK', bx(mx - rr), bz(zTR), bx(mx - rr), bz(zTR + tRoof));
+      b.line('FP-TANK', bx(mx + rr), bz(zTR), bx(mx + rr), bz(zTR + tRoof));
+      if (acc.ladder === 'internal') {
+        for (const dx of [-200, 200]) b.line('FP-TANK', bx(mx + dx), bz(zTF), bx(mx + dx), bz(zTR + tRoof + 500));
+        for (let zz = zTF + 150; zz < zTR + tRoof + 400; zz += 300) b.line('FP-TANK', bx(mx - 200), bz(zz), bx(mx + 200), bz(zz));
+      }
+    } else {
+      const sz = o1?.sizeMm ?? 600;
+      const z0 = zTF + 300;
+      b.rect('FP-TANK', bx(-tw - 50), bz(z0), tw + 50, sz);
+      b.line('FP-TANK', bx(-tw - 50), bz(z0), bx(0), bz(z0 + sz));
+      b.line('FP-TANK', bx(-tw - 50), bz(z0 + sz), bx(0), bz(z0));
+      for (const zz of [z0 + 60, z0 + sz - 60]) b.line('FP-TANK', bx(-tw - 90), bz(zz), bx(-tw - 50), bz(zz));
+    }
     // vent through the roof (gooseneck)
     const vOd = odOf(vent?.sizeIn ?? 4);
     b.pipe('FP-PIPE-TEST', [[bx(500), bz(zTR - 150)], [bx(500), bz(zTR + tRoof + 700)], [bx(500) + 220, bz(zTR + tRoof + 700)], [bx(500) + 220, bz(zTR + tRoof + 560)]], vOd, false);
@@ -276,7 +308,8 @@ export function drawTankSheet(c: Ctx): void {
       pb.callout([bx(x), bz(zz)], lines, 2.2, ang);
     };
     lbl(500, zTR + tRoof + 700, ['VENT + INSECT', 'SCREEN'], [90, 45, 135]);
-    lbl(mx, zTR + tRoof + 400, ['MANHOLE O800 +', 'GALV. LADDER'], [90, 135, 45]);
+    if (acc.kind === 'top') lbl(mx, zTR + tRoof + 400, [(o1?.label ?? 'ROOF MANHOLE').split(',')[0], 'GALV. / SS INTERNAL LADDER'], [90, 135, 45]);
+    else lbl(-tw - 50, zTF + 300 + (o1?.sizeMm ?? 600) / 2, [(o1?.label ?? 'SIDE MANWAY').split(',')[0], 'INVERT 300 ABOVE TANK FLOOR', 'TANK TO BE DRAINED BEFORE OPENING'], [180, 225, 135]);
     lbl(-tw - 600, zOFL - oOd / 2, [`OVERFLOW ${formatPipeSize(ovf?.sizeIn ?? 5)}`], [180, 225, 135]);
     lbl(-tw - 450, zFill, [`FILL ${formatPipeSize(fill?.sizeIn ?? 4)} + FLOAT VALVE`], [90, 135, 45]);
   }
@@ -316,9 +349,8 @@ export function drawTankSheet(c: Ctx): void {
     const od = sp.suctionPipeOdMm;
     const xP = -sp.plateCentreFromWallMm;
     b.pipe('FP-PIPE-SUCT', [[dx(wall), dz(zCL)], [dx(xP), dz(zCL)], [dx(xP), dz(sp.inletAboveSumpFloorMm)]], od * f, true);
-    b.line('FP-WALL', dx(0), dz(zCL + od / 2 + 35), dx(wall), dz(zCL + od / 2 + 35));
-    b.line('FP-WALL', dx(0), dz(zCL - od / 2 - 35), dx(wall), dz(zCL - od / 2 - 35));
-    b.rect('FP-WALL', dx(wall / 2 - 8), dz(zCL - od / 2 - 90), 16 * f, (od + 180) * f);
+    const pfOd = r.room.penetrations.find((q) => q.kind === 'puddle-flange')?.puddleFlangeOdMm ?? od + 200;
+    b.rect('FP-WALL', dx(wall / 2 - 5), dz(zCL - pfOd / 2), 10 * f, pfOd * f);
     const pl = sp.vortexPlateMm;
     b.rect('FP-TANK', dx(xP - pl / 2), dz(40), pl * f, 12 * f);
     for (const q of [-pl / 2 + 40, pl / 2 - 40]) b.line('FP-TANK', dx(xP + q), dz(0), dx(xP + q), dz(40));
@@ -337,7 +369,7 @@ export function drawTankSheet(c: Ctx): void {
     const lines: string[] = [];
     lines.push('(1) ANTI-VORTEX PLATE', `    ${pl} x ${pl} x 10 THK, GRP / SS 316 ON LEGS`, '');
     lines.push('(2) SUCTION ELBOW TURNED DOWN', `    OPEN END ${sp.inletAboveSumpFloorMm} ABOVE SUMP FLOOR`, '');
-    lines.push('(3) WALL SLEEVE + PUDDLE FLANGE', '    (WATERTIGHT PENETRATION)', '');
+    lines.push('(3) PUDDLE FLANGE PF-01', `    OD ${pfOd} x 10 THK, CAST IN (NO SLEEVE)`, '');
     lines.push(`D = ${formatPipeSize(sp.suctionPipeIn)} SUCTION PIPE (OD ${Math.round(od)})`);
     let yy = byB + bh - 30;
     for (const t of lines) {
@@ -414,7 +446,7 @@ export function drawTankSheet(c: Ctx): void {
     const x3 = x2 + cc.reduce((a, v) => a + v, 0) + 8;
     void t1;
     void t2;
-    const matNotes = [...tank.materialSpec, 'Interior surfaces suitable for potable / fire water (WRAS / NSF 61 where required). Tank to be tested watertight before commissioning.', 'Tank to be isolated from the pump room by the common wall; suction penetrations with sleeve and puddle flange.'];
+    const matNotes = [...tank.materialSpec, 'Interior surfaces suitable for potable / fire water (WRAS / NSF 61 where required). Tank to be tested watertight before commissioning.', 'Tank to be isolated from the pump room by the common wall; suction penetrations through cast-in puddle flanges (PF-nn, see FP-110).'];
     drawNotes(c, x3, y0, 831 - x3 - 6, 'MATERIAL SPECIFICATION & NOTES', matNotes);
   }
 }

@@ -4,7 +4,7 @@
  */
 import { formatPipeSize, gateValveLengthMm } from '../standards/pipeData';
 import { butterflyValve, checkValve, concentricReducer, eccentricReducer, flexibleCoupling, gateValve, pressureGauge } from './symbols';
-import { type Box, type Ctx, FRAME, Placer, PX, PY, TBLK, autoCols, dimBoxes, drawNotes, drawTable, sheetTitle, wrapText } from './sheetKit';
+import { type Box, type Ctx, FRAME, Placer, PX, PY, TBLK, arrowLine, autoCols, dimBoxes, drawNotes, drawTable, sheetTitle, wrapText } from './sheetKit';
 import { odOf, westWallMm } from './sheetGeom';
 
 /** Smallest of 1:20 / 1:25 / 1:50 at which the section fits its zone. */
@@ -110,10 +110,11 @@ export function drawSectionSheet(c: Ctx): void {
   b.rect('FP-TANK', X(xPlate - pl / 2), Z(zPit + 40), pl, 12);
   for (const dx of [-pl / 2 + 40, pl / 2 - 40]) b.line('FP-TANK', X(xPlate + dx), Z(zPit), X(xPlate + dx), Z(zPit + 40));
   // wall sleeve + puddle flange
-  const slv = odS / 2 + 35;
-  b.line('FP-WALL', X(-wW), Z(zPumpCL + slv), X(0), Z(zPumpCL + slv));
-  b.line('FP-WALL', X(-wW), Z(zPumpCL - slv), X(0), Z(zPumpCL - slv));
-  b.rect('FP-WALL', X(-wW / 2 - 8), Z(zPumpCL - odS / 2 - 90), 16, odS + 180);
+  // cast-in puddle flange PF-01 (no wall sleeve in the water-retaining wall): plate OD = pipe OD + 200, 10 thick, centred
+  const pf1 = room.penetrations.find((q) => q.kind === 'puddle-flange') ?? room.penetrations[0];
+  const pfOd = pf1?.puddleFlangeOdMm || odS + 200;
+  b.rect('FP-WALL', X(-wW / 2 - 5), Z(zPumpCL - pfOd / 2), 10, pfOd);
+  b.solid('FP-WALL', [[X(-wW / 2 - 5), Z(zPumpCL - pfOd / 2)], [X(-wW / 2 + 5), Z(zPumpCL - pfOd / 2)], [X(-wW / 2 + 5), Z(zPumpCL + pfOd / 2)], [X(-wW / 2 - 5), Z(zPumpCL + pfOd / 2)]]);
   // valves (positions from the layout)
   const vl = room.valves.filter((v) => Math.abs(v.y - room.suctionLineY[0]) < 2);
   const vOf = (k: string) => vl.find((v) => v.kind === k);
@@ -248,6 +249,9 @@ export function drawSectionSheet(c: Ctx): void {
   P.addRect(X(0), Z(zPumpCL - odS / 2 - 40), room.headerX + odH / 2, odS + 300);
   P.addRect(X(room.headerX - odH), Z(zPumpCL - odH), 2 * odH, 2 * odH);
   if (pump) P.addRect(X(pump.rect.x), Z(zPumpCL), pump.rect.w, 520);
+  const co = (anchor: [number, number], lines: string[], hP = 2.5, prefer?: number[]): void => {
+    if (!P.callout(anchor, lines, hP, prefer) && process.env.FIRE_DEBUG) console.warn('FP-102 callout failed:', lines[0]);
+  };
   // stack of room items: tag + descriptive callout
   const room1 = room.valves.filter((v) => Math.abs(v.y - room.suctionLineY[0]) < 2 && v.kind !== 'tamper-switch');
   const text: Record<string, string> = {
@@ -284,18 +288,38 @@ export function drawSectionSheet(c: Ctx): void {
     lines.forEach((t, i) => P.text('FP-ANNO', X(cxp), Z(1650 + 80 + (lines.length - 1 - i) * 3.4 * s), 2.4, t, { align: 'center', vAlign: 'bottom' }));
   }
   P.setBounds(bndRoom);
-  P.callout([X(room.headerX), Z(zPumpCL) + odH / 2], ['DISCHARGE HEADER (CUT)', `${formatPipeSize(room.pipes.find((p) => p.id === 'HDR-1')?.sizeIn ?? 6)} - EL +${(zPumpCL / 1000).toFixed(3)}`], 2.2, [90, 60, 120]);
-  P.callout([X(room.headerX), Z(zHL)], ['HIGH-LEVEL TEST RETURN', '(IN FRONT OF CUT PLANE) TO TANK'], 2.2, [90, 135, 45, 180]);
+  co([X(room.headerX), Z(zPumpCL) + odH / 2], ['DISCHARGE HEADER (CUT)', `${formatPipeSize(room.pipes.find((p) => p.id === 'HDR-1')?.sizeIn ?? 6)} - EL +${(zPumpCL / 1000).toFixed(3)}`], 2.2, [90, 60, 120]);
+  co([X(room.headerX), Z(zHL)], ['HIGH-LEVEL TEST RETURN', '(IN FRONT OF CUT PLANE) TO TANK'], 2.2, [90, 135, 45, 180]);
   const tx = tr.path[0][0];
-  P.callout([X(tx), Z(-60)], ['TRENCH 300 WIDE, 1% SLOPE', 'c/w GALVANISED GRATING'], 2.2, [90, 135, 45]);
-  if (ctl) P.callout([X(ctl.rect.x + ctl.rect.w / 2), Z(2000)], [`${ctl.tag} CONTROLLER`, 'SENSING LINE FROM HEADER'], 2.2, [90, 135, 45]);
-  P.callout([X(-wW / 2), Z(zPumpCL + slv + 90)], ['WALL SLEEVE + PUDDLE FLANGE', '(WATERTIGHT PIPE PENETRATION)'], 2.2, [90, 135, 45]);
+  {
+    // trench label below the slab, with a leader up to the trench invert
+    const depthT = tr.depthStartMm + ((tr.path[0][1] - room.suctionLineY[0]) * tr.slopePercent) / 100;
+    const yT = Z(-slab - 1500);
+    arrowLine(b, [X(tx), Z(-depthT)], [X(tx), yT + 3.2 * s], s);
+    P.text('FP-ANNO', X(tx), yT, 2.2, `TRENCH ${tr.widthMm} WIDE, ${tr.slopePercent}% SLOPE c/w GALVANISED GRATING`, { align: 'center', vAlign: 'middle' });
+  }
+  if (ctl) co([X(ctl.rect.x + ctl.rect.w / 2), Z(2000)], [`${ctl.tag} CONTROLLER`, 'SENSING LINE FROM HEADER'], 2.2, [90, 135, 45]);
+
   P.setBounds(frameBounds);
   // tank-side callouts
   P.setBounds({ x0: X(xL) + 2 * s, y0: Z(zLWL) + 2 * s, x1: X(-wW) - 2 * s, y1: Z(zTWL) - 2 * s });
-  P.callout([X(xPlate), Z(zPit + 52)], ['ANTI-VORTEX PLATE', `${sp.vortexPlateMm} x ${sp.vortexPlateMm} x 10 (GRP / SS 316)`], 2.2, [90, 135, 45, 180]);
-  P.callout([X(xPlate), Z(zOpen)], ['SUCTION ELBOW TURNED DOWN', `INLET ${sp.inletAboveSumpFloorMm} ABOVE SUMP FLOOR`], 2.2, [135, 180, 90, 225]);
-  P.callout([X(xPitW), Z(zPit + 400)], [`SUMP PIT ${sp.pitLengthMm} x ${sp.pitWidthMm} x ${sp.pitDepthMm} DEEP`, 'BELOW TANK FLOOR'], 2.2, [180, 135, 225]);
+
+
+  {
+    // tank-side labels: a stack in the free water zone, each with a leader to its detail
+    const xT = xL + 1500;
+    const items: { zz: number; ax: number; az: number; t: string[] }[] = [
+      { zz: zLWL + 2500, ax: -wW / 2, az: zPumpCL + pfOd / 2, t: [`PUDDLE FLANGE ${pf1?.tag ?? 'PF-01'}`, `OD ${pfOd} x 10 THK, CAST IN (NO SLEEVE)`] },
+      { zz: zLWL + 1900, ax: xPitW, az: zPit + 400, t: [`SUMP PIT ${sp.pitLengthMm} x ${sp.pitWidthMm} x ${sp.pitDepthMm} DEEP`, 'BELOW TANK FLOOR'] },
+      { zz: zLWL + 1300, ax: xPlate, az: zOpen, t: ['SUCTION ELBOW TURNED DOWN', `INLET ${sp.inletAboveSumpFloorMm} ABOVE SUMP FLOOR`] },
+      { zz: zLWL + 700, ax: xPlate, az: zPit + 52, t: ['ANTI-VORTEX PLATE', `${sp.vortexPlateMm} x ${sp.vortexPlateMm} x 10 (GRP / SS 316)`] }
+    ];
+    for (const it of items) {
+      const wTxt = Math.max(...it.t.map((q) => 0.6 * 2.2 * s * q.length));
+      it.t.forEach((q, k) => P.text('FP-ANNO', X(xT), Z(it.zz) - k * 3.4 * s, 2.2, q, { align: 'left', vAlign: 'middle' }));
+      arrowLine(b, [X(it.ax), Z(it.az)], [X(xT) + wTxt + 1.5 * s, Z(it.zz) - 1.7 * s], s);
+    }
+  }
   P.block(['FIRE WATER - EFFECTIVE STORAGE', `${(tank.effectiveDepthM * 1000).toFixed(0)} mm EFFECTIVE DEPTH (NFPA 22)`], 2.4, [[X(xL + 3300), Z(zNWL - 1500)], [X(xL + 3300), Z(zNWL - 2500)]]);
   P.setBounds(frameBounds);
 
@@ -325,7 +349,7 @@ export function drawSectionSheet(c: Ctx): void {
     `Suction pipe turns down inside the ${sp.pitLengthMm} x ${sp.pitWidthMm} x ${sp.pitDepthMm} sump pit; inlet ${sp.inletAboveSumpFloorMm} mm above the pit floor, anti-vortex plate ${sp.vortexPlateMm} mm square (NFPA 22).`,
     'Eccentric reducer installed flat-side up to avoid air pockets; OS&Y gate valve with tamper switch; no butterfly valve on the suction (NFPA 20 4.14.5).',
     'Suction straight run of not less than 10 pipe diameters upstream of the pump flange (NFPA 20 4.14.6).',
-    'Wall sleeve with puddle flange cast into the common wall; annular space sealed (watertight).'
+    `Puddle flange ${pf1?.tag ?? 'PF-01'} (OD ${pfOd} mm, 10 mm thick, centred in the wall, welded to the pipe) cast into the common wall; no wall sleeve in the water-retaining wall (see FP-110).`
   ];
   drawNotes(c, x0, 574 - t.h - 8, 831 - x0 - 4, 'SECTION NOTES', notes);
 }
