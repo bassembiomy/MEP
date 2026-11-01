@@ -826,6 +826,25 @@ function buildBlocks(c: Ctx, th: number, maxH: number): Block[] {
     if (u.internalExamYears) ins.push([`INTERNAL EXAMINATION\n${u.id} (${AGENT_SHORT[u.agent]})`, `EVERY ${u.internalExamYears} YEARS`, 'SEC. 7.3.3']);
   }
   blocks.push(tableBlock(c, autoCols(ins, th), ins, { title: 'INSPECTION & MAINTENANCE (NFPA 10 CH. 7 / CH. 8)', th }));
+  // compliance summary — zone checks grouped by rule (id before ':'), then system checks
+  const groups = new Map<string, { title: string; ref: string; pass: number; warn: number; fail: number }>();
+  for (const z of fe.zones) {
+    for (const k of z.checks) {
+      const base = k.id.split(':')[0];
+      const g = groups.get(base) ?? { title: k.title.split(' — ')[0], ref: k.reference, pass: 0, warn: 0, fail: 0 };
+      g[k.status] += 1;
+      groups.set(base, g);
+    }
+  }
+  const cs: string[][] = [['CHECK', 'NFPA 10-2022 / IFC', 'PASS', 'WARN', 'FAIL']];
+  for (const g of groups.values()) {
+    cs.push([wrapText(g.title.toUpperCase(), 34).join('\n'), wrapText(g.ref.toUpperCase(), 30).join('\n'), String(g.pass), String(g.warn), String(g.fail)]);
+  }
+  for (const k of fe.checks) {
+    const n = (s: string): string => (k.status === s ? '1' : '0');
+    cs.push([wrapText(k.title.toUpperCase(), 34).join('\n'), wrapText(k.reference.toUpperCase(), 30).join('\n'), n('pass'), n('warn'), n('fail')]);
+  }
+  blocks.push(tableBlock(c, autoCols(cs, th), cs, { title: 'EXTINGUISHER COMPLIANCE SUMMARY', th, alignRight: [false, false, true, true, true] }));
   return blocks;
 }
 
