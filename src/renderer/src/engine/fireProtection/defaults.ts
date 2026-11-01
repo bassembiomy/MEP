@@ -1,7 +1,7 @@
 /**
  * Default design input for the fire pump room & tank module (plan §3.4).
  */
-import { BuildingInput, FireDesignInput, FloorLevel, StandpipeDesignInput } from './fpTypes';
+import { BuildingInput, ExtinguisherDesignInput, ExtinguisherZoneInput, FireDesignInput, FloorLevel, StandpipeDesignInput } from './fpTypes';
 
 /** Simple project input (no building data): OH2 sprinklers, Class I standpipes, electric + diesel pumps, underground RC tank. */
 export const SIMPLE_FIRE_INPUT: FireDesignInput = {
@@ -83,10 +83,30 @@ const DEFAULT_STANDPIPE_DESIGN: StandpipeDesignInput = {
   fdcInlets: undefined
 };
 
+const efZone = (p: Partial<ExtinguisherZoneInput> & Pick<ExtinguisherZoneInput, 'id' | 'name' | 'floorId' | 'hazard' | 'lengthM' | 'widthM'>): ExtinguisherZoneInput => ({
+  classA: true, classB: 'none', deepLayerSurfaceM2: 0, classC: false, sensitiveElectronics: false,
+  classD: false, dMetal: '', fryers: 0, maxFryerOilLb: 0, mounting: 'bracket', ...p
+});
+
+/** Default portable extinguisher zones (NFPA 10-2022). */
+const DEFAULT_EXTINGUISHERS: ExtinguisherDesignInput = {
+  zones: [
+    efZone({ id: 'Z1', name: 'Parking', floorId: 'B1', hazard: 'ordinary', lengthM: 40, widthM: 30, classB: 'spill' }),
+    efZone({ id: 'Z2', name: 'Electrical Room', floorId: 'B1', hazard: 'ordinary', lengthM: 6, widthM: 5, classC: true, sensitiveElectronics: true, mounting: 'cabinet' }),
+    efZone({ id: 'Z3', name: 'Fire Pump Room', floorId: 'B1', hazard: 'ordinary', lengthM: 13.8, widthM: 6.5, classB: 'spill', classC: true }),
+    efZone({ id: 'Z4', name: 'Lobby', floorId: 'GF', hazard: 'light', lengthM: 40, widthM: 27.5 }),
+    efZone({ id: 'Z5', name: 'Kitchen', floorId: 'GF', hazard: 'ordinary', lengthM: 10, widthM: 10, fryers: 3, maxFryerOilLb: 50 }),
+    ...[1, 2, 3, 4, 5, 6, 7, 8].map((n) =>
+      efZone({ id: `Z${n + 5}`, name: `Offices Level ${n}`, floorId: `L${n}`, hazard: 'light', lengthM: 40, widthM: 30 })
+    )
+  ]
+};
+
 /** Default project input: 11-level building with two Class I combined standpipes, 300 psi components. */
 export const DEFAULT_FIRE_INPUT: FireDesignInput = {
   ...SIMPLE_FIRE_INPUT,
   systemComponentRatingPsi: 300,
   building: DEFAULT_BUILDING,
-  standpipeDesign: DEFAULT_STANDPIPE_DESIGN
+  standpipeDesign: DEFAULT_STANDPIPE_DESIGN,
+  extinguishers: DEFAULT_EXTINGUISHERS
 };

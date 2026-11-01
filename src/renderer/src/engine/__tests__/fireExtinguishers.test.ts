@@ -156,7 +156,7 @@ const result = designFireProtectionSystem(DEFAULT_FIRE_INPUT);
   for (const s of ['NFPA 10', 'FE-B1-01', 'ABC-10', '4-A:60-B:C', 'CLEAN-15.5', 'WETCHEM-6L', 'HYDROSTATIC', 'MONTHLY', 'TRAVEL', 'SCHEDULE', 'SPECIFICATION', '11250', 'KITCHEN']) {
     assert(rep.includes(s), `extinguisher report contains ${s}`);
   }
-  assert(!rep.includes('NAN') && !rep.includes('UNDEFINED'), 'report clean');
+  assert(!/\bNAN\b/.test(rep) && !/\bUNDEFINED\b/.test(rep), 'report clean');
   assert(buildFireCalcReport(result).toUpperCase().includes('PORTABLE FIRE EXTINGUISHERS'), 'main report section');
   console.log('✓ reports');
 }

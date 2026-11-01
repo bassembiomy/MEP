@@ -4,6 +4,7 @@
 import { DEFAULT_FIRE_INPUT, SIMPLE_FIRE_INPUT } from './defaults';
 import { FireDesignInput, FireDesignResult, StandpipeSystemDesign } from './fpTypes';
 import { calculateSprinklerDemand, calculateSystemDemand } from './hydraulics';
+import { designExtinguishers } from './extinguisherDesigner';
 import { designPumpRoom } from './pumpRoomDesigner';
 import { analyzeStandpipeOutlets, derivedSprinklerRiser, designStandpipeHydraulics, pumpCenterlineAbsM, standpipeApplicable } from './standpipeDesigner';
 import { selectRatedCapacity } from './standards/nfpa20';
@@ -43,6 +44,7 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
   const tank = designTank(input, demand, pumps);
   const room = designPumpRoom(input, pumps, tank);
   const standpipe = spHyd ? analyzeStandpipeOutlets(spHyd, input, pumps) : null;
+  const extinguishers = designExtinguishers(input);
   return {
     input,
     demand,
@@ -50,7 +52,14 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
     tank,
     room,
     standpipe,
-    checks: [...pumps.checks, ...tank.checks, ...room.checks, ...(standpipe ? standpipe.checks : [])],
+    extinguishers,
+    checks: [
+      ...pumps.checks,
+      ...tank.checks,
+      ...room.checks,
+      ...(standpipe ? standpipe.checks : []),
+      ...(extinguishers ? [...extinguishers.zones.flatMap((z) => z.checks), ...extinguishers.checks] : [])
+    ],
     standardsReferences: STANDARDS_REFERENCES.map((r) => ({ ...r }))
   };
 }

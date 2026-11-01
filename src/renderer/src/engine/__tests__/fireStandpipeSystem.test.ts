@@ -164,7 +164,7 @@ const result = designFireProtectionSystem(DEFAULT_FIRE_INPUT);
 {
   const rep = buildFireCalcReport(result).toUpperCase();
   for (const s of ['STANDPIPE SYSTEM', 'ST-1-H1', 'ST-1-SB', 'PRV', 'FIRE DEPARTMENT CONNECTION', 'LEVEL 8', 'ROOF']) assert(rep.includes(s), `report contains ${s}`);
-  assert(!rep.includes('NAN') && !rep.includes('UNDEFINED'), 'report clean');
+  assert(!/\bNAN\b/.test(rep) && !/\bUNDEFINED\b/.test(rep), 'report clean');
   console.log('✓ report');
 }
 

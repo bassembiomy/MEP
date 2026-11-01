@@ -1,7 +1,20 @@
 /**
  * Fixed-width (Elite-Fire style) hydraulic calculation report for the fire pump / tank design.
  */
-import { FireDesignResult, HydraulicNodeRow } from './fpTypes';
+import { ExtinguisherAgent, FireDesignResult, HydraulicNodeRow } from './fpTypes';
+import {
+  FE_DEEP_B_PER_FT2,
+  FE_DEEP_MAX_SURFACE_FT2,
+  FE_HAZARD,
+  FE_HEAVY_LB,
+  FE_HEAVY_MOUNT_TOP_MAX_MM,
+  FE_LIGHT_MOUNT_TOP_MAX_MM,
+  FE_MAX_AREA_PER_UNIT_FT2,
+  FE_MIN_BOTTOM_CLEARANCE_MM,
+  FE_TRAVEL_A_FT,
+  FE_TRAVEL_D_FT,
+  FE_TRAVEL_K_FT
+} from './standards/nfpa10';
 import { CODE_NOTE } from './standards/codeReferences';
 import { formatPipeSize } from './standards/pipeData';
 import { gpmToLpm, psiToBar } from './hydraulics';
@@ -74,6 +87,159 @@ function standpipeSection(result: FireDesignResult): string[] {
   );
   for (const c of sp.checks) L.push(`   [${c.status.toUpperCase()}] ${pad(c.id, 22)} ${c.title} - ${c.detail}`);
   return L;
+}
+
+const AGENT_LABEL: Record<ExtinguisherAgent, string> = {
+  'dry-chemical-abc': 'dry chemical ABC',
+  co2: 'carbon dioxide',
+  water: 'water',
+  afff: 'AFFF foam',
+  'clean-agent': 'clean agent',
+  'wet-chemical': 'wet chemical',
+  'dry-powder-d': 'dry powder Class D'
+};
+
+function extinguisherZoneLines(result: FireDesignResult): string[] {
+  const fe = result.extinguishers!;
+  const L: string[] = [];
+  const zin = new Map((result.input.extinguishers?.zones ?? []).map((z) => [z.id, z]));
+  for (const z of fe.zones) {
+    const zi = zin.get(z.zoneId);
+    const cls = zi
+      ? [zi.classA ? 'A' : '', zi.classB !== 'none' ? `B (${zi.classB})` : '', zi.classC ? `C${zi.sensitiveElectronics ? ' (sensitive electronics)' : ''}` : '', zi.classD ? `D (${zi.dMetal || 'metal'})` : '', zi.fryers > 0 ? `K (${zi.fryers} fryers, max ${zi.maxFryerOilLb} lb)` : ''].filter(Boolean).join(', ')
+      : '-';
+    L.push(
+      '',
+      `Zone ${z.zoneId} - ${z.zoneName} (floor ${z.floorId}, ${FE_HAZARD[z.hazard].label})`,
+      `   Size / area            : ${num(z.lengthFt, 1)} x ${num(z.widthFt, 1)} ft = ${Math.round(z.areaFt2)} ft2; classes ${cls || '-'}`
+    );
+    if (z.minARating !== null) {
+      L.push(`   Class A requirement    : min ${z.minARating}-A single rating, ${z.areaPerAFt2} ft2 per A, max ${z.maxAreaPerUnitFt2 === null ? '-' : Math.round(z.maxAreaPerUnitFt2)} ft2 per unit (cap ${FE_MAX_AREA_PER_UNIT_FT2} ft2)`);
+    }
+    if (z.bRequirement) L.push(`   Class B requirement    : ${z.bRequirement}`);
+    if (z.selectedUnitId) {
+      L.push(
+        `   Candidates (units)     : ${z.candidates.map((c) => `${c.unitId} x${c.count}`).join(', ')}`,
+        `   Selected               : ${z.count} x ${z.selectedUnitId}, grid ${z.grid.nx} x ${z.grid.ny}, allowed travel ${z.maxTravelFt} ft, actual travel ${num(z.maxTravelActualFt, 1)} ft`
+      );
+    } else if (z.candidates.length === 0 && zi && (zi.classA || zi.classB !== 'none' || zi.classC)) {
+      L.push('   Selected               : none - no catalog unit satisfies the requirements');
+    }
+    if (z.kUnits > 0) L.push(`   Class K                : ${z.kUnits} x WETCHEM-6L within ${FE_TRAVEL_K_FT} ft of the cooking appliances`);
+    if (z.dUnits > 0) L.push(`   Class D                : ${z.dUnits} x CLASSD-30 within ${FE_TRAVEL_D_FT} ft; size agent per manufacturer for the metal`);
+    for (const n of z.notes) L.push(`   Note: ${n}`);
+  }
+  return L;
+}
+
+function extinguisherSection(result: FireDesignResult): string[] {
+  const fe = result.extinguishers!;
+  const L: string[] = [...section('PORTABLE FIRE EXTINGUISHERS (NFPA 10)')];
+  L.push(
+    `Design basis            : NFPA 10-2022, IFC §906; ${fe.zones.length} zones on ${fe.floorsCovered.length} floors`,
+    `Total extinguishers     : ${fe.totalCount} (${fe.totals.map((t) => `${t.qty} x ${t.unitId} ${t.ratingText}`).join(', ')})`
+  );
+  L.push(...extinguisherZoneLines(result));
+  L.push('', 'Extinguisher schedule:', pad('Tag', 12) + pad('Zone', 8) + pad('Unit', 18) + pad('Purpose', 10) + pad('Mounting', 10) + lpad('Top mm', 8) + lpad('Bottom mm', 11));
+  for (const z of fe.zones) {
+    for (const e of z.extinguishers) {
+      L.push(pad(e.tag, 12) + pad(e.zoneId, 8) + pad(e.unitId, 18) + pad(e.purpose, 10) + pad(e.mounting, 10) + lpad(String(e.mountingTopMm), 8) + lpad(String(e.bottomClearanceMm), 11));
+    }
+  }
+  return L;
+}
+
+/** Standalone portable fire extinguisher design report (NFPA 10-2022). */
+export function buildExtinguisherReport(result: FireDesignResult): string {
+  const { input } = result;
+  const fe = result.extinguishers;
+  const L: string[] = [];
+  L.push(LINE, 'PORTABLE FIRE EXTINGUISHERS (NFPA 10-2022) - DESIGN REPORT', LINE);
+  L.push(`Project   : ${input.projectName}`, `Number    : ${input.projectNumber}`, `Designer  : ${input.designer}`);
+  if (!fe) {
+    L.push('', 'No portable fire extinguisher data in the project input.', '', CODE_NOTE, '');
+    return L.join('\n');
+  }
+
+  L.push(...section('Standards and design basis'));
+  L.push(
+    'NFPA 10-2022 Standard for Portable Fire Extinguishers (selection Ch. 5, distribution Ch. 6, inspection and maintenance Ch. 7-8)',
+    'IFC §906 Portable Fire Extinguishers',
+    `Zones: ${fe.zones.length}; floors covered: ${fe.floorsCovered.join(', ')}; total extinguishers: ${fe.totalCount}`,
+    'Travel model: direct distance from any point of the zone to the nearest unit (half the diagonal of a uniform grid cell).',
+    'Verify actual walking travel distance on the architectural plan.'
+  );
+
+  L.push(...section('Hazard rules'));
+  L.push(pad('Hazard', 30) + lpad('Min A', 7) + lpad('ft2 per A', 11) + lpad('B @ 30 ft', 11) + lpad('B @ 50 ft', 11) + lpad('Max ft2/unit', 14) + lpad('Travel A ft', 13));
+  for (const h of ['light', 'ordinary', 'extra'] as const) {
+    const r = FE_HAZARD[h];
+    L.push(pad(r.label, 30) + lpad(`${r.minA}-A`, 7) + lpad(String(r.areaPerAFt2), 11) + lpad(`${r.bShort}-B`, 11) + lpad(`${r.bLong}-B`, 11) + lpad(String(FE_MAX_AREA_PER_UNIT_FT2), 14) + lpad(String(FE_TRAVEL_A_FT), 13));
+  }
+  L.push(
+    `Max floor area per extinguisher ${FE_MAX_AREA_PER_UNIT_FT2} ft2 (Table 6.2.1.1). Class B appreciable depth (§6.3.2): ${FE_DEEP_B_PER_FT2}-B per ft2 of surface, travel 50 ft, fixed system when surface > ${FE_DEEP_MAX_SURFACE_FT2} ft2.`,
+    `Class K (§6.6): travel ${FE_TRAVEL_K_FT} ft, 1 unit per 4 fryers. Class D (§6.5): travel ${FE_TRAVEL_D_FT} ft. Class C (§6.4): non-conductive agent.`
+  );
+
+  L.push(...section('Extinguisher types used (catalog)'));
+  L.push(pad('Id', 18) + pad('Rating', 14) + pad('Agent', 20) + pad('Capacity', 18) + lpad('Gross lb', 9) + lpad('Hydro yr', 10) + lpad('Internal yr', 12));
+  for (const t of fe.totals) {
+    const u = fe.catalog.find((c) => c.id === t.unitId)!;
+    L.push(pad(u.id, 18) + pad(u.ratingText, 14) + pad(AGENT_LABEL[u.agent], 20) + pad(u.capacity, 18) + lpad(String(u.grossWeightLb), 9) + lpad(String(u.hydroTestYears), 10) + lpad(u.internalExamYears === null ? '-' : String(u.internalExamYears), 12));
+  }
+  L.push('Ratings are typical listed values (UL 711) - verify with the selected manufacturer.');
+
+  L.push(...section('Zone calculations'));
+  L.push(...extinguisherZoneLines(result));
+
+  L.push(...section('Extinguisher schedule'));
+  L.push(pad('Tag', 12) + pad('Floor', 7) + pad('Zone', 24) + pad('Unit', 18) + pad('Rating', 14) + pad('Mounting', 10) + lpad('Top mm', 8) + lpad('Bottom mm', 11) + lpad('x m', 8) + lpad('y m', 8));
+  for (const z of fe.zones) {
+    for (const e of z.extinguishers) {
+      const u = fe.catalog.find((c) => c.id === e.unitId)!;
+      L.push(pad(e.tag, 12) + pad(e.floorId, 7) + pad(z.zoneName.slice(0, 22), 24) + pad(e.unitId, 18) + pad(u.ratingText, 14) + pad(e.mounting === 'cabinet' ? 'cabinet' : e.mounting, 10) + lpad(String(e.mountingTopMm), 8) + lpad(String(e.bottomClearanceMm), 11) + lpad(num(e.xM, 1), 8) + lpad(num(e.yM, 1), 8));
+    }
+  }
+
+  L.push(...section('Totals'));
+  for (const t of fe.totals) L.push(`${lpad(String(t.qty), 4)} x ${pad(t.unitId, 18)} ${t.label} (${t.ratingText})`);
+  L.push(`Total: ${fe.totalCount} extinguishers`);
+
+  L.push(...section('Inspection, maintenance and hydrostatic test schedule'));
+  L.push(
+    'Monthly inspection (NFPA 10 §7.2): location, access, pressure gauge, seals, condition.',
+    'Annual maintenance (NFPA 10 §7.3): thorough examination by a certified person, tag/record.',
+    'Stored-pressure dry chemical: internal examination every 6 years (§7.3.3).',
+    'Hydrostatic test (Table 8.3.1):'
+  );
+  for (const t of fe.totals) {
+    const u = fe.catalog.find((c) => c.id === t.unitId)!;
+    L.push(`   ${pad(u.id, 18)} every ${u.hydroTestYears} years${u.internalExamYears ? `; internal exam every ${u.internalExamYears} years` : ''}`);
+  }
+
+  L.push(...section('Installation specification'));
+  [
+    'Extinguishers shall be listed and labelled (UL 711) and sized per NFPA 10-2022 Tables 6.2.1.1 and 6.3.1.1.',
+    'Locate units conspicuously along normal paths of travel, including exits, unobstructed (§6.1.3).',
+    `Mount units with gross weight up to ${FE_HEAVY_LB} lb with the top at most ${FE_LIGHT_MOUNT_TOP_MAX_MM} mm above the floor (design 1200 mm).`,
+    `Mount units over ${FE_HEAVY_LB} lb with the top at most ${FE_HEAVY_MOUNT_TOP_MAX_MM} mm above the floor (design 1000 mm).`,
+    `Keep at least ${FE_MIN_BOTTOM_CLEARANCE_MM} mm clearance between the bottom of the extinguisher and the floor; wheeled units stand on the floor.`,
+    'Provide signage where extinguishers are not visible (§6.1.3.3); cabinets shall not be locked.',
+    'Class K units are installed within 30 ft of cooking appliances; Class D units within 75 ft of the metal hazard.',
+    'Use CO2 or clean agent (not dry chemical) for delicate electronics (§5.5.4).',
+    'Install at least one extinguisher on every occupied floor (IFC §906.1).',
+    'Verify actual walking travel distance on the architectural plan and adjust positions to the nearest wall or column.',
+    'Tag each unit with its identification (FE-floor-nn) and record inspections.',
+    'Wall brackets shall be rated for the gross weight of the extinguisher and fixed to structure.'
+  ].forEach((t, i) => L.push(`${lpad(String(i + 1), 3)}. ${t}`));
+
+  L.push(...section('Design checks'));
+  const checks = [...fe.zones.flatMap((z) => z.checks), ...fe.checks];
+  for (const c of checks) {
+    L.push(`[${c.status.toUpperCase()}] ${pad(c.id, 22)} ${c.title}`, `        ${c.reference}`, `        ${c.detail}`);
+  }
+  L.push('', CODE_NOTE, '');
+  return L.join('\n');
 }
 
 /** Build the full text calculation report (project header, standards, hydraulics, pumps, tank, room, checks). */
@@ -187,6 +353,7 @@ export function buildFireCalcReport(result: FireDesignResult): string {
   for (const q of room.equipment) L.push(`   ${pad(q.tag, 8)} ${q.label}  [x ${num(q.rect.x, 0)}, y ${num(q.rect.y, 0)}, ${num(q.rect.w, 0)} x ${num(q.rect.h, 0)}]`);
 
   if (result.standpipe) L.push(...standpipeSection(result));
+  if (result.extinguishers) L.push(...extinguisherSection(result));
 
   L.push(...section('Design checks'));
   for (const c of result.checks) {

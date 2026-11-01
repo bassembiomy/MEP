@@ -8,6 +8,7 @@
  */
 import type { FireDesignInput, FloorLevel } from './fpTypes'
 import { SIMPLE_FIRE_INPUT } from './defaults'
+import { generateExtinguisherZonesFromFloors } from './extinguisherDesigner'
 
 function floor(
   id: string,
@@ -39,6 +40,13 @@ const FLOORS: FloorLevel[] = [
   floor('RF', 'Roof', 21.5, 0, 'Roof', true)
 ]
 
+const LEARNING_BUILDING = {
+  floors: FLOORS,
+  pumpRoomFloorElevationM: -4.0,
+  roofSlopeLessThan4in12: true,
+  fireDeptAccessElevationM: 0
+}
+
 export const LEARNING_EXAMPLE_INPUT: FireDesignInput = {
   ...SIMPLE_FIRE_INPUT,
   projectName: 'Learning Example - Office Tower',
@@ -64,12 +72,8 @@ export const LEARNING_EXAMPLE_INPUT: FireDesignInput = {
   twoCompartments: true,
   tankFloorToPumpCLm: 0.5,
   refillFlowGpm: 200,
-  building: {
-    floors: FLOORS,
-    pumpRoomFloorElevationM: -4.0,
-    roofSlopeLessThan4in12: true,
-    fireDeptAccessElevationM: 0
-  },
+  building: LEARNING_BUILDING,
+  extinguishers: { zones: generateExtinguisherZonesFromFloors(LEARNING_BUILDING) },
   standpipeDesign: {
     systemType: 'automatic-wet',
     combinedWithSprinklers: true,
