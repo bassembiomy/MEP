@@ -192,6 +192,8 @@ export const FloorPlanCanvas: React.FC = () => {
     const handleGlobalMouseUp = (e: MouseEvent) => {
       if (e.button === 1 || e.button === 0) {
         if (isPanning) {
+          const st = stageRef.current;
+          if (st) setStagePos({ x: st.x(), y: st.y() });
           setIsPanning(false);
           const container = stageRef.current?.container();
           if (container) {
@@ -212,24 +214,25 @@ export const FloorPlanCanvas: React.FC = () => {
     const stage = stageRef.current;
     if (!stage) return;
 
+    // Panning moves the Konva stage directly (no React re-render per mouse move); committed on mouse-up.
+    if (isPanning) {
+      const dx = e.evt.clientX - lastPosRef.current.x;
+      const dy = e.evt.clientY - lastPosRef.current.y;
+      stage.position({ x: stage.x() + dx, y: stage.y() + dy });
+      stage.batchDraw();
+      lastPosRef.current = { x: e.evt.clientX, y: e.evt.clientY };
+      return;
+    }
+
+    // The cursor position is only needed for the polyline rubber-band preview.
+    if (drawMode !== 'polyline') return;
     const transform = stage.getAbsoluteTransform().copy().invert();
     const pos = stage.getPointerPosition();
     if (pos) {
       const localPos = transform.point(pos);
-      setMousePos({
-        x: snapToGrid(localPos.x, gridSpacing),
-        y: snapToGrid(localPos.y, gridSpacing),
-      });
-    }
-
-    if (isPanning) {
-      const dx = e.evt.clientX - lastPosRef.current.x;
-      const dy = e.evt.clientY - lastPosRef.current.y;
-      setStagePos((prev) => ({
-        x: prev.x + dx,
-        y: prev.y + dy
-      }));
-      lastPosRef.current = { x: e.evt.clientX, y: e.evt.clientY };
+      const nx = snapToGrid(localPos.x, gridSpacing);
+      const ny = snapToGrid(localPos.y, gridSpacing);
+      setMousePos((prev) => (prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny }));
     }
   };
 
@@ -264,18 +267,20 @@ export const FloorPlanCanvas: React.FC = () => {
   };
 
   // Continuous smooth exponential cursor-anchored zooming
+  const wheelCommitRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
     const stage = stageRef.current;
     if (!stage) return;
 
-    const oldScale = stageScale;
+    // Read the live stage transform (may be ahead of React state while zooming).
+    const oldScale = stage.scaleX();
     const pointer = stage.getPointerPosition();
     if (!pointer) return;
 
     const mousePointTo = {
-      x: (pointer.x - stagePos.x) / oldScale,
-      y: (pointer.y - stagePos.y) / oldScale,
+      x: (pointer.x - stage.x()) / oldScale,
+      y: (pointer.y - stage.y()) / oldScale,
     };
 
     // Sub-pixel continuous zoom response for wheels and trackpads
@@ -283,12 +288,18 @@ export const FloorPlanCanvas: React.FC = () => {
     const zoomFactor = Math.exp(-delta * 0.0018);
     let newScale = oldScale * zoomFactor;
     newScale = Math.min(Math.max(newScale, 0.01), 50.0);
+    const newPos = { x: pointer.x - mousePointTo.x * newScale, y: pointer.y - mousePointTo.y * newScale };
 
-    setStageScale(newScale);
-    setStagePos({
-      x: pointer.x - mousePointTo.x * newScale,
-      y: pointer.y - mousePointTo.y * newScale,
-    });
+    // Apply immediately on the canvas; commit to React (LOD, stroke widths) once the wheel settles.
+    stage.scale({ x: newScale, y: newScale });
+    stage.position(newPos);
+    stage.batchDraw();
+    if (wheelCommitRef.current) clearTimeout(wheelCommitRef.current);
+    wheelCommitRef.current = setTimeout(() => {
+      wheelCommitRef.current = null;
+      setStageScale(newScale);
+      setStagePos(newPos);
+    }, 120);
   };
 
   const handleZoomBtn = (factor: number) => {

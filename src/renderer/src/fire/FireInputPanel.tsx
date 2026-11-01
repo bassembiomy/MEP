@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { ChevronDown, ChevronRight, Copy, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { useFireProtectionStore } from '../store/fireProtectionStore'
+import { useShallow } from 'zustand/react/shallow'
 import type {
   BuildingInput,
   FireDesignInput,
@@ -1029,7 +1030,9 @@ const FireExtinguisherSection: React.FC<{
 }
 
 export const FireInputPanel: React.FC = () => {
-  const { input, setInput, reset } = useFireProtectionStore()
+  const { input, setInput, reset } = useFireProtectionStore(
+    useShallow((s) => ({ input: s.input, setInput: s.setInput, reset: s.reset }))
+  )
   const set = (p: Partial<FireDesignInput>): void => setInput(p)
   const detailed = !!(input.building && input.standpipeDesign)
   const toggleDetailed = (on: boolean): void => {

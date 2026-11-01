@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, FileImage, Maximize } from 'lucide-react'
 import { useFireProtectionStore } from '../store/fireProtectionStore'
+import { useShallow } from 'zustand/react/shallow'
 import { renderSvg } from '../engine/fireProtection/drawing/svgRenderer'
 import { writeDxf } from '../engine/fireProtection/drawing/dxfWriter'
 import { downloadText, safeFileName } from './download'
@@ -8,7 +9,14 @@ import { downloadText, safeFileName } from './download'
 const BASE_WIDTH = 1200
 
 export const DrawingPreview: React.FC = () => {
-  const { drawing, activeSheet, setActiveSheet, input } = useFireProtectionStore()
+  const { drawing, activeSheet, setActiveSheet, projectName } = useFireProtectionStore(
+    useShallow((s) => ({
+      drawing: s.drawing,
+      activeSheet: s.activeSheet,
+      setActiveSheet: s.setActiveSheet,
+      projectName: s.input.projectName
+    }))
+  )
   const sheetIndex = drawing ? Math.min(activeSheet, Math.max(0, drawing.sheets.length - 1)) : 0
 
   const svg = useMemo(
@@ -23,21 +31,71 @@ export const DrawingPreview: React.FC = () => {
   const pageH = BASE_WIDTH * aspect
 
   const boxRef = useRef<HTMLDivElement>(null)
-  const [view, setView] = useState({ x: 0, y: 0, k: 1 })
+  const layerRef = useRef<HTMLDivElement>(null)
+  // View transform lives in a ref and is applied directly to the DOM (no React re-render per mouse move).
+  const view = useRef({ x: 0, y: 0, k: 1 })
+  // Width (px) at which the sheet image is rasterised; re-rasterised sharply after zooming settles.
+  const [rasterW, setRasterW] = useState(BASE_WIDTH)
+  const rasterRef = useRef(BASE_WIDTH)
   const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null)
+  const frame = useRef(0)
+  const settle = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // The SVG is shown as an <img> (rasterised once, GPU-composited) instead of thousands of live DOM nodes.
+  const imgUrl = useMemo(
+    () => (svg ? URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' })) : ''),
+    [svg]
+  )
+  useEffect(
+    () => () => {
+      if (imgUrl) URL.revokeObjectURL(imgUrl)
+    },
+    [imgUrl]
+  )
+
+  const apply = useCallback(() => {
+    frame.current = 0
+    const el = layerRef.current
+    if (!el) return
+    const v = view.current
+    const s = (v.k * BASE_WIDTH) / rasterRef.current
+    el.style.transform = `translate3d(${v.x}px, ${v.y}px, 0) scale(${s})`
+  }, [])
+  const schedule = useCallback(() => {
+    if (!frame.current) frame.current = requestAnimationFrame(apply)
+  }, [apply])
+
+  const commitRaster = useCallback(() => {
+    // Sharp re-render at the current zoom, capped at 6000 px wide to bound memory.
+    const w = Math.round(Math.min(6000, Math.max(BASE_WIDTH * 0.5, BASE_WIDTH * view.current.k)))
+    if (Math.abs(w - rasterRef.current) / rasterRef.current > 0.15) {
+      rasterRef.current = w
+      setRasterW(w)
+    }
+    schedule()
+  }, [schedule])
 
   const fit = useCallback(() => {
     const el = boxRef.current
     if (!el) return
     const k = Math.min(el.clientWidth / BASE_WIDTH, el.clientHeight / pageH) * 0.97
-    setView({ k, x: (el.clientWidth - BASE_WIDTH * k) / 2, y: (el.clientHeight - pageH * k) / 2 })
-  }, [pageH])
+    view.current = {
+      k,
+      x: (el.clientWidth - BASE_WIDTH * k) / 2,
+      y: (el.clientHeight - pageH * k) / 2
+    }
+    commitRaster()
+  }, [pageH, commitRaster])
 
   useEffect(() => {
     fit()
-  }, [fit, sheetIndex])
+  }, [fit, sheetIndex, imgUrl])
 
-  // Wheel zoom about the cursor (needs a non-passive native listener to prevent page scroll).
+  useEffect(() => {
+    schedule()
+  }, [rasterW, schedule])
+
+  // Wheel zoom about the cursor (non-passive native listener to prevent page scroll).
   useEffect(() => {
     const el = boxRef.current
     if (!el) return
@@ -46,23 +104,28 @@ export const DrawingPreview: React.FC = () => {
       const r = el.getBoundingClientRect()
       const px = e.clientX - r.left
       const py = e.clientY - r.top
-      const f = Math.exp(-e.deltaY * 0.0015)
-      setView((v) => {
-        const k = Math.min(20, Math.max(0.05, v.k * f))
-        const r2 = k / v.k
-        return { k, x: px - (px - v.x) * r2, y: py - (py - v.y) * r2 }
-      })
+      const v = view.current
+      const k = Math.min(20, Math.max(0.05, v.k * Math.exp(-e.deltaY * 0.0015)))
+      const r2 = k / v.k
+      view.current = { k, x: px - (px - v.x) * r2, y: py - (py - v.y) * r2 }
+      schedule()
+      if (settle.current) clearTimeout(settle.current)
+      settle.current = setTimeout(commitRaster, 180)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [])
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      if (settle.current) clearTimeout(settle.current)
+      if (frame.current) cancelAnimationFrame(frame.current)
+    }
+  }, [schedule, commitRaster])
 
   if (!drawing) {
     return <div className="text-xs text-neutral-500 p-6">No drawing available.</div>
   }
 
   const sheet = drawing.sheets[sheetIndex]
-  const base = safeFileName(input.projectName)
+  const base = safeFileName(projectName)
 
   return (
     <div className="flex flex-col gap-3">
@@ -117,25 +180,42 @@ export const DrawingPreview: React.FC = () => {
         ref={boxRef}
         className="relative overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-800 h-[70vh] min-h-[420px] cursor-grab active:cursor-grabbing select-none"
         onMouseDown={(e) => {
-          drag.current = { sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y }
+          drag.current = { sx: e.clientX, sy: e.clientY, ox: view.current.x, oy: view.current.y }
         }}
         onMouseMove={(e) => {
           const d = drag.current
-          if (d) setView((v) => ({ ...v, x: d.ox + e.clientX - d.sx, y: d.oy + e.clientY - d.sy }))
+          if (!d) return
+          view.current = { ...view.current, x: d.ox + e.clientX - d.sx, y: d.oy + e.clientY - d.sy }
+          schedule()
         }}
         onMouseUp={() => (drag.current = null)}
         onMouseLeave={() => (drag.current = null)}
       >
         <div
+          ref={layerRef}
           className="absolute top-0 left-0 bg-white shadow-2xl"
           style={{
-            width: BASE_WIDTH,
-            height: pageH,
+            width: rasterW,
+            height: rasterW * aspect,
             transformOrigin: '0 0',
-            transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})`
+            willChange: 'transform'
           }}
-          dangerouslySetInnerHTML={{ __html: svg }}
-        />
+        >
+          {imgUrl && (
+            <img
+              src={imgUrl}
+              alt={sheet?.title ?? 'drawing sheet'}
+              draggable={false}
+              decoding="async"
+              style={{
+                width: rasterW,
+                height: rasterW * aspect,
+                display: 'block',
+                pointerEvents: 'none'
+              }}
+            />
+          )}
+        </div>
       </div>
     </div>
   )

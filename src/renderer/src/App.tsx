@@ -11,11 +11,13 @@ import { useProjectStore } from './store/projectStore';
 import Versions from './components/Versions';
 import { useFireProtectionStore } from './store/fireProtectionStore';
 import { FireWorkspace } from './fire/FireWorkspace';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Flame, Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table, FileSpreadsheet } from 'lucide-react';
 
 function App(): React.JSX.Element {
   const { project, setProject, activeTab, setActiveTab } = useProjectStore();
-  const { discipline, setDiscipline } = useFireProtectionStore();
+  const discipline = useFireProtectionStore((s) => s.discipline);
+  const setDiscipline = useFireProtectionStore((s) => s.setDiscipline);
   const isFire = discipline === 'fire';
 
   return (
@@ -107,8 +109,11 @@ function App(): React.JSX.Element {
       </header>
 
       {isFire ? (
-        <FireWorkspace />
+        <ErrorBoundary area="Fire Fighting workspace">
+          <FireWorkspace />
+        </ErrorBoundary>
       ) : (
+      <ErrorBoundary area="HVAC workspace">
       <main className="relative z-10 flex-1 grid grid-cols-1 xl:grid-cols-4 gap-6 p-6">
         {/* Draw Board Workspace (Left Column - Spans 3/4) */}
         <div className="xl:col-span-3 flex flex-col gap-6">
@@ -220,6 +225,7 @@ function App(): React.JSX.Element {
           </div>
         </div>
       </main>
+      </ErrorBoundary>
       )}
     </div>
   );

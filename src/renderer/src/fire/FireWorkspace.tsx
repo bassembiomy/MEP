@@ -14,6 +14,8 @@ import {
   Warehouse
 } from 'lucide-react'
 import { useFireProtectionStore, type FireView } from '../store/fireProtectionStore'
+import { useShallow } from 'zustand/react/shallow'
+import { ErrorBoundary } from '../components/ErrorBoundary'
 import { FireInputPanel } from './FireInputPanel'
 import { DrawingPreview } from './DrawingPreview'
 import { LearningPanel } from './LearningPanel'
@@ -62,7 +64,16 @@ const Stat: React.FC<{ label: string; value: React.ReactNode; sub?: React.ReactN
 )
 
 export const FireWorkspace: React.FC = () => {
-  const { result, error, activeView, setActiveView } = useFireProtectionStore()
+  const { result, error, activeView, setActiveView, pending, reset } = useFireProtectionStore(
+    useShallow((s) => ({
+      result: s.result,
+      error: s.error,
+      activeView: s.activeView,
+      setActiveView: s.setActiveView,
+      pending: s.pending,
+      reset: s.reset
+    }))
+  )
 
   const header =
     result &&
@@ -142,6 +153,9 @@ export const FireWorkspace: React.FC = () => {
           <span className="font-bold uppercase tracking-wider text-neutral-300">
             Fire Pump Room & Water Tank Design
           </span>
+          {pending && (
+            <span className="text-[10px] text-orange-400 animate-pulse">Recalculating...</span>
+          )}
         </div>
         {error && (
           <div className="flex items-start gap-2 bg-red-950/40 border border-red-800/60 text-red-300 text-xs rounded-2xl px-4 py-3">
@@ -171,16 +185,23 @@ export const FireWorkspace: React.FC = () => {
                 </button>
               ))}
             </div>
-            {activeView === 'learning' && <LearningPanel />}
-            {activeView === 'drawings' && <DrawingPreview />}
-            {activeView === 'calc' && <HydraulicCalcPanel result={result} />}
-            {activeView === 'standpipe' && <StandpipePanel result={result} />}
-            {activeView === 'extinguishers' && <ExtinguisherPanel result={result} />}
-            {activeView === 'pumps' && <PumpsPanel result={result} />}
-            {activeView === 'tank' && <TankPanel result={result} />}
-            {activeView === 'room' && <PumpRoomPanel result={result} />}
-            {activeView === 'checks' && <ChecksPanel result={result} />}
-            {activeView === 'report' && <ReportPanel result={result} />}
+            <ErrorBoundary
+              key={activeView}
+              area={`The ${activeView} tab`}
+              onReset={reset}
+              resetLabel="Reset design to default"
+            >
+              {activeView === 'learning' && <LearningPanel />}
+              {activeView === 'drawings' && <DrawingPreview />}
+              {activeView === 'calc' && <HydraulicCalcPanel result={result} />}
+              {activeView === 'standpipe' && <StandpipePanel result={result} />}
+              {activeView === 'extinguishers' && <ExtinguisherPanel result={result} />}
+              {activeView === 'pumps' && <PumpsPanel result={result} />}
+              {activeView === 'tank' && <TankPanel result={result} />}
+              {activeView === 'room' && <PumpRoomPanel result={result} />}
+              {activeView === 'checks' && <ChecksPanel result={result} />}
+              {activeView === 'report' && <ReportPanel result={result} />}
+            </ErrorBoundary>
           </>
         )}
         {!result && !error && <div className="text-xs text-neutral-500">Computing...</div>}

@@ -35,7 +35,13 @@ function compute(input: FireDesignInput): Computed {
   }
 }
 
+/** Recompute delay after the last input change (keeps typing responsive). */
+const RECOMPUTE_DELAY_MS = 180
+let recomputeTimer: ReturnType<typeof setTimeout> | null = null
+
 interface FireProtectionState extends Computed {
+  /** True while an input change is waiting to be recalculated. */
+  pending: boolean
   discipline: Discipline
   input: FireDesignInput
   activeView: FireView
@@ -52,29 +58,51 @@ interface FireProtectionState extends Computed {
   loadLearningExample: () => void
 }
 
-export const useFireProtectionStore = create<FireProtectionState>((set, get) => ({
-  discipline: 'hvac',
-  input: DEFAULT_FIRE_INPUT,
-  ...compute(DEFAULT_FIRE_INPUT),
-  activeView: 'drawings',
-  activeSheet: 0,
-  setDiscipline: (discipline) => set({ discipline }),
-  setInput: (partial) => {
-    const input = { ...get().input, ...partial }
-    const c = compute(input)
-    // Keep the last good result/drawing visible while the input is invalid.
+export const useFireProtectionStore = create<FireProtectionState>((set, get) => {
+  /** Recalculate the design + drawings for the current input. Keeps the last good result on error. */
+  const recompute = (): void => {
+    recomputeTimer = null
+    const c = compute(get().input)
     set((s) => ({
-      input,
+      pending: false,
       error: c.error,
       result: c.result ?? s.result,
       drawing: c.drawing ?? s.drawing
     }))
-  },
-  setActiveView: (activeView) => set({ activeView }),
-  setActiveSheet: (activeSheet) => set({ activeSheet }),
-  reset: () => set({ input: DEFAULT_FIRE_INPUT, ...compute(DEFAULT_FIRE_INPUT), activeSheet: 0 }),
-  learningStep: 0,
-  setLearningStep: (learningStep) => set({ learningStep }),
-  loadLearningExample: () =>
-    set({ input: LEARNING_EXAMPLE_INPUT, ...compute(LEARNING_EXAMPLE_INPUT), activeSheet: 0 })
-}))
+  }
+  const scheduleRecompute = (): void => {
+    if (recomputeTimer) clearTimeout(recomputeTimer)
+    recomputeTimer = setTimeout(recompute, RECOMPUTE_DELAY_MS)
+  }
+  const replaceInput = (input: FireDesignInput): void => {
+    if (recomputeTimer) clearTimeout(recomputeTimer)
+    recomputeTimer = null
+    set({ input, ...compute(input), pending: false, activeSheet: 0 })
+  }
+  return {
+    discipline: 'hvac',
+    input: DEFAULT_FIRE_INPUT,
+    // The fire design is computed lazily the first time the Fire Fighting branch is opened.
+    result: null,
+    drawing: null,
+    error: null,
+    pending: false,
+    activeView: 'drawings',
+    activeSheet: 0,
+    setDiscipline: (discipline) => {
+      set({ discipline })
+      if (discipline === 'fire' && !get().result && !recomputeTimer) setTimeout(recompute, 0)
+    },
+    setInput: (partial) => {
+      // Inputs update immediately; the heavy recalculation runs once typing pauses.
+      set((s) => ({ input: { ...s.input, ...partial }, pending: true }))
+      scheduleRecompute()
+    },
+    setActiveView: (activeView) => set({ activeView }),
+    setActiveSheet: (activeSheet) => set({ activeSheet }),
+    reset: () => replaceInput(DEFAULT_FIRE_INPUT),
+    learningStep: 0,
+    setLearningStep: (learningStep) => set({ learningStep }),
+    loadLearningExample: () => replaceInput(LEARNING_EXAMPLE_INPUT)
+  }
+})

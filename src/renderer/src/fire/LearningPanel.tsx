@@ -11,6 +11,7 @@ import {
   RotateCcw
 } from 'lucide-react'
 import { useFireProtectionStore, type FireView } from '../store/fireProtectionStore'
+import { useShallow } from 'zustand/react/shallow'
 import type { FireDesignInput, FireDesignResult } from '../engine/fireProtection/fpTypes'
 import { LEARNING_EXAMPLE_INPUT } from '../engine/fireProtection/learningExample'
 import { HAZARD_DESIGN } from '../engine/fireProtection/standards/nfpa13'
@@ -524,7 +525,18 @@ export const LearningPanel: React.FC = () => {
     setActiveView,
     setActiveSheet,
     loadLearningExample
-  } = useFireProtectionStore()
+  } = useFireProtectionStore(
+    useShallow((s) => ({
+      result: s.result,
+      input: s.input,
+      learningStep: s.learningStep,
+      setLearningStep: s.setLearningStep,
+      setInput: s.setInput,
+      setActiveView: s.setActiveView,
+      setActiveSheet: s.setActiveSheet,
+      loadLearningExample: s.loadLearningExample
+    }))
+  )
   const [visited, setVisited] = React.useState<Set<number>>(() => new Set([0]))
 
   const stepIndex = Math.min(Math.max(learningStep, 0), STEPS.length - 1)

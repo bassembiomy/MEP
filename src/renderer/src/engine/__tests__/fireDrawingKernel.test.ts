@@ -14,14 +14,17 @@ function assert(condition: boolean, message: string): void {
 
 /** Parse DXF into [code, value] pairs; throws on malformed structure. */
 function parseGroups(dxf: string): [number, string][] {
-  const lines = dxf.split('\n');
+  assert(dxf.endsWith('\r\n') && !/[^\r]\n/.test(dxf), 'AutoCAD-style CRLF line endings throughout');
+  const lines = dxf.split('\r\n');
   if (lines[lines.length - 1] === '') lines.pop();
   assert(lines.length % 2 === 0, `DXF must have an even number of lines, got ${lines.length}`);
   const out: [number, string][] = [];
   for (let i = 0; i < lines.length; i += 2) {
     const code = Number(lines[i].trim());
     assert(Number.isInteger(code), `line ${i + 1}: group code must be integer, got "${lines[i]}"`);
-    assert(!lines[i + 1].includes('\r'), 'no CR characters');
+    assert(!lines[i + 1].includes('\r') && !lines[i + 1].includes('\n'), 'no stray CR/LF inside values');
+    assert([...lines[i + 1]].every((ch) => ch.charCodeAt(0) >= 0x20 && ch.charCodeAt(0) <= 0x7e), `7-bit ASCII value "${lines[i + 1]}"`);
+    assert(lines[i + 1].length <= 255, 'value ≤ 255 chars');
     out.push([code, lines[i + 1]]);
   }
   return out;
@@ -119,6 +122,17 @@ const drawing = b.build([sheet]);
   const ver = idx(9, '$ACADVER');
   assert(ver >= 0 && g[ver + 1][1].trim() === 'AC1009', 'AC1009 version');
   const order = ['HEADER', 'TABLES', 'BLOCKS', 'ENTITIES'].map((n) => idx(2, n));
+  // AutoCAD R12 structure: all 8 tables in order, handles everywhere, $HANDSEED above every handle
+  const tableNames = g.filter((p, i) => i > 0 && g[i - 1][0] === 0 && g[i - 1][1] === 'TABLE' && p[0] === 2).map((p) => p[1]);
+  assert(JSON.stringify(tableNames) === JSON.stringify(['VPORT', 'LTYPE', 'LAYER', 'STYLE', 'VIEW', 'UCS', 'APPID', 'DIMSTYLE']), `tables ${tableNames}`);
+  const handles = g.filter((p) => (p[0] === 5 || p[0] === 105) && p[1].trim() !== '').map((p) => parseInt(p[1], 16));
+  const hsIdx = idx(9, '$HANDSEED');
+  assert(hsIdx > 0 && handles.length > 0, '$HANDSEED and handles present');
+  const seed = parseInt(g[hsIdx + 1][1], 16);
+  assert(new Set(handles.slice(1)).size === handles.length - 1, 'unique handles');
+  assert(handles.slice(1).every((h) => h < seed), `handles below $HANDSEED (seed ${seed}, max ${Math.max(...handles.slice(1))}, first ${handles[0]})`);
+  assert(idx(2, '$MODEL_SPACE') > 0 && idx(2, '$PAPER_SPACE') > 0, 'model/paper space blocks');
+  assert(idx(9, '$DWGCODEPAGE') > 0, '$DWGCODEPAGE');
   assert(order.every((v) => v > 0) && order.every((v, i) => i === 0 || v > order[i - 1]), `section order ${order}`);
   const sections = g.filter((p) => p[0] === 0 && p[1] === 'SECTION').length;
   const endsec = g.filter((p) => p[0] === 0 && p[1] === 'ENDSEC').length;
@@ -153,7 +167,7 @@ const drawing = b.build([sheet]);
   for (let i = 0; i < ents.length; i++) {
     const [c, v] = ents[i];
     if (c === 0 && ['LINE', 'CIRCLE', 'ARC', 'TEXT', 'SOLID', 'POLYLINE', 'VERTEX', 'SEQEND'].includes(v)) {
-      assert(ents[i + 1][0] === 8, `${v} followed by layer group 8`);
+      assert(ents[i + 1][0] === 5 && ents[i + 2][0] === 8, `${v} followed by handle 5 then layer 8`);
     }
   }
   // centred text carries alignment point 11
@@ -163,6 +177,8 @@ const drawing = b.build([sheet]);
   const tGroups = ents.slice(j, ents.findIndex((p, i) => i > j && p[0] === 0));
   assert(tGroups.some((p) => p[0] === 72 && p[1].trim() === '1'), 'centre text 72=1');
   assert(tGroups.some((p) => p[0] === 11), 'aligned text has 11 alignment point');
+  const i72 = tGroups.findIndex((p) => p[0] === 72), i11 = tGroups.findIndex((p) => p[0] === 11), i73 = tGroups.findIndex((p) => p[0] === 73);
+  assert(i72 < i11 && (i73 < 0 || i11 < i73), 'AutoCAD TEXT group order 72, 11, 73');
   console.log(`✓ DXF R12 structure (${g.length} groups)`);
 }
 
