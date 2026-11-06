@@ -1,5 +1,5 @@
 /** K2 — sprinkler head selection, head layout per room (NFPA 13 spacing / area / wall distance / coverage) and floor piping. */
-import { selectHeadType, layoutRoomHeads } from '../fireProtection/sprinkler/headLayout';
+import { selectHeadType, layoutRoomHeads, roomLayoutChecks } from '../fireProtection/sprinkler/headLayout';
 import { layoutFloorPiping } from '../fireProtection/sprinkler/pipingLayout';
 import { defaultSprinklerAnswers, SPACING_RULES } from '../fireProtection/sprinkler/nfpa13Sprinkler';
 import { SprinklerRoomInput, PlacedSprinkler } from '../fireProtection/sprinkler/sprinklerTypes';
@@ -63,6 +63,13 @@ const answers = defaultSprinklerAnswers();
     for (let j = i + 1; j < l.points.length; j++)
       assert(Math.hypot(l.points[i][0] - l.points[j][0], l.points[i][1] - l.points[j][1]) >= 1829, 'L min spacing 1829 mm');
   assert(l.S <= 4572.01 && l.L <= 4572.01 && (l.S * l.L) / 1e6 * 10.7639 <= 225.01, 'L spacing & area');
+  // Wall-distance check applies to the outermost head facing each wall (regression: middle heads must not count)
+  for (const [poly, rules, label] of [[OFFICE_POLYGON, SPACING_RULES.light, 'office'], [[[0, 12500], [30000, 12500], [30000, 14500], [0, 14500]], SPACING_RULES.light, 'corridor'], [Lp, SPACING_RULES.light, 'L-shape']] as const) {
+    const rm = room({ polygon: poly as [number, number][] });
+    const lay = layoutRoomHeads(rm, 'x', rules);
+    const cs = roomLayoutChecks(rm, lay, rules, 'x');
+    for (const c of cs) assert(c.status === 'pass', `${label}: ${c.id} passes (${c.detail})`);
+  }
   console.log('✓ head layout (rectangles, corridor, L-shape coverage)');
 }
 {
@@ -85,6 +92,12 @@ const answers = defaultSprinklerAnswers();
   assert(rn.sizeIn === 2.5 && rn.fromNode === 'FC' && rn.toNode === 'R' && Math.abs(rn.lengthM - 1) < 1e-6, 'riser nipple 2½"');
   assert(!r.pipes.some((p) => p.fromNode === 'J2' || p.toNode === 'J2'), 'junction at the riser point is FC');
   assert(r.pipes.every((p) => p.schedule === 'sch40'), 'schedule');
+  // A long unsprinklered run feeding a remote room is sized as a main (≥ 2"), not by the branch pipe schedule
+  const far: PlacedSprinkler[] = [[25000, 3000], [29000, 3000]].map(([x, y], i) => ({ ...heads[0], tag: `S-L1-1${i}`, node: `S-L1-1${i}`, x, y }));
+  const fr = layoutFloorPiping('L1', far, { x: -500, y: 6000 }, 'x', { hazardOf: () => 'light', schedule: 'sch40', minMainIn: 2 });
+  const feed = fr.pipes.find((p) => p.kind === 'branch' && p.lengthM > 20)!;
+  assert(!!feed && feed.sizeIn >= 2, `25.5 m feed run sized ≥ 2", got ${feed?.sizeIn}`);
+  assert(fr.pipes.find((p) => p.kind === 'branch' && Math.abs(p.lengthM - 4) < 1e-6)!.sizeIn === 1, 'short branch between sprinklers stays per schedule');
   console.log('✓ floor piping & pipe-schedule sizing');
 }
 console.log('\nAll sprinkler K2 tests passed.');

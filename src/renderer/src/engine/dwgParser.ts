@@ -5,7 +5,7 @@ import wasmUrl from '../../../../node_modules/@mlightcad/libredwg-web/wasm/libre
 
 let libredwgInstance: any = null;
 
-async function getLibreDwgInstance() {
+export async function getLibreDwgInstance() {
   if (!libredwgInstance) {
     // Let Vite manage the WASM binary URL dynamically in both dev and production
     const wasmInstance = await createModule({

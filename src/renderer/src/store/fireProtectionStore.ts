@@ -13,6 +13,7 @@ export type FireView =
   | 'calc'
   | 'standpipe'
   | 'extinguishers'
+  | 'sprinklers'
   | 'pumps'
   | 'tank'
   | 'room'

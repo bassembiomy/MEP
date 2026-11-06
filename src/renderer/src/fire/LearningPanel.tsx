@@ -62,6 +62,7 @@ const VIEW_LABEL: Record<FireView, string> = {
   calc: 'Hydraulic Calc',
   standpipe: 'Standpipe',
   extinguishers: 'Extinguishers',
+  sprinklers: 'Sprinklers',
   pumps: 'Pumps',
   tank: 'Tank & Sump',
   room: 'Pump Room',
