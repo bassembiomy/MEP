@@ -244,6 +244,8 @@ export interface FireDesignInput {
    * remote-area demand replaces the simple density/area sprinkler calculation for the pump sizing.
    */
   sprinklerDesign?: import('./sprinkler/sprinklerTypes').SprinklerDesignInput;
+  /** NFPA 12 total-flooding CO2 design (optional). */
+  co2Design?: import('./co2/co2Types').Co2DesignInput;
 
   /** Portable fire extinguisher design (NFPA 10). Optional; when absent result.extinguishers is null. */
   extinguishers?: ExtinguisherDesignInput;
@@ -801,6 +803,8 @@ export interface FireDesignResult {
   extinguishers: ExtinguisherSystemDesign | null;
   /** Present when input.sprinklerDesign is given. */
   sprinklers: import('./sprinkler/sprinklerTypes').SprinklerSystemDesign | null;
+  /** Present when input.co2Design is given. */
+  co2: import('./co2/co2Types').Co2SystemDesign | null;
   checks: DesignCheck[]; // all checks concatenated
   standardsReferences: { code: string; edition: string; scope: string }[];
 }

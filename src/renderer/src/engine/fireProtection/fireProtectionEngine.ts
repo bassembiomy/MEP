@@ -14,6 +14,7 @@ import { STANDARDS_REFERENCES } from './standards/codeReferences';
 import { designTank } from './tankDesigner';
 import { applyFirePumpSupply, designSprinklerSystem } from './sprinkler/sprinklerEngine';
 import type { SprinklerSystemDesign } from './sprinkler/sprinklerTypes';
+import { designCo2System } from './co2/co2Engine';
 
 export { DEFAULT_FIRE_INPUT, SIMPLE_FIRE_INPUT };
 
@@ -88,6 +89,7 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
   }
   const standpipe = spHyd ? analyzeStandpipeOutlets(spHyd, input, pumps) : null;
   const extinguishers = designExtinguishers(input);
+  const co2 = inputIn.co2Design ? designCo2System(inputIn.co2Design) : null;
   return {
     input,
     demand,
@@ -96,6 +98,7 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
     room,
     standpipe,
     sprinklers: sprDesign,
+    co2,
     extinguishers,
     checks: [
       ...pumps.checks,
@@ -104,6 +107,7 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
       ...room.drainageSump.checks,
       ...(standpipe ? standpipe.checks : []),
       ...(sprDesign ? sprDesign.checks : []),
+      ...(co2 ? co2.checks : []),
       ...(extinguishers ? [...extinguishers.zones.flatMap((z) => z.checks), ...extinguishers.checks] : [])
     ],
     standardsReferences: STANDARDS_REFERENCES.map((r) => ({ ...r }))

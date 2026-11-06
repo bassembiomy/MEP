@@ -16,6 +16,7 @@ import {
   FE_TRAVEL_K_FT
 } from './standards/nfpa10';
 import { CODE_NOTE } from './standards/codeReferences';
+import { CO2_PRELIMINARY_NOTE } from './co2/nfpa12';
 import { formatPipeSize } from './standards/pipeData';
 import { gpmToLpm, psiToBar } from './hydraulics';
 
@@ -98,6 +99,39 @@ const AGENT_LABEL: Record<ExtinguisherAgent, string> = {
   'wet-chemical': 'wet chemical',
   'dry-powder-d': 'dry powder Class D'
 };
+
+function co2Section(result: FireDesignResult): string[] {
+  const c = result.co2!;
+  const st = c.storage;
+  const L: string[] = [...section('CARBON DIOXIDE TOTAL FLOODING (NFPA 12)')];
+  L.push(
+    `Storage                 : ${st.storage}, main ${num(st.mainLb, 1)} lb (${num(st.mainLb / 2.20462262, 1)} kg), reserve ${num(st.reserveLb, 1)} lb, installed ${num(st.installedLb, 0)} lb` +
+      (st.storage === 'high-pressure' ? `; ${st.mainCylinders} + ${st.reserveCylinders} cylinders of ${st.cylinderLb} lb` : `; ${st.tankTons} ton tank`),
+    `Governing enclosure     : ${st.governingEnclosureId ?? '-'}; ${c.totalNozzles} nozzle(s) in total`,
+    CO2_PRELIMINARY_NOTE,
+    ''
+  );
+  for (const f of c.floors) {
+    L.push(`Floor ${f.floorName}`);
+    L.push(
+      pad('Enclosure', 22) + lpad('V ft3', 10) + lpad('C %', 6) + lpad('MCF', 7) + lpad('Total lb', 10) + lpad('Total kg', 10) + lpad('Rate lb/min', 12) +
+        lpad('t min', 7) + lpad('Cyl', 5) + lpad('Noz', 5) + lpad('Pmin psi', 10)
+    );
+    L.push(SUB);
+    for (const e of f.enclosures) {
+      const q = e.quantity;
+      L.push(
+        pad(`${e.enclosureId} ${e.name}`.slice(0, 21), 22) + lpad(num(q.volumeFt3, 0), 10) + lpad(num(q.designConcentrationPct, 0), 6) + lpad(num(q.mcf, 3), 7) +
+          lpad(num(q.totalLb, 1), 10) + lpad(num(q.totalLb / 2.20462262, 1), 10) + lpad(num(e.rateLbMin, 1), 12) + lpad(num(e.dischargeTimeMin, 2), 7) +
+          lpad(String(e.cylinders), 5) + lpad(String(e.nozzles.length), 5) + lpad(num(e.minNozzlePressurePsi, 1), 10)
+      );
+      L.push(`    ${e.hazardLabel}; basic ${num(q.basicLb, 1)} lb, openings ${num(q.openingsLb, 1)} lb, ventilation ${num(q.ventilationLb, 1)} lb, temperature +${num(q.temperatureCorrectionPct, 1)} %; vent ${num(e.ventAreaIn2, 1)} in2`);
+    }
+  }
+  L.push('', 'Accessories:');
+  for (const a of c.accessories) L.push(`   ${pad(a.tag, 7)} ${pad(a.item, 80)} x ${a.qty}`);
+  return L;
+}
 
 function sprinklerSection(result: FireDesignResult): string[] {
   const sp = result.sprinklers!;
@@ -426,6 +460,7 @@ export function buildFireCalcReport(result: FireDesignResult): string {
 
   if (result.standpipe) L.push(...standpipeSection(result));
   if (result.sprinklers) L.push(...sprinklerSection(result));
+  if (result.co2) L.push(...co2Section(result));
   if (result.extinguishers) L.push(...extinguisherSection(result));
 
   L.push(...section('Design checks'));
