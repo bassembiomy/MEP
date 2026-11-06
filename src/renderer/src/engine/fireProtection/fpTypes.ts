@@ -239,6 +239,12 @@ export interface FireDesignInput {
   /** Fire water tank personnel access: roof manholes with internal ladders ('top', default) or bolted side manways ('side'). */
   tankAccess?: 'top' | 'side';
 
+  /**
+   * Automatic sprinkler system designed from the architectural floor plans (NFPA 13). When present its governing
+   * remote-area demand replaces the simple density/area sprinkler calculation for the pump sizing.
+   */
+  sprinklerDesign?: import('./sprinkler/sprinklerTypes').SprinklerDesignInput;
+
   /** Portable fire extinguisher design (NFPA 10). Optional; when absent result.extinguishers is null. */
   extinguishers?: ExtinguisherDesignInput;
 }
@@ -793,6 +799,8 @@ export interface FireDesignResult {
   standpipe: StandpipeSystemDesign | null;
   /** Present when input.extinguishers is given. */
   extinguishers: ExtinguisherSystemDesign | null;
+  /** Present when input.sprinklerDesign is given. */
+  sprinklers: import('./sprinkler/sprinklerTypes').SprinklerSystemDesign | null;
   checks: DesignCheck[]; // all checks concatenated
   standardsReferences: { code: string; edition: string; scope: string }[];
 }
