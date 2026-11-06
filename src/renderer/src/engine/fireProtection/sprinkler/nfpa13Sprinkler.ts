@@ -141,7 +141,7 @@ export function spareHeadCount(total: number): number {
 /** Hazen-Williams C (NFPA 13-2019 Table 28.2.4.8.1). */
 export function hazenC(material: SprinklerAnswers['pipeMaterial'], systemType: SprinklerSystemType): number {
   if (material === 'cpvc' || material === 'copper-type-l') return 150;
-  return systemType === 'wet' ? 120 : 100;
+  return systemType === 'wet' || systemType === 'deluge' ? 120 : 100;
 }
 
 // ─────────────────────────── Questionnaire ───────────────────────────

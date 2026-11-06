@@ -55,7 +55,7 @@ Test `engine/__tests__/sprinklerImportAndRooms.test.ts`.
 - `HANGER_SPACING_M`: steel 1" → 3.66 (12 ft), ≥ 1¼" → 4.57 (15 ft); CPVC 1" → 1.68, 1¼" → 1.83, 1½" → 2.13, 2" → 2.44
   (Table 17.4.2.1(a); CPVC per listing). `hangerSpacingM(sizeIn, material)`.
 - `spareHeadCount(total)`: ≤ 300 → 6, ≤ 1000 → 12, else 24 (§16.2.7.3).
-- `hazenC(material, systemType)`: black steel wet 120, black steel dry/preaction/deluge 100, galvanized 100 (dry) / 120 (wet),
+- `hazenC(material, systemType)`: black steel wet & deluge 120, black steel dry/preaction 100, galvanized 100 (dry/preaction) / 120 (wet & deluge),
   CPVC 150, copper 150 (Table 28.2.4.8.1).
 - `QUESTIONNAIRE`: array of `{ id: keyof SprinklerAnswers; question; help; options?: {value, label}[] }` — one entry per answers
   field, help text citing NFPA 13 (freezing → §8.2 dry / dry pendents; water-sensitive → §8.3 preaction; deluge → §8.3 / open
@@ -146,7 +146,7 @@ If fewer candidates than N exist: all flow and check `spr-design-area` = warn.
 q_min = density × head.areaFt2 (use the remote head); P_start = max(7, (q_min/K)²).
 Arm calculation (`calculateArm(arm, flowingTags, Pstart)`): from the farthest flowing head toward the junction; flowing heads add
 q = K√P; non-flowing heads add nothing; the last segment (first head → J) carries fitting `{tee-branch: 1}` at the arm size;
-C = hazenC(material, systemType). Remote arm: Pstart at its farthest flowing head. Other arms: computed with the same Pstart to
+C = hazenC(material, systemType); fitting equivalent lengths use the shared `equivalentLengthFt` (NFPA 13 Table 28.2.3.1.1 with the C multiplier, e.g. × 0.713 at C = 100). Remote arm: Pstart at its farthest flowing head. Other arms: computed with the same Pstart to
 obtain K_arm = Q/√P_J.
 Cross main: start at the remote arm junction, walk toward FC adding, at each junction reached, the flow of every other flowing arm
 there (K_arm √P_J). Flowing arms whose junctions are on the other side of FC (or on cross-main stubs not on that path) join at FC:

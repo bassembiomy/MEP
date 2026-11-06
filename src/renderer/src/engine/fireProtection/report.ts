@@ -99,6 +99,46 @@ const AGENT_LABEL: Record<ExtinguisherAgent, string> = {
   'dry-powder-d': 'dry powder Class D'
 };
 
+function sprinklerSection(result: FireDesignResult): string[] {
+  const sp = result.sprinklers!;
+  const L: string[] = [...section('AUTOMATIC SPRINKLER SYSTEM (NFPA 13)')];
+  L.push(`Sprinklers              : ${sp.totalHeads} on ${sp.floors.length} floor(s); building riser ${formatPipeSize(result.input.sprinklerDesign?.buildingRiserIn ?? 6)}`);
+  L.push('Head types:');
+  for (const t of sp.headTypes) L.push(`   ${pad(t.id, 20)} ${t.description}`);
+  L.push('', pad('Floor', 14) + pad('System', 18) + lpad('Heads', 7) + lpad('Vol gal', 9) + lpad('Hazard', 12) + lpad('Flow gpm', 10) + lpad('P src psi', 11) + lpad('Avail psi', 11) + lpad('Margin', 8));
+  for (const f of sp.floors) {
+    const g = f.governing;
+    L.push(
+      pad(f.floorName, 14) + pad(f.systemType, 18) + lpad(String(f.heads.length), 7) + lpad(num(f.volumeGal, 1), 9) + lpad(g ? g.hazard : '-', 12) +
+        lpad(g ? num(g.flowAtSourceGpm, 1) : '-', 10) + lpad(g ? num(g.pressureAtSourcePsi, 1) : '-', 11) + lpad(g ? num(g.availablePsi, 1) : '-', 11) + lpad(g ? num(g.marginPsi, 1) : '-', 8)
+    );
+  }
+  const g = sp.governing;
+  if (g) {
+    L.push(
+      '',
+      `Governing remote area   : floor ${g.floorId}, ${g.hazard}, ${num(g.densityGpmFt2, 3)} gpm/ft2 over ${num(g.designAreaFt2, 0)} ft2 (base ${num(g.baseAreaFt2, 0)} ft2), ${g.headsFlowing.length} sprinklers, ${g.headsPerBranch} per branch line`,
+      `Remote head             : ${num(g.minHeadFlowGpm, 1)} gpm at ${num(g.remoteHeadPressurePsi, 2)} psi`,
+      `At floor control        : ${num(g.flowAtFloorGpm, 1)} gpm at ${num(g.pressureAtFloorPsi, 1)} psi`,
+      `At source               : ${num(g.flowAtSourceGpm, 1)} gpm at ${num(g.pressureAtSourcePsi, 1)} psi (${num(gpmToLpm(g.flowAtSourceGpm), 0)} L/min, ${num(psiToBar(g.pressureAtSourcePsi), 2)} bar); hose allowance ${num(g.hoseAllowanceGpm, 0)} gpm, total ${num(g.totalDemandGpm, 0)} gpm`,
+      `Supply                  : ${num(g.availablePsi, 1)} psi available, margin ${num(g.marginPsi, 1)} psi`,
+      '',
+      'Node-to-node calculation of the governing remote area:'
+    );
+    L.push(...nodeTable(g.rows));
+  }
+  L.push('', 'Accessories:');
+  for (const a of sp.accessories) L.push(`   ${pad(a.tag, 7)} ${pad(String(a.qty), 4)} ${a.item}  [${a.reference}]`);
+  L.push('', `Spare sprinklers        : ${sp.spareHeads.map((x) => `${x.qty} x ${x.headTypeId}`).join(', ') || '-'} (+ sprinkler wrench)`);
+  L.push('', 'Bill of materials:');
+  for (const b of sp.bom) L.push(`   ${pad(b.item.slice(0, 90), 92)} ${pad(b.size, 14)} ${lpad(String(b.qty), 8)} ${b.unit}`);
+  if (sp.outOfScope.length) {
+    L.push('', 'Outside the scope of this design:');
+    for (const o of sp.outOfScope) L.push(`   - ${o}`);
+  }
+  return L;
+}
+
 function extinguisherZoneLines(result: FireDesignResult): string[] {
   const fe = result.extinguishers!;
   const L: string[] = [];
@@ -385,6 +425,7 @@ export function buildFireCalcReport(result: FireDesignResult): string {
   for (const c of ds.controls) L.push(`   - ${c}`);
 
   if (result.standpipe) L.push(...standpipeSection(result));
+  if (result.sprinklers) L.push(...sprinklerSection(result));
   if (result.extinguishers) L.push(...extinguisherSection(result));
 
   L.push(...section('Design checks'));

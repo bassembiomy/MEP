@@ -2,7 +2,7 @@
  * Fire protection engine orchestrator: demand -> pump set -> tank & sump -> pump room -> checks.
  */
 import { DEFAULT_FIRE_INPUT, SIMPLE_FIRE_INPUT } from './defaults';
-import { FireDesignInput, FireDesignResult, StandpipeSystemDesign } from './fpTypes';
+import { FireDesignInput, FireDesignResult, SprinklerDemandResult, StandpipeSystemDesign } from './fpTypes';
 import { calculateSprinklerDemand, calculateSystemDemand } from './hydraulics';
 import { designExtinguishers } from './extinguisherDesigner';
 import { designPumpRoom } from './pumpRoomDesigner';
@@ -12,6 +12,8 @@ import { STANDPIPE_DURATION_MIN, standpipeFlowGpm } from './standards/nfpa14';
 import { selectPumpSet } from './pumpSelector';
 import { STANDARDS_REFERENCES } from './standards/codeReferences';
 import { designTank } from './tankDesigner';
+import { applyFirePumpSupply, designSprinklerSystem } from './sprinkler/sprinklerEngine';
+import type { SprinklerSystemDesign } from './sprinkler/sprinklerTypes';
 
 export { DEFAULT_FIRE_INPUT, SIMPLE_FIRE_INPUT };
 
@@ -20,15 +22,49 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
   let input = inputIn;
   let spHyd: StandpipeSystemDesign | null = null;
   let demand;
+  let sprDesign: SprinklerSystemDesign | null = null;
+  let sprOverride: SprinklerDemandResult | undefined;
+  const sd = inputIn.sprinklerDesign;
+  if (sd) {
+    // flow does not depend on the riser elevation: size the pump centre-line from a standalone calculation first
+    const flow0 = designSprinklerSystem(sd).governing?.flowAtSourceGpm ?? 0;
+    const q = standpipeApplicable(inputIn)
+      ? standpipeFlowGpm(inputIn.standpipeClass, inputIn.standpipeDesign!.locations.length, inputIn.buildingSprinklered)
+      : 0;
+    const rated0 = selectRatedCapacity(Math.max(flow0 + inputIn.insideHoseGpm, q, 1));
+    const pumpCLAbs = pumpCenterlineAbsM(inputIn, rated0);
+    sprDesign = designSprinklerSystem(sd, { pumpCLAbsM: pumpCLAbs, feedMain: inputIn.feedMain, insideHoseGpm: inputIn.insideHoseGpm });
+    const g = sprDesign.governing;
+    if (g) {
+      const gf = sprDesign.floors.find((f) => f.floorId === g.floorId)!;
+      const remote = gf.heads.find((h) => h.tag === g.rows[0].fromNode);
+      const spacingFt = remote ? remote.spacingSmm / 304.8 : 0;
+      sprOverride = {
+        densityGpmFt2: g.densityGpmFt2,
+        designAreaFt2: g.designAreaFt2,
+        coverageFt2: remote ? remote.areaFt2 : 0,
+        spacingFt,
+        sprinklersInArea: g.headsFlowing.length,
+        headsPerBranch: g.headsPerBranch,
+        branchLines: Math.ceil(g.headsFlowing.length / Math.max(1, g.headsPerBranch)),
+        minHeadFlowGpm: g.minHeadFlowGpm,
+        remoteHeadPressurePsi: g.remoteHeadPressurePsi,
+        sprinklerFlowGpm: g.flowAtSourceGpm,
+        pressureAtPumpDischargePsi: g.pressureAtSourcePsi,
+        rows: g.rows
+      };
+    }
+  }
   if (standpipeApplicable(inputIn)) {
     const locations = inputIn.standpipeDesign!.locations;
     const q = standpipeFlowGpm(inputIn.standpipeClass, locations.length, inputIn.buildingSprinklered);
-    const sprFlow = calculateSprinklerDemand(inputIn).sprinklerFlowGpm;
+    const sprFlow = sprOverride ? sprOverride.sprinklerFlowGpm : calculateSprinklerDemand(inputIn).sprinklerFlowGpm;
     const rated0 = selectRatedCapacity(Math.max(sprFlow + inputIn.insideHoseGpm, q));
-    const pumpCLAbs = pumpCenterlineAbsM(inputIn, rated0);
-    input = { ...inputIn, riser: derivedSprinklerRiser(inputIn, pumpCLAbs), standpipeCount: locations.length };
-    spHyd = designStandpipeHydraulics(input, pumpCLAbs);
+    const pumpCLStd = pumpCenterlineAbsM(inputIn, rated0);
+    input = { ...inputIn, riser: derivedSprinklerRiser(inputIn, pumpCLStd), standpipeCount: locations.length };
+    spHyd = designStandpipeHydraulics(input, pumpCLStd);
     demand = calculateSystemDemand(input, {
+      sprinkler: sprOverride,
       standpipe: {
         applicable: true,
         flowGpm: spHyd.demandFlowGpm,
@@ -38,11 +74,18 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
       }
     });
   } else {
-    demand = calculateSystemDemand(input);
+    demand = calculateSystemDemand(input, sprOverride ? { sprinkler: sprOverride } : undefined);
   }
   const pumps = selectPumpSet(input, demand);
   const tank = designTank(input, demand, pumps);
   const room = designPumpRoom(input, pumps, tank);
+  if (sprDesign && sd) {
+    const main = pumps.mainPumps[0];
+    applyFirePumpSupply(sprDesign, sd.answers, (flow) => {
+      const x = flow / main.ratedFlowGpm;
+      return main.ratedNetPressurePsi * (1.2 + 0.066667 * x - 0.266667 * x * x) + pumps.suctionPressureMinPsi;
+    });
+  }
   const standpipe = spHyd ? analyzeStandpipeOutlets(spHyd, input, pumps) : null;
   const extinguishers = designExtinguishers(input);
   return {
@@ -52,6 +95,7 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
     tank,
     room,
     standpipe,
+    sprinklers: sprDesign,
     extinguishers,
     checks: [
       ...pumps.checks,
@@ -59,6 +103,7 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
       ...room.checks,
       ...room.drainageSump.checks,
       ...(standpipe ? standpipe.checks : []),
+      ...(sprDesign ? sprDesign.checks : []),
       ...(extinguishers ? [...extinguishers.zones.flatMap((z) => z.checks), ...extinguishers.checks] : [])
     ],
     standardsReferences: STANDARDS_REFERENCES.map((r) => ({ ...r }))
