@@ -1,6 +1,6 @@
 /**
  * Sprinkler shop drawings (NFPA 13-2019): one A1 sheet per floor (FS-101 …) over the client's architectural plan,
- * FS-501 riser diagram & details and FS-601 hydraulic calculations. `combined` holds every sheet left → right.
+ * FS-501 riser diagram & details and FS-601 … hydraulic calculations (one sheet per floor zone). `combined` holds every sheet left → right.
  */
 import type { FireDesignResult } from '../fpTypes'
 import { DRY_SLOPE_BRANCH_MM_PER_M, DRY_SLOPE_MAIN_MM_PER_M } from '../sprinkler/nfpa13Sprinkler'
@@ -45,7 +45,15 @@ import {
 } from './sprinklerSheetKit'
 import { drawArchUnderlay, loadFloorPlan } from './sheetUnderlay'
 import { drawRiserSheet } from './sprinklerSheetRiser'
-import { drawHydraulicSheet } from './sprinklerSheetHydraulics'
+import { drawHydraulicSheet, hydraulicSheetRefs } from './sprinklerSheetHydraulics'
+import {
+  OBSTRUCTION_NOTE,
+  drawObstructionGeometry,
+  hasObstructions,
+  markObstructionHeads,
+  obstructionScheduleRows,
+  placeObstructionTags
+} from './sprinklerSheetObstructions'
 import {
   drawAreaDimensions,
   drawReducers,
@@ -93,6 +101,7 @@ function sprinklerContentBBox(d: FloorData): BoxMm {
   for (const p of d.fd.pipes) p.points.forEach(add)
   add([d.fd.riser.x, d.fd.riser.y])
   for (const z of d.fd.zones) add([z.riser.x, z.riser.y])
+  for (const o of d.fi.obstructions ?? []) o.polygon.forEach((q) => add(q as Pt))
   add([d.fd.inspectorTest.x, d.fd.inspectorTest.y])
   if (!Number.isFinite(bb.minX)) return { minX: 0, minY: 0, maxX: 1000, maxY: 1000 }
   return bb
@@ -128,12 +137,14 @@ function floorNotes(c: Ctx, d: FloorData): string[] {
     sizingNote(sd.answers.pipeSizing === 'hydraulic') +
       '. ZONES, ZONE CONTROL VALVES AND THE ZONE SCHEDULE ARE SHOWN ON THIS SHEET; REDUCERS MARK EVERY PIPE SIZE CHANGE.',
     g
-      ? `HYDRAULICALLY CALCULATED SYSTEM: ${HAZARD_LABEL[g.hazard] ?? g.hazard.toUpperCase()} HAZARD, ${f1(g.densityGpmFt2, 2)} GPM/FT2 OVER ${f1(g.designAreaFt2, 0)} FT2 (NFPA 13-2019 SEC. 19.3.3.1, 28.2). PIPE SIZES AND LENGTHS SHOWN ARE THE CALCULATED ONES (FS-601); NO CHANGE WITHOUT A NEW CALCULATION.`
+      ? `HYDRAULICALLY CALCULATED SYSTEM: ${HAZARD_LABEL[g.hazard] ?? g.hazard.toUpperCase()} HAZARD, ${f1(g.densityGpmFt2, 2)} GPM/FT2 OVER ${f1(g.designAreaFt2, 0)} FT2 (NFPA 13-2019 SEC. 19.3.3.1, 28.2). PIPE SIZES AND LENGTHS SHOWN ARE THE CALCULATED ONES (FS-601 ET SEQ., ONE SHEET PER ZONE); NO CHANGE WITHOUT A NEW CALCULATION.`
       : 'HYDRAULICALLY CALCULATED SYSTEM (NFPA 13-2019 SEC. 28.2). PIPE SIZES AND LENGTHS SHOWN ARE THE CALCULATED ONES; NO CHANGE WITHOUT A NEW CALCULATION.',
     'SPRINKLERS: NEW, LISTED, K-FACTOR AND TEMPERATURE RATING AS IN THE LEGEND. QUICK-RESPONSE SPRINKLERS IN LIGHT HAZARD OCCUPANCIES (NFPA 13-2019 SEC. 9.5.3.2).',
     'SPACING: MAXIMUM PROTECTION AREA AND SPACING PER NFPA 13-2019 SEC. 10.2.4; MINIMUM 1.83 M (6 FT) BETWEEN SPRINKLERS (SEC. 10.2.5.3); MINIMUM 102 MM (4 IN) FROM WALLS (SEC. 10.2.5.2.3).',
     'DEFLECTOR DISTANCE BELOW THE CEILING 25 MM (1 IN) MINIMUM TO 305 MM (12 IN) MAXIMUM (NFPA 13-2019 SEC. 10.2.6.1.1). SEE INSTALLATION DETAILS ON FS-501. COORDINATE SPRINKLER POSITIONS WITH THE REFLECTED CEILING PLAN.',
-    'OBSTRUCTIONS (LIGHTS, DUCTS, BEAMS, CABLE TRAYS): MAINTAIN THE CLEARANCES OF NFPA 13-2019 CH. 10. MOVE A SPRINKLER ONLY ALONG ITS BRANCH LINE AND WITHIN THE SPACING LIMITS OF NOTE 4; REPORT TO THE ENGINEER.',
+    hasObstructions(d.fd, d.fi)
+      ? OBSTRUCTION_NOTE
+      : 'OBSTRUCTIONS (LIGHTS, DUCTS, BEAMS, CABLE TRAYS): MAINTAIN THE CLEARANCES OF NFPA 13-2019 CH. 10. MOVE A SPRINKLER ONLY ALONG ITS BRANCH LINE AND WITHIN THE SPACING LIMITS OF NOTE 4; REPORT TO THE ENGINEER.',
     `PIPE: ${MATERIAL[sd.answers.pipeMaterial] ?? 'STEEL PIPE'}; NOMINAL SIZES AS LABELLED, LENGTHS IN METRES BETWEEN SPRINKLERS / FITTINGS. THREADED OR GROOVED FITTINGS LISTED FOR FIRE SERVICE.`,
     `HANGERS (SHORT TICKS): MAXIMUM SPACING 3.7 M (12 FT) FOR 1" PIPE AND 4.6 M (15 FT) FOR 1-1/4" AND LARGER (NFPA 13-2019 TABLE 17.4.2.1(a)); SEE HANGER DETAIL ON FS-501.${sd.answers.seismic ? ' SEISMIC SWAY BRACING, FLEXIBLE COUPLINGS AND CLEARANCES PER NFPA 13-2019 CH. 18.' : ''}`,
     `FLOOR CONTROL ASSEMBLY ${sizeLabel(nipple)}: SUPERVISED CONTROL VALVE WITH TAMPER SWITCH, WATERFLOW SWITCH, PRESSURE GAUGE AND TEST & DRAIN WITH SIGHT GLASS (NFPA 13-2019 SEC. 16.9.1, 16.9.3, 16.13). SEE FS-501.`,
@@ -272,6 +283,8 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
   // ───────── room outlines ─────────
   for (const rm of fi.rooms) b.polyline('FS-ROOM', rm.polygon.map(M), true)
   drawZoneBoundaries(c, d, M)
+  const showObst = hasObstructions(fd, fi)
+  if (showObst) drawObstructionGeometry(c, fd, fi, M, bb)
 
   // ───────── pipes, slope arrows, hangers ─────────
   const pipeById = new Map(fd.pipes.map((p) => [p.id, p]))
@@ -741,6 +754,8 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
     )
   }
 
+  if (showObst) placeObstructionTags(c, fd, fi, M, P)
+
   // head tags
   const tagCand = (
     m: Pt
@@ -777,6 +792,7 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
     const m = M([h.x, h.y])
     if (!tryText(h.tag, 2.0, tagCand(m))) P.tag(m, h.tag)
   }
+  if (showObst) markObstructionHeads(c, fd.heads, M, P)
   for (const lb of labels) if (!lb.sizeChange) placePipeLabel(lb, false)
 
   // ───────── sheet title and right-hand panel ─────────
@@ -917,6 +933,42 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
       text: 'SLOPE DIRECTION OF PIPING (TO DRAIN)',
       draw: (x, yy) => slopeArrow([x, yy], [1, 0])
     })
+  if (showObst) {
+    legend.push({
+      text: 'OBSTRUCTION (HATCHED FOOTPRINT, LAYER FS-OBST) - TAG: ID, KIND, BOTTOM BELOW CEILING',
+      draw: (x, yy) => {
+        b.polyline(
+          'FS-OBST',
+          [
+            [x - 5 * S, yy - 1.5 * S],
+            [x + 5 * S, yy - 1.5 * S],
+            [x + 5 * S, yy + 1.5 * S],
+            [x - 5 * S, yy + 1.5 * S]
+          ],
+          true
+        )
+        hatchRectOn(b, 'FS-OBST', x - 5 * S, yy - 1.5 * S, 10 * S, 3 * S, 1.6 * S * Math.SQRT2)
+      }
+    })
+    legend.push({
+      text: 'CLEARANCE ZONE OF AN OBSTRUCTION - NO SPRINKLER INSIDE (DASHED, FS-OBST-CLR)',
+      draw: (x, yy) => b.line('FS-OBST-CLR', x - 5 * S, yy, x + 5 * S, yy)
+    })
+    legend.push({
+      text: 'RELOCATED / BELOW-OBSTRUCTION SPRINKLER (DIAMOND, "RELOCATED nnn MM" / "BELOW <ID>")',
+      draw: (x, yy) =>
+        b.polyline(
+          'FS-OBST',
+          [
+            [x - 2.2 * S, yy],
+            [x, yy - 2.2 * S],
+            [x + 2.2 * S, yy],
+            [x, yy + 2.2 * S]
+          ],
+          true
+        )
+    })
+  }
   legend.push({
     text: 'ROOM BOUNDARY',
     draw: (x, yy) => b.line('FS-ROOM', x - 5 * S, yy, x + 5 * S, yy)
@@ -956,6 +1008,21 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
     trows[0].map((_, i) => i >= 5)
   )
   y -= th2.h + 3
+
+  if (showObst) {
+    const orows = obstructionScheduleRows(fd)
+    const oh = fitTable(
+      c,
+      PANEL.x0,
+      y,
+      orows,
+      2.0,
+      PANEL.x1 - PANEL.x0,
+      'OBSTRUCTION SCHEDULE (NFPA 13-2019 SEC. 10.2.7)',
+      orows[0].map((_, i) => i === 2 || i === 3 || i === 5 || i === 6 || i === 7)
+    )
+    y -= oh.h + 3
+  }
 
   // head schedule
   const sched: string[][] = [['ROOM', 'ZONE', 'HAZARD', 'HEAD TYPE', 'QTY', 'S x L (M)', 'AREA M2']]
@@ -1080,13 +1147,17 @@ export function generateSprinklerDrawings(result: FireDesignResult): {
     scaleText: 'NTS / 1:10',
     draw: (c) => drawRiserSheet(c)
   }
-  const hydSpec: SheetSpec = {
-    number: 'FS-601',
-    title: 'SPRINKLER HYDRAULICS & MATERIALS',
-    scale: 10,
-    scaleText: 'NTS',
-    draw: (c) => drawHydraulicSheet(c)
-  }
+  const hydSpecs: SheetSpec[] = hydraulicSheetRefs(spr.floors).map((ref, i) => {
+    const fl = spr.floors[ref.floorIndex]
+    const z = fl.zones[ref.zoneIndex]
+    return {
+      number: `FS-${601 + i}`,
+      title: `SPRINKLER HYDRAULICS${ref.withBom ? ' & MATERIALS' : ''} - ${fl.floorName.toUpperCase()} ${z.zoneId}`,
+      scale: 10,
+      scaleText: 'NTS',
+      draw: (c) => drawHydraulicSheet(c, ref)
+    }
+  })
   const specs = data.map(floorSpec)
   return {
     floors: data.map((d, i) => ({
@@ -1106,14 +1177,14 @@ export function generateSprinklerDrawings(result: FireDesignResult): {
     ),
     hydraulics: assembleSprinklerDrawing(
       result,
-      `Sprinkler FS-601 hydraulic calculations - ${proj}`,
-      [hydSpec],
+      `Sprinkler ${hydSpecs.length > 1 ? `FS-601 to FS-${600 + hydSpecs.length}` : 'FS-601'} hydraulic calculations - ${proj}`,
+      hydSpecs,
       archLayers
     ),
     combined: assembleSprinklerDrawing(
       result,
       `Sprinkler shop drawings - ${proj}`,
-      [...specs, riserSpec, hydSpec],
+      [...specs, riserSpec, ...hydSpecs],
       archLayers
     )
   }

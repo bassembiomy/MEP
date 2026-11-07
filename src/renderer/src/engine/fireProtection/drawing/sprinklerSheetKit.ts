@@ -41,6 +41,20 @@ export const FS_LAYERS: LayerDef[] = [
   ...ZONE_COLORS.map((c, i) =>
     L(`FS-ZONE-${i + 1}`, c, 'CONTINUOUS', 0.5, `Zone ${i + 1} colour band`)
   ),
+  L(
+    'FS-OBST',
+    34,
+    'CONTINUOUS',
+    0.25,
+    'Obstructions to sprinkler discharge (beams, ducts, columns ...), tags, markers'
+  ),
+  L(
+    'FS-OBST-CLR',
+    34,
+    'DASHED',
+    0.18,
+    'Clearance zones of the obstructions (NFPA 13 beam / three-times rules)'
+  ),
   L('FS-ANNO', 7, 'CONTINUOUS', 0.25, 'Text, tags, leaders'),
   L('FS-DIMS', 7, 'CONTINUOUS', 0.18, 'Dimensions'),
   L('FS-TBLK', 7, 'CONTINUOUS', 0.5, 'Sheet frame & title block'),

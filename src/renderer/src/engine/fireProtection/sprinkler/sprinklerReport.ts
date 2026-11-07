@@ -6,6 +6,12 @@
 import type { FireDesignResult } from '../fpTypes'
 import type { Drawing } from '../drawing/drawingTypes'
 import { renderSvg } from '../drawing/svgRenderer'
+import {
+  type HydraulicGraphModel,
+  buildHydraulicGraph,
+  graphX,
+  maxVelocityFps
+} from '../drawing/sprinklerHydraulicGraph'
 import { HAZARD_DESIGN } from '../standards/nfpa13'
 import {
   DEFLECTOR_RANGE_MM,
@@ -20,7 +26,13 @@ import {
   SPACING_RULES,
   SPRINKLER_OCCUPANCIES
 } from './nfpa13Sprinkler'
-import type { SprinklerAnswers, SprinklerHeadType, SprinklerSystemType } from './sprinklerTypes'
+import type {
+  ObstructionResult,
+  RemoteAreaResult,
+  SprinklerAnswers,
+  SprinklerHeadType,
+  SprinklerSystemType
+} from './sprinklerTypes'
 
 /** The drawing set produced by `generateSprinklerDrawings(result)`. */
 export interface SprinklerDrawingSet {
@@ -111,6 +123,121 @@ td.n{text-align:right;font-variant-numeric:tabular-nums}
 @page{size:A3 landscape;margin:10mm}
 @media print{body{padding:0}.floor{page-break-before:always}table{page-break-inside:auto}tr{page-break-inside:avoid}h2,h3{page-break-after:avoid}}
 `
+
+const RULE_LABEL: Record<ObstructionResult['rule'], string> = {
+  beam: 'Beam rule',
+  'three-times': 'Three-times rule',
+  wide: 'Wide obstruction - sprinklers below',
+  wall: 'Deep beam - wall (bays)'
+}
+
+const NODE_HEAD = [
+  'From',
+  'To',
+  'Description',
+  'K',
+  'q added gpm',
+  'Q total gpm',
+  'Nom. in',
+  'ID in',
+  'C',
+  'Length ft',
+  'Fittings',
+  'Eq. ft',
+  'Total ft',
+  'Pf psi/ft',
+  'Pf psi',
+  'Pe psi',
+  'Pt start psi',
+  'Pt end psi',
+  'v fps'
+]
+
+function nodeRows(g: RemoteAreaResult): string[][] {
+  return g.rows.map((r) => [
+    r.fromNode,
+    r.toNode,
+    r.description,
+    r.kFactor === undefined ? '-' : num(r.kFactor, 1),
+    num(r.flowAddedGpm, 1),
+    num(r.totalFlowGpm, 1),
+    num(r.nominalIn, 2),
+    num(r.idIn, 3),
+    num(r.c, 0),
+    num(r.lengthFt, 1),
+    r.fittingsDesc || '-',
+    num(r.fittingsEqFt, 1),
+    num(r.totalLengthFt, 1),
+    num(r.pfPerFt, 4),
+    num(r.pfPsi, 2),
+    num(r.pePsi, 2),
+    num(r.ptStartPsi, 2),
+    num(r.ptEndPsi, 2),
+    num(r.velocityFps, 1)
+  ])
+}
+
+/** Inline SVG of the N^1.85 graph: x axis proportional to Q^1.85, gridlines labelled in gpm. */
+function graphSvg(m: HydraulicGraphModel): string {
+  const W = 640
+  const H = 330
+  const x0 = 56
+  const x1 = W - 16
+  const y0 = H - 46
+  const y1 = 14
+  const X = (q: number): number => x0 + (x1 - x0) * graphX(q, m.qMax)
+  const Y = (p: number): number => y0 - ((y0 - y1) * p) / m.pMax
+  const o: string[] = []
+  o.push(
+    `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI,Arial,sans-serif" font-size="10" style="max-width:720px;border:1px solid #c9c9c9;background:#fff">`
+  )
+  o.push(
+    `<rect x="${x0}" y="${y1}" width="${x1 - x0}" height="${y0 - y1}" fill="none" stroke="#888"/>`
+  )
+  for (const t of m.xTicks) {
+    const x = x0 + (x1 - x0) * t.pos
+    if (t.pos > 0 && t.pos < 1)
+      o.push(`<line x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke="#ddd"/>`)
+    if (t.showLabel)
+      o.push(`<text x="${x}" y="${y0 + 12}" text-anchor="middle">${esc(t.label)}</text>`)
+  }
+  for (const t of m.yTicks) {
+    const y = y0 - (y0 - y1) * t.pos
+    if (t.pos > 0 && t.pos < 1)
+      o.push(`<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="#ddd"/>`)
+    o.push(`<text x="${x0 - 5}" y="${y + 3}" text-anchor="end">${esc(t.label)}</text>`)
+  }
+  o.push(
+    `<text x="${(x0 + x1) / 2}" y="${H - 6}" text-anchor="middle">Flow Q (gpm) - axis scaled Q^1.85</text>`
+  )
+  o.push(
+    `<text transform="translate(12 ${(y0 + y1) / 2}) rotate(-90)" text-anchor="middle">Pressure (psi)</text>`
+  )
+  o.push(
+    `<polyline fill="none" stroke="#0e7490" stroke-width="2" points="${m.supply.map(([q, p]) => `${X(q).toFixed(1)},${Y(p).toFixed(1)}`).join(' ')}"/>`
+  )
+  const [qa, pa] = m.demand
+  const [qb, pb] = m.demandHose
+  const [qc, pc] = m.supplyAtDemand
+  o.push(
+    `<line x1="${X(qa)}" y1="${Y(pa)}" x2="${X(qb)}" y2="${Y(pb)}" stroke="#b91c1c" stroke-dasharray="5 3"/>`
+  )
+  o.push(`<line x1="${X(qb)}" y1="${Y(pb)}" x2="${X(qc)}" y2="${Y(pc)}" stroke="#444"/>`)
+  for (const [lbl, q, p, col] of [
+    ['A', qa, pa, '#b91c1c'],
+    ['B', qb, pb, '#b91c1c'],
+    ['C', qc, pc, '#0e7490']
+  ] as [string, number, number, string][]) {
+    o.push(
+      `<circle cx="${X(q)}" cy="${Y(p)}" r="3.5" fill="${col}"/><text x="${X(q) + 6}" y="${Y(p) - 4}" font-weight="700">${lbl}</text>`
+    )
+  }
+  o.push(
+    `<text x="${X(qc) + 10}" y="${(Y(pb) + Y(pc)) / 2}" fill="#444">${esc(num(m.marginPsi, 1))} psi</text>`
+  )
+  o.push('</svg>')
+  return o.join('')
+}
 
 export function buildSprinklerReportHtml(
   result: FireDesignResult,
@@ -336,54 +463,31 @@ export function buildSprinklerReportHtml(
         )
       )
       p.push(`<p class="note">Sprinklers flowing: ${esc(g.headsFlowing.join(', ') || '-')}</p>`)
-      p.push('<h3>Hydraulic node table - governing remote area</h3>')
       p.push(
-        table(
-          [
-            'From',
-            'To',
-            'Description',
-            'K',
-            'q added gpm',
-            'Q total gpm',
-            'Nom. in',
-            'ID in',
-            'C',
-            'Length ft',
-            'Fittings',
-            'Eq. ft',
-            'Total ft',
-            'Pf psi/ft',
-            'Pf psi',
-            'Pe psi',
-            'Pt start psi',
-            'Pt end psi',
-            'v fps'
-          ],
-          g.rows.map((r) => [
-            r.fromNode,
-            r.toNode,
-            r.description,
-            r.kFactor === undefined ? '-' : num(r.kFactor, 1),
-            num(r.flowAddedGpm, 1),
-            num(r.totalFlowGpm, 1),
-            num(r.nominalIn, 2),
-            num(r.idIn, 3),
-            num(r.c, 0),
-            num(r.lengthFt, 1),
-            r.fittingsDesc || '-',
-            num(r.fittingsEqFt, 1),
-            num(r.totalLengthFt, 1),
-            num(r.pfPerFt, 4),
-            num(r.pfPsi, 2),
-            num(r.pePsi, 2),
-            num(r.ptStartPsi, 2),
-            num(r.ptEndPsi, 2),
-            num(r.velocityFps, 1)
-          ]),
-          'nodes'
-        )
+        '<p class="note">Node-to-node worksheets of every zone follow (hydraulic calculation, NFPA 13-2019 §28.2, Hazen-Williams).</p>'
       )
+      for (const z of f.zones) {
+        const zg = z.governing
+        p.push(
+          `<h3>Hydraulic worksheet - Zone ${esc(z.zoneId)} ${esc(z.name)}${zg && zg === g ? ' (governing zone of the floor)' : ''}</h3>`
+        )
+        if (!zg) {
+          p.push('<p>No remote area (no sprinklers in this zone).</p>')
+          continue
+        }
+        p.push(
+          `<p class="note">Remote area ${num(zg.designAreaFt2, 0)} ft² at ${num(zg.densityGpmFt2, 2)} gpm/ft², ${zg.headsFlowing.length} sprinklers flowing; at the zone control valve ${num(zg.flowAtFloorGpm, 1)} gpm @ ${num(zg.pressureAtFloorPsi, 1)} psi; at the source ${num(zg.flowAtSourceGpm, 1)} gpm @ ${num(zg.pressureAtSourcePsi, 1)} psi; hose ${num(zg.hoseAllowanceGpm, 0)} gpm; supply ${num(zg.availablePsi, 1)} psi at ${num(zg.totalDemandGpm, 1)} gpm; margin ${num(zg.marginPsi, 1)} psi; maximum velocity ${num(maxVelocityFps(zg), 1)} ft/s.</p>`
+        )
+        p.push(table(NODE_HEAD, nodeRows(zg), 'nodes'))
+        const gm = buildHydraulicGraph(result, z)
+        if (gm) {
+          p.push(`<h3>N^1.85 hydraulic graph - Zone ${esc(z.zoneId)}</h3>`)
+          p.push(graphSvg(gm))
+          p.push(
+            `<p class="note">Curve: ${esc(gm.supplyLabel)}. A = sprinkler demand ${num(gm.demand[0], 1)} gpm @ ${num(gm.demand[1], 1)} psi; B = demand incl. hose allowance ${num(gm.demandHose[0], 1)} gpm; C = supply ${num(gm.supplyAtDemand[1], 1)} psi at B; margin ${num(gm.marginPsi, 1)} psi (${gm.adequate ? 'adequate' : 'inadequate'}).</p>`
+          )
+        }
+      }
     } else {
       p.push('<p>No remote area was calculated for this floor (no sprinklers).</p>')
     }
@@ -472,8 +576,53 @@ export function buildSprinklerReportHtml(
     p.push('</section>')
   })
 
+  // ───────── Obstructions
+  p.push('<h2>4. Obstructions to sprinkler discharge (NFPA 13-2019 §10.2.7)</h2>')
+  const obstRows = s.floors.flatMap((f) =>
+    f.obstructions.map((o) => [
+      f.floorName,
+      o.id,
+      o.kind,
+      `${num(o.widthMm, 0)} x ${num(o.lengthMm, 0)}`,
+      num(o.bottomBelowCeilingMm, 0),
+      RULE_LABEL[o.rule],
+      num(o.requiredClearanceMm, 0),
+      o.relocatedHeads.join(', ') || '-',
+      o.headsBelow.join(', ') || '-',
+      o.violations.length > 0 ? `NOT CLEARED: ${o.violations.join(', ')}` : 'Cleared'
+    ])
+  )
+  if (obstRows.length === 0) p.push('<p>No obstructions were defined for this design.</p>')
+  else
+    p.push(
+      table(
+        [
+          'Floor',
+          'Id',
+          'Kind',
+          'Size mm',
+          'Bottom below ceiling mm',
+          'Rule',
+          'Required clearance mm',
+          'Sprinklers moved',
+          'Sprinklers below',
+          'Status'
+        ],
+        obstRows
+      )
+    )
+  p.push(
+    `<ul>
+<li><b>Beam rule</b> (continuous obstructions: beams, ducts, cable trays, pipes): the distance from the sprinkler to the side of the obstruction must be at least the value of Table 10.2.7.1.2 for the height of the deflector above the bottom of the obstruction.</li>
+<li><b>Three-times rule</b> (discrete obstructions: columns, lights): the sprinkler is at least three times the greatest dimension of the obstruction away from it.</li>
+<li><b>Wide obstructions</b> (wider than 1219 mm / 4 ft, e.g. ducts): sprinklers are installed below the obstruction in addition to the ceiling sprinklers - the sprinklers below are listed above.</li>
+<li><b>Deep beams</b> deeper than the beam table allows act as walls dividing the area into bays, each protected on its own.</li>
+</ul>
+<p class="note">The beam table is applied conservatively beyond 7.5 ft sprinkler spacing and for sidewall sprinklers. Ceiling sprinklers that violate a clearance are moved along their branch line within the spacing limits; verify the clause numbers against the edition adopted by the AHJ.</p>`
+  )
+
   // ───────── Building summary
-  p.push('<h2>4. Building summary</h2>')
+  p.push('<h2>5. Building summary</h2>')
   const gov = s.governing
   p.push(
     table(
@@ -521,13 +670,35 @@ export function buildSprinklerReportHtml(
     )
   )
 
-  p.push('<h3>Pipe sizing method</h3>')
+  p.push('<h2>6. Pipe sizing</h2>')
   p.push(
     `<p>${
       design.answers.pipeSizing === 'hydraulic'
-        ? `Hydraulically calculated pipe sizes (NFPA 13-2019 Ch. 28): smallest sizes keeping at least ${num(design.answers.minSupplyMarginPsi ?? 10, 0)} psi margin below the supply and velocities within 20 ft/s.`
-        : 'Pipe schedule sizing (NFPA 13-2019 §28.5), hydraulically verified and upsized where the supply is short.'
-    }</p>`
+        ? `Hydraulically calculated pipe sizes (NFPA 13-2019 Ch. 28): for every remote area the smallest sizes are chosen that keep at least ${num(design.answers.minSupplyMarginPsi ?? 10, 0)} psi margin below the water supply and velocities within 20 ft/s.`
+        : 'Pipe schedule sizing (NFPA 13-2019 §28.5, maximum sprinklers per pipe size, see the limits in section 2), then hydraulically verified and upsized where the supply is short.'
+    }</p>
+<ul>
+<li><b>Hydraulic vs pipe schedule:</b> the pipe schedule (§28.5) fixes the size from the number of sprinklers downstream and is limited to light and ordinary hazard; hydraulic calculation (Ch. 28) sizes each segment from the flow and the available supply and can give smaller pipe where the supply allows.</li>
+<li><b>Velocity:</b> 20 ft/s (6.1 m/s) is the usual maximum velocity criterion - good practice to limit erosion, noise and water hammer; NFPA 13 itself sets no velocity limit.</li>
+<li><b>Supply margin:</b> the margin is the supply pressure at the demand flow (sprinklers plus hose allowance) minus the pressure required at the source; it must be positive.</li>
+</ul>`
+  )
+  p.push(
+    table(
+      ['Floor', 'Zone', 'Maximum velocity ft/s', 'Criterion 20 ft/s', 'Margin psi'],
+      s.floors.flatMap((f) =>
+        f.zones.map((z) => {
+          const v = maxVelocityFps(z.governing)
+          return [
+            f.floorName,
+            `${z.zoneId} ${z.name}`,
+            num(v, 1),
+            v <= 20 ? 'Met' : 'Exceeded',
+            num(z.governing?.marginPsi, 1)
+          ]
+        })
+      )
+    )
   )
   p.push('<h3>Sprinkler types (designer-selected vs automatic)</h3>')
   p.push(
@@ -572,7 +743,7 @@ export function buildSprinklerReportHtml(
   )
 
   // ───────── Accessories, spares, BOM
-  p.push('<h2>5. Accessories</h2>')
+  p.push('<h2>7. Accessories</h2>')
   p.push(
     table(
       ['Tag', 'Item', 'Qty', 'Size in', 'Location', 'System', 'Reference'],
@@ -587,7 +758,7 @@ export function buildSprinklerReportHtml(
       ])
     )
   )
-  p.push('<h2>6. Spare sprinklers</h2>')
+  p.push('<h2>8. Spare sprinklers</h2>')
   p.push(
     table(
       ['Head type', 'Description', 'Spare qty'],
@@ -599,7 +770,7 @@ export function buildSprinklerReportHtml(
     )
   )
   p.push(`<p class="note">Spare sprinkler cabinet with sprinkler wrench, NFPA 13-2019 §16.2.7.</p>`)
-  p.push('<h2>7. Bill of materials</h2>')
+  p.push('<h2>9. Bill of materials</h2>')
   p.push(
     table(
       ['Item', 'Size', 'Qty', 'Unit'],
@@ -608,9 +779,9 @@ export function buildSprinklerReportHtml(
   )
 
   // ───────── Checks, out of scope
-  p.push('<h2>8. Design checks</h2>')
+  p.push('<h2>10. Design checks</h2>')
   p.push(checksTable(s.checks))
-  p.push('<h2>9. Out of scope</h2>')
+  p.push('<h2>11. Out of scope</h2>')
   if (s.outOfScope.length === 0) p.push('<p>No out-of-scope items were declared.</p>')
   else p.push(`<ul>${s.outOfScope.map((o) => `<li>${esc(o)}</li>`).join('')}</ul>`)
 
@@ -632,8 +803,11 @@ export function buildSprinklerReportHtml(
     drawings.riserAndDetails,
     `${rd?.number ?? 'FS-501'} - ${rd?.title ?? 'Riser diagram and details'}`
   )
-  const hy = drawings.hydraulics.sheets[0]
-  sheet(drawings.hydraulics, `${hy?.number ?? 'FS-601'} - ${hy?.title ?? 'Hydraulic calculations'}`)
+  drawings.hydraulics.sheets.forEach((hy, i) => {
+    p.push(
+      `<section class="sheet"><h2>${esc(`${hy.number} - ${hy.title}`)}</h2>${renderSvg(drawings.hydraulics, { sheetIndex: i, background: 'white' })}</section>`
+    )
+  })
 
   return wrap(title, p.join('\n'))
 }

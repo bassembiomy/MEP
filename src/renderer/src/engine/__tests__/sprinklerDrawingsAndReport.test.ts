@@ -69,7 +69,7 @@ const d = generateSprinklerDrawings(result);
   contained(hy);
   for (const r of s.governing!.rows) assert(texts(hy).some((t) => t.text === r.fromNode), `FS-601 node ${r.fromNode}`);
   for (const str of ['SUPPLY', 'DEMAND', 'BILL OF MATERIALS']) assert(has(hy, str), `FS-601 "${str}"`);
-  assert(d.combined.sheets.map((x) => x.number).join() === 'FS-101,FS-102,FS-501,FS-601', 'combined sheet set');
+  assert(d.combined.sheets.map((x) => x.number).join() === 'FS-101,FS-102,FS-501,FS-601,FS-602', 'combined sheet set');
   contained(d.combined);
   const out = process.env.SPK_OUT;
   if (out) {

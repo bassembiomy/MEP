@@ -1702,7 +1702,7 @@ const ExportsStep: React.FC<{ result: FireDesignResult }> = ({ result }) => {
       <Card title="Riser, hydraulics and package">
         <div className="flex flex-wrap items-center gap-2">
           {dxfBtn('FS-501 riser & details DXF', `${base}_FS-501.dxf`, d.riserAndDetails)}
-          {dxfBtn('FS-601 hydraulics DXF', `${base}_FS-601.dxf`, d.hydraulics)}
+          {dxfBtn(`Hydraulic calcs DXF (${d.hydraulics.sheets.length} sheet${d.hydraulics.sheets.length === 1 ? '' : 's'})`, `${base}_FS-60x_hydraulics.dxf`, d.hydraulics)}
           {dxfBtn('Combined DXF (all sheets)', `${base}_sprinklers_combined.dxf`, d.combined)}
           <button
             disabled={busy}
@@ -1736,7 +1736,7 @@ const ExportsStep: React.FC<{ result: FireDesignResult }> = ({ result }) => {
           {[
             ...d.floors.map((f) => f.drawing.sheets[0]?.number),
             d.riserAndDetails.sheets[0]?.number,
-            d.hydraulics.sheets[0]?.number
+            ...d.hydraulics.sheets.map((x) => x.number)
           ].join(', ')}
           . The HTML report is printable (A3 landscape per sheet).
         </div>
