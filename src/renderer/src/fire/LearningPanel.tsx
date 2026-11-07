@@ -68,7 +68,8 @@ const VIEW_LABEL: Record<FireView, string> = {
   tank: 'Tank & Sump',
   room: 'Pump Room',
   checks: 'Checks',
-  report: 'Report'
+  report: 'Report',
+  bim: 'BIM / Revit'
 }
 
 const STEPS: LearningStep[] = [

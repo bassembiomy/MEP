@@ -11,6 +11,7 @@ import { useProjectStore } from './store/projectStore';
 import Versions from './components/Versions';
 import { useFireProtectionStore } from './store/fireProtectionStore';
 import { FireWorkspace } from './fire/FireWorkspace';
+import { HvacExportMenu } from './components/HvacExportMenu';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Flame, Wind, LayoutGrid, Info, Sparkles, Gauge, Award, Table, FileSpreadsheet } from 'lucide-react';
 
@@ -188,6 +189,9 @@ function App(): React.JSX.Element {
               <FileSpreadsheet size={14} />
               Air Distribution & 9-Point Validation
             </button>
+            <div className="ml-auto">
+              <HvacExportMenu />
+            </div>
           </div>
 
           {/* Lower Workspace Content Panels */}

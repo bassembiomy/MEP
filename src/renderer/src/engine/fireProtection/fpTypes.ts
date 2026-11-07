@@ -256,6 +256,8 @@ export interface PipeRun {
 }
 
 export interface FireDesignInput {
+  /** Where the pump room / standpipe risers / extinguisher zones sit in the building (BIM / Revit export only). */
+  bimPlacement?: import('../bim/bimTypes').FireBimPlacement;
   projectName: string;
   projectNumber: string;
   designer: string;

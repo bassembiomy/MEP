@@ -13,6 +13,7 @@ import {
   GraduationCap,
   ShowerHead,
   Wind,
+  Box,
   Warehouse
 } from 'lucide-react'
 import { useFireProtectionStore, type FireView } from '../store/fireProtectionStore'
@@ -34,6 +35,7 @@ import {
 import { ExtinguisherPanel } from './ExtinguisherPanel'
 import { SprinklerPanel } from './SprinklerPanel'
 import { Co2Panel } from './Co2Panel'
+import { BimPanel } from './BimPanel'
 import { gpmToLpm, psiToBar } from '../engine/fireProtection/hydraulics'
 
 const TABS: { id: FireView; label: string; icon: React.ReactNode }[] = [
@@ -48,7 +50,8 @@ const TABS: { id: FireView; label: string; icon: React.ReactNode }[] = [
   { id: 'tank', label: 'Tank & Sump', icon: <Warehouse size={14} /> },
   { id: 'room', label: 'Pump Room', icon: <BarChart3 size={14} /> },
   { id: 'checks', label: 'Checks', icon: <ClipboardCheck size={14} /> },
-  { id: 'report', label: 'Report', icon: <FileText size={14} /> }
+  { id: 'report', label: 'Report', icon: <FileText size={14} /> },
+  { id: 'bim', label: 'BIM / Revit', icon: <Box size={14} /> }
 ]
 
 const XL_COLS: Record<number, string> = {
@@ -226,6 +229,7 @@ export const FireWorkspace: React.FC = () => {
               {activeView === 'room' && <PumpRoomPanel result={result} />}
               {activeView === 'checks' && <ChecksPanel result={result} />}
               {activeView === 'report' && <ReportPanel result={result} />}
+              {activeView === 'bim' && <BimPanel result={result} />}
             </ErrorBoundary>
           </>
         )}

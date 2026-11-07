@@ -4,6 +4,7 @@ import { DEFAULT_FIRE_INPUT } from '../engine/fireProtection/defaults'
 import { LEARNING_EXAMPLE_INPUT } from '../engine/fireProtection/learningExample'
 import { designFireProtectionSystem } from '../engine/fireProtection/fireProtectionEngine'
 import { generateFireDrawings } from '../engine/fireProtection/drawing/sheets'
+import type { FireBimPlacement } from '../engine/bim/bimTypes'
 import type { Drawing } from '../engine/fireProtection/drawing/drawingTypes'
 
 export type Discipline = 'hvac' | 'fire'
@@ -20,6 +21,7 @@ export type FireView =
   | 'room'
   | 'checks'
   | 'report'
+  | 'bim'
 
 interface Computed {
   result: FireDesignResult | null
@@ -51,6 +53,8 @@ interface FireProtectionState extends Computed {
   setDiscipline: (d: Discipline) => void
   setInput: (partial: Partial<FireDesignInput>) => void
   setActiveView: (v: FireView) => void
+  /** BIM placement does not affect the design, so it is stored without a recalculation. */
+  setBimPlacement: (p: FireBimPlacement) => void
   setActiveSheet: (i: number) => void
   reset: () => void
   /** Learning tab: current tutorial step (0-based). */
@@ -101,6 +105,7 @@ export const useFireProtectionStore = create<FireProtectionState>((set, get) => 
       scheduleRecompute()
     },
     setActiveView: (activeView) => set({ activeView }),
+    setBimPlacement: (bimPlacement) => set((s) => ({ input: { ...s.input, bimPlacement } })),
     setActiveSheet: (activeSheet) => set({ activeSheet }),
     reset: () => replaceInput(DEFAULT_FIRE_INPUT),
     learningStep: 0,
