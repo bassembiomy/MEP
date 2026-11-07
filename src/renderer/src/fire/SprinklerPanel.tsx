@@ -41,18 +41,18 @@ import { exportDwgFromApp, type DwgExportStatus } from './dwgExport'
 
 // ─────────────────────────── small UI kit ───────────────────────────
 
-const inputCls =
+export const inputCls =
   'w-full bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1 text-xs text-neutral-200 font-mono focus:outline-none focus:border-red-600'
-const btnCls =
+export const btnCls =
   'flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer disabled:opacity-40 disabled:cursor-default'
-const btnGhost = `${btnCls} bg-neutral-900 text-neutral-300 hover:bg-neutral-850 border border-neutral-800`
-const btnPrimary = `${btnCls} bg-gradient-to-r from-red-600 to-orange-500 text-white shadow-lg shadow-red-500/20`
+export const btnGhost = `${btnCls} bg-neutral-900 text-neutral-300 hover:bg-neutral-850 border border-neutral-800`
+export const btnPrimary = `${btnCls} bg-gradient-to-r from-red-600 to-orange-500 text-white shadow-lg shadow-red-500/20`
 
-const Card: React.FC<{ title: string; children: React.ReactNode; right?: React.ReactNode }> = ({
-  title,
-  children,
-  right
-}) => (
+export const Card: React.FC<{
+  title: string
+  children: React.ReactNode
+  right?: React.ReactNode
+}> = ({ title, children, right }) => (
   <div className="bg-neutral-900 border border-neutral-850 p-5 rounded-2xl flex flex-col gap-3 shadow-xl">
     <div className="flex items-center gap-2">
       <div className="text-xs font-bold text-neutral-300 uppercase tracking-wider flex-1">
@@ -64,7 +64,7 @@ const Card: React.FC<{ title: string; children: React.ReactNode; right?: React.R
   </div>
 )
 
-const Field: React.FC<{
+export const Field: React.FC<{
   label: string
   children: React.ReactNode
   hint?: string
@@ -78,7 +78,7 @@ const Field: React.FC<{
 )
 
 /** Number input that tolerates blank / partial text (commits only finite values). */
-const NumInput: React.FC<{
+export const NumInput: React.FC<{
   value: number
   onChange: (v: number) => void
   step?: number
@@ -113,7 +113,7 @@ const NumInput: React.FC<{
   )
 }
 
-function SelectBox<T extends string>({
+export function SelectBox<T extends string>({
   value,
   options,
   onChange,
@@ -142,7 +142,7 @@ function SelectBox<T extends string>({
   )
 }
 
-const Check: React.FC<{
+export const Check: React.FC<{
   checked: boolean
   onChange: (v: boolean) => void
   label?: string
@@ -160,7 +160,7 @@ const Check: React.FC<{
   </label>
 )
 
-const Stat: React.FC<{ label: string; value: React.ReactNode; sub?: React.ReactNode }> = ({
+export const Stat: React.FC<{ label: string; value: React.ReactNode; sub?: React.ReactNode }> = ({
   label,
   value,
   sub
@@ -172,7 +172,7 @@ const Stat: React.FC<{ label: string; value: React.ReactNode; sub?: React.ReactN
   </div>
 )
 
-const ChecksList: React.FC<{ checks: DesignCheck[] }> = ({ checks }) => (
+export const ChecksList: React.FC<{ checks: DesignCheck[] }> = ({ checks }) => (
   <div className="flex flex-col divide-y divide-neutral-850">
     {checks.map((c) => (
       <div key={c.id} className="py-2 flex gap-3 items-start">

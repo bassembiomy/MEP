@@ -5,12 +5,20 @@ import { useShallow } from 'zustand/react/shallow'
 import { renderSvg } from '../engine/fireProtection/drawing/svgRenderer'
 import { writeDxf } from '../engine/fireProtection/drawing/dxfWriter'
 import { downloadText, safeFileName } from './download'
+import type { Drawing } from '../engine/fireProtection/drawing/drawingTypes'
 import { exportDwgFromApp, type DwgExportStatus } from './dwgExport'
 
 const BASE_WIDTH = 1200
 
-export const DrawingPreview: React.FC = () => {
-  const { drawing, activeSheet, setActiveSheet, projectName } = useFireProtectionStore(
+/**
+ * Sheet viewer. Without props it shows the main fire design drawing from the store; with `drawing` it shows
+ * that drawing instead (own sheet selection) and exports under `fileBase`.
+ */
+export const DrawingPreview: React.FC<{ drawing?: Drawing | null; fileBase?: string }> = ({
+  drawing: drawingProp,
+  fileBase
+}) => {
+  const st = useFireProtectionStore(
     useShallow((s) => ({
       drawing: s.drawing,
       activeSheet: s.activeSheet,
@@ -18,6 +26,12 @@ export const DrawingPreview: React.FC = () => {
       projectName: s.input.projectName
     }))
   )
+  const [localSheet, setLocalSheet] = useState(0)
+  const own = drawingProp !== undefined
+  const drawing = own ? drawingProp : st.drawing
+  const activeSheet = own ? localSheet : st.activeSheet
+  const setActiveSheet = own ? setLocalSheet : st.setActiveSheet
+  const projectName = fileBase ?? st.projectName
   const sheetIndex = drawing ? Math.min(activeSheet, Math.max(0, drawing.sheets.length - 1)) : 0
 
   const svg = useMemo(

@@ -12,6 +12,7 @@ import {
   Droplets,
   GraduationCap,
   ShowerHead,
+  Wind,
   Warehouse
 } from 'lucide-react'
 import { useFireProtectionStore, type FireView } from '../store/fireProtectionStore'
@@ -32,6 +33,7 @@ import {
 } from './FireResultsPanels'
 import { ExtinguisherPanel } from './ExtinguisherPanel'
 import { SprinklerPanel } from './SprinklerPanel'
+import { Co2Panel } from './Co2Panel'
 import { gpmToLpm, psiToBar } from '../engine/fireProtection/hydraulics'
 
 const TABS: { id: FireView; label: string; icon: React.ReactNode }[] = [
@@ -41,6 +43,7 @@ const TABS: { id: FireView; label: string; icon: React.ReactNode }[] = [
   { id: 'standpipe', label: 'Standpipe', icon: <Building2 size={14} /> },
   { id: 'extinguishers', label: 'Extinguishers', icon: <FlameKindling size={14} /> },
   { id: 'sprinklers', label: 'Sprinklers', icon: <ShowerHead size={14} /> },
+  { id: 'co2', label: 'CO2', icon: <Wind size={14} /> },
   { id: 'pumps', label: 'Pumps', icon: <Cylinder size={14} /> },
   { id: 'tank', label: 'Tank & Sump', icon: <Warehouse size={14} /> },
   { id: 'room', label: 'Pump Room', icon: <BarChart3 size={14} /> },
@@ -200,6 +203,7 @@ export const FireWorkspace: React.FC = () => {
               {activeView === 'standpipe' && <StandpipePanel result={result} />}
               {activeView === 'extinguishers' && <ExtinguisherPanel result={result} />}
               {activeView === 'sprinklers' && <SprinklerPanel result={result} />}
+              {activeView === 'co2' && <Co2Panel result={result} />}
               {activeView === 'pumps' && <PumpsPanel result={result} />}
               {activeView === 'tank' && <TankPanel result={result} />}
               {activeView === 'room' && <PumpRoomPanel result={result} />}

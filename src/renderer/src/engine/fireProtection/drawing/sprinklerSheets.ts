@@ -3,7 +3,6 @@
  * FS-501 riser diagram & details and FS-601 hydraulic calculations. `combined` holds every sheet left → right.
  */
 import type { FireDesignResult } from '../fpTypes'
-import { importFloorPlanDxf } from '../sprinkler/floorPlanImport'
 import { DRY_SLOPE_BRANCH_MM_PER_M, DRY_SLOPE_MAIN_MM_PER_M } from '../sprinkler/nfpa13Sprinkler'
 import type {
   FloorPlan,
@@ -37,13 +36,13 @@ import {
   type SheetSpec,
   archLayerName,
   assembleSprinklerDrawing,
-  clipSegment,
   hatchRectOn,
   headSymbol,
   headTypeText,
   pointInPolygon,
   sizeLabel
 } from './sprinklerSheetKit'
+import { drawArchUnderlay, loadFloorPlan } from './sheetUnderlay'
 import { drawRiserSheet } from './sprinklerSheetRiser'
 import { drawHydraulicSheet } from './sprinklerSheetHydraulics'
 
@@ -252,44 +251,7 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
       x1: Math.min(hi[0], paBox.x1),
       y1: Math.min(hi[1], paBox.y1)
     }
-    const inside = (p: Pt): boolean =>
-      p[0] >= win.x0 && p[0] <= win.x1 && p[1] >= win.y0 && p[1] <= win.y1
-    for (const e of d.plan.entities) {
-      if (e.kind === 'text') continue
-      const layer = archLayerName(e.layer)
-      if (e.kind === 'line' && e.points.length >= 2) {
-        const a = M(e.points[0])
-        const z = M(e.points[1])
-        const cl = clipSegment(a[0], a[1], z[0], z[1], win)
-        if (cl) b.line(layer, cl[0], cl[1], cl[2], cl[3])
-      } else if (e.kind === 'polyline') {
-        const pts = e.points.map(M)
-        if (pts.every(inside)) b.polyline(layer, pts, e.closed)
-        else {
-          const n = e.closed ? pts.length : pts.length - 1
-          for (let i = 0; i < n; i++) {
-            const a = pts[i]
-            const z = pts[(i + 1) % pts.length]
-            const cl = clipSegment(a[0], a[1], z[0], z[1], win)
-            if (cl) b.line(layer, cl[0], cl[1], cl[2], cl[3])
-          }
-        }
-      } else if (
-        (e.kind === 'circle' || e.kind === 'arc') &&
-        e.points.length >= 1 &&
-        e.radius &&
-        e.radius > 0
-      ) {
-        const m = M(e.points[0])
-        if (
-          inside([m[0] - e.radius, m[1] - e.radius]) &&
-          inside([m[0] + e.radius, m[1] + e.radius])
-        ) {
-          if (e.kind === 'circle') b.circle(layer, m[0], m[1], e.radius)
-          else b.arc(layer, m[0], m[1], e.radius, e.startDeg ?? 0, e.endDeg ?? 360)
-        }
-      }
-    }
+    drawArchUnderlay(b, d.plan, M, win)
   }
 
   // ───────── room outlines ─────────
@@ -964,12 +926,7 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
 // ─────────────────────────── public entry ───────────────────────────
 
 function loadPlan(fi: SprinklerFloorInput): FloorPlan | null {
-  if (!fi.planDxf) return null
-  try {
-    return importFloorPlanDxf(fi.planDxf, fi.planUnits)
-  } catch {
-    return null
-  }
+  return loadFloorPlan(fi.planDxf, fi.planUnits)
 }
 
 export function generateSprinklerDrawings(result: FireDesignResult): {
