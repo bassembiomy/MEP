@@ -170,9 +170,15 @@ export const BimPanel: React.FC<{ result: FireDesignResult }> = ({ result }) => 
 
   const fireModel = useMemo(() => fireBimModel(result, placement), [result, placement])
   const hasHvac = zones.length > 0
+  // an HVAC storey with the id of a fire storey takes that floor's level, so both disciplines share one Revit level
+  const hvacStoreyEff = useMemo(() => {
+    const id = hvacStorey.id.trim() || 'L1'
+    const fs = fireModel.storeys.find((s) => s.id === id)
+    return fs ? { ...hvacStorey, id, name: fs.name, elevationMm: fs.elevationMm } : hvacStorey
+  }, [hvacStorey, fireModel])
   const hvacModel = useMemo(
-    () => (hasHvac ? buildHvacModel(zones, project, hvacStorey, input.projectNumber) : null),
-    [hasHvac, zones, project, hvacStorey, input.projectNumber]
+    () => (hasHvac ? buildHvacModel(zones, project, hvacStoreyEff, input.projectNumber) : null),
+    [hasHvac, zones, project, hvacStoreyEff, input.projectNumber]
   )
   const merged = useMemo(
     () => (hvacModel ? mergeBimModels([fireModel, hvacModel], 'MEP') : null),
@@ -466,7 +472,7 @@ export const BimPanel: React.FC<{ result: FireDesignResult }> = ({ result }) => 
         </div>
         <div className="text-[10px] text-neutral-500">
           {hasHvac
-            ? `${zones.length} HVAC zone(s) drawn. Use a fire storey id (e.g. ${storeys[0]?.id ?? 'L1'}) with the same elevation to share a level.`
+            ? `${zones.length} HVAC zone(s) drawn. When the id matches a fire storey (e.g. ${storeys[0]?.id ?? 'L1'}) the HVAC model uses that floor's name and level (${hvacStoreyEff.elevationMm} mm), so both disciplines share one Revit level.`
             : 'No HVAC zones drawn yet - the HVAC and combined downloads are disabled.'}
         </div>
       </Card>

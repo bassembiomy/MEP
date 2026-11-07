@@ -80,7 +80,7 @@ export const HvacExportMenu: React.FC = () => {
         <Download size={14} /> Export / BIM <ChevronDown size={12} />
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-2 z-30 w-80 bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl p-3 flex flex-col gap-1">
+        <div className="absolute right-0 bottom-full mb-2 z-30 w-80 bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl p-3 flex flex-col gap-1">
           {empty && (
             <div className="text-[11px] text-amber-300 px-2 pb-1">
               Draw at least one zone to enable the exports.

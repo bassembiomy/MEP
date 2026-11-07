@@ -20,14 +20,20 @@ export function mergeBimModels(models: BimModel[], discipline: string): BimModel
   const slug = (s: string): string => s.replace(/\s+/g, '')
 
   for (const m of models) {
+    // same storey id with a different elevation: keep both as separate storeys (never fail the export) and warn
+    const storeyMap = new Map<string, string>()
     for (const st of m.storeys) {
       const have = storeys.get(st.id)
       if (have && Math.abs(have.elevationMm - st.elevationMm) > 0.5) {
-        throw new Error(
-          `mergeBimModels: storey ${st.id} has elevation ${have.elevationMm} mm and ${st.elevationMm} mm (${m.discipline})`
+        let id = `${st.id}-${slug(m.discipline)}`
+        let n = 1
+        while (storeys.has(id) && Math.abs(storeys.get(id)!.elevationMm - st.elevationMm) > 0.5) id = `${st.id}-${slug(m.discipline)}-${n++}`
+        if (!storeys.has(id)) storeys.set(id, { ...st, id, name: `${st.name} (${m.discipline})` })
+        storeyMap.set(st.id, id)
+        warnings.push(
+          `Storey ${st.id} is at ${have.elevationMm} mm in ${models[0].discipline} but ${st.elevationMm} mm in ${m.discipline}; ${m.discipline} elements kept on storey ${id} — set the same floor level for both disciplines.`
         )
-      }
-      if (!have) storeys.set(st.id, { ...st })
+      } else if (!have) storeys.set(st.id, { ...st })
     }
     const sysMap = new Map<string, string>()
     for (const sys of m.systems) {
@@ -45,7 +51,7 @@ export function mergeBimModels(models: BimModel[], discipline: string): BimModel
       let n = 1
       while (keys.has(key)) key = `${slug(m.discipline)}:${el.key}:${n++}`
       keys.add(key)
-      elements.push({ ...el, key, systemId: sysMap.get(el.systemId) ?? el.systemId })
+      elements.push({ ...el, key, storeyId: storeyMap.get(el.storeyId) ?? el.storeyId, systemId: sysMap.get(el.systemId) ?? el.systemId })
     }
     for (const w of m.warnings) warnings.push(models.length > 1 ? `[${m.discipline}] ${w}` : w)
   }
@@ -272,10 +278,20 @@ const near3 = (a: Vec3, b: Vec3): boolean =>
 
 /** Two linear elements that meet end to end are connected (a fitting), not a clash. */
 function connected(a: BimElement, b: BimElement): boolean {
+  // a run (duct / pipe) ending inside an equipment / terminal body is its connection, not a clash
+  if (a.geometry.kind === 'segment' && b.geometry.kind !== 'segment') return endsInBody(a, b)
+  if (b.geometry.kind === 'segment' && a.geometry.kind !== 'segment') return endsInBody(b, a)
   if (a.geometry.kind !== 'segment' || b.geometry.kind !== 'segment') return false
   const ea = [a.geometry.start, a.geometry.end]
   const eb = [b.geometry.start, b.geometry.end]
   return ea.some((p) => eb.some((q) => near3(p, q)))
+}
+
+function endsInBody(seg: BimElement, body: BimElement): boolean {
+  if (seg.geometry.kind !== 'segment') return false
+  const bb = aabbOf(envelopeOf(body))
+  const pad = 50
+  return [seg.geometry.start, seg.geometry.end].some((p) => [0, 1, 2].every((k) => p[k] >= bb.min[k] - pad && p[k] <= bb.max[k] + pad))
 }
 
 const isDuct = (e: BimElement): boolean =>
