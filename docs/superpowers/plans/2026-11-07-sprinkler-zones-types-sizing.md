@@ -35,7 +35,7 @@ Tests (must pass unchanged): `__tests__/sprinklerZonesAndTypes.test.ts` (K6 engi
    headCount, area (sum of its rooms), maxAreaFt2 = 52,000 (40,000 if any extra hazard room) and check
    `spr-zone-area:<floor>/<zone>`; governing = worst of its remote areas; floor governing = worst zone (max pressure at
    source). Floor-level checks aggregate the zones. Accessories: one zone (floor) control valve assembly per zone.
-4. **Hydraulic pipe sizing** (`answers.pipeSizing === 'hydraulic'`): start every branch segment at 1" and every
+4. **Hydraulic pipe sizing** (`answers.pipeSizing === 'hydraulic'`):
    start sizes: branch 1", cross-main & feed 1½", riser nipple 2"; iterate
    (≤ 500): compute all remote areas; (a) any segment row with velocity > 20 ft/s (good practice, not an NFPA limit)
    → upsize it one size; else (b) any remote area with margin < minSupplyMarginPsi (default 10) → upsize the segment
