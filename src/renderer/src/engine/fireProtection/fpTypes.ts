@@ -150,6 +150,93 @@ export interface StandpipeDesignInput {
   fdcDistanceToHydrantM: number;
   /** Override number of 2½" FDC inlets; undefined = ⌈demand / 250 gpm⌉, min 2. */
   fdcInlets?: number;
+  /**
+   * Pressure-regulating strategy. 'avoid' (default when undefined): split the risers into pressure zones so that no
+   * hose outlet exceeds 175 psi static (NFPA 14 §7.2.3) without PRVs; 'allow': single zone with PRVs where needed.
+   * Both solutions are always calculated and reported (StandpipeSystemDesign.zoning).
+   */
+  prvStrategy?: PrvStrategy;
+  /**
+   * Service (mechanical / technical) floors that can host a zone break tank + booster pump set.
+   * undefined / null = the question has NOT been answered yet (the design warns and asks); [] = no service floors.
+   */
+  serviceFloorIds?: string[] | null;
+  /** Shutoff (churn) ratio of the zone booster / express pumps, 1.10–1.40 (default 1.20; flat-curve pumps ≈ 1.10). */
+  zonePumpShutoffRatio?: number;
+}
+
+export type PrvStrategy = 'avoid' | 'allow';
+
+/** Where a standpipe pressure zone is pumped from. */
+export interface StandpipeZoneStation {
+  /** 'pump-room': main fire pumps (zone 1); 'express': dedicated zone pump in the pump room feeding an express riser
+   *  without outlets up to the zone; 'service-floor': break tank + booster pump set on a service floor. */
+  kind: 'pump-room' | 'express' | 'service-floor';
+  floorId: string | null;
+  /** Pump centre-line elevation, m (relative to ground FFL). */
+  pumpCLElevationM: number;
+  suctionMinPsi: number;
+  suctionMaxPsi: number;
+}
+
+export interface StandpipeZone {
+  id: string; // Z1, Z2 … bottom → top
+  station: StandpipeZoneStation;
+  /** Floor ids with hose outlets in this zone, bottom → top (roof id when the roof outlet is in the zone). */
+  floorIds: string[];
+  bottomOutletElevationM: number;
+  topOutletElevationM: number;
+  /** Pressure required at the zone pump discharge for the standpipe demand, psi (governing riser of the zone). */
+  requiredPressurePsi: number;
+  governingRiserTag: string;
+  ratedFlowGpm: number;
+  ratedNetPressurePsi: number;
+  shutoffRatio: number;
+  /** Shutoff (churn) pressure + max static suction at the pump discharge, psi. */
+  churnDischargePsi: number;
+  /** Highest static pressure at a hose outlet of the zone (lowest outlet), psi. */
+  maxStaticPsi: number;
+  /** Residual at the top outlet with the rated pump at demand flow, psi. */
+  topResidualPsi: number;
+  /** All outlets ≤ 175 psi static and the discharge ≤ 350 psi without PRVs. */
+  feasible: boolean;
+  /** Outlets in this zone that still need a PRV (0 when feasible). */
+  prvOutlets: number;
+  /** Express riser length from the pump room floor to the zone base, m (express zones only). */
+  expressRiserLengthM: number | null;
+  /** Service-floor zones: break tank sized for the full 30-min demand, and the NFPA 20 break-tank alternative
+   *  (15 min at 150 % of rated flow with a reliable automatic refill). */
+  breakTank: { volumeGal: number; volumeM3: number; nfpa20BreakTankGal: number; nfpa20BreakTankM3: number } | null;
+  /** Node-to-node calculation of the governing riser for this zone (top outlet → zone pump discharge). */
+  rows: HydraulicNodeRow[];
+}
+
+export interface StandpipeSolution {
+  kind: 'with-prv' | 'without-prv';
+  zones: StandpipeZone[];
+  prvCount: number;
+  /** Number of fire pump sets (main + zone pumps), excluding jockeys. */
+  pumpSets: number;
+  expressRisers: number;
+  serviceFloorStations: string[];
+  maxStaticPsi: number;
+  /** Without-PRV: every zone feasible. With-PRV: discharge ≤ 350 psi. */
+  feasible: boolean;
+  /** Plain-language comparison points (equipment, maintenance, risks). */
+  summary: string[];
+  /** When PRVs cannot be fully avoided: where a service floor would remove them. */
+  suggestion: string | null;
+}
+
+export interface StandpipeZoningStudy {
+  strategy: PrvStrategy;
+  /** False until the user has answered the service-floor question. */
+  serviceFloorsAnswered: boolean;
+  serviceFloorIds: string[];
+  withPrv: StandpipeSolution;
+  withoutPrv: StandpipeSolution;
+  /** Solution used for the design, drawings and pump selection. */
+  selected: 'with-prv' | 'without-prv';
 }
 
 export interface PipeSpec {
@@ -336,6 +423,8 @@ export interface StandpipeOutlet {
   prvRequired: boolean;
   /** Outlet pressure setting of the pressure-regulating device, psi (175 for 2½", 100 for 1½"). */
   prvSetPsi: number | null;
+  /** Pressure zone of the selected solution (Z1 …). */
+  zoneId: string;
 }
 
 export interface StandpipeRiserDesign {
@@ -375,6 +464,8 @@ export interface StandpipeSystemDesign {
   drainRiserIn: number | null; // 3" when PRVs are installed
   mainDrainIn: number; // 2"
   hoseValveHeightMm: number;
+  /** PRV vs no-PRV zoning study (both solutions) and the selected one. */
+  zoning: StandpipeZoningStudy;
   checks: DesignCheck[];
 }
 
