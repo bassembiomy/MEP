@@ -19,6 +19,7 @@ import {
   recommendedSystemType
 } from '../engine/fireProtection/sprinkler/nfpa13Sprinkler'
 import { importFloorPlanDxf } from '../engine/fireProtection/sprinkler/floorPlanImport'
+import { detectObstructions } from '../engine/fireProtection/sprinkler/obstructions'
 import { detectRooms } from '../engine/fireProtection/sprinkler/roomDetection'
 import { buildSampleFloorDxf } from '../engine/fireProtection/sprinkler/sampleFloor'
 import { buildSprinklerReportHtml } from '../engine/fireProtection/sprinkler/sprinklerReport'
@@ -27,9 +28,11 @@ import { writeDxf } from '../engine/fireProtection/drawing/dxfWriter'
 import type {
   DrawingUnits,
   FloorPlan,
+  ObstructionKind,
   SprinklerAnswers,
   SprinklerDesignInput,
   SprinklerFloorInput,
+  SprinklerObstruction,
   SprinklerRoomInput,
   SprinklerSystemType,
   SprinklerZoneInput
@@ -39,10 +42,18 @@ import { SprinklerPlanSvg } from './SprinklerPlanSvg'
 import { SprinklerPlanEditor, type PlanTool } from './SprinklerPlanEditor'
 import { AreaEditor, ZonesPanel } from './SprinklerAreaPanels'
 import {
+  ObstructionLayersPanel,
+  ObstructionPanel,
+  ObstructionResultsTable,
+  type LayerMappingRow
+} from './SprinklerObstructionPanels'
+import {
   ZONE_AREA_LIMIT_FT2,
+  defaultLayerMapping,
   effectiveZones,
   headSpecLabel,
   makeDrawnArea,
+  makeDrawnObstruction,
   nextZoneId,
   setRoomsPatch,
   zoneColor,
@@ -347,7 +358,10 @@ const QuestionsStep: React.FC<{ design: SprinklerDesignInput }> = ({ design }) =
     <Card title="1. Design questionnaire (NFPA 13-2019)">
       <div className="flex flex-col divide-y divide-neutral-850">
         {QUESTIONNAIRE.filter(
-          (q) => (q.id as string) !== 'pipeSizing' && (q.id as string) !== 'minSupplyMarginPsi'
+          (q) =>
+            (q.id as string) !== 'pipeSizing' &&
+            (q.id as string) !== 'minSupplyMarginPsi' &&
+            (q.id as string) !== 'deflectorBelowCeilingMm'
         ).map((q) => {
           const v = a[q.id]
           let control: React.ReactNode
@@ -480,6 +494,25 @@ const QuestionsStep: React.FC<{ design: SprinklerDesignInput }> = ({ design }) =
         </div>
         <div className="py-3 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_280px] gap-3 items-start">
           <div className="flex flex-col gap-1">
+            <div className="text-xs font-semibold text-neutral-200">
+              Sprinkler deflector distance below the ceiling (mm)
+            </div>
+            <div className="text-[11px] text-neutral-500 leading-relaxed">
+              Pendent / upright deflectors sit 25-305 mm below the ceiling (NFPA 13-2019
+              §10.2.6.1.1, default 100 mm). With the depth of an obstruction it sets the beam-rule
+              clearance (§10.2.7).
+            </div>
+          </div>
+          <NumInput
+            ariaLabel="Deflector distance below ceiling mm"
+            value={a.deflectorBelowCeilingMm ?? 100}
+            step={5}
+            min={25}
+            onChange={(n) => set({ deflectorBelowCeilingMm: Math.min(305, Math.max(25, n)) })}
+          />
+        </div>
+        <div className="py-3 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_280px] gap-3 items-start">
+          <div className="flex flex-col gap-1">
             <div className="text-xs font-semibold text-neutral-200">Building riser</div>
             <div className="text-[11px] text-neutral-500">
               Size and schedule of the riser feeding the floor control assemblies (default 6 in Sch
@@ -528,6 +561,10 @@ const FloorEditor: React.FC<{
   const [activeZone, setActiveZone] = useState('Z1')
   const [selectedRaw, setSelected] = useState<string[]>([])
   const sprinklerResult = useFireProtectionStore((st) => st.result?.sprinklers)
+  const [layerMap, setLayerMap] = useState<Record<string, LayerMappingRow>>({})
+  const [selObs, setSelObs] = useState<string | null>(null)
+  const [drawKind, setDrawKind] = useState<ObstructionKind>('duct')
+  const [drawDepth, setDrawDepth] = useState(500)
   if (!floor) return null
 
   const zones = effectiveZones(floor)
@@ -556,6 +593,64 @@ const FloorEditor: React.FC<{
     const area = makeDrawnArea(polygon, rooms, answers, activeZoneId)
     patchFloor({ rooms: [...rooms, area] })
     setSelected([area.id])
+  }
+  const obstructions = floor.obstructions ?? []
+  const latestObstructions = (): SprinklerObstruction[] =>
+    (currentDesign()?.floors[index] ?? floor).obstructions ?? []
+  const createObstruction = (polygon: [number, number][]): void => {
+    const list = latestObstructions()
+    const ob = makeDrawnObstruction(polygon, list, drawKind, drawDepth)
+    patchFloor({ obstructions: [...list, ob] })
+    setSelObs(ob.id)
+  }
+  const patchObstruction = (id: string, patch: Partial<SprinklerObstruction>): void =>
+    patchFloor({
+      obstructions: latestObstructions().map((o) => (o.id === id ? { ...o, ...patch } : o))
+    })
+  const deleteObstruction = (id: string): void => {
+    patchFloor({ obstructions: latestObstructions().filter((o) => o.id !== id) })
+    setSelObs(null)
+  }
+  const ceilingM = design.answers.defaultCeilingHeightM
+  const layerRows = (plan?.layers ?? []).map((l) => ({
+    layer: l.name,
+    label: `${l.name} (${l.count})`
+  }))
+  const layerMapping = (layer: string): LayerMappingRow =>
+    layerMap[layer] ?? { ...defaultLayerMapping(layer, ceilingM), on: false }
+  const fullLayerMap: Record<string, LayerMappingRow> = {}
+  for (const r of layerRows) fullLayerMap[r.layer] = layerMapping(r.layer)
+  const detectObs = (): void => {
+    if (!plan) {
+      setMsg({ ok: false, text: 'Upload a floor plan first.' })
+      return
+    }
+    const maps = Object.values(fullLayerMap)
+      .filter((m) => m.on)
+      .map(({ layer, kind, bottomBelowCeilingMm }) => ({ layer, kind, bottomBelowCeilingMm }))
+    if (maps.length === 0) {
+      setMsg({ ok: false, text: 'Tick at least one obstruction layer.' })
+      return
+    }
+    const found = detectObstructions(plan, maps)
+    const drawn = latestObstructions().filter((o) => o.source === 'drawn')
+    const used = new Set(drawn.map((o) => o.id))
+    let n = 1
+    const fresh = found.map((o) => {
+      while (used.has(`OB${n}`)) n++
+      const id = `OB${n}`
+      used.add(id)
+      return { ...o, id, source: 'detected' as const }
+    })
+    patchFloor({ obstructions: [...fresh, ...drawn] })
+    setSelObs(null)
+    setMsg({
+      ok: found.length > 0,
+      text:
+        found.length > 0
+          ? `${found.length} obstructions detected - drawn ones were kept.`
+          : 'No closed shapes found on the selected obstruction layers.'
+    })
   }
   const placeZcv = (x: number, y: number): void => {
     setZones(zones.map((z) => (z.id === activeZoneId ? { ...z, riser: { x, y } } : z)))
@@ -787,6 +882,16 @@ const FloorEditor: React.FC<{
               ))}
             </div>
           </div>
+          <ObstructionLayersPanel
+            rows={layerRows}
+            mapping={fullLayerMap}
+            ceilingHeightM={ceilingM}
+            disabled={busy || !plan}
+            onChange={(layer, patch) =>
+              setLayerMap((m) => ({ ...m, [layer]: { ...layerMapping(layer), ...patch } }))
+            }
+            onDetect={detectObs}
+          />
           <div className="flex flex-col gap-2">
             <div className="text-[9px] font-bold text-neutral-500 uppercase tracking-wide">
               Riser / floor control assembly (mm)
@@ -847,6 +952,14 @@ const FloorEditor: React.FC<{
             onCreateArea={createArea}
             onPlaceZcv={placeZcv}
             onDeleteSelected={() => deleteAreas(selected)}
+            obstructions={obstructions}
+            selectedObstruction={selObs}
+            onSelectObstruction={setSelObs}
+            onCreateObstruction={createObstruction}
+            onDeleteObstruction={deleteObstruction}
+            obstructionResults={
+              sprinklerResult?.floors.find((f) => f.floorId === floor.id)?.obstructions
+            }
             className="h-[460px]"
           />
           <div className="text-[10px] text-neutral-600">
@@ -854,6 +967,18 @@ const FloorEditor: React.FC<{
             drawn) | filled by zone colour with hazard label | squares = zone control valves | grey
             = architectural underlay
           </div>
+          <ObstructionPanel
+            obstructions={obstructions}
+            selectedId={selObs}
+            drawKind={drawKind}
+            drawDepthMm={drawDepth}
+            ceilingHeightM={ceilingM}
+            onSelect={setSelObs}
+            onPatch={patchObstruction}
+            onDelete={deleteObstruction}
+            onDrawKind={setDrawKind}
+            onDrawDepth={setDrawDepth}
+          />
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
             <ZonesPanel
               zones={zones}
@@ -1415,12 +1540,14 @@ const DesignStep: React.FC<{
                 riser={floorOut.riser}
                 zones={effectiveZones(floorIn)}
                 design={floorOut}
+                obstructions={floorIn.obstructions}
                 flowingTags={g?.headsFlowing}
                 className="h-[420px]"
               />
               <div className="text-[10px] text-neutral-500 mt-1">
                 White = sprinkler, red = remote design area, blue = branch lines, orange = cross
-                main, green = riser
+                main, green = riser | hatched = obstruction, dashed amber = clearance zone, yellow
+                ring = relocated sprinkler, magenta square = sprinkler below obstruction
               </div>
             </div>
             <div className="flex flex-col gap-2 text-[11px]">
@@ -1469,6 +1596,14 @@ const DesignStep: React.FC<{
       </Card>
       {floorOut && (
         <ZoneAndAreaTables floorIn={floorIn} floorOut={floorOut} headTypes={s.headTypes} />
+      )}
+      {floorOut && (floorOut.obstructions?.length ?? 0) > 0 && (
+        <Card title="Obstructions to discharge (NFPA 13-2019 §10.2.7)">
+          <ObstructionResultsTable
+            results={floorOut.obstructions}
+            check={floorChecks.find((c) => c.id.startsWith('spr-obstruction'))}
+          />
+        </Card>
       )}
       {floorOut && (
         <Card title="Floor checks">

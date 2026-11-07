@@ -110,7 +110,7 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
     applyFirePumpSupply(sprDesign, sd.answers, (flow) => {
       const x = flow / main.ratedFlowGpm;
       return main.ratedNetPressurePsi * (1.2 + 0.066667 * x - 0.266667 * x * x) + pumps.suctionPressureMinPsi;
-    });
+    }, main.ratedFlowGpm);
   }
   const standpipe = spHyd ? analyzeStandpipeOutlets(spHyd, input, pumps) : null;
   if (standpipe && zoneNote) {

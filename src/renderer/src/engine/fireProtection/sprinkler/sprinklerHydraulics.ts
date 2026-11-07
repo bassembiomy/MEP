@@ -257,10 +257,14 @@ export function calculateFloorDemand(
     if (vOf(h.x, h.y) > vOf(remote.x, remote.y)) remote = h
   }
 
-  const nRequired = Math.ceil(designArea / remote.areaFt2 - EPS)
+  // a sprinkler below an obstruction protects a small area: the ceiling sprinklers set the design area count
+  const ref = remote.belowObstruction
+    ? (candidates.filter((h) => !h.belowObstruction).sort((a, b) => b.areaFt2 - a.areaFt2)[0] ?? remote)
+    : remote
+  const nRequired = Math.ceil(designArea / ref.areaFt2 - EPS)
   const nb = Math.max(
     1,
-    Math.ceil((1.2 * Math.sqrt(designArea)) / (remote.spacingSmm / MM_PER_FT) - EPS)
+    Math.ceil((1.2 * Math.sqrt(designArea)) / (ref.spacingSmm / MM_PER_FT) - EPS)
   )
   const flowing = new Set<string>()
   const candSet = new Set(candidates.map((h) => h.tag))
@@ -295,7 +299,10 @@ export function calculateFloorDemand(
   const flowingTagsOrdered = heads.filter((h) => flowing.has(h.tag)).map((h) => h.tag)
 
   // ── arm calculation ──
-  const qMin = hz.densityGpmFt2 * remote.areaFt2
+  // minimum flow: density × the largest protection area among the flowing sprinklers (NFPA 13 §10.2.4.1.1)
+  let maxFlowArea = remote.areaFt2
+  for (const h of heads) if (flowing.has(h.tag)) maxFlowArea = Math.max(maxFlowArea, h.areaFt2)
+  const qMin = hz.densityGpmFt2 * maxFlowArea
   const pStart = Math.max(7, Math.pow(qMin / kOf(remote.tag), 2))
   const calcArm = (arm: PipingArm): ArmCalc | null => {
     let idx = -1

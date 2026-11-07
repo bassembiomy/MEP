@@ -163,6 +163,55 @@ export const MIN_WALL_DISTANCE_MM = 102
 /** Deflector distance below the ceiling, 1 in – 12 in (NFPA 13-2019 §10.2.6.1.1). */
 export const DEFLECTOR_RANGE_MM: [number, number] = [25, 305]
 
+// ─────────────────────────── Obstructions (NFPA 13-2019 §10.2.7) ───────────────────────────
+
+/** Obstructions wider than 4 ft (1219 mm) need sprinklers below them (NFPA 13-2019 §10.2.7.1.3 — verify the clause). */
+export const WIDE_OBSTRUCTION_MM = 1219
+/** Largest clearance of the three-times rule, 24 in (610 mm). */
+export const THREE_TIMES_MAX_MM = 610
+
+/**
+ * Beam rule — standard pendent / upright spray sprinklers (NFPA 13-2019 Table 10.2.7.1.2, verify against the adopted
+ * edition): [A lower bound ft, maximum B in]. A = horizontal distance from the sprinkler to the side of the obstruction,
+ * B = height of the deflector above the bottom of the obstruction.
+ */
+export const BEAM_RULE_TABLE: [number, number][] = [
+  [1, 2.5],
+  [1.5, 3.5],
+  [2, 5.5],
+  [2.5, 7.5],
+  [3, 9.5],
+  [3.5, 12],
+  [4, 14],
+  [4.5, 16.5],
+  [5, 18],
+  [5.5, 20],
+  [6, 24],
+  [6.5, 30],
+  [7, 35]
+]
+/** Table end: B above this cannot be cleared by distance (the obstruction acts as a wall). */
+export const BEAM_RULE_MAX_B_IN = 35
+
+/** Maximum B (in) allowed for a distance A (ft) from the obstruction; A < 1 ft → 0; the table ends at 35 in. */
+export function beamRuleMaxBIn(aFt: number): number {
+  let b = 0
+  for (const [a, max] of BEAM_RULE_TABLE) if (aFt >= a - 1e-9) b = max
+  return b
+}
+
+/** Smallest table distance A (ft) for a given B (in): 0 for B ≤ 0, Infinity beyond the table. */
+export function beamRuleMinAFt(bIn: number): number {
+  if (bIn <= 1e-9) return 0
+  for (const [a, max] of BEAM_RULE_TABLE) if (max >= bIn - 1e-9) return a
+  return Infinity
+}
+
+/** Three-times rule: distance of at least 3 × the largest dimension of the obstruction, at most 24 in (610 mm). */
+export function threeTimesClearanceMm(maxDimMm: number): number {
+  return Math.min(3 * maxDimMm, THREE_TIMES_MAX_MM)
+}
+
 // ─────────────────────────── Pipe schedule (NFPA 13-2019 §28.5) ───────────────────────────
 
 /** Maximum number of sprinklers per steel pipe size (initial sizing; verified hydraulically). */

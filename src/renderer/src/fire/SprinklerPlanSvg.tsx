@@ -2,10 +2,12 @@ import React, { useMemo, useRef } from 'react'
 import type {
   FloorPlan,
   SprinklerFloorDesign,
+  SprinklerObstruction,
   SprinklerRoomInput,
   SprinklerZoneInput
 } from '../engine/fireProtection/sprinkler/sprinklerTypes'
 import { polyD, underlayPath } from './planGeometry'
+import { polygonBounds } from './sprinklerAreaEditing'
 import { zoneColor, zoneIdOf } from './sprinklerAreaEditing'
 
 const PIPE_COLORS: Record<string, string> = {
@@ -21,10 +23,11 @@ export const SprinklerPlanSvg: React.FC<{
   riser: { x: number; y: number }
   zones?: SprinklerZoneInput[]
   design?: SprinklerFloorDesign | null
+  obstructions?: SprinklerObstruction[]
   flowingTags?: string[]
   onPick?: (x: number, y: number) => void
   className?: string
-}> = ({ plan, rooms, riser, zones, design, flowingTags, onPick, className }) => {
+}> = ({ plan, rooms, riser, zones, design, obstructions, flowingTags, onPick, className }) => {
   const svgRef = useRef<SVGSVGElement>(null)
   const under = useMemo(() => underlayPath(plan), [plan])
   const box = useMemo(() => {
@@ -50,6 +53,13 @@ export const SprinklerPlanSvg: React.FC<{
     return { x: minX - pad, y: minY - pad, w: maxX - minX + 2 * pad, h: maxY - minY + 2 * pad }
   }, [plan, rooms, riser.x, riser.y])
   const unit = Math.max(box.w, box.h) / 100 // ~1 % of the view
+  const clearances = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const r of design?.obstructions ?? [])
+      if (Number.isFinite(r.requiredClearanceMm) && r.rule !== 'wide')
+        m.set(r.id, r.requiredClearanceMm)
+    return m
+  }, [design])
   const flowing = useMemo(() => new Set(flowingTags ?? []), [flowingTags])
 
   const handleClick = (e: React.MouseEvent<SVGSVGElement>): void => {
@@ -73,6 +83,18 @@ export const SprinklerPlanSvg: React.FC<{
       preserveAspectRatio="xMidYMid meet"
       onClick={handleClick}
     >
+      <defs>
+        <pattern
+          id="obs-hatch-res"
+          width={unit * 1.1}
+          height={unit * 1.1}
+          patternUnits="userSpaceOnUse"
+          patternTransform="rotate(45)"
+        >
+          <rect width={unit * 1.1} height={unit * 1.1} fill="#404040" fillOpacity={0.55} />
+          <line x1={0} y1={0} x2={0} y2={unit * 1.1} stroke="#b4b4b4" strokeWidth={unit * 0.25} />
+        </pattern>
+      </defs>
       <g transform="scale(1,-1)">
         {under && (
           <path
@@ -94,6 +116,34 @@ export const SprinklerPlanSvg: React.FC<{
             vectorEffect="non-scaling-stroke"
           />
         ))}
+        {(obstructions ?? []).map((o) => {
+          const b = polygonBounds(o.polygon)
+          const c = clearances.get(o.id) ?? 0
+          return (
+            <g key={o.id}>
+              {c > 0 && (
+                <rect
+                  x={b.minX - c}
+                  y={b.minY - c}
+                  width={b.maxX - b.minX + 2 * c}
+                  height={b.maxY - b.minY + 2 * c}
+                  fill="none"
+                  stroke="#f59e0b"
+                  strokeWidth={1.2}
+                  strokeDasharray="6 4"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              <path
+                d={polyD(o.polygon, true)}
+                fill="url(#obs-hatch-res)"
+                stroke="#a3a3a3"
+                strokeWidth={1.2}
+                vectorEffect="non-scaling-stroke"
+              />
+            </g>
+          )
+        })}
         {design?.pipes.map((p) => (
           <path
             key={p.id}
@@ -116,6 +166,35 @@ export const SprinklerPlanSvg: React.FC<{
             vectorEffect="non-scaling-stroke"
           />
         ))}
+        {design?.heads
+          .filter((h) => (h.relocatedMm ?? 0) > 0)
+          .map((h) => (
+            <circle
+              key={`rel-${h.tag}`}
+              cx={h.x}
+              cy={h.y}
+              r={unit * 1.15}
+              fill="none"
+              stroke="#facc15"
+              strokeWidth={1.6}
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+        {design?.heads
+          .filter((h) => h.belowObstruction)
+          .map((h) => (
+            <rect
+              key={`blw-${h.tag}`}
+              x={h.x - unit * 1.1}
+              y={h.y - unit * 1.1}
+              width={unit * 2.2}
+              height={unit * 2.2}
+              fill="none"
+              stroke="#e879f9"
+              strokeWidth={1.6}
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
         {(zones && zones.length > 0 ? zones : [{ id: 'Z1', name: '', riser }]).map((z) => (
           <rect
             key={z.id}
@@ -130,6 +209,48 @@ export const SprinklerPlanSvg: React.FC<{
           />
         ))}
       </g>
+      {/* obstruction ids, relocated / below-obstruction head notes */}
+      {(obstructions ?? []).map((o) => {
+        const b = polygonBounds(o.polygon)
+        return (
+          <text
+            key={o.id}
+            x={(b.minX + b.maxX) / 2}
+            y={-(b.minY + b.maxY) / 2}
+            fontSize={unit * 1.2}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fontWeight={700}
+            fill="#fafafa"
+            stroke="#0a0a0a"
+            strokeWidth={unit * 0.26}
+            paintOrder="stroke"
+            style={{ pointerEvents: 'none' }}
+          >
+            {o.id}
+          </text>
+        )
+      })}
+      {design?.heads
+        .filter((h) => (h.relocatedMm ?? 0) > 0 || h.belowObstruction)
+        .map((h) => (
+          <text
+            key={`note-${h.tag}`}
+            x={h.x + unit * 1.5}
+            y={-h.y - unit * 1.4}
+            fontSize={unit * 1.05}
+            fontWeight={700}
+            fill={h.belowObstruction ? '#f0abfc' : '#fde047'}
+            stroke="#0a0a0a"
+            strokeWidth={unit * 0.22}
+            paintOrder="stroke"
+            style={{ pointerEvents: 'none' }}
+          >
+            {h.belowObstruction
+              ? `BELOW ${h.belowObstruction}`
+              : `MOVED \u2192 ${Math.round(h.relocatedMm ?? 0)} mm`}
+          </text>
+        ))}
       {/* room names (outside the flipped group so text is upright) */}
       {rooms.map((r) => {
         const n = r.polygon.length || 1

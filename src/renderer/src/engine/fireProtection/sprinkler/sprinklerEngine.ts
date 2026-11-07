@@ -10,6 +10,7 @@ import {
   DRY_DELIVERY_TIME_S,
   DRY_SLOPE_BRANCH_MM_PER_M,
   DRY_SLOPE_MAIN_MM_PER_M,
+  MIN_WALL_DISTANCE_MM,
   PREACTION_MAX_CLOSED_SPRINKLERS,
   SPACING_RULES,
   hangerSpacingM,
@@ -25,13 +26,29 @@ import {
   sidewallChecks
 } from './headLayout'
 import type { RoomHeadLayout, SidewallLayout } from './headLayout'
+import { areaFt2Of, layoutRoomObstructions } from './obstructionLayout'
+import type { RoomObsResult } from './obstructionLayout'
+import {
+  DEFAULT_DEFLECTOR_MM,
+  analyseObstruction,
+  distanceToObstruction,
+  emptyObstructionResult
+} from './obstructions'
+import type { ObstructionGeom } from './obstructions'
 import { FEED_RUN_THRESHOLD_MM, layoutFloorPiping } from './pipingLayout'
 import type { FloorPiping } from './pipingLayout'
 import { distanceToPolygonEdges, pointInPolygon } from './roomDetection'
 import { buildAccessories, buildBom, spareSprinklers } from './sprinklerAccessories'
-import { FT_PER_M, calculateFloorDemand, supplyShort, upsizeOne } from './sprinklerHydraulics'
+import {
+  FT_PER_M,
+  calculateFloorDemand,
+  citySupplyAvailablePsi,
+  supplyShort,
+  upsizeOne
+} from './sprinklerHydraulics'
 import type { FloorHydraulicContext, SourceContext } from './sprinklerHydraulics'
 import type {
+  ObstructionResult,
   PlacedSprinkler,
   RemoteAreaResult,
   SprinklerDesignInput,
@@ -60,6 +77,23 @@ const ZONE_MAX_AREA_FT2 = 52000
 const ZONE_MAX_AREA_EXTRA_FT2 = 40000
 const MAX_VELOCITY_FPS = 20
 const HYDRAULIC_ITERATIONS = 500
+
+interface HeadPlan {
+  x: number
+  y: number
+  S: number
+  L: number
+  areaFt2: number
+  relocatedMm?: number
+  below?: string
+  recId?: number
+}
+
+function bboxOfPoly(p: Pt[]): { minX: number; minY: number; maxX: number; maxY: number } {
+  const xs = p.map((q) => q[0])
+  const ys = p.map((q) => q[1])
+  return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) }
+}
 
 interface FloorLayoutData {
   direction: 'x' | 'y'
@@ -227,65 +261,176 @@ function designFloor(
   }
   const swap = direction === 'y'
 
-  // heads, tags in room order then along rows (numbered floor-wide)
+  // heads, tags in room order then along rows (numbered floor-wide); obstructions (NFPA 13 §10.2.7) handled per room
   const heads: PlacedSprinkler[] = []
   const rooms: SprinklerRoomResult[] = []
   const hazardByTag = new Map<string, HazardClass>()
   const zoneOfHead = new Map<string, string>()
+  const geoms = (floor.obstructions ?? []).map((o) =>
+    analyseObstruction(o, answers.deflectorBelowCeilingMm ?? DEFAULT_DEFLECTOR_MM)
+  )
+  const acc = new Map(
+    geoms.map((g) => [
+      g.ob.id,
+      { moved: [] as string[], below: [] as string[], added: 0, notes: [] as string[] }
+    ])
+  )
+  let recSeq = 0
+  const tagOfRec = new Map<number, string>()
   let n = 0
   for (const { room, layout, sidewall, headType } of data.roomLayouts) {
     if (!headTypes.some((t) => t.id === headType.id)) headTypes.push(headType)
     const zoneId = zoneOfRoom(room, zones).id
     const rules = SPACING_RULES[spacingClass(room.hazard)]
-    const pts = [...layout.points].sort((a, b) => {
-      const av = swap ? a[0] : a[1]
-      const bv = swap ? b[0] : b[1]
-      const au = swap ? a[1] : a[0]
-      const bu = swap ? b[1] : b[0]
+    const uniformArea = (layout.S / MM_PER_FT) * (layout.L / MM_PER_FT)
+    let plans: HeadPlan[] = layout.points.map(([x, y]) => ({
+      x,
+      y,
+      S: layout.S,
+      L: layout.L,
+      areaFt2: uniformArea
+    }))
+    let effLayout: RoomHeadLayout = layout
+    let effSidewall: SidewallLayout | undefined = sidewall
+    let obs: RoomObsResult | null = null
+    if (geoms.length > 0) {
+      const bb = bboxOfPoly(room.polygon)
+      const axis: 'x' | 'y' = sidewall
+        ? bb.maxX - bb.minX >= bb.maxY - bb.minY
+          ? 'x'
+          : 'y'
+        : direction
+      obs = layoutRoomObstructions({
+        polygon: room.polygon,
+        axis,
+        points: layout.points,
+        maxSpacingMm: sidewall ? sidewall.maxSpacingMm : rules.maxSpacingFt * MM_PER_FT,
+        maxAreaMm2: (sidewall ? sidewall.maxAreaFt2 : rules.maxAreaFt2) * MM_PER_FT * MM_PER_FT,
+        sidewall: sidewall ? { throwMm: sidewall.L } : undefined,
+        obstructions: geoms,
+        nextId: () => ++recSeq
+      })
+      if (obs.modified) {
+        plans = obs.heads.map((h) => ({
+          x: h.x,
+          y: h.y,
+          S: h.S,
+          L: h.L,
+          areaFt2: areaFt2Of(h.S, h.L),
+          relocatedMm: h.relocatedMm,
+          recId: h.id
+        }))
+        effLayout = { points: plans.map((q): Pt => [q.x, q.y]), S: obs.S, L: obs.L }
+        if (sidewall) {
+          effSidewall = { ...sidewall, points: effLayout.points, S: obs.S, L: obs.L }
+          effLayout = effSidewall
+        }
+      }
+    }
+    plans.sort((a, b) => {
+      const av = swap ? a.x : a.y
+      const bv = swap ? b.x : b.y
+      const au = swap ? a.y : a.x
+      const bu = swap ? b.y : b.x
       return Math.round(av / 10) - Math.round(bv / 10) || au - bu
     })
-    const areaFt2 = (layout.S / MM_PER_FT) * (layout.L / MM_PER_FT)
-    for (const [x, y] of pts) {
+    const ceilingCount = plans.length
+    if (obs)
+      for (const b of obs.below)
+        plans.push({
+          x: b.x,
+          y: b.y,
+          S: b.S,
+          L: b.L,
+          areaFt2: areaFt2Of(b.S, b.L),
+          below: b.obstructionId
+        })
+    for (const q of plans) {
       n++
       const tag = `S-${floor.id}-${String(n).padStart(3, '0')}`
       hazardByTag.set(tag, room.hazard)
       zoneOfHead.set(tag, zoneId)
+      if (q.recId !== undefined) tagOfRec.set(q.recId, tag)
+      if (q.below) acc.get(q.below)?.below.push(tag)
       heads.push({
         tag,
         floorId: floor.id,
         roomId: room.id,
-        x,
-        y,
+        x: q.x,
+        y: q.y,
         headTypeId: headType.id,
-        spacingSmm: layout.S,
-        spacingLmm: layout.L,
-        areaFt2,
-        wallDistanceMm: distanceToPolygonEdges(x, y, room.polygon),
+        spacingSmm: q.S,
+        spacingLmm: q.L,
+        areaFt2: q.areaFt2,
+        wallDistanceMm: distanceToPolygonEdges(q.x, q.y, room.polygon),
         node: tag,
-        zoneId
+        zoneId,
+        ...(q.below ? { belowObstruction: q.below } : {}),
+        ...(q.relocatedMm !== undefined ? { relocatedMm: q.relocatedMm } : {})
       })
+    }
+    if (obs) {
+      for (const [id, recIds] of obs.movedBy)
+        for (const r of recIds) {
+          const t = tagOfRec.get(r)
+          if (t && !acc.get(id)!.moved.includes(t)) acc.get(id)!.moved.push(t)
+        }
+      for (const [id, k] of obs.addedBy) acc.get(id)!.added += k
+      for (const [id, list] of obs.notes) acc.get(id)!.notes.push(...list)
     }
     let a = 0
     for (let i = 0, j = room.polygon.length - 1; i < room.polygon.length; j = i++)
       a += room.polygon[j][0] * room.polygon[i][1] - room.polygon[i][0] * room.polygon[j][1]
-    const layoutChecks = sidewall
-      ? sidewallChecks(room, sidewall)
-      : roomLayoutChecks(room, layout, rules, direction)
+    let layoutChecks = effSidewall
+      ? sidewallChecks(room, effSidewall)
+      : roomLayoutChecks(room, effLayout, rules, direction)
+    if (obs?.modified && !effSidewall) {
+      // per-head protection areas S × L (NFPA 13 §10.2.4.1.1) replace the uniform area check
+      const maxArea = Math.max(...plans.slice(0, ceilingCount).map((q) => q.areaFt2))
+      layoutChecks = layoutChecks.map((c) =>
+        c.id === `spr-area:${room.id}`
+          ? {
+              ...c,
+              status: maxArea <= rules.maxAreaFt2 * (1 + 1e-6) ? 'pass' : 'fail',
+              detail: `largest protection area ${maxArea.toFixed(1)} ft² (S × L per sprinkler, obstructions respected; max ${rules.maxAreaFt2} ft²)`
+            }
+          : c
+      )
+    }
     const specCheck = headSpecCheck(room, headType, floor.systemType)
     rooms.push({
       roomId: room.id,
       name: room.name,
       hazard: room.hazard,
       areaM2: Math.abs(a) / 2 / 1e6,
-      headCount: pts.length,
+      headCount: plans.length,
       headTypeId: headType.id,
-      spacingSmm: layout.S,
-      spacingLmm: layout.L,
-      maxSpacingMm: sidewall ? sidewall.maxSpacingMm : rules.maxSpacingFt * MM_PER_FT,
-      maxAreaFt2: sidewall ? sidewall.maxAreaFt2 : rules.maxAreaFt2,
+      spacingSmm: effLayout.S,
+      spacingLmm: effLayout.L,
+      maxSpacingMm: effSidewall ? effSidewall.maxSpacingMm : rules.maxSpacingFt * MM_PER_FT,
+      maxAreaFt2: effSidewall ? effSidewall.maxAreaFt2 : rules.maxAreaFt2,
       checks: specCheck ? [...layoutChecks, specCheck] : layoutChecks
     })
   }
+
+  // obstruction results: sprinklers below / relocated, and a final clearance check of every ceiling sprinkler
+  const obstructionResults: ObstructionResult[] = geoms.map((g) => {
+    const r = emptyObstructionResult(g)
+    const a = acc.get(g.ob.id)!
+    r.headsBelow = [...a.below]
+    r.relocatedHeads = [...a.moved]
+    const need = g.inactive ? 0 : g.wall ? MIN_WALL_DISTANCE_MM : g.requiredClearanceMm
+    for (const h of heads) {
+      if (h.belowObstruction || need <= 0) continue
+      const d = distanceToObstruction(g, h.x, h.y)
+      if (d < need - 0.5)
+        r.violations.push(
+          `${h.tag}: ${d.toFixed(0)} mm from ${g.ob.id} (required ${need.toFixed(0)} mm) - add / relocate sprinkler`
+        )
+    }
+    r.violations.push(...a.notes)
+    return r
+  })
 
   // hydraulic context
   const minCeiling = active.length ? Math.min(...active.map((r) => r.ceilingHeightM)) : 3
@@ -513,6 +658,7 @@ function designFloor(
   const shortZone = solutions.find((z) => z.governing && supplyShort(z.governing))
   checks.push(supplyCheck(fid, shortZone?.governing ?? gov, answers, !source))
   checks.push(areaOverlapCheck(floor))
+  checks.push(obstructionCheck(fid, geoms, obstructionResults, acc))
   checks.push(
     pipeSizingCheck(
       fid,
@@ -623,6 +769,7 @@ function designFloor(
     remoteAreas,
     governing: gov,
     zones: zoneResults,
+    obstructions: obstructionResults,
     checks
   }
 }
@@ -666,6 +813,46 @@ function areaOverlapCheck(floor: SprinklerFloorInput): DesignCheck {
     detail: pairs.length
       ? `Overlapping areas: ${pairs.join(', ')} — sprinklers would be duplicated; omit or delete one of them`
       : 'No overlapping areas'
+  }
+}
+
+const RULE_TEXT: Record<ObstructionResult['rule'], string> = {
+  beam: 'beam rule',
+  'three-times': 'three-times rule',
+  wide: 'wide obstruction - sprinklers below',
+  wall: 'deep beam as wall (bays)'
+}
+
+/** `spr-obstruction:<floor>` — obstructions to discharge (NFPA 13-2019 §10.2.7). */
+function obstructionCheck(
+  floorId: string,
+  geoms: ObstructionGeom[],
+  results: ObstructionResult[],
+  acc: Map<string, { added: number }>
+): DesignCheck {
+  const base = {
+    id: `spr-obstruction:${floorId}`,
+    title: `Obstructions to sprinkler discharge — ${floorId}`,
+    reference: 'NFPA 13-2019 §10.2.7, Table 10.2.7.1.2 (verify against the adopted edition)'
+  }
+  if (results.length === 0)
+    return { ...base, status: 'pass', detail: 'No obstructions on this floor' }
+  const bad = results.filter((r) => r.violations.length > 0)
+  const lines = results.map((r, i) => {
+    const added = acc.get(r.id)?.added ?? 0
+    const parts = [
+      `${r.id} ${r.kind} ${r.widthMm.toFixed(0)} x ${r.lengthMm.toFixed(0)} mm, bottom ${r.bottomBelowCeilingMm.toFixed(0)} mm below ceiling: ${RULE_TEXT[r.rule]}${geoms[i].inactive ? ' (above the deflector, no clearance needed)' : `, clearance ${r.requiredClearanceMm.toFixed(0)} mm`}`,
+      `${r.relocatedHeads.length} sprinkler(s) moved`
+    ]
+    if (added > 0) parts.push(`${added} added`)
+    if (r.headsBelow.length > 0) parts.push(`${r.headsBelow.length} below`)
+    if (r.violations.length > 0) parts.push(`OBSTRUCTED: ${r.violations.join('; ')}`)
+    return parts.join(', ')
+  })
+  return {
+    ...base,
+    status: bad.length > 0 ? 'fail' : 'pass',
+    detail: lines.join(' | ')
   }
 }
 
@@ -754,7 +941,18 @@ export function designSprinklerSystem(
   const accessories = buildAccessories(floors, headTypes)
   const spareHeads = spareSprinklers(floors)
   const bom = buildBom(floors, headTypes, accessories, input.answers)
+  const sup = input.answers.supply
   const design: SprinklerSystemDesign = {
+    supplyCurve:
+      sup.kind === 'city' && sup.residualFlowGpm > 0
+        ? {
+            label: `City supply: ${sup.staticPsi} psi static, ${sup.residualPsi} psi residual at ${sup.residualFlowGpm} gpm`,
+            points: [0, 0.25, 0.5, 0.75, 1, 1.25, 1.5].map((f): [number, number] => [
+              f * sup.residualFlowGpm,
+              Math.max(0, citySupplyAvailablePsi(sup, f * sup.residualFlowGpm))
+            ])
+          }
+        : null,
     headTypes,
     floors,
     governing,
@@ -787,9 +985,23 @@ function collectChecks(design: SprinklerSystemDesign, building: DesignCheck[]): 
 export function applyFirePumpSupply(
   design: SprinklerSystemDesign,
   answers: SprinklerDesignInput['answers'],
-  availableAt: (flowGpm: number) => number
+  availableAt: (flowGpm: number) => number,
+  ratedFlowGpm?: number
 ): void {
   if (answers.supply.kind !== 'fire-pump') return
+  const rated =
+    ratedFlowGpm ??
+    Math.max(0, ...design.floors.flatMap((f) => f.remoteAreas.map((r) => r.totalDemandGpm)))
+  design.supplyCurve =
+    rated > 0
+      ? {
+          label: 'Fire pump FP-1: net pressure curve plus minimum suction pressure',
+          points: [0, 0.5, 1, 1.25, 1.5].map((f): [number, number] => [
+            f * rated,
+            availableAt(f * rated)
+          ])
+        }
+      : null
   for (const f of design.floors) {
     for (const ra of f.remoteAreas) {
       ra.availablePsi = availableAt(ra.flowAtSourceGpm + ra.hoseAllowanceGpm)

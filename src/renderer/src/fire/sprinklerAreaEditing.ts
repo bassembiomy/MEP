@@ -9,9 +9,13 @@ import {
 } from '../engine/fireProtection/sprinkler/nfpa13Sprinkler'
 import type {
   FloorPlan,
+  ObstructionLayerMapping,
+  ObstructionKind,
+  ObstructionResult,
   SprinklerAnswers,
   SprinklerFloorInput,
   SprinklerHeadSpec,
+  SprinklerObstruction,
   SprinklerRoomInput,
   SprinklerZoneInput
 } from '../engine/fireProtection/sprinkler/sprinklerTypes'
@@ -247,4 +251,122 @@ export function setRoomsPatch(
   patch: Partial<SprinklerRoomInput>
 ): SprinklerRoomInput[] {
   return rooms.map((r) => (ids.has(r.id) ? { ...r, ...patch } : r))
+}
+
+// ─────────────────────────── obstructions (NFPA 13 §10.2.7) ───────────────────────────
+
+export const OBSTRUCTION_KIND_OPTIONS: { value: ObstructionKind; label: string }[] = [
+  { value: 'beam', label: 'Beam' },
+  { value: 'duct', label: 'Duct' },
+  { value: 'cable-tray', label: 'Cable tray' },
+  { value: 'pipe', label: 'Pipe' },
+  { value: 'column', label: 'Column' },
+  { value: 'light', label: 'Light fixture' },
+  { value: 'other', label: 'Other' }
+]
+
+export const OBSTRUCTION_KIND_LABEL: Record<ObstructionKind, string> = Object.fromEntries(
+  OBSTRUCTION_KIND_OPTIONS.map((o) => [o.value, o.label])
+) as Record<ObstructionKind, string>
+
+export const OBSTRUCTION_RULE_LABEL: Record<ObstructionResult['rule'], string> = {
+  beam: 'Beam rule',
+  'three-times': 'Three-times rule',
+  wide: 'Wide - sprinklers below',
+  wall: 'Wall (bays)'
+}
+
+/** Default bottom of an obstruction below the ceiling, mm (a column reaches the floor below the ceiling). */
+export function defaultObstructionDepthMm(kind: ObstructionKind, ceilingHeightM: number): number {
+  switch (kind) {
+    case 'beam':
+      return 400
+    case 'duct':
+      return 500
+    case 'cable-tray':
+      return 300
+    case 'pipe':
+      return 200
+    case 'column':
+      return Math.round(Math.max(ceilingHeightM, 0.1) * 1000)
+    case 'light':
+      return 150
+    default:
+      return 300
+  }
+}
+
+export function defaultLayerMapping(
+  layer: string,
+  ceilingHeightM: number
+): ObstructionLayerMapping {
+  const n = layer.toLowerCase()
+  const kind: ObstructionKind = /beam|joist|girder/.test(n)
+    ? 'beam'
+    : /duct|hvac/.test(n)
+      ? 'duct'
+      : /tray|cable/.test(n)
+        ? 'cable-tray'
+        : /pipe/.test(n)
+          ? 'pipe'
+          : /col/.test(n)
+            ? 'column'
+            : /light|lamp|lum/.test(n)
+              ? 'light'
+              : 'beam'
+  return { layer, kind, bottomBelowCeilingMm: defaultObstructionDepthMm(kind, ceilingHeightM) }
+}
+
+export function nextObstructionId(obstructions: SprinklerObstruction[]): string {
+  const ids = new Set(obstructions.map((o) => o.id))
+  let n = 1
+  while (ids.has(`OB${n}`)) n++
+  return `OB${n}`
+}
+
+export function rectPolygon(a: Pt, b: Pt): Pt[] {
+  const x1 = Math.min(a[0], b[0])
+  const x2 = Math.max(a[0], b[0])
+  const y1 = Math.min(a[1], b[1])
+  const y2 = Math.max(a[1], b[1])
+  return [
+    [x1, y1],
+    [x2, y1],
+    [x2, y2],
+    [x1, y2]
+  ]
+}
+
+export function polygonBounds(p: Pt[]): { minX: number; minY: number; maxX: number; maxY: number } {
+  const xs = p.map((q) => q[0])
+  const ys = p.map((q) => q[1])
+  return {
+    minX: Math.min(...xs),
+    minY: Math.min(...ys),
+    maxX: Math.max(...xs),
+    maxY: Math.max(...ys)
+  }
+}
+
+/** Smaller x larger plan dimension of the footprint, mm. */
+export function obstructionSizeMm(o: SprinklerObstruction): [number, number] {
+  const b = polygonBounds(o.polygon)
+  const w = b.maxX - b.minX
+  const h = b.maxY - b.minY
+  return [Math.min(w, h), Math.max(w, h)]
+}
+
+export function makeDrawnObstruction(
+  polygon: Pt[],
+  existing: SprinklerObstruction[],
+  kind: ObstructionKind,
+  bottomBelowCeilingMm: number
+): SprinklerObstruction {
+  return {
+    id: nextObstructionId(existing),
+    kind,
+    polygon: polygon.map(([x, y]) => [x, y] as Pt),
+    bottomBelowCeilingMm,
+    source: 'drawn'
+  }
 }

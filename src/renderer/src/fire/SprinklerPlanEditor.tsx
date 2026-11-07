@@ -4,9 +4,20 @@
  * Wheel = zoom, drag = pan. Geometry in mm (+y up); the SVG flips y for display.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Hand, Maximize, MousePointer2, PenLine, Trash2, ZoomIn, ZoomOut } from 'lucide-react'
+import {
+  BoxSelect,
+  Hand,
+  Maximize,
+  MousePointer2,
+  PenLine,
+  Trash2,
+  ZoomIn,
+  ZoomOut
+} from 'lucide-react'
 import type {
   FloorPlan,
+  ObstructionResult,
+  SprinklerObstruction,
   SprinklerRoomInput,
   SprinklerZoneInput
 } from '../engine/fireProtection/sprinkler/sprinklerTypes'
@@ -16,7 +27,9 @@ import {
   buildVertexIndex,
   pointInPolygon,
   polygonAreaMm2,
+  polygonBounds,
   polygonCentroid,
+  rectPolygon,
   snapPoint,
   zoneColor,
   zoneIdOf
@@ -24,7 +37,7 @@ import {
 
 type Pt = [number, number]
 type View = { x: number; y: number; w: number; h: number }
-export type PlanTool = 'select' | 'draw' | 'zcv'
+export type PlanTool = 'select' | 'draw' | 'zcv' | 'obstruction'
 
 const Underlay = React.memo(function Underlay({ d }: { d: string }) {
   if (!d) return null
@@ -55,6 +68,43 @@ const AreaShape = React.memo(function AreaShape({
   )
 })
 
+/** Hatched grey obstruction footprint with its (optional) dashed clearance zone. */
+const ObstructionShape = React.memo(function ObstructionShape({
+  ob,
+  selected,
+  clearance
+}: {
+  ob: SprinklerObstruction
+  selected: boolean
+  clearance: number
+}) {
+  const b = polygonBounds(ob.polygon)
+  return (
+    <g>
+      {clearance > 0 && (
+        <rect
+          x={b.minX - clearance}
+          y={b.minY - clearance}
+          width={b.maxX - b.minX + 2 * clearance}
+          height={b.maxY - b.minY + 2 * clearance}
+          fill="none"
+          stroke="#f59e0b"
+          strokeWidth={1.2}
+          strokeDasharray="6 4"
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
+      <path
+        d={polyD(ob.polygon, true)}
+        fill="url(#obs-hatch)"
+        stroke={selected ? '#ffffff' : '#a3a3a3'}
+        strokeWidth={selected ? 2.5 : 1.2}
+        vectorEffect="non-scaling-stroke"
+      />
+    </g>
+  )
+})
+
 const isTyping = (t: EventTarget | null): boolean => {
   const el = t as HTMLElement | null
   return !!el && (/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName) || el.isContentEditable)
@@ -72,6 +122,13 @@ export const SprinklerPlanEditor: React.FC<{
   onCreateArea: (polygon: Pt[]) => void
   onPlaceZcv: (x: number, y: number) => void
   onDeleteSelected: () => void
+  obstructions?: SprinklerObstruction[]
+  selectedObstruction?: string | null
+  onSelectObstruction?: (id: string | null) => void
+  onCreateObstruction?: (polygon: Pt[]) => void
+  onDeleteObstruction?: (id: string) => void
+  /** Result obstructions (clearance zones are drawn when present). */
+  obstructionResults?: ObstructionResult[]
   className?: string
 }> = ({
   plan,
@@ -85,6 +142,12 @@ export const SprinklerPlanEditor: React.FC<{
   onCreateArea,
   onPlaceZcv,
   onDeleteSelected,
+  obstructions = [],
+  selectedObstruction = null,
+  onSelectObstruction,
+  onCreateObstruction,
+  onDeleteObstruction,
+  obstructionResults,
   className
 }) => {
   const svgRef = useRef<SVGSVGElement>(null)
@@ -143,7 +206,15 @@ export const SprinklerPlanEditor: React.FC<{
     sy: number
     vb: View
     moved: boolean
+    rect?: Pt
   } | null>(null)
+  const [rectEnd, setRectEnd] = useState<{ a: Pt; b: Pt } | null>(null)
+  const clearances = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const r of obstructionResults ?? [])
+      if (Number.isFinite(r.requiredClearanceMm)) m.set(r.id, r.requiredClearanceMm)
+    return m
+  }, [obstructionResults])
 
   const toWorld = useCallback((cx: number, cy: number): Pt | null => {
     const svg = svgRef.current
@@ -211,26 +282,56 @@ export const SprinklerPlanEditor: React.FC<{
         setDraft(draft.slice(0, -1))
       } else if (e.key === 'Delete' && draft.length === 0 && selected.length > 0) {
         onDeleteSelected()
+      } else if (e.key === 'Delete' && selectedObstruction && onDeleteObstruction) {
+        onDeleteObstruction(selectedObstruction)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [draft, tool, selected, setDraft, onToolChange, onSelect, onDeleteSelected])
+  }, [
+    draft,
+    tool,
+    selected,
+    selectedObstruction,
+    setDraft,
+    onToolChange,
+    onSelect,
+    onDeleteSelected,
+    onDeleteObstruction
+  ])
 
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>): void => {
     if (e.button !== 0 && e.button !== 1) return
     e.currentTarget.setPointerCapture(e.pointerId)
+    let rect: Pt | undefined
+    if (tool === 'obstruction' && e.button === 0) {
+      const w = toWorld(e.clientX, e.clientY)
+      if (w) rect = snapPoint(vIndex, w[0], w[1], null, false).p
+    }
     drag.current = {
       id: e.pointerId,
       sx: e.clientX,
       sy: e.clientY,
       vb: vbRef.current,
-      moved: false
+      moved: false,
+      rect
     }
   }
 
   const onPointerMove = (e: React.PointerEvent<SVGSVGElement>): void => {
     const d = drag.current
+    if (d && d.id === e.pointerId && d.rect) {
+      const w = toWorld(e.clientX, e.clientY)
+      if (w) {
+        const s = snapPoint(vIndex, w[0], w[1], null, false)
+        setCursor(s)
+        if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 4) {
+          d.moved = true
+          setRectEnd({ a: d.rect, b: s.p })
+        }
+      }
+      return
+    }
     if (d && d.id === e.pointerId) {
       const dx = e.clientX - d.sx
       const dy = e.clientY - d.sy
@@ -258,10 +359,37 @@ export const SprinklerPlanEditor: React.FC<{
     const d = drag.current
     drag.current = null
     setPanning(false)
+    if (d?.rect) {
+      const end = rectEnd
+      setRectEnd(null)
+      if (end && onCreateObstruction) {
+        const poly = rectPolygon(end.a, end.b)
+        if (poly[2][0] - poly[0][0] >= 50 && poly[2][1] - poly[0][1] >= 50)
+          onCreateObstruction(poly)
+      }
+      return
+    }
     if (!d || d.moved || e.button !== 0) return
     const w = toWorld(e.clientX, e.clientY)
     if (!w) return
     if (tool === 'select') {
+      // obstructions sit on top of areas
+      let ob: SprinklerObstruction | null = null
+      let obBest = Infinity
+      for (const o of obstructions) {
+        if (!pointInPolygon(w[0], w[1], o.polygon)) continue
+        const a = polygonAreaMm2(o.polygon)
+        if (a < obBest) {
+          obBest = a
+          ob = o
+        }
+      }
+      if (ob) {
+        onSelect([])
+        onSelectObstruction?.(ob.id)
+        return
+      }
+      onSelectObstruction?.(null)
       // innermost (smallest) area under the cursor
       let hit: SprinklerRoomInput | null = null
       let best = Infinity
@@ -312,7 +440,10 @@ export const SprinklerPlanEditor: React.FC<{
   const tools: { id: PlanTool; label: string; icon: React.ReactNode }[] = [
     { id: 'select', label: 'Select', icon: <MousePointer2 size={13} /> },
     { id: 'draw', label: 'Draw area', icon: <PenLine size={13} /> },
-    { id: 'zcv', label: 'Place zone control valve', icon: <Hand size={13} /> }
+    { id: 'zcv', label: 'Place zone control valve', icon: <Hand size={13} /> },
+    ...(onCreateObstruction
+      ? [{ id: 'obstruction' as const, label: 'Draw obstruction', icon: <BoxSelect size={13} /> }]
+      : [])
   ]
   const tbtn = (active: boolean): string =>
     `flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer border ${active ? 'bg-red-600 text-white border-red-600' : 'bg-neutral-900 text-neutral-300 border-neutral-800 hover:bg-neutral-850'}`
@@ -323,7 +454,9 @@ export const SprinklerPlanEditor: React.FC<{
         : `${draft.length} point${draft.length > 1 ? 's' : ''} - click the first point or double-click to close, Backspace = undo point, Esc = cancel.`
       : tool === 'zcv'
         ? `Click the plan to place the zone control valve of ${activeZoneId}.`
-        : 'Click an area to select it (Shift = add to selection, Delete = remove). Wheel = zoom, drag = pan.'
+        : tool === 'obstruction'
+          ? 'Drag a rectangle for the obstruction (snaps like the area tool); set its kind and depth in the obstruction panel.'
+          : 'Click an area to select it (Shift = add to selection, Delete = remove). Wheel = zoom, drag = pan.'
   const cursorCls = panning
     ? 'cursor-grabbing'
     : tool === 'select'
@@ -346,8 +479,12 @@ export const SprinklerPlanEditor: React.FC<{
         ))}
         <button
           className={`${tbtn(false)} disabled:opacity-40`}
-          disabled={selected.length === 0}
-          onClick={onDeleteSelected}
+          disabled={selected.length === 0 && !selectedObstruction}
+          onClick={() =>
+            selected.length === 0 && selectedObstruction
+              ? onDeleteObstruction?.(selectedObstruction)
+              : onDeleteSelected()
+          }
         >
           <Trash2 size={13} /> Delete
         </button>
@@ -376,6 +513,18 @@ export const SprinklerPlanEditor: React.FC<{
         onPointerLeave={() => setCursor(null)}
         onDoubleClick={onDoubleClick}
       >
+        <defs>
+          <pattern
+            id="obs-hatch"
+            width={unit * 1.1}
+            height={unit * 1.1}
+            patternUnits="userSpaceOnUse"
+            patternTransform="rotate(45)"
+          >
+            <rect width={unit * 1.1} height={unit * 1.1} fill="#404040" fillOpacity={0.55} />
+            <line x1={0} y1={0} x2={0} y2={unit * 1.1} stroke="#b4b4b4" strokeWidth={unit * 0.25} />
+          </pattern>
+        </defs>
         <g transform="scale(1,-1)">
           <Underlay d={under} />
           {rooms.map((r) => (
@@ -386,6 +535,24 @@ export const SprinklerPlanEditor: React.FC<{
               selected={selSet.has(r.id)}
             />
           ))}
+          {obstructions.map((o) => (
+            <ObstructionShape
+              key={o.id}
+              ob={o}
+              selected={o.id === selectedObstruction}
+              clearance={clearances.get(o.id) ?? 0}
+            />
+          ))}
+          {rectEnd && (
+            <path
+              d={polyD(rectPolygon(rectEnd.a, rectEnd.b), true)}
+              fill="url(#obs-hatch)"
+              stroke="#fafafa"
+              strokeWidth={1.5}
+              strokeDasharray="5 3"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
           {rooms
             .filter((r) => selSet.has(r.id))
             .flatMap((r) =>
@@ -485,6 +652,27 @@ export const SprinklerPlanEditor: React.FC<{
               </text>
             </g>
           ))}
+        {obstructions.map((o) => {
+          const b = polygonBounds(o.polygon)
+          return (
+            <text
+              key={o.id}
+              x={(b.minX + b.maxX) / 2}
+              y={-(b.minY + b.maxY) / 2}
+              fontSize={unit * 1.3}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              fontWeight={700}
+              fill="#fafafa"
+              stroke="#0a0a0a"
+              strokeWidth={unit * 0.28}
+              paintOrder="stroke"
+              style={{ pointerEvents: 'none' }}
+            >
+              {o.id}
+            </text>
+          )
+        })}
         {zones.map((z) => (
           <text
             key={z.id}
