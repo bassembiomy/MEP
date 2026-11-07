@@ -7,11 +7,28 @@ import type { Co2DeviceKind } from '../co2/co2Types'
 import type { FireDesignResult } from '../fpTypes'
 import { DrawingBuilder, FP_LAYERS } from './drawingBuilder'
 import type { Drawing, LayerDef, Linetype, SheetInfo } from './drawingTypes'
-import { type Box, type Ctx, type Placer, type Pt, PX, PY, autoCols, drawTable, measureTable, textBox } from './sheetKit'
+import {
+  type Box,
+  type Ctx,
+  type Placer,
+  type Pt,
+  PX,
+  PY,
+  autoCols,
+  drawTable,
+  measureTable,
+  textBox
+} from './sheetKit'
 import { archLayerName } from './sprinklerSheetKit'
 import { titleBlock } from './symbols'
 
-const L = (name: string, color: number, linetype: Linetype, lineweightMm: number, description: string): LayerDef => ({
+const L = (
+  name: string,
+  color: number,
+  linetype: Linetype,
+  lineweightMm: number,
+  description: string
+): LayerDef => ({
   name,
   color,
   linetype,
@@ -42,7 +59,8 @@ export const CO2_LAYERS: LayerDef[] = [
   L('CO2-HIDN', 8, 'HIDDEN', 0.18, 'Hidden / limits')
 ]
 
-const archLayerDef = (name: string): LayerDef => L(name, 8, 'CONTINUOUS', 0.13, 'Architectural underlay (client plan)')
+const archLayerDef = (name: string): LayerDef =>
+  L(name, 8, 'CONTINUOUS', 0.13, 'Architectural underlay (client plan)')
 
 export function newCo2Builder(title: string, archLayers: string[]): DrawingBuilder {
   const arch = [...new Set(archLayers.map(archLayerName))].map(archLayerDef)
@@ -141,12 +159,34 @@ export const DEVICE_LABEL: Record<Co2DeviceKind, string> = {
 const DEVICE_LAYER = 'CO2-DEVICE'
 
 /** Device symbol at (x, y) with base radius r (model mm). Every kind has its own geometry. */
-export function deviceSymbol(b: DrawingBuilder, kind: Co2DeviceKind, x: number, y: number, r: number): void {
+export function deviceSymbol(
+  b: DrawingBuilder,
+  kind: Co2DeviceKind,
+  x: number,
+  y: number,
+  r: number
+): void {
   const T = (t: string, h: number, dy = 0): void =>
     b.text(DEVICE_LAYER, x, y + dy, h / b.scale, t, { align: 'center', vAlign: 'middle' })
   const bow = (cy: number, hw: number, hh: number): void => {
-    b.polyline(DEVICE_LAYER, [[x - hw, cy - hh], [x - hw, cy + hh], [x, cy]], true)
-    b.polyline(DEVICE_LAYER, [[x + hw, cy - hh], [x + hw, cy + hh], [x, cy]], true)
+    b.polyline(
+      DEVICE_LAYER,
+      [
+        [x - hw, cy - hh],
+        [x - hw, cy + hh],
+        [x, cy]
+      ],
+      true
+    )
+    b.polyline(
+      DEVICE_LAYER,
+      [
+        [x + hw, cy - hh],
+        [x + hw, cy + hh],
+        [x, cy]
+      ],
+      true
+    )
   }
   switch (kind) {
     case 'smoke-detector':
@@ -163,26 +203,49 @@ export function deviceSymbol(b: DrawingBuilder, kind: Co2DeviceKind, x: number, 
       break
     case 'strobe-outside': {
       const q = 1.3 * r
-      b.polyline(DEVICE_LAYER, [[x, y - q], [x + q, y], [x, y + q], [x - q, y]], true)
+      b.polyline(
+        DEVICE_LAYER,
+        [
+          [x, y - q],
+          [x + q, y],
+          [x, y + q],
+          [x - q, y]
+        ],
+        true
+      )
       T('ST', 0.85 * r)
       break
     }
     case 'manual-release': {
       const q = 1.15 * r
       const pts: Pt[] = []
-      for (let k = 0; k < 6; k++) pts.push([x + q * Math.cos((k * Math.PI) / 3), y + q * Math.sin((k * Math.PI) / 3)])
+      for (let k = 0; k < 6; k++)
+        pts.push([x + q * Math.cos((k * Math.PI) / 3), y + q * Math.sin((k * Math.PI) / 3)])
       b.polyline(DEVICE_LAYER, pts, true)
       T('MR', 0.9 * r)
       break
     }
     case 'warning-sign':
-      b.polyline(DEVICE_LAYER, [[x - 1.25 * r, y - 0.85 * r], [x + 1.25 * r, y - 0.85 * r], [x, y + 1.25 * r]], true)
+      b.polyline(
+        DEVICE_LAYER,
+        [
+          [x - 1.25 * r, y - 0.85 * r],
+          [x + 1.25 * r, y - 0.85 * r],
+          [x, y + 1.25 * r]
+        ],
+        true
+      )
       T('!', 1.15 * r, -0.2 * r)
       break
     case 'lockout-valve':
       bow(y, 1.1 * r, 0.65 * r)
       b.line(DEVICE_LAYER, x, y, x, y + 0.9 * r)
-      b.solid(DEVICE_LAYER, [[x - 0.45 * r, y + 0.9 * r], [x + 0.45 * r, y + 0.9 * r], [x + 0.45 * r, y + 1.5 * r], [x - 0.45 * r, y + 1.5 * r]])
+      b.solid(DEVICE_LAYER, [
+        [x - 0.45 * r, y + 0.9 * r],
+        [x + 0.45 * r, y + 0.9 * r],
+        [x + 0.45 * r, y + 1.5 * r],
+        [x - 0.45 * r, y + 1.5 * r]
+      ])
       break
     case 'selector-valve':
       bow(y, 1.1 * r, 0.65 * r)
@@ -192,11 +255,15 @@ export function deviceSymbol(b: DrawingBuilder, kind: Co2DeviceKind, x: number, 
     case 'pressure-switch':
       b.circle(DEVICE_LAYER, x, y + 0.25 * r, 0.95 * r)
       b.line(DEVICE_LAYER, x, y - 0.7 * r, x, y - 1.3 * r)
-      b.text(DEVICE_LAYER, x, y + 0.25 * r, (0.8 * r) / b.scale, 'PS', { align: 'center', vAlign: 'middle' })
+      b.text(DEVICE_LAYER, x, y + 0.25 * r, (0.8 * r) / b.scale, 'PS', {
+        align: 'center',
+        vAlign: 'middle'
+      })
       break
     case 'pressure-relief-vent':
       b.rect(DEVICE_LAYER, x - 1.15 * r, y - 0.8 * r, 2.3 * r, 1.6 * r)
-      for (const k of [-0.4, 0, 0.4]) b.line(DEVICE_LAYER, x - 0.9 * r, y + k * r * 1.1, x + 0.9 * r, y + k * r * 1.1)
+      for (const k of [-0.4, 0, 0.4])
+        b.line(DEVICE_LAYER, x - 0.9 * r, y + k * r * 1.1, x + 0.9 * r, y + k * r * 1.1)
       break
     case 'control-panel':
       b.rect(DEVICE_LAYER, x - 1.35 * r, y - 0.95 * r, 2.7 * r, 1.9 * r)
@@ -212,7 +279,13 @@ export function nozzleSymbol(b: DrawingBuilder, x: number, y: number, r: number)
   b.circle(layer, x, y, r)
   b.circle(layer, x, y, 0.4 * r)
   const k = Math.SQRT1_2
-  for (const [ux, uy] of [[k, k], [-k, k], [-k, -k], [k, -k]]) b.line(layer, x + ux * r, y + uy * r, x + ux * 1.7 * r, y + uy * 1.7 * r)
+  for (const [ux, uy] of [
+    [k, k],
+    [-k, k],
+    [-k, -k],
+    [k, -k]
+  ])
+    b.line(layer, x + ux * r, y + uy * r, x + ux * 1.7 * r, y + uy * 1.7 * r)
 }
 
 // ─────────────────────────── geometry ───────────────────────────
@@ -282,7 +355,13 @@ export function hatchPolygon(b: DrawingBuilder, layer: string, poly: Pt[], step:
 }
 
 /** Soft collision boxes along a polyline (labels avoid lying on pipes / walls). */
-export function addSoftAlong(P: Placer, pts: Pt[], closed: boolean, half: number, pitch: number): void {
+export function addSoftAlong(
+  P: Placer,
+  pts: Pt[],
+  closed: boolean,
+  half: number,
+  pitch: number
+): void {
   const n = closed ? pts.length : pts.length - 1
   for (let i = 0; i < n; i++) {
     const a = pts[i]
@@ -379,7 +458,14 @@ export interface LegendItem {
 }
 
 /** Two-column legend box (layer CO2-LEGEND). Returns the paper height. */
-export function drawLegend(c: Ctx, xP: number, yTopP: number, w: number, items: LegendItem[], title = 'LEGEND'): number {
+export function drawLegend(
+  c: Ctx,
+  xP: number,
+  yTopP: number,
+  w: number,
+  items: LegendItem[],
+  title = 'LEGEND'
+): number {
   const { b, sheet } = c
   const s = sheet.scale
   const rowH = 6

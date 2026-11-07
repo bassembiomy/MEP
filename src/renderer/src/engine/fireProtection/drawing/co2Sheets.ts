@@ -31,7 +31,6 @@ import {
   kgOf,
   lbKg,
   nozzleSymbol,
-  polyBBox,
   polyCentroid,
   ringCands,
   tryText,
@@ -94,7 +93,9 @@ function bankLayout(st: Co2StorageDesign): BankLayout {
         `TANK ${st.tankTons ?? 0} TON = ${lbKg(st.installedLb)} (MAIN + RESERVE)`
       ]
   if (hp && st.reserveCylinders > 0)
-    lines.push(`RESERVE ${st.reserveCylinders} CYLINDERS x ${f0(st.cylinderLb)} LB = ${lbKg(st.reserveCylinders * st.cylinderLb)}`)
+    lines.push(
+      `RESERVE ${st.reserveCylinders} CYLINDERS x ${f0(st.cylinderLb)} LB = ${lbKg(st.reserveCylinders * st.cylinderLb)}`
+    )
   if (!hp) lines.push(`MAIN ${lbKg(st.mainLb)} + RESERVE ${lbKg(st.reserveLb)}`)
   const pitch = 3.8
   const perRow = Math.max(1, Math.min(16, Math.max(st.mainCylinders, st.reserveCylinders)))
@@ -115,7 +116,9 @@ function bankLayout(st: Co2StorageDesign): BankLayout {
       const x0 = x - (wP * S) / 2
       b.rect('CO2-STORAGE', x0, yTop - hP * S, wP * S, hP * S)
       lines.forEach((t, i) =>
-        b.text('CO2-ANNO', x0 + 2 * S, yTop - (1.5 + lineH * (i + 0.5)) * S, BANK_TH, t, { vAlign: 'middle' })
+        b.text('CO2-ANNO', x0 + 2 * S, yTop - (1.5 + lineH * (i + 0.5)) * S, BANK_TH, t, {
+          vAlign: 'middle'
+        })
       )
       const yG = yTop - (2 + lines.length * lineH) * S
       b.line('CO2-STORAGE', x0, yG, x0 + wP * S, yG)
@@ -123,7 +126,9 @@ function bankLayout(st: Co2StorageDesign): BankLayout {
         let row = 0
         const draw = (n: number, label: string): void => {
           if (n <= 0) return
-          b.text('CO2-ANNO', x0 + 2 * S, yG - (row * pitch + pitch / 2 + 0.5) * S, 1.6, label, { vAlign: 'middle' })
+          b.text('CO2-ANNO', x0 + 2 * S, yG - (row * pitch + pitch / 2 + 0.5) * S, 1.6, label, {
+            vAlign: 'middle'
+          })
           for (let k = 0; k < n; k++) {
             const rr = Math.floor(k / perRow)
             const col = k % perRow
@@ -148,7 +153,10 @@ function bankLayout(st: Co2StorageDesign): BankLayout {
         b.arc('CO2-STORAGE', cx + hw, cy, r, 270, 90)
         b.circle('CO2-STORAGE', cx + hw + 9 * S, cy, 2.5 * S)
         b.line('CO2-STORAGE', cx + hw + r, cy, cx + hw + 6.5 * S, cy)
-        b.text('CO2-STORAGE', cx + hw + 9 * S, cy, 1.5, 'REF', { align: 'center', vAlign: 'middle' })
+        b.text('CO2-STORAGE', cx + hw + 9 * S, cy, 1.5, 'REF', {
+          align: 'center',
+          vAlign: 'middle'
+        })
         b.line('CO2-STORAGE', cx - 8 * S, cy - r, cx - 8 * S, cy - r - 1.5 * S)
         b.line('CO2-STORAGE', cx + 8 * S, cy - r, cx + 8 * S, cy - r - 1.5 * S)
       }
@@ -216,10 +224,11 @@ function floorNotes(c: Ctx, d: Co2FloorData): string[] {
     'WORKING PLANS FOR APPROVAL BY THE AUTHORITY HAVING JURISDICTION (AHJ) BEFORE FABRICATION. INSTALL TO NFPA 12-2022 (CARBON DIOXIDE EXTINGUISHING SYSTEMS), NFPA 72 AND NFPA 70 AS ADOPTED BY THE AHJ.',
     CO2_PRELIMINARY_NOTE.toUpperCase().replace('—', '-'),
     `TOTAL FLOODING OF EACH ENCLOSURE: QUANTITY, DISCHARGE RATE AND TIME AS IN THE ENCLOSURE BOXES AND CO-601 (NFPA 12-2022 CH. 5). ${hp ? `CYLINDERS ARE ${f0(c.r.co2!.storage.cylinderLb)} LB NET, ONE STORAGE SERVES ALL ENCLOSURES (SIZED FOR THE LARGEST).` : 'ONE LOW-PRESSURE TANK SERVES ALL ENCLOSURES (SIZED FOR THE LARGEST).'}`,
-    'NOZZLES: LISTED, TAGGED WITH THE ORIFICE CODE (DIAMETER IN 1/32 IN) SHOWN. INSTALL AT THE LOCATIONS AND HEIGHT GIVEN BY THE MANUFACTURER\'S LISTING; NOZZLE FLOW AND PRESSURE ARE THE CALCULATED ONES (CO-601).',
+    "NOZZLES: LISTED, TAGGED WITH THE ORIFICE CODE (DIAMETER IN 1/32 IN) SHOWN. INSTALL AT THE LOCATIONS AND HEIGHT GIVEN BY THE MANUFACTURER'S LISTING; NOZZLE FLOW AND PRESSURE ARE THE CALCULATED ONES (CO-601).",
     `PRE-DISCHARGE ALARM: HORN/STROBE INSIDE EACH ENCLOSURE AND STROBE OUTSIDE EACH ENTRANCE; PRESSURE-OPERATED TIME DELAY ${a.timeDelayS} S (NOT LESS THAN 20 S WHERE PERSONNEL MAY BE PRESENT). SUPERVISED LOCKOUT VALVE ON THE MAIN DISCHARGE PIPE.`,
     `DETECTION AND RELEASE: ${CO2_DETECTION_TEXT[a.detection]}. MANUAL RELEASE OUTSIDE EACH ENTRANCE AND MECHANICAL MANUAL RELEASE AT THE STORAGE.`,
-    'WARNING SIGNS INSIDE, AT EVERY ENTRANCE AND AT THE STORAGE - WORDING ON CO-501. ' + (a.odorizer ? 'ODORIZER ON THE MAIN DISCHARGE PIPE.' : 'NO ODORIZER.'),
+    'WARNING SIGNS INSIDE, AT EVERY ENTRANCE AND AT THE STORAGE - WORDING ON CO-501. ' +
+      (a.odorizer ? 'ODORIZER ON THE MAIN DISCHARGE PIPE.' : 'NO ODORIZER.'),
     `VENTILATION: ${anyVent ? 'VENTILATION THAT CANNOT BE SHUT DOWN IS COMPENSATED IN THE QUANTITY (CO-601); OTHERWISE' : ''} VENTILATION AND DAMPERS ARE SHUT DOWN AUTOMATICALLY BEFORE DISCHARGE. PRESSURE RELIEF VENTS AS IN THE SCHEDULE; VENT TO A SAFE LOCATION. VENTILATE AND TEST THE ATMOSPHERE BEFORE RE-ENTRY.`,
     'PIPING: SEAMLESS STEEL, SCHEDULE AS LABELLED (HIGH-PRESSURE SCH 80 FROM 1-1/4" UP, SCH 40 BELOW; NFPA 12-2022 SEC. 4.8). SIZES AND LENGTHS ARE THE CALCULATED ONES; NO CHANGE WITHOUT A NEW CALCULATION.',
     'GREY ARCHITECTURAL UNDERLAY (LAYERS A-*) IS THE CLIENT FLOOR PLAN, FOR REFERENCE ONLY; ITS TEXT IS NOT SHOWN. CONTRACTOR TO FIELD-VERIFY DIMENSIONS, CEILING HEIGHTS, OPENINGS AND COORDINATE WITH OTHER TRADES. DIMENSIONS IN MM.'
@@ -236,7 +245,11 @@ interface QtyLine {
   h: number
 }
 
-function qtyLines(e: Co2EnclosureResult, en: Co2EnclosureInput | undefined, st: Co2StorageDesign): QtyLine[] {
+function qtyLines(
+  e: Co2EnclosureResult,
+  en: Co2EnclosureInput | undefined,
+  st: Co2StorageDesign
+): QtyLine[] {
   const q = e.quantity
   const hz = e.hazardLabel.toUpperCase().replace('—', '-')
   const hzLines: string[] = []
@@ -253,10 +266,16 @@ function qtyLines(e: Co2EnclosureResult, en: Co2EnclosureInput | undefined, st: 
   out.push({ t: 'CARBON DIOXIDE TOTAL FLOODING', h: 1.9 })
   out.push({ t: `V = ${fx(q.volumeFt3 / FT3_PER_M3)} M3 (${f0(q.volumeFt3)} FT3)`, h: 1.9 })
   if (en) out.push({ t: `H = ${fx(en.heightM, 1)} M   AREA ${fx(e.areaM2, 0)} M2`, h: 1.9 })
-  out.push({ t: `C = ${f0(q.designConcentrationPct)} %   FLOODING FACTOR ${fx(q.floodingFactorFt3PerLb, 1)} FT3/LB`, h: 1.9 })
+  out.push({
+    t: `C = ${f0(q.designConcentrationPct)} %   FLOODING FACTOR ${fx(q.floodingFactorFt3PerLb, 1)} FT3/LB`,
+    h: 1.9
+  })
   out.push({ t: `TOTAL ${lbKg(q.totalLb)}`, h: 2.2 })
   out.push({ t: `RATE ${f0(e.rateLbMin)} LB/MIN (${f0(kgOf(e.rateLbMin))} KG/MIN)`, h: 1.9 })
-  out.push({ t: `T = ${fx(e.dischargeTimeMin, 1)} MIN${e.soakMin > 0 ? `   SOAK ${f0(e.soakMin)} MIN` : ''}`, h: 1.9 })
+  out.push({
+    t: `T = ${fx(e.dischargeTimeMin, 1)} MIN${e.soakMin > 0 ? `   SOAK ${f0(e.soakMin)} MIN` : ''}`,
+    h: 1.9
+  })
   out.push({
     t:
       st.storage === 'high-pressure'
@@ -328,7 +347,12 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
     b.line('CO2-STORAGE', sp[0] - 1.8 * S, sp[1], sp[0] + 1.8 * S, sp[1])
     b.line('CO2-STORAGE', sp[0], sp[1] - 1.1 * S, sp[0], yTop)
     bank.draw(c, sp[0], yTop)
-    P.addHard({ x0: sp[0] - (bank.wP * S) / 2, y0: yTop - bank.hP * S, x1: sp[0] + (bank.wP * S) / 2, y1: yTop })
+    P.addHard({
+      x0: sp[0] - (bank.wP * S) / 2,
+      y0: yTop - bank.hP * S,
+      x1: sp[0] + (bank.wP * S) / 2,
+      y1: yTop
+    })
     P.addHard({ x0: sp[0] - 2 * S, y0: sp[1] - 1.5 * S, x1: sp[0] + 2 * S, y1: sp[1] + 1.5 * S })
   }
 
@@ -338,7 +362,12 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
     for (const n of e.nozzles) {
       const m = M([n.x, n.y])
       nozzleSymbol(b, m[0], m[1], rNoz)
-      P.addHard({ x0: m[0] - 1.9 * rNoz, y0: m[1] - 1.9 * rNoz, x1: m[0] + 1.9 * rNoz, y1: m[1] + 1.9 * rNoz })
+      P.addHard({
+        x0: m[0] - 1.9 * rNoz,
+        y0: m[1] - 1.9 * rNoz,
+        x1: m[0] + 1.9 * rNoz,
+        y1: m[1] + 1.9 * rNoz
+      })
     }
   }
 
@@ -369,7 +398,10 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
       let found = false
       for (const k of [1, 1.45, 1.9, 2.4, 3, 3.7, 4.5, 5.5, 6.8]) {
         for (let a = 0; a < 360 && !found; a += 30) {
-          const q: Pt = [m[0] + Math.cos((a * Math.PI) / 180) * k * 2.6 * rDev, m[1] + Math.sin((a * Math.PI) / 180) * k * 2.6 * rDev]
+          const q: Pt = [
+            m[0] + Math.cos((a * Math.PI) / 180) * k * 2.6 * rDev,
+            m[1] + Math.sin((a * Math.PI) / 180) * k * 2.6 * rDev
+          ]
           if (fits(q)) {
             pos = q
             found = true
@@ -383,7 +415,12 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
       b.line('CO2-ANNO', m[0], m[1], pos[0], pos[1])
     }
     deviceSymbol(b, dv.kind, pos[0], pos[1], rDev)
-    P.addHard({ x0: pos[0] - 1.45 * rDev, y0: pos[1] - 1.45 * rDev, x1: pos[0] + 1.45 * rDev, y1: pos[1] + 1.45 * rDev })
+    P.addHard({
+      x0: pos[0] - 1.45 * rDev,
+      y0: pos[1] - 1.45 * rDev,
+      x1: pos[0] + 1.45 * rDev,
+      y1: pos[1] + 1.45 * rDev
+    })
     devPos.set(dv.tag, pos)
   }
 
@@ -391,7 +428,8 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
 
   // ───────── enclosure quantity boxes ─────────
   const grid: Pt[] = []
-  for (let x = PA.x0 + 2; x < PA.x1 - 2; x += 3) for (let y = PA.y0 + 2; y < PA.y1 - 2; y += 3) grid.push([PX(c, x), PY(c, y)])
+  for (let x = PA.x0 + 2; x < PA.x1 - 2; x += 3)
+    for (let y = PA.y0 + 2; y < PA.y1 - 2; y += 3) grid.push([PX(c, x), PY(c, y)])
   for (const e of fd.enclosures) {
     const en = fi.enclosures.find((x) => x.id === e.enclosureId)
     const poly = encPoly.get(e.enclosureId)
@@ -403,14 +441,28 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
     const ctr = polyCentroid(poly)
     const anchor: Pt = pointInPolygon(ctr, poly) ? ctr : poly[0]
     const cands = [...grid]
-      .map((q) => ({ q, d: Math.hypot(q[0] - anchor[0], q[1] - anchor[1]), inside: pointInPolygon(q, poly) }))
+      .map((q) => ({
+        q,
+        d: Math.hypot(q[0] - anchor[0], q[1] - anchor[1]),
+        inside: pointInPolygon(q, poly)
+      }))
       .sort((p1, p2) => (p1.inside === p2.inside ? p1.d - p2.d : p1.inside ? -1 : 1))
     const evaluate = (soft: boolean): boolean => {
       for (const { q, inside } of cands) {
-        const bx: Box = { x0: q[0] - wBox / 2, y0: q[1] - hBox / 2, x1: q[0] + wBox / 2, y1: q[1] + hBox / 2 }
+        const bx: Box = {
+          x0: q[0] - wBox / 2,
+          y0: q[1] - hBox / 2,
+          x1: q[0] + wBox / 2,
+          y1: q[1] + hBox / 2
+        }
         if (inside) {
           // keep the box wholly inside the enclosure when it claims to be "inside"
-          const corners: Pt[] = [[bx.x0, bx.y0], [bx.x1, bx.y0], [bx.x1, bx.y1], [bx.x0, bx.y1]]
+          const corners: Pt[] = [
+            [bx.x0, bx.y0],
+            [bx.x1, bx.y0],
+            [bx.x1, bx.y1],
+            [bx.x0, bx.y1]
+          ]
           if (!corners.every((k) => pointInPolygon(k, poly))) continue
         }
         if (!P.free(bx, 0.6 * S, soft)) continue
@@ -424,7 +476,12 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
           yy -= pit / 2
           if (i === 0) b.line('CO2-ANNO', bx.x0, yy + 0.2 * S, bx.x1, yy + 0.2 * S)
         })
-        const cornersInside = [[bx.x0, bx.y0], [bx.x1, bx.y0], [bx.x1, bx.y1], [bx.x0, bx.y1]].every((k) => pointInPolygon(k as Pt, poly))
+        const cornersInside = [
+          [bx.x0, bx.y0],
+          [bx.x1, bx.y0],
+          [bx.x1, bx.y1],
+          [bx.x0, bx.y1]
+        ].every((k) => pointInPolygon(k as Pt, poly))
         if (!cornersInside) {
           const e1 = nearestPointInBox(bx, anchor)
           b.line('CO2-ANNO', e1[0], e1[1], anchor[0], anchor[1])
@@ -467,10 +524,23 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
       let done = false
       for (const soft of [true, false]) {
         for (const q of cand) {
-          const bx: Box = { x0: q[0] - w / 2, y0: q[1] - hh / 2, x1: q[0] + w / 2, y1: q[1] + hh / 2 }
+          const bx: Box = {
+            x0: q[0] - w / 2,
+            y0: q[1] - hh / 2,
+            x1: q[0] + w / 2,
+            y1: q[1] + hh / 2
+          }
           if (!P.free(bx, 0.35 * S, soft)) continue
-          P.text('CO2-ANNO', q[0], q[1] + hh * 0.22, tagH, n.tag, { align: 'center', vAlign: 'middle', register: false })
-          P.text('CO2-ANNO', q[0], q[1] - hh * 0.22, tagH * 0.9, code, { align: 'center', vAlign: 'middle', register: false })
+          P.text('CO2-ANNO', q[0], q[1] + hh * 0.22, tagH, n.tag, {
+            align: 'center',
+            vAlign: 'middle',
+            register: false
+          })
+          P.text('CO2-ANNO', q[0], q[1] - hh * 0.22, tagH * 0.9, code, {
+            align: 'center',
+            vAlign: 'middle',
+            register: false
+          })
           P.addHard(bx)
           done = true
           break
@@ -485,7 +555,11 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
   for (const dv of fd.devices) {
     const pos = devPos.get(dv.tag) ?? M([dv.x, dv.y])
     const cands = ringCands(pos, S, 2.7 * rDev * 0.62 + 0.6 * S).map((q): TextCand => q)
-    if (!tryText(P, S, dv.tag, 1.9, cands, 'FP-ANNO', true) && !tryText(P, S, dv.tag, 1.9, cands, 'FP-ANNO', false)) P.tag(pos, dv.tag)
+    if (
+      !tryText(P, S, dv.tag, 1.9, cands, 'FP-ANNO', true) &&
+      !tryText(P, S, dv.tag, 1.9, cands, 'FP-ANNO', false)
+    )
+      P.tag(pos, dv.tag)
   }
 
   // ───────── pipe size labels ─────────
@@ -521,7 +595,12 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
     if (tryText(P, S, text, labelHP, cands, 'FP-ANNO', true)) continue
     if (tryText(P, S, text, labelHP, cands, 'FP-ANNO', false)) continue
     const mid: Pt = [(sa[0] + sz[0]) / 2, (sa[1] + sz[1]) / 2]
-    if (!P.callout(mid, [text], labelHP)) P.text('FP-ANNO', mid[0] + nrm[0] * off, mid[1] + nrm[1] * off, labelHP, text, { align: 'center', vAlign: 'middle', rotationDeg: ang })
+    if (!P.callout(mid, [text], labelHP))
+      P.text('FP-ANNO', mid[0] + nrm[0] * off, mid[1] + nrm[1] * off, labelHP, text, {
+        align: 'center',
+        vAlign: 'middle',
+        rotationDeg: ang
+      })
   }
 
   // ───────── sheet title and right-hand panel ─────────
@@ -531,30 +610,88 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
     26,
     570,
     `CARBON DIOXIDE TOTAL FLOODING PLAN - ${fd.floorName.toUpperCase()}`,
-    `NFPA 12-2022 - FFL ${fi.elevationM >= 0 ? '+' : '-'}${Math.abs(fi.elevationM).toFixed(3)} M - ${fd.enclosures.length} ENCLOSURES - ${nNoz} NOZZLES - SCALE 1:${S}`
+    `NFPA 12-2022 - FFL ${fi.elevationM >= 0 ? '+' : '-'}${Math.abs(fi.elevationM).toFixed(3)} M - ${fd.enclosures.length} ENCLOSURE(S) - ${nNoz} NOZZLES - SCALE 1:${S}`
   )
   let y = 582
   northArrow(b, PX(c, PANEL.x0 + 14), PY(c, y - 14))
-  b.text('FP-ANNO', PX(c, PANEL.x0 + 32), PY(c, y - 6), 3.2, fd.floorName.toUpperCase(), { vAlign: 'middle' })
-  b.text('FP-ANNO', PX(c, PANEL.x0 + 32), PY(c, y - 12), 2.4, `SCALE 1:${S} (A1)   PLAN NORTH = UP`, { vAlign: 'middle' })
-  b.text('FP-ANNO', PX(c, PANEL.x0 + 32), PY(c, y - 17.5), 2.4, `SHEET ${sheet.number}`, { vAlign: 'middle' })
+  b.text('FP-ANNO', PX(c, PANEL.x0 + 32), PY(c, y - 6), 3.2, fd.floorName.toUpperCase(), {
+    vAlign: 'middle'
+  })
+  b.text(
+    'FP-ANNO',
+    PX(c, PANEL.x0 + 32),
+    PY(c, y - 12),
+    2.4,
+    `SCALE 1:${S} (A1)   PLAN NORTH = UP`,
+    { vAlign: 'middle' }
+  )
+  b.text('FP-ANNO', PX(c, PANEL.x0 + 32), PY(c, y - 17.5), 2.4, `SHEET ${sheet.number}`, {
+    vAlign: 'middle'
+  })
   y = 562
 
   // legend
   const kinds = new Set(fd.devices.map((v) => v.kind))
   const legend: LegendItem[] = []
-  legend.push({ text: 'PROTECTED ENCLOSURE (HATCHED)', draw: (x, yy) => { b.rect('CO2-ENCL', x - 4 * S, yy - 1.8 * S, 8 * S, 3.6 * S); b.line('CO2-HTCH', x - 3 * S, yy - 1.8 * S, x + 1.2 * S, yy + 1.8 * S) } })
-  legend.push({ text: 'DISCHARGE NOZZLE (TAG + ORIFICE CODE)', draw: (x, yy) => nozzleSymbol(b, x, yy, 1.2 * S) })
-  legend.push({ text: 'CO2 PIPE (SIZE, SCH, LENGTH)', draw: (x, yy) => b.line('CO2-PIPE', x - 5 * S, yy, x + 5 * S, yy) })
-  legend.push({ text: 'CO2 CYLINDER BANK / TANK', draw: (x, yy) => { b.circle('CO2-STORAGE', x - 1.8 * S, yy, 1.35 * S); b.circle('CO2-STORAGE', x + 1.8 * S, yy, 1.35 * S) } })
-  for (const k of order) if (kinds.has(k)) legend.push({ text: DEVICE_LABEL[k], draw: (x, yy) => deviceSymbol(b, k, x, yy, 1.7 * S) })
-  legend.push({ text: 'MOVED SYMBOL - DOT = TRUE POSITION', draw: (x, yy) => { b.circle('CO2-ANNO', x - 3 * S, yy, 0.35 * S); b.line('CO2-ANNO', x - 3 * S, yy, x + 3 * S, yy) } })
-  if (d.plan) legend.push({ text: 'ARCHITECTURAL UNDERLAY (CLIENT DXF)', draw: (x, yy) => b.line(archLayerName(d.plan!.entities[0]?.layer ?? 'A-WALL'), x - 5 * S, yy, x + 5 * S, yy) })
+  legend.push({
+    text: 'PROTECTED ENCLOSURE (HATCHED)',
+    draw: (x, yy) => {
+      b.rect('CO2-ENCL', x - 4 * S, yy - 1.8 * S, 8 * S, 3.6 * S)
+      b.line('CO2-HTCH', x - 3 * S, yy - 1.8 * S, x + 1.2 * S, yy + 1.8 * S)
+    }
+  })
+  legend.push({
+    text: 'DISCHARGE NOZZLE (TAG + ORIFICE CODE)',
+    draw: (x, yy) => nozzleSymbol(b, x, yy, 1.2 * S)
+  })
+  legend.push({
+    text: 'CO2 PIPE (SIZE, SCH, LENGTH)',
+    draw: (x, yy) => b.line('CO2-PIPE', x - 5 * S, yy, x + 5 * S, yy)
+  })
+  legend.push({
+    text: 'CO2 CYLINDER BANK / TANK',
+    draw: (x, yy) => {
+      b.circle('CO2-STORAGE', x - 1.8 * S, yy, 1.35 * S)
+      b.circle('CO2-STORAGE', x + 1.8 * S, yy, 1.35 * S)
+    }
+  })
+  for (const k of order)
+    if (kinds.has(k))
+      legend.push({ text: DEVICE_LABEL[k], draw: (x, yy) => deviceSymbol(b, k, x, yy, 1.7 * S) })
+  legend.push({
+    text: 'MOVED SYMBOL - DOT = TRUE POSITION',
+    draw: (x, yy) => {
+      b.circle('CO2-ANNO', x - 3 * S, yy, 0.35 * S)
+      b.line('CO2-ANNO', x - 3 * S, yy, x + 3 * S, yy)
+    }
+  })
+  if (d.plan)
+    legend.push({
+      text: 'ARCHITECTURAL UNDERLAY (CLIENT DXF)',
+      draw: (x, yy) =>
+        b.line(archLayerName(d.plan!.entities[0]?.layer ?? 'A-WALL'), x - 5 * S, yy, x + 5 * S, yy)
+    })
   const lh = drawLegend(c, PANEL.x0, y, PANEL.x1 - PANEL.x0, legend)
   y -= lh + 3
 
   // enclosure schedule
-  const sched: string[][] = [['ENCL', 'NAME', 'FIRE', 'V M3', 'V FT3', 'C %', 'TOTAL LB', 'TOTAL KG', 'LB/MIN', 'T MIN', 'CYL', 'NOZ', 'VENT IN2']]
+  const sched: string[][] = [
+    [
+      'ENCL',
+      'NAME',
+      'FIRE',
+      'V M3',
+      'V FT3',
+      'C %',
+      'TOTAL LB',
+      'TOTAL KG',
+      'LB/MIN',
+      'T MIN',
+      'CYL',
+      'NOZ',
+      'VENT IN2'
+    ]
+  ]
   for (const e of fd.enclosures) {
     const q = e.quantity
     sched.push([
@@ -573,7 +710,16 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
       fx(e.ventAreaIn2, 1)
     ])
   }
-  const sh = fitTable(c, PANEL.x0, y, sched, 2.1, PANEL.x1 - PANEL.x0, 'ENCLOSURE SCHEDULE - CARBON DIOXIDE TOTAL FLOODING', sched[0].map((_, i) => i >= 3))
+  const sh = fitTable(
+    c,
+    PANEL.x0,
+    y,
+    sched,
+    2.1,
+    PANEL.x1 - PANEL.x0,
+    'ENCLOSURE SCHEDULE - CARBON DIOXIDE TOTAL FLOODING',
+    sched[0].map((_, i) => i >= 3)
+  )
   y -= sh.h + 3
 
   // storage summary
@@ -583,7 +729,12 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
     ['GOVERNING ENCLOSURE', st.governingEnclosureId ?? '-'],
     ['MAIN SUPPLY', lbKg(st.mainLb)],
     ['RESERVE SUPPLY', st.reserveLb > 0 ? lbKg(st.reserveLb) : 'NONE'],
-    [hp ? 'CYLINDERS MAIN + RESERVE' : 'TANK', hp ? `${st.mainCylinders} + ${st.reserveCylinders} x ${f0(st.cylinderLb)} LB` : `${st.tankTons ?? 0} TON`],
+    [
+      hp ? 'CYLINDERS MAIN + RESERVE' : 'TANK',
+      hp
+        ? `${st.mainCylinders} + ${st.reserveCylinders} x ${f0(st.cylinderLb)} LB`
+        : `${st.tankTons ?? 0} TON`
+    ],
     ['INSTALLED CO2', lbKg(st.installedLb)]
   ]
   const ss = fitTable(c, PANEL.x0, y, sum, 2.1, PANEL.x1 - PANEL.x0, 'STORAGE SUMMARY', undefined)
@@ -608,13 +759,17 @@ export function generateCo2Drawings(result: FireDesignResult): {
 } {
   const co2 = result.co2
   const cd = result.input.co2Design
-  if (!co2 || !cd) throw new Error('generateCo2Drawings: result.co2 is null (no CO2 design in the input)')
+  if (!co2 || !cd)
+    throw new Error('generateCo2Drawings: result.co2 is null (no CO2 design in the input)')
   const data: Co2FloorData[] = co2.floors.map((fd, index) => {
     const fi = cd.floors.find((x) => x.id === fd.floorId)
-    if (!fi) throw new Error(`generateCo2Drawings: floor ${fd.floorId} not found in the CO2 design input`)
+    if (!fi)
+      throw new Error(`generateCo2Drawings: floor ${fd.floorId} not found in the CO2 design input`)
     return { index, fi, fd, plan: loadFloorPlan(fi.planDxf, fi.planUnits) }
   })
-  const archLayers = [...new Set(data.flatMap((d) => (d.plan ? d.plan.layers.map((l) => l.name) : [])))]
+  const archLayers = [
+    ...new Set(data.flatMap((d) => (d.plan ? d.plan.layers.map((l) => l.name) : [])))
+  ]
   const proj = result.input.projectName
   const floorSpec = (d: Co2FloorData): SheetSpec => {
     const scale = pickCo2FloorScale(d, co2.storage)
@@ -644,10 +799,30 @@ export function generateCo2Drawings(result: FireDesignResult): {
   return {
     floors: data.map((d, i) => ({
       floorId: d.fd.floorId,
-      drawing: assembleCo2Drawing(result, `CO2 ${specs[i].number} - ${d.fd.floorName} - ${proj}`, [specs[i]], archLayers)
+      drawing: assembleCo2Drawing(
+        result,
+        `CO2 ${specs[i].number} - ${d.fd.floorName} - ${proj}`,
+        [specs[i]],
+        archLayers
+      )
     })),
-    schematic: assembleCo2Drawing(result, `CO2 CO-501 system schematic & details - ${proj}`, [schematicSpec], archLayers),
-    calculations: assembleCo2Drawing(result, `CO2 CO-601 calculations - ${proj}`, [calcSpec], archLayers),
-    combined: assembleCo2Drawing(result, `CO2 shop drawings - ${proj}`, [...specs, schematicSpec, calcSpec], archLayers)
+    schematic: assembleCo2Drawing(
+      result,
+      `CO2 CO-501 system schematic & details - ${proj}`,
+      [schematicSpec],
+      archLayers
+    ),
+    calculations: assembleCo2Drawing(
+      result,
+      `CO2 CO-601 calculations - ${proj}`,
+      [calcSpec],
+      archLayers
+    ),
+    combined: assembleCo2Drawing(
+      result,
+      `CO2 shop drawings - ${proj}`,
+      [...specs, schematicSpec, calcSpec],
+      archLayers
+    )
   }
 }
