@@ -27,7 +27,7 @@ import {
 import type { RoomHeadLayout, SidewallLayout } from './headLayout'
 import { FEED_RUN_THRESHOLD_MM, layoutFloorPiping } from './pipingLayout'
 import type { FloorPiping } from './pipingLayout'
-import { distanceToPolygonEdges } from './roomDetection'
+import { distanceToPolygonEdges, pointInPolygon } from './roomDetection'
 import { buildAccessories, buildBom, spareSprinklers } from './sprinklerAccessories'
 import { FT_PER_M, calculateFloorDemand, supplyShort, upsizeOne } from './sprinklerHydraulics'
 import type { FloorHydraulicContext, SourceContext } from './sprinklerHydraulics'
@@ -512,6 +512,7 @@ function designFloor(
   // supply: the first zone whose governing area is short of water (city supply), else the floor's governing area
   const shortZone = solutions.find((z) => z.governing && supplyShort(z.governing))
   checks.push(supplyCheck(fid, shortZone?.governing ?? gov, answers, !source))
+  checks.push(areaOverlapCheck(floor))
   checks.push(
     pipeSizingCheck(
       fid,
@@ -623,6 +624,48 @@ function designFloor(
     governing: gov,
     zones: zoneResults,
     checks
+  }
+}
+
+/** Overlap area of two polygons, m²: 250 mm grid sampling inside the bbox intersection (coarser for huge overlaps). */
+function overlapAreaM2(a: Pt[], b: Pt[]): number {
+  const bb = (p: Pt[]): number[] => [
+    Math.min(...p.map((q) => q[0])),
+    Math.min(...p.map((q) => q[1])),
+    Math.max(...p.map((q) => q[0])),
+    Math.max(...p.map((q) => q[1]))
+  ]
+  const A = bb(a)
+  const B = bb(b)
+  const x0 = Math.max(A[0], B[0])
+  const y0 = Math.max(A[1], B[1])
+  const x1 = Math.min(A[2], B[2])
+  const y1 = Math.min(A[3], B[3])
+  if (x1 <= x0 || y1 <= y0) return 0
+  const step = Math.max(250, Math.sqrt(((x1 - x0) * (y1 - y0)) / 40000))
+  let n = 0
+  for (let x = x0 + step / 2; x < x1; x += step)
+    for (let y = y0 + step / 2; y < y1; y += step)
+      if (pointInPolygon(x, y, a) && pointInPolygon(x, y, b)) n++
+  return (n * step * step) / 1e6
+}
+
+function areaOverlapCheck(floor: SprinklerFloorInput): DesignCheck {
+  const rs = floor.rooms.filter((r) => !r.omit)
+  const pairs: string[] = []
+  for (let i = 0; i < rs.length; i++)
+    for (let j = i + 1; j < rs.length; j++) {
+      const m2 = overlapAreaM2(rs[i].polygon, rs[j].polygon)
+      if (m2 > 1) pairs.push(`${rs[i].id}/${rs[j].id} ${m2.toFixed(1)} m²`)
+    }
+  return {
+    id: `spr-area-overlap:${floor.id}`,
+    title: `Overlapping protected areas — ${floor.id}`,
+    reference: 'NFPA 13-2019 Ch. 10 (one protection area per sprinkler)',
+    status: pairs.length ? 'warn' : 'pass',
+    detail: pairs.length
+      ? `Overlapping areas: ${pairs.join(', ')} — sprinklers would be duplicated; omit or delete one of them`
+      : 'No overlapping areas'
   }
 }
 
