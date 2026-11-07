@@ -36,7 +36,11 @@ export const FP_LAYERS: LayerDef[] = [
   L('FP-LEVL', 5, 'CONTINUOUS', 0.18, 'Level markers'),
   L('FP-TABL', 7, 'CONTINUOUS', 0.18, 'Schedules & tables'),
   L('FP-TBLK', 7, 'CONTINUOUS', 0.5, 'Sheet frame & title block'),
-  L('FP-ARCH', 8, 'CONTINUOUS', 0.25, 'Doors, louvers, openings')
+  L('FP-ARCH', 8, 'CONTINUOUS', 0.25, 'Doors, louvers, openings'),
+  L('FP-ZONE-1', 5, 'CONTINUOUS', 0.25, 'Standpipe pressure zone 1 (bands, labels)'),
+  L('FP-ZONE-2', 3, 'CONTINUOUS', 0.25, 'Standpipe pressure zone 2 (bands, labels)'),
+  L('FP-ZONE-3', 6, 'CONTINUOUS', 0.25, 'Standpipe pressure zone 3 (bands, labels)'),
+  L('FP-ZONE-4', 30, 'CONTINUOUS', 0.25, 'Standpipe pressure zone 4 (bands, labels)')
 ];
 
 /** Bounding box of a set of entities (text approximated as height × 0.6 × chars, rotation honoured). */

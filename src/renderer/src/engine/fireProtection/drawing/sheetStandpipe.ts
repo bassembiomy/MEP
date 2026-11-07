@@ -5,12 +5,16 @@
  * landing (with PRV where required), outlet static / residual pressures, floor control valve assemblies
  * (combined systems), drain riser, automatic air release, roof outlet, cross connection, supply main
  * to the pump room and the fire department connection.
+ * Pressure zoning (PRV-avoiding solution): zone bands with labels, express risers without outlets from the pump room,
+ * service-floor stations (break tank + booster pump set), zone isolation (check + OS&Y gate valve) and PRVs only
+ * where an outlet still needs one.
  */
-import type { FloorLevel, StandpipeOutlet, StandpipeRiserDesign } from '../fpTypes';
+import type { FloorLevel, StandpipeOutlet, StandpipeRiserDesign, StandpipeZone } from '../fpTypes';
 import { formatPipeSize } from '../standards/pipeData';
 import { ballValve, butterflyValve, checkValve, gateValve, hoseValve } from './symbols';
 import { type Box, type Ctx, FRAME, Placer, PX, PY, TBLK, arrowLine, dimBoxes, drawNotes, drawTable, sheetTitle, splitInterval, textWidth } from './sheetKit';
 import { odOf } from './sheetGeom';
+import { breakTankSymbol, floorsText, hatchOnLayer, selectedSolution, stationText, withCommas, zoneLayer, zonePumpSymbol } from './sheetStandpipeZoneKit';
 
 /** Standard drawing scales offered by the sheet set. */
 export const SP_SCALES = [50, 75, 100, 150, 200, 250, 500];
@@ -62,7 +66,19 @@ export function riserDiagramNotes(c: Ctx): string[] {
       ? 'FLOOR CONTROL VALVE ASSEMBLY AT EACH SPRINKLERED FLOOR: SUPERVISED BUTTERFLY VALVE, WATERFLOW SWITCH (FS), PRESSURE GAUGE AND TEST & DRAIN WITH SIGHT GLASS (NFPA 13 SEC. 16.9.4). SEE FP-107.'
       : 'STANDPIPES ARE NOT COMBINED WITH THE FLOOR SPRINKLER SYSTEMS; SPRINKLER CONTROL VALVE ASSEMBLIES ARE SHOWN ON THE SPRINKLER DRAWINGS.',
     'AUTOMATIC AIR RELEASE VALVE AT THE HIGH POINT OF EVERY WET RISER. RISERS ARE INTERCONNECTED AT THE BASE WITH OS&Y ISOLATION VALVES (SUPERVISED OPEN).',
-    'SEE FP-107 FOR THE TYPICAL FLOOR CONNECTION, THE FIRE DEPARTMENT CONNECTION DETAIL, THE FLOOR SCHEDULE AND THE HYDRAULIC CALCULATION.'
+    'SEE FP-107 FOR THE TYPICAL FLOOR CONNECTION, THE FIRE DEPARTMENT CONNECTION DETAIL, THE FLOOR SCHEDULE AND THE HYDRAULIC CALCULATION.',
+    ...zoningNotes(c)
+  ];
+}
+
+/** Zoning note of the riser diagram (empty for a single-zone system). */
+function zoningNotes(c: Ctx): string[] {
+  const sp = c.r.standpipe!;
+  const sol = selectedSolution(sp);
+  if (sol.zones.length < 2) return [];
+  const st = sol.serviceFloorStations;
+  return [
+    `PRESSURE ZONING TO AVOID PRVs (NFPA 14 SEC. 7.2.1 AND 7.2.3, NFPA 20 SEC. 4.31): ${sol.zones.length} ZONES ${sol.zones[0].id}-${sol.zones[sol.zones.length - 1].id}, ${sol.pumpSets} PUMP SETS, ${sol.expressRisers} EXPRESS RISER(S) WITHOUT OUTLETS, ${st.length ? `BREAK TANK + BOOSTER PUMP SET ON SERVICE FLOOR ${st.join(', ')}` : 'NO SERVICE FLOOR STATIONS'}. EACH ZONE RISER STARTS AT A CHECK VALVE AND OS&Y ISOLATION VALVE. SEE FP-111 FOR THE COMPARISON WITH THE PRV SOLUTION.`
   ];
 }
 
@@ -96,12 +112,103 @@ export function drawStandpipeRiserSheet(c: Ctx): void {
   P.addRect(PX(c, FRAME.x0), PY(c, 548), (PANEL_X - FRAME.x0) * S, 40 * S);
   const reg = (x0: number, y0: number, x1: number, y1: number, soft = false): void => P.addRect(x0, y0, x1 - x0, y1 - y0, soft);
 
-  const xRp = sp.risers.map((_, k) => BL + ((BR - BL) * (k + 0.5)) / N);
+  // pressure zones of the selected solution (the risers are split per zone when there are several)
+  const zones = selectedSolution(sp).zones;
+  const zoned = zones.length > 1;
+  const kS = Math.min(1, Math.max(0.45, 120 / S));
+  const stationFloors: string[] = [];
+  for (const z of zones) if (z.station.kind === 'service-floor' && z.station.floorId && !stationFloors.includes(z.station.floorId)) stationFloors.push(z.station.floorId);
+  /** A zone whose lowest floor is its own service floor is fed straight from the booster pump set (no feed riser). */
+  const bottomIsStation = (z: StandpipeZone): boolean => z.station.kind === 'service-floor' && z.floorIds[0] === z.station.floorId;
+  const slotZones = zones.map((z, zi) => ({ z, zi })).filter(({ z, zi }) => zi > 0 && !bottomIsStation(z)).sort((a, b) => b.zi - a.zi); // highest zone leftmost
+  const SLOT_PITCH = 8;
+  const slotStart = BL + (stationFloors.length ? 54 : 10);
+  const xRiserMin = slotZones.length ? slotStart + slotZones.length * SLOT_PITCH + 44 : 0;
+  const xRp0 = Math.max(BL + ((BR - BL) * 0.5) / N, xRiserMin);
+  const xRpLast = Math.max(BL + ((BR - BL) * (N - 0.5)) / N, xRp0 + (N - 1) * 40);
+  const xRp = sp.risers.map((_, k) => (N === 1 ? xRp0 : xRp0 + ((xRpLast - xRp0) * k) / (N - 1)));
   const odR = sp.risers.map((q) => odOf(q.sizeIn));
   const odMain = odOf(sp.supplyMainSizeIn);
   const yMainEl = lowEl - 0.8;
   const yMain = Zr(yMainEl);
   const hM = odMain / 2;
+
+  // ───────────────────────── zone feeds (express risers, service-floor stations) ─────────────────────────
+  interface Feed {
+    zi: number;
+    z: StandpipeZone;
+    express: boolean;
+    service: boolean;
+    fid: string | null;
+    /** Feed riser x (model); 0 when the zone is fed straight from the booster pump set. */
+    x: number;
+    hasVert: boolean;
+    /** Header (zone riser base) y, pump y. */
+    yH: number;
+    yP: number;
+  }
+  const rP = 2.4 * kS * S;
+  const endExt = Math.max(600, 4.2 * S);
+  const feeds: Feed[] = [];
+  zones.forEach((z, zi) => {
+    if (zi === 0) return;
+    const yBo = Zr(z.bottomOutletElevationM);
+    let yH = yBo - Math.max(900, 5.5 * S);
+    const prevEnd = Zr(zones[zi - 1].topOutletElevationM) + endExt;
+    if (yH < prevEnd + 3 * S) yH = Math.min(prevEnd + 3 * S, yBo - 1.5 * S);
+    const sj = slotZones.findIndex((q) => q.zi === zi);
+    const service = z.station.kind === 'service-floor';
+    feeds.push({ zi, z, express: !service, service, fid: z.station.floorId, x: sj >= 0 ? X(slotStart + sj * SLOT_PITCH + SLOT_PITCH / 2) : 0, hasVert: sj >= 0, yH, yP: Zr(lowEl) + rP + 1.0 * S });
+  });
+  const feedOf = (zi: number): Feed | undefined => feeds.find((f) => f.zi === zi);
+  interface Station {
+    fid: string;
+    floor: FloorLevel;
+    zs: Feed[];
+    x0: number;
+    w: number;
+    y0: number;
+    h: number;
+    manifoldX: number;
+    pumpX: number;
+  }
+  const stations: Station[] = [];
+  for (const fid of stationFloors) {
+    const floor = floorOf(fid);
+    if (!floor) continue;
+    const zs = feeds.filter((f) => f.fid === fid);
+    const yFloor = Zr(floor.elevationM);
+    zs.forEach((f, i) => {
+      const y0 = i === 0 ? (bottomIsStation(f.z) ? Math.max(f.yH, yFloor + rP + 0.6 * S) : yFloor + rP + 1.2 * S) : zs[0].yP + i * (2 * rP + 2.4 * S * kS);
+      f.yP = y0;
+      if (bottomIsStation(f.z) || f.yH < f.yP + 3 * S) {
+        f.yH = f.yP;
+        f.hasVert = f.hasVert && f.yH - f.yP > 0;
+      }
+    });
+    const yTopP = Math.max(...zs.map((f) => f.yP));
+    const h = Math.max(Math.min(2400, 0.7 * floor.floorToFloorM * 1000), yTopP + rP + 2.2 * S - yFloor);
+    stations.push({ fid, floor, zs, x0: X(BL + 9), w: 22 * S, y0: yFloor, h, manifoldX: X(BL + 35), pumpX: X(BL + 42) });
+  }
+
+  /** Riser pipe segments of one standpipe: one per pressure zone it serves (a single segment without zoning). */
+  const riserSegs = (q: StandpipeRiserDesign): { zi: number; lo: number; hi: number }[] => {
+    const yb0 = yMain + hM;
+    if (!zoned) return [{ zi: 0, lo: yb0, hi: Zr(q.topElevationM + 0.6) }];
+    const out: { zi: number; lo: number; hi: number }[] = [];
+    zones.forEach((z, zi) => {
+      const os = q.outlets.filter((o) => o.zoneId === z.id);
+      if (!os.length) return;
+      const topEl = Math.max(...os.map((o) => o.elevationM));
+      const botEl = Math.min(...os.map((o) => o.elevationM));
+      let hi = topEl >= q.topElevationM - 1e-9 ? Zr(q.topElevationM + 0.6) : Zr(topEl) + endExt;
+      const nf = feedOf(zi + 1);
+      if (nf && topEl < q.topElevationM - 1e-9) hi = Math.max(Math.min(hi, nf.yH - 3 * S), Zr(topEl) + 1.5 * S);
+      const lo = zi === 0 ? yb0 : Math.min(feedOf(zi)!.yH, Zr(botEl) - 1.0 * S);
+      out.push({ zi, lo, hi });
+    });
+    return out;
+  };
 
   // ───────────────────────── levels, slabs, walls ─────────────────────────
   const drainOf = (k: number): number => X(xRp[k] + 44);
@@ -118,6 +225,7 @@ export function drawStandpipeRiserSheet(c: Ctx): void {
   const slab = (f: FloorLevel): void => {
     const holes: [number, number][] = sp.risers.map((_q, k) => [X(xRp[k]) - odR[k] / 2 - 200, X(xRp[k]) + odR[k] / 2 + 200]);
     for (const d of drainRisers) holes.push([drainOf(d.k) - 160, drainOf(d.k) + 160]);
+    for (const fd of feeds) if (fd.hasVert) holes.push([fd.x - odR[0] / 2 - 200, fd.x + odR[0] / 2 + 200]);
     const segs = splitInterval(X(BL), X(BR), holes.filter((h) => h[1] > X(BL) + 10));
     for (const [a, z] of segs) {
       if (z - a < 1) continue;
@@ -186,7 +294,14 @@ export function drawStandpipeRiserSheet(c: Ctx): void {
   {
     const x1 = X(xRp[0]);
     // supply stub + cross connection (bottom line continuous, top line broken at the risers)
-    hpipe(xStubEnd, x1 - odR[0] / 2, yMain, odMain);
+    const exprX = feeds.filter((fd) => fd.express && fd.hasVert).map((fd) => fd.x);
+    if (exprX.length) {
+      // express risers tee off the stub: the top line of the stub is open at each tee
+      b.line('FP-PIPE-DISC', xStubEnd, yMain - hM, x1 - odR[0] / 2, yMain - hM);
+      for (const [a, z] of splitInterval(xStubEnd, x1 - odR[0] / 2, exprX.map((x) => [x - odR[0] / 2, x + odR[0] / 2] as [number, number]))) b.line('FP-PIPE-DISC', a, yMain + hM, z, yMain + hM);
+    } else {
+      hpipe(xStubEnd, x1 - odR[0] / 2, yMain, odMain);
+    }
     b.line('FP-PIPE-DISC', x1 - odR[0] / 2, yMain - hM, X(xRp[N - 1]) + odR[N - 1] / 2, yMain - hM);
     for (let k = 0; k + 1 < N; k++) b.line('FP-PIPE-DISC', X(xRp[k]) + odR[k] / 2, yMain + hM, X(xRp[k + 1]) - odR[k + 1] / 2, yMain + hM);
     P.addRect(xStubEnd, yMain - hM, X(xRp[N - 1]) - xStubEnd, odMain, true);
@@ -222,6 +337,148 @@ export function drawStandpipeRiserSheet(c: Ctx): void {
 
   // ───────────────────────── risers ─────────────────────────
   const tagJobs: (() => void)[] = [];
+
+  // ───────────────────────── pressure zones: bands, feeds, stations ─────────────────────────
+  if (zones.length > 0) {
+    const odF = odR[0];
+    const rr0 = odF / 2;
+    const xR0 = X(xRp[0]);
+    const lastKOf = (z: StandpipeZone): number => {
+      let m = 0;
+      sp.risers.forEach((q, k) => {
+        if (q.outlets.some((o) => o.zoneId === z.id)) m = k;
+      });
+      return m;
+    };
+    const bands = zones.map((z, zi) => {
+      const lay = zoneLayer(zi);
+      const yLo = zi === 0 ? Zr(lowEl) - 200 : Zr(floorOf(z.floorIds[0])?.elevationM ?? z.bottomOutletElevationM);
+      const nf = zi + 1 < zones.length ? floorOf(zones[zi + 1].floorIds[0]) : undefined;
+      const yHi = nf ? Zr(nf.elevationM) : yWallHi;
+      b.rect(lay, X(BL), yLo, 4 * S, yHi - yLo);
+      hatchOnLayer(b, lay, X(BL), yLo, 4 * S, yHi - yLo, 1.8 * S);
+      if (zi > 0) b.line(lay, X(BL), yLo + 0.5 * S, X(BR), yLo + 0.5 * S);
+      reg(X(BL), yLo, X(BL + 4), yHi);
+      return { z, zi, lay, yLo, yHi };
+    });
+
+    // tanks, suction manifolds, fill lines
+    for (const st of stations) {
+      breakTankSymbol(b, st.x0, st.y0, st.w, st.h);
+      reg(st.x0 - 0.04 * st.w, st.y0, st.x0 + 1.04 * st.w, st.y0 + st.h);
+      const ys = st.zs.map((fd) => fd.yP);
+      const yLow = Math.min(...ys);
+      const yHigh = Math.max(...ys);
+      b.pipe('FP-PIPE-SUCT', [[st.x0 + st.w, yLow], [st.manifoldX, yLow], [st.manifoldX, yHigh]], odF, false);
+      reg(st.x0 + st.w, yLow - rr0, st.manifoldX + rr0, yHigh + rr0);
+      const zFirst = st.zs[0].zi;
+      const k0 = Math.max(0, sp.risers.findIndex((q) => q.outlets.some((o) => o.zoneId === zones[zFirst - 1]?.id)));
+      const seg = riserSegs(sp.risers[k0]).find((sg) => sg.zi === zFirst - 1);
+      const tank = st.zs[0].z.breakTank;
+      if (seg) {
+        const yTap = seg.hi - 0.8 * S;
+        const xf = X(BL + 6.5);
+        const yEnter = st.y0 + st.h - 2.8 * S;
+        b.pipe('FP-PIPE-DISC', [[X(xRp[k0]) - odR[k0] / 2, yTap], [xf, yTap], [xf, yEnter], [st.x0, yEnter]], 90, false);
+        ballValve(b, xf, st.y0 - 4 * S, 90, 3 * S);
+        reg(xf - 1.5 * S, yTap - 0.8 * S, X(xRp[k0]) - odR[k0] / 2, yTap + 0.8 * S);
+        reg(xf - 1.5 * S, yTap, xf + 1.5 * S, yEnter);
+        tagJobs.push(() => P.callout([xf, st.y0 - 4 * S], [`FILL LINE FROM ${zones[zFirst - 1].id}`, 'WITH FLOAT VALVE'], 2, [0, 45, 315, 90]));
+      }
+      tagJobs.push(() =>
+        P.callout([st.x0 + st.w / 2, st.y0 + st.h], [`BREAK TANK - SERVICE FLOOR ${st.fid}`, tank ? `${tank.volumeM3.toFixed(1)} M3 (${withCommas(tank.volumeGal)} GAL)` : '', ...(tank ? [`30 MIN AT ${st.zs[0].z.ratedFlowGpm} GPM`] : [])].filter((t) => t), 2, [90, 45, 135, 0])
+      );
+      tagJobs.push(() =>
+        P.callout([st.pumpX, st.zs[0].yP + rP], ['BOOSTER PUMP SET', ...st.zs.map((fd) => `${fd.z.id}: ${fd.z.ratedFlowGpm} GPM @ ${fd.z.ratedNetPressurePsi} PSI`)], 2, [90, 45, 0, 135])
+      );
+    }
+
+    // zone feeds
+    feeds.forEach((fd, fi) => {
+      const xTo = xR0 - rr0;
+      const z = fd.z;
+      const st = stations.find((q) => q.fid === fd.fid);
+      if (fd.service && !st) return;
+      if (fd.express) {
+        b.pipe('FP-PIPE-DISC', [[fd.x, yMain + hM], [fd.x, fd.yP - rP]], odF, false);
+        b.pipe('FP-PIPE-DISC', [[fd.x, fd.yP + rP], [fd.x, fd.yH], [xTo, fd.yH]], odF, false);
+        zonePumpSymbol(b, fd.x, fd.yP, rP, 'up');
+        reg(fd.x - rP, fd.yP - rP, fd.x + rP, fd.yP + rP);
+        reg(fd.x - rr0, yMain, fd.x + rr0, fd.yH + rr0);
+        tagJobs.push(() => P.callout([fd.x + rP * 0.7, fd.yP], [`ZONE PUMP ${z.id}`, `${z.ratedFlowGpm} GPM @ ${z.ratedNetPressurePsi} PSI`], 2, [0, 45, 315]));
+      } else if (st) {
+        const pts: [number, number][] = fd.hasVert ? [[st.pumpX + rP, fd.yP], [fd.x, fd.yP], [fd.x, fd.yH], [xTo, fd.yH]] : [[st.pumpX + rP, fd.yP], [xTo, fd.yP]];
+        b.pipe('FP-PIPE-DISC', pts, odF, false);
+        b.pipe('FP-PIPE-SUCT', [[st.manifoldX, fd.yP], [st.pumpX - rP, fd.yP]], odF, false);
+        zonePumpSymbol(b, st.pumpX, fd.yP, rP, 'right');
+        reg(st.pumpX - rP, fd.yP - rP, st.pumpX + rP, fd.yP + rP);
+        if (fd.hasVert) reg(fd.x - rr0, fd.yP - rr0, fd.x + rr0, fd.yH + rr0);
+      }
+      const yHdr = fd.yH;
+      for (let k = 0; k < lastKOf(z); k++) hpipe(X(xRp[k]) + odR[k] / 2, X(xRp[k + 1]) - odR[k + 1] / 2, yHdr, odF);
+      reg(xTo - 40 * S, yHdr - rr0, X(xRp[lastKOf(z)]), yHdr + rr0);
+      // zone isolation: check valve + OS&Y gate valve where the zone riser starts
+      const dG = 4 * S;
+      const dC = 4.4 * S;
+      const xg = xR0 - 31 * S;
+      const xc = xR0 - 40 * S;
+      gateValve(b, xg, yHdr, 0, dG);
+      checkValve(b, xc, yHdr, 0, dC);
+      reg(xg - dG / 2, yHdr - 0.4 * dG, xg + dG / 2, yHdr + 1.15 * dG);
+      reg(xc - dC / 2, yHdr - 0.4 * dC, xc + dC / 2, yHdr + 0.9 * dC);
+      if (fi === 0) tagJobs.push(() => P.callout([(xg + xc) / 2, yHdr + 0.4 * dG], ['ZONE ISOLATION: CHECK VALVE', '+ OS&Y GATE VALVE'], 2, [90, 270, 45]));
+      // feed riser label
+      if (fd.hasVert) {
+        const label = fd.express ? `EXPRESS RISER ${z.id} (${(z.expressRiserLengthM ?? 0).toFixed(1)} M, NO OUTLETS)` : `FEED RISER ${z.id} FROM ${fd.fid}`;
+        const yLo = fd.yP + rP + 2 * S;
+        const yMid = (yLo + fd.yH) / 2;
+        if (fd.yH - yLo > textWidth(2 * S, label) + 6 * S) {
+          P.text('FP-ANNO', fd.x + rr0 + 1.8 * S, yMid, 2, label, { rotationDeg: 90, align: 'center', vAlign: 'middle' });
+        } else {
+          tagJobs.push(() => P.callout([fd.x, yMid], [fd.express ? `EXPRESS RISER ${z.id}` : `FEED RISER ${z.id}`, 'NO OUTLETS'], 2, [0, 45, 315]));
+        }
+      }
+    });
+
+    // zone labels (first, so that the tags avoid them)
+    const th = 2.2;
+    const xPref = (X(xRp[0]) + X(xRp[N - 1])) / 2 + (N === 1 ? 60 * S : 0);
+    const placeLabels = (): void => {
+      for (const bd of bands) {
+        const z = bd.z;
+        const lines =
+          S >= 150
+            ? [`ZONE ${z.id} - ${floorsText(z)}`, stationText(z, floors), `ZONE PUMP ${z.ratedFlowGpm} GPM @ ${z.ratedNetPressurePsi} PSI - MAX STATIC ${psi(z.maxStaticPsi)} PSI`]
+            : [
+                `ZONE ${z.id} - ${floorsText(z)}`,
+                stationText(z, floors),
+                `ZONE PUMP ${z.ratedFlowGpm} GPM @ ${z.ratedNetPressurePsi} PSI`,
+                `MAX STATIC ${psi(z.maxStaticPsi)} PSI - TOP ${psi(z.topResidualPsi)} PSI RESIDUAL`
+              ];
+        const w = Math.max(...lines.map((l, i) => textWidth((i === 0 ? th * 1.2 : th) * S, l)));
+        const pitch = th * 1.5 * S;
+        const hBox = lines.length * pitch;
+        const yMidB = (bd.yLo + bd.yHi) / 2;
+        let best: { x: number; y: number; sc: number } | null = null;
+        for (const soft of [true, false]) {
+          for (let x0 = X(BL + 7); x0 + w <= X(BR - 3); x0 += 5 * S) {
+            for (let yc = bd.yLo + hBox / 2 + 1.2 * S; yc <= bd.yHi - hBox / 2 - 1.2 * S; yc += 2.5 * S) {
+              const box: Box = { x0, y0: yc - hBox / 2, x1: x0 + w, y1: yc + hBox / 2 };
+              if (!P.free(box, 0.5 * S, soft)) continue;
+              const sc = Math.abs(x0 + w / 2 - xPref) + 1.5 * Math.abs(yc - yMidB);
+              if (!best || sc < best.sc) best = { x: x0, y: yc, sc };
+            }
+          }
+          if (best) break;
+        }
+        const pos = best ?? { x: X(BL + 7), y: yMidB, sc: 0 };
+        if (!best) P.fallbacks.push(`zone label ${z.id}`);
+        lines.forEach((ln, i) => b.text(bd.lay, pos.x, pos.y + hBox / 2 - pitch * (i + 0.5), i === 0 ? th * 1.2 : th, ln, { vAlign: 'middle' }));
+        P.addHard({ x0: pos.x, y0: pos.y - hBox / 2, x1: pos.x + w, y1: pos.y + hBox / 2 });
+      }
+    };
+    tagJobs.unshift(placeLabels);
+  }
   sp.risers.forEach((q: StandpipeRiserDesign, k: number) => {
     const xR = X(xRp[k]);
     const rr = odR[k] / 2;
@@ -319,11 +576,24 @@ export function drawStandpipeRiserSheet(c: Ctx): void {
     if (last) rightHoles.push([yFdc - odOf(sp.fdc.pipeSizeIn) / 2, yFdc + odOf(sp.fdc.pipeSizeIn) / 2]);
 
     // riser pipe (left / right lines broken at the branch mouths)
-    const yb = yMain + hM;
-    for (const [a, z] of splitInterval(yb, yTop, leftHoles)) b.line('FP-PIPE-DISC', xR - rr, a, xR - rr, z);
-    for (const [a, z] of splitInterval(last ? yMain - hM : yb, yTop, rightHoles)) b.line('FP-PIPE-DISC', xR + rr, a, xR + rr, z);
-    b.line('FP-PIPE-DISC', xR - rr, yTop, xR + rr, yTop);
-    P.addRect(xR - rr, yMain, odR[k], yTop - yMain, true);
+    for (const sg of riserSegs(q)) {
+      const loR = sg.zi === 0 && last ? yMain - hM : sg.lo;
+      for (const [a, z] of splitInterval(sg.lo, sg.hi, leftHoles)) b.line('FP-PIPE-DISC', xR - rr, a, xR - rr, z);
+      for (const [a, z] of splitInterval(loR, sg.hi, rightHoles)) b.line('FP-PIPE-DISC', xR + rr, a, xR + rr, z);
+      b.line('FP-PIPE-DISC', xR - rr, sg.hi, xR + rr, sg.hi);
+      P.addRect(xR - rr, sg.zi === 0 ? yMain : sg.lo, odR[k], sg.hi - (sg.zi === 0 ? yMain : sg.lo), true);
+      // lower zone risers end below the next zone's base: capped, with an automatic air release where there is room
+      const nf = feedOf(sg.zi + 1);
+      if (sg.hi < yTop - 1e-6 && nf && nf.yH - sg.hi > 14 * S) {
+        const dA2 = 3.2 * S;
+        const yA2 = sg.hi + 4.6 * S;
+        vpipe(xR, sg.hi, yA2 - dA2 / 2, 50);
+        vpipe(xR, yA2 + dA2 / 2, sg.hi + 9 * S, 50);
+        ballValve(b, xR, yA2, 90, dA2);
+        b.solid('FP-PIPE-DISC', [[xR, sg.hi + 11.6 * S], [xR - 0.7 * S, sg.hi + 9.4 * S], [xR + 0.7 * S, sg.hi + 9.4 * S]]);
+        reg(xR - 2.5 * S, sg.hi, xR + 2.5 * S, sg.hi + 11.8 * S);
+      }
+    }
 
     // automatic air release valve at the top
     const dA = 3.2 * S;
@@ -431,20 +701,21 @@ export function drawStandpipeRiserSheet(c: Ctx): void {
     ['PUMP DISCHARGE', `${psi(sp.pressureAtPumpDischargePsi)} PSI`],
     ['GOVERNING RISER', sp.governingRiserTag],
     ['BUILDING HEIGHT', `${sp.buildingHeightFt.toFixed(0)} FT${sp.highRise ? ' (HIGH-RISE, IBC 202)' : ''}`],
-    ['FDC', `${sp.fdc.inlets} x 2-1/2" INLETS, ${fmtSize(sp.fdc.pipeSizeIn)} PIPE`]
+    ['FDC', `${sp.fdc.inlets} x 2-1/2" INLETS, ${fmtSize(sp.fdc.pipeSizeIn)} PIPE`],
+    ...(zoned ? [['PRESSURE ZONES', `${zones.length} (${zones[0].id}-${zones[zones.length - 1].id}), ${selectedSolution(sp).pumpSets} PUMP SETS, ${selectedSolution(sp).prvCount} PRV`]] : [])
   ];
   const dCols = [34, 150];
   drawTable(c, PANEL_X + 4, 576, dCols, data, { title: 'STANDPIPE SYSTEM DATA', th: 2.2 });
 
   // legend
   const lgTop = 576 - (data.length * (2.2 * 1.3 + 2.8) + 2.2 * 2.6) - 6;
-  const lg = drawStandpipeLegend(c, PANEL_X + 4, lgTop);
+  const lg = drawStandpipeLegend(c, PANEL_X + 4, lgTop, zoned);
   const notes = riserDiagramNotes(c);
   drawNotes(c, PANEL_X + 4, lgTop - lg.h - 6, FRAME.x1 - PANEL_X - 8, 'GENERAL NOTES', notes, 2.2);
 }
 
 /** Symbol legend of the standpipe sheets (two columns). Returns the paper size. */
-export function drawStandpipeLegend(c: Ctx, xP: number, yTopP: number): { w: number; h: number } {
+export function drawStandpipeLegend(c: Ctx, xP: number, yTopP: number, zoned = false): { w: number; h: number } {
   const { b, sheet } = c;
   const s = sheet.scale;
   const X = (v: number): number => PX(c, v);
@@ -477,7 +748,18 @@ export function drawStandpipeLegend(c: Ctx, xP: number, yTopP: number): { w: num
         b.line('FP-PIPE-DISC', x, y + 1.6 * s, x, y + 2.8 * s);
         b.line('FP-PIPE-DISC', x, y - 1.6 * s, x, y - 2.6 * s);
       }
-    }
+    },
+    ...(zoned
+      ? [
+          { label: 'ZONE PUMP / BOOSTER PUMP SET', draw: (x: number, y: number) => zonePumpSymbol(b, x, y, 2.4 * s, 'right') },
+          {
+            label: 'BREAK TANK (SERVICE FLOOR)',
+            draw: (x: number, y: number) => {
+              breakTankSymbol(b, x - 4 * s, y - 2.4 * s, 8 * s, 4.8 * s);
+            }
+          }
+        ]
+      : [])
   ];
   const th = 2.2;
   const colW = 98;

@@ -34,7 +34,7 @@ function check(input: FireDesignInput, label: string): void {
   const r = designFireProtectionSystem(input);
   const d = generateFireDrawings(r);
   const nums = d.sheets.map((s) => s.number);
-  assert(nums[nums.length - 1] === 'FP-110', `${label}: FP-110 is the last sheet (${nums})`);
+  assert(nums[nums.length - 1] === (r.standpipe ? 'FP-111' : 'FP-110') && nums.includes('FP-110'), `${label}: FP-110 is the last pump-room sheet; FP-111 (zoning study) follows (${nums})`);
   const room = r.room;
   const wall = room.wallThicknessMm;
 

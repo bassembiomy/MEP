@@ -1,5 +1,5 @@
 /**
- * Fire pump room & tank drawing set (FP-101 … FP-105, plus FP-106 / FP-107 when a standpipe design exists) — A1 sheets laid out left to right.
+ * Fire pump room & tank drawing set (FP-101 … FP-105, plus FP-106 / FP-107 / FP-111 when a standpipe design exists) — A1 sheets laid out left to right.
  */
 import type { FireDesignResult } from '../fpTypes';
 import { DrawingBuilder } from './drawingBuilder';
@@ -13,6 +13,7 @@ import { drawSchematicSheet } from './sheetSchematic';
 import { drawScheduleSheet } from './sheetSchedules';
 import { drawPumpRoomDetailsSheet } from './sheetPumpRoomDetails';
 import { drawStandpipeDetailSheet } from './sheetStandpipeDetail';
+import { drawStandpipeZoningSheet } from './sheetStandpipeZoning';
 import { drawStandpipeRiserSheet, pickStandpipeScale } from './sheetStandpipe';
 import { drawExtinguisherDetailSheet, drawExtinguisherLayoutSheet, extinguisherSheetNumber, planExtinguisherLayout } from './sheetExtinguishers';
 
@@ -78,5 +79,9 @@ export function generateFireDrawings(result: FireDesignResult): Drawing {
   }
   const s10 = add('FP-110', 'PUMP ROOM DETAILS', 20);
   drawPumpRoomDetailsSheet(frame(s10, '1:10 / 1:20 (DETAILS)'));
+  if (result.standpipe) {
+    const s11 = add('FP-111', 'STANDPIPE ZONING STUDY - WITH PRV vs WITHOUT PRV', 10);
+    drawStandpipeZoningSheet(frame(s11, 'NTS'));
+  }
   return b.build(sheets);
 }
