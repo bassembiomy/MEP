@@ -42,6 +42,7 @@ import {
   type Box,
   type Ctx,
   Placer,
+  drawTag,
   PX,
   PY,
   type Pt,
@@ -190,7 +191,7 @@ function contentBBox(d: Co2FloorData): BoxMm {
   return bb
 }
 
-const BANK_GAP = 4
+const BANK_GAP = 10
 
 /** Content box extended by the storage bank drawn below the storage point at scale S. */
 function layoutBBox(d: Co2FloorData, bank: BankLayout, S: number): BoxMm {
@@ -290,6 +291,61 @@ function nearestPointInBox(bx: Box, p: Pt): Pt {
   return [Math.min(Math.max(p[0], bx.x0), bx.x1), Math.min(Math.max(p[1], bx.y0), bx.y1)]
 }
 
+/** Tag with a short leader (at most ~16 mm paper) at the nearest free position; false when none is free. */
+function nearTag(P: Placer, c: Ctx, anchor: Pt, text: string): boolean {
+  const { b, sheet } = c
+  const S = sheet.scale
+  const hw = ((text.length <= 4 ? 6 : Math.max(6, text.length * 1.6 + 3)) * S) / 2
+  const hh = 3 * S
+  for (const rad of [5, 6.5, 8, 10, 12, 14, 16].map((k) => k * S)) {
+    for (const ang of [90, 270, 0, 180, 45, 135, 225, 315, 60, 120, 240, 300, 20, 160, 200, 340]) {
+      const a = (ang * Math.PI) / 180
+      const cx = anchor[0] + Math.cos(a) * rad
+      const cy = anchor[1] + Math.sin(a) * rad
+      const box: Box = { x0: cx - hw, y0: cy - hh, x1: cx + hw, y1: cy + hh }
+      if (!P.free(box, 0.5 * S, false)) continue
+      const ux = Math.cos(a)
+      const uy = Math.sin(a)
+      const edge =
+        text.length <= 4
+          ? hh
+          : Math.min(hw / Math.max(Math.abs(ux), 1e-9), hh / Math.max(Math.abs(uy), 1e-9))
+      b.line('FP-ANNO', anchor[0], anchor[1], cx - ux * edge, cy - uy * edge)
+      b.circle('FP-ANNO', anchor[0], anchor[1], 0.4 * S)
+      drawTag(b, cx, cy, text, S)
+      P.addHard(box)
+      return true
+    }
+  }
+  return false
+}
+
+/** Plain text with a short thin leader to `anchor` (within ~14 mm paper). */
+function nearText(P: Placer, c: Ctx, anchor: Pt, text: string, hP: number): boolean {
+  const { b, sheet } = c
+  const S = sheet.scale
+  const w = textWidth(hP * S, text)
+  const h = hP * S
+  for (const rad of [3, 4.5, 6, 8, 10, 12, 14].map((k) => k * S)) {
+    for (const ang of [90, 270, 0, 180, 45, 135, 225, 315, 60, 120, 240, 300]) {
+      const a = (ang * Math.PI) / 180
+      const cx = anchor[0] + Math.cos(a) * (rad + (w / 2) * Math.abs(Math.cos(a)))
+      const cy = anchor[1] + Math.sin(a) * (rad + h)
+      const box: Box = { x0: cx - w / 2, y0: cy - h / 2, x1: cx + w / 2, y1: cy + h / 2 }
+      if (!P.free(box, 0.4 * S, false)) continue
+      const e: Pt = [
+        Math.min(Math.max(anchor[0], box.x0), box.x1),
+        Math.min(Math.max(anchor[1], box.y0), box.y1)
+      ]
+      b.line('FP-ANNO', anchor[0], anchor[1], e[0], e[1])
+      b.circle('FP-ANNO', anchor[0], anchor[1], 0.35 * S)
+      P.text('FP-ANNO', cx, cy, hP, text, { align: 'center', vAlign: 'middle' })
+      return true
+    }
+  }
+  return false
+}
+
 export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
   const { b, sheet, r } = c
   const S = sheet.scale
@@ -335,7 +391,7 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
     if (p.points.length < 2) continue
     const pts = p.points.map(M)
     b.polyline('CO2-PIPE', pts, false)
-    addSoftAlong(P, pts, false, 0.6 * S, 2.2 * S)
+    addSoftAlong(P, pts, false, 0.9 * S, 2.2 * S)
     pipeLines.push({ p, pts })
   }
 
@@ -355,6 +411,21 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
     })
     P.addHard({ x0: sp[0] - 2 * S, y0: sp[1] - 1.5 * S, x1: sp[0] + 2 * S, y1: sp[1] + 1.5 * S })
   }
+
+  // ───────── common discharge pipe: storage → feeder → start of every main ─────────
+  const stubBottom: Pt = [sp[0], sp[1] - BANK_GAP * S]
+  for (const { p, pts } of pipeLines) {
+    if (p.kind !== 'main') continue
+    const s0 = pts[0]
+    if (Math.hypot(s0[0] - sp[0], s0[1] - sp[1]) < 0.5 * S) continue
+    const feeder: Pt[] =
+      Math.abs(s0[0] - sp[0]) < 0.3 * S || Math.abs(s0[1] - sp[1]) < 0.3 * S
+        ? [sp, s0]
+        : [sp, [sp[0], s0[1]], s0]
+    b.polyline('CO2-PIPE', feeder, false)
+    addSoftAlong(P, feeder, false, 0.9 * S, 2.2 * S)
+  }
+  addSoftAlong(P, [sp, stubBottom], false, 0.9 * S, 2.2 * S)
 
   // ───────── nozzles ─────────
   const rNoz = 1.2 * S
@@ -387,8 +458,42 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
     'smoke-detector',
     'heat-detector'
   ]
+  const fixedPos = new Map<string, { pos: Pt; vertical: boolean }>()
+  const rFix = 1.7 * S
+  for (const dv of fd.devices) {
+    if (dv.kind === 'selector-valve') {
+      const ml = pipeLines.find((q) => q.p.kind === 'main' && q.p.enclosureId === dv.enclosureId)
+      if (!ml) continue
+      const [a0, a1] = [ml.pts[0], ml.pts[1]]
+      const l = Math.hypot(a1[0] - a0[0], a1[1] - a0[1]) || 1
+      const u: Pt = [(a1[0] - a0[0]) / l, (a1[1] - a0[1]) / l]
+      const dist = Math.min(4.2 * S, l * 0.45)
+      fixedPos.set(dv.tag, {
+        pos: [a0[0] + u[0] * dist, a0[1] + u[1] * dist],
+        vertical: Math.abs(u[1]) > Math.abs(u[0])
+      })
+    } else if (dv.kind === 'lockout-valve') {
+      fixedPos.set(dv.tag, { pos: [sp[0], sp[1] - 3.6 * S], vertical: true })
+    } else if (dv.kind === 'pressure-switch') {
+      const yPS = sp[1] - 7.2 * S
+      b.line('CO2-PIPE', sp[0], yPS, sp[0] + 4.6 * S, yPS)
+      fixedPos.set(dv.tag, { pos: [sp[0] + 4.6 * S, yPS + 1.3 * rFix], vertical: false })
+    }
+  }
   const devs = [...fd.devices].sort((a, z) => order.indexOf(a.kind) - order.indexOf(z.kind))
   for (const dv of devs) {
+    const fx0 = fixedPos.get(dv.tag)
+    if (fx0) {
+      deviceSymbol(b, dv.kind, fx0.pos[0], fx0.pos[1], rDev, fx0.vertical)
+      P.addHard({
+        x0: fx0.pos[0] - 1.45 * rDev,
+        y0: fx0.pos[1] - 1.45 * rDev,
+        x1: fx0.pos[0] + 1.45 * rDev,
+        y1: fx0.pos[1] + 1.45 * rDev
+      })
+      devPos.set(dv.tag, fx0.pos)
+      continue
+    }
     const m = M([dv.x, dv.y])
     const half = 1.55 * rDev
     const fits = (q: Pt): boolean =>
@@ -440,12 +545,23 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
     const hBox = lines.reduce((s, l) => s + pitchOf(l.h), 0) + 2 * S
     const ctr = polyCentroid(poly)
     const anchor: Pt = pointInPolygon(ctr, poly) ? ctr : poly[0]
+    // boundary samples: outside boxes are kept close to the enclosure wall and tied back with a short leader
+    const edgePts: Pt[] = []
+    for (let i = 0; i < poly.length; i++) {
+      const a0 = poly[i]
+      const a1 = poly[(i + 1) % poly.length]
+      const n = Math.max(1, Math.ceil(Math.hypot(a1[0] - a0[0], a1[1] - a0[1]) / (1.5 * S)))
+      for (let k = 0; k <= n; k++)
+        edgePts.push([a0[0] + ((a1[0] - a0[0]) * k) / n, a0[1] + ((a1[1] - a0[1]) * k) / n])
+    }
     const cands = [...grid]
-      .map((q) => ({
-        q,
-        d: Math.hypot(q[0] - anchor[0], q[1] - anchor[1]),
-        inside: pointInPolygon(q, poly)
-      }))
+      .map((q) => {
+        const inside = pointInPolygon(q, poly)
+        const d = inside
+          ? Math.hypot(q[0] - anchor[0], q[1] - anchor[1])
+          : Math.min(...edgePts.map((e) => Math.hypot(q[0] - e[0], q[1] - e[1])))
+        return { q, d, inside }
+      })
       .sort((p1, p2) => (p1.inside === p2.inside ? p1.d - p2.d : p1.inside ? -1 : 1))
     const evaluate = (soft: boolean): boolean => {
       for (const { q, inside } of cands) {
@@ -465,7 +581,7 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
           ]
           if (!corners.every((k) => pointInPolygon(k, poly))) continue
         }
-        if (!P.free(bx, 0.6 * S, soft)) continue
+        if (!P.free(bx, 1.2 * S, soft)) continue
         // draw
         b.rect('CO2-ANNO', bx.x0, bx.y0, bx.x1 - bx.x0, bx.y1 - bx.y0)
         let yy = bx.y1 - S
@@ -483,9 +599,16 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
           [bx.x0, bx.y1]
         ].every((k) => pointInPolygon(k as Pt, poly))
         if (!cornersInside) {
-          const e1 = nearestPointInBox(bx, anchor)
-          b.line('CO2-ANNO', e1[0], e1[1], anchor[0], anchor[1])
-          b.circle('CO2-ANNO', anchor[0], anchor[1], 0.5 * S)
+          let best: { e: Pt; k: Pt; d: number } | null = null
+          for (const e of edgePts) {
+            const k = nearestPointInBox(bx, e)
+            const d = Math.hypot(k[0] - e[0], k[1] - e[1])
+            if (!best || d < best.d) best = { e, k, d }
+          }
+          if (best && best.d > 1.2 * S) {
+            b.line('CO2-ANNO', best.k[0], best.k[1], best.e[0], best.e[1])
+            b.circle('CO2-ANNO', best.e[0], best.e[1], 0.5 * S)
+          }
         }
         P.addHard(bx)
         return true
@@ -547,7 +670,8 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
         }
         if (done) break
       }
-      if (!done) P.tag(m, `${n.tag} ${n.orificeCode}`)
+      if (!done && !nearTag(P, c, m, `${n.tag} ${n.orificeCode}`))
+        P.tag(m, `${n.tag} ${n.orificeCode}`)
     }
   }
 
@@ -559,48 +683,53 @@ export function drawCo2FloorSheet(c: Ctx, d: Co2FloorData): void {
       !tryText(P, S, dv.tag, 1.9, cands, 'FP-ANNO', true) &&
       !tryText(P, S, dv.tag, 1.9, cands, 'FP-ANNO', false)
     )
-      P.tag(pos, dv.tag)
+      if (!nearTag(P, c, pos, dv.tag)) P.tag(pos, dv.tag)
   }
 
   // ───────── pipe size labels ─────────
   const labelHP = 2.0
   for (const { p, pts } of pipeLines) {
     const text = pipeLabelText(p)
-    const lens = pts.slice(1).map((q, i) => Math.hypot(q[0] - pts[i][0], q[1] - pts[i][1]))
-    const iMax = lens.indexOf(Math.max(...lens))
-    const sa = pts[iMax]
-    const sz = pts[iMax + 1]
-    const sl = lens[iMax] || 1
-    const u: Pt = [(sz[0] - sa[0]) / sl, (sz[1] - sa[1]) / sl]
-    let ang = (Math.atan2(u[1], u[0]) * 180) / Math.PI
-    if (ang > 90 + 1e-9) ang -= 180
-    else if (ang <= -90 + 1e-9) ang += 180
-    const nrm: Pt = [-u[1], u[0]]
-    const off = (labelHP * 0.5 + 0.9) * S
     const wLabel = textWidth(labelHP * S, text)
-    const fracs = sl > wLabel * 1.15 ? [0.5, 0.38, 0.62, 0.28, 0.72, 0.18, 0.82] : [0.5]
+    const off = (labelHP * 0.5 + 0.9) * S
+    const segs = pts
+      .slice(1)
+      .map((q, i) => ({ sa: pts[i], sz: q, l: Math.hypot(q[0] - pts[i][0], q[1] - pts[i][1]) }))
+      .sort((m, n) => n.l - m.l)
     const cands: TextCand[] = []
     for (const k of [0, 1, 2]) {
       const o = off * (1 + k * 0.9)
-      for (const fr of fracs)
-        for (const side of [1, -1])
-          cands.push({
-            x: sa[0] + u[0] * sl * fr + nrm[0] * o * side,
-            y: sa[1] + u[1] * sl * fr + nrm[1] * o * side,
-            align: 'center',
-            vAlign: 'middle',
-            rot: ang
-          })
+      for (const sg of segs) {
+        const sl = sg.l || 1
+        const u: Pt = [(sg.sz[0] - sg.sa[0]) / sl, (sg.sz[1] - sg.sa[1]) / sl]
+        let ang = (Math.atan2(u[1], u[0]) * 180) / Math.PI
+        if (ang > 90 + 1e-9) ang -= 180
+        else if (ang <= -90 + 1e-9) ang += 180
+        const nrm: Pt = [-u[1], u[0]]
+        const fracs =
+          sl > wLabel * 1.15
+            ? [0.5, 0.38, 0.62, 0.28, 0.72, 0.18, 0.82]
+            : sl > wLabel * 0.8
+              ? [0.5]
+              : []
+        for (const fr of fracs)
+          for (const side of [1, -1])
+            cands.push({
+              x: sg.sa[0] + u[0] * sl * fr + nrm[0] * o * side,
+              y: sg.sa[1] + u[1] * sl * fr + nrm[1] * o * side,
+              align: 'center',
+              vAlign: 'middle',
+              rot: ang
+            })
+      }
     }
     if (tryText(P, S, text, labelHP, cands, 'FP-ANNO', true)) continue
     if (tryText(P, S, text, labelHP, cands, 'FP-ANNO', false)) continue
-    const mid: Pt = [(sa[0] + sz[0]) / 2, (sa[1] + sz[1]) / 2]
+    const lg = segs[0]
+    const mid: Pt = [(lg.sa[0] + lg.sz[0]) / 2, (lg.sa[1] + lg.sz[1]) / 2]
+    if (nearText(P, c, mid, text, labelHP)) continue
     if (!P.callout(mid, [text], labelHP))
-      P.text('FP-ANNO', mid[0] + nrm[0] * off, mid[1] + nrm[1] * off, labelHP, text, {
-        align: 'center',
-        vAlign: 'middle',
-        rotationDeg: ang
-      })
+      P.text('FP-ANNO', mid[0], mid[1] + off, labelHP, text, { align: 'center', vAlign: 'middle' })
   }
 
   // ───────── sheet title and right-hand panel ─────────

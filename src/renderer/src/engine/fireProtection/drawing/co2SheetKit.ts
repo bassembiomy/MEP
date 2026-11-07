@@ -164,29 +164,16 @@ export function deviceSymbol(
   kind: Co2DeviceKind,
   x: number,
   y: number,
-  r: number
+  r: number,
+  vertical = false
 ): void {
   const T = (t: string, h: number, dy = 0): void =>
     b.text(DEVICE_LAYER, x, y + dy, h / b.scale, t, { align: 'center', vAlign: 'middle' })
-  const bow = (cy: number, hw: number, hh: number): void => {
-    b.polyline(
-      DEVICE_LAYER,
-      [
-        [x - hw, cy - hh],
-        [x - hw, cy + hh],
-        [x, cy]
-      ],
-      true
-    )
-    b.polyline(
-      DEVICE_LAYER,
-      [
-        [x + hw, cy - hh],
-        [x + hw, cy + hh],
-        [x, cy]
-      ],
-      true
-    )
+  // local (u along the pipe, v across it) → model; vertical valves lie along y
+  const pt = (u: number, v: number): Pt => (vertical ? [x - v, y + u] : [x + u, y + v])
+  const bow = (hw: number, hh: number): void => {
+    b.polyline(DEVICE_LAYER, [pt(-hw, -hh), pt(-hw, hh), pt(0, 0)], true)
+    b.polyline(DEVICE_LAYER, [pt(hw, -hh), pt(hw, hh), pt(0, 0)], true)
   }
   switch (kind) {
     case 'smoke-detector':
@@ -237,21 +224,28 @@ export function deviceSymbol(
       )
       T('!', 1.15 * r, -0.2 * r)
       break
-    case 'lockout-valve':
-      bow(y, 1.1 * r, 0.65 * r)
-      b.line(DEVICE_LAYER, x, y, x, y + 0.9 * r)
+    case 'lockout-valve': {
+      bow(1.1 * r, 0.65 * r)
+      const s0 = pt(0, 0)
+      const s1 = pt(0, 0.9 * r)
+      b.line(DEVICE_LAYER, s0[0], s0[1], s1[0], s1[1])
       b.solid(DEVICE_LAYER, [
-        [x - 0.45 * r, y + 0.9 * r],
-        [x + 0.45 * r, y + 0.9 * r],
-        [x + 0.45 * r, y + 1.5 * r],
-        [x - 0.45 * r, y + 1.5 * r]
+        pt(-0.45 * r, 0.9 * r),
+        pt(0.45 * r, 0.9 * r),
+        pt(0.45 * r, 1.5 * r),
+        pt(-0.45 * r, 1.5 * r)
       ])
       break
-    case 'selector-valve':
-      bow(y, 1.1 * r, 0.65 * r)
-      b.line(DEVICE_LAYER, x, y, x, y + 0.7 * r)
-      b.circle(DEVICE_LAYER, x, y + 1.15 * r, 0.45 * r)
+    }
+    case 'selector-valve': {
+      bow(1.1 * r, 0.65 * r)
+      const s0 = pt(0, 0)
+      const s1 = pt(0, 0.7 * r)
+      b.line(DEVICE_LAYER, s0[0], s0[1], s1[0], s1[1])
+      const c0 = pt(0, 1.15 * r)
+      b.circle(DEVICE_LAYER, c0[0], c0[1], 0.45 * r)
       break
+    }
     case 'pressure-switch':
       b.circle(DEVICE_LAYER, x, y + 0.25 * r, 0.95 * r)
       b.line(DEVICE_LAYER, x, y - 0.7 * r, x, y - 1.3 * r)
