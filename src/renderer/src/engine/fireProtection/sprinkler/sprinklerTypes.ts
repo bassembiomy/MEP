@@ -80,12 +80,40 @@ export interface SprinklerAnswers {
   supply:
     | { kind: 'fire-pump' }
     | { kind: 'city'; staticPsi: number; residualPsi: number; residualFlowGpm: number }
+  /**
+   * Pipe sizing method. 'schedule-verified' (default): sizes from the NFPA 13 pipe schedule (§28.5 tables), then
+   * hydraulically verified and upsized where the supply is short. 'hydraulic': hydraulically calculated sizing
+   * (NFPA 13 Ch. 28) — the smallest sizes for which every remote area keeps `minSupplyMarginPsi` below the supply.
+   */
+  pipeSizing?: 'schedule-verified' | 'hydraulic'
+  /** Safety margin kept between the available supply and the demand in hydraulic sizing, psi (default 10). */
+  minSupplyMarginPsi?: number
 }
 
 // ─────────────────────────── Design input ───────────────────────────
 
 export type SprinklerSystemType = 'wet' | 'dry' | 'preaction-single' | 'preaction-double' | 'deluge'
-export type SprinklerOrientation = 'pendent' | 'upright' | 'dry-pendent' | 'concealed-pendent'
+export type SprinklerOrientation = 'pendent' | 'upright' | 'dry-pendent' | 'concealed-pendent' | 'sidewall'
+
+/**
+ * Sprinkler type chosen by the designer for a protected area (standard-coverage spray sprinklers, NFPA 13 Ch. 9/10).
+ * 'sidewall' = standard horizontal sidewall (heads along a wall, NFPA 13 §10.3).
+ */
+export interface SprinklerHeadSpec {
+  kFactor: 5.6 | 8 | 11.2 | 14 | 16.8 | 25.2
+  orientation: 'pendent' | 'upright' | 'dry-pendent' | 'concealed-pendent' | 'sidewall'
+  response: 'quick' | 'standard'
+  /** 135 / 155 (ordinary), 175 / 200 (intermediate), 286 (high) °F. */
+  tempRatingF: 135 | 155 | 175 | 200 | 286
+}
+
+/** Sprinkler system zone on a floor: one zone control valve assembly (riser connection) and its own piping. */
+export interface SprinklerZoneInput {
+  id: string // Z1
+  name: string
+  /** Zone control valve / riser connection location, mm. */
+  riser: { x: number; y: number }
+}
 
 export interface SprinklerRoomInput {
   id: string // R1
@@ -105,6 +133,12 @@ export interface SprinklerRoomInput {
   /** Omit sprinklers (only where NFPA 13 §9.2 permits, e.g. noncombustible shafts) — a reason is required. */
   omit: boolean
   omitReason: string
+  /** Sprinkler type chosen by the designer; undefined / null = selected automatically from hazard and ceiling. */
+  headSpec?: SprinklerHeadSpec | null
+  /** System zone (SprinklerFloorInput.zones) serving this area; undefined = the first zone. */
+  zoneId?: string
+  /** 'detected' from the plan's closed polylines or 'drawn' by the designer on the plan. */
+  source?: 'detected' | 'drawn'
 }
 
 export interface SprinklerFloorInput {
@@ -123,6 +157,11 @@ export interface SprinklerFloorInput {
   riser: { x: number; y: number }
   /** Branch lines run along x or y; 'auto' picks the direction giving fewer branch lines. */
   branchDirection: 'x' | 'y' | 'auto'
+  /**
+   * System zones on this floor (each with its own zone control valve and piping). undefined / empty = one zone
+   * 'Z1' named after the floor, at `riser`.
+   */
+  zones?: SprinklerZoneInput[]
 }
 
 export interface SprinklerDesignInput {
@@ -163,6 +202,7 @@ export interface PlacedSprinkler {
   wallDistanceMm: number
   /** Hydraulic node id of this sprinkler. */
   node: string
+  zoneId: string
 }
 
 export type SprinklerPipeKind = 'branch' | 'cross-main' | 'riser-nipple' | 'feed'
@@ -179,6 +219,7 @@ export interface SprinklerPipe {
   toNode: string
   /** Number of sprinklers supplied through this segment (pipe schedule sizing). */
   sprinklersDownstream: number
+  zoneId: string
 }
 
 export interface SprinklerRoomResult {
@@ -197,6 +238,7 @@ export interface SprinklerRoomResult {
 
 export interface RemoteAreaResult {
   floorId: string
+  zoneId: string
   hazard: HazardClass
   densityGpmFt2: number
   /** Design area after adjustments (dry / double-interlock +30 %), ft². */
@@ -234,6 +276,25 @@ export interface SprinklerFloorDesign {
   /** Water capacity of the floor piping, US gal. */
   volumeGal: number
   remoteAreas: RemoteAreaResult[]
+  governing: RemoteAreaResult | null
+  zones: SprinklerZoneResult[]
+  checks: DesignCheck[]
+}
+
+export interface SprinklerZoneResult {
+  zoneId: string
+  name: string
+  riser: { x: number; y: number }
+  /** Zone control valve assembly tag, e.g. ZCV-L1-Z1. */
+  controlValveTag: string
+  roomIds: string[]
+  headCount: number
+  areaFt2: number
+  areaM2: number
+  /** NFPA 13 §4.4 maximum area per system riser on one floor: 52,000 ft² light/ordinary, 40,000 ft² extra hazard. */
+  maxAreaFt2: number
+  /** Hydraulic node at the zone control valve ('FC' for the first zone, 'FC-<zoneId>' otherwise). */
+  node: string
   governing: RemoteAreaResult | null
   checks: DesignCheck[]
 }
