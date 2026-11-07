@@ -1,5 +1,14 @@
 import React, { useState } from 'react'
-import { ChevronDown, ChevronRight, Copy, Plus, RotateCcw, Trash2 } from 'lucide-react'
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Plus,
+  RotateCcw,
+  Trash2
+} from 'lucide-react'
 import { useFireProtectionStore } from '../store/fireProtectionStore'
 import { useShallow } from 'zustand/react/shallow'
 import type {
@@ -15,6 +24,7 @@ import type {
   PipeRun,
   PipeSchedule,
   PipeSpec,
+  PrvStrategy,
   PumpArrangement,
   FirePumpType,
   StandpipeClass,
@@ -680,6 +690,121 @@ const RISER_OPTIONS = [
   { value: '8', label: '8 in' }
 ]
 
+// ───────────────────────── Standpipe pressure zoning (avoid PRVs) ─────────────────────────
+
+const PRV_STRATEGIES: { value: PrvStrategy; label: string }[] = [
+  { value: 'avoid', label: 'Avoid PRVs - zones (recommended)' },
+  { value: 'allow', label: 'Allow PRVs (single zone)' }
+]
+
+export const SERVICE_FLOOR_QUESTION_ID = 'service-floor-question'
+
+/** Pressure strategy, zone pump shutoff ratio and the REQUIRED service-floor question. */
+const StandpipeZoningInputs: React.FC<{
+  design: StandpipeDesignInput
+  floors: FloorLevel[]
+  onChange: (d: StandpipeDesignInput) => void
+}> = ({ design, floors, onChange }) => {
+  const answered = Array.isArray(design.serviceFloorIds)
+  const ids = design.serviceFloorIds ?? []
+  const usable = floors.filter((fl) => !fl.isRoof)
+  const setIds = (next: string[] | null): void => onChange({ ...design, serviceFloorIds: next })
+  const toggle = (id: string, on: boolean): void => {
+    const set = new Set(ids)
+    if (on) set.add(id)
+    else set.delete(id)
+    // keep floor order
+    setIds(usable.filter((fl) => set.has(fl.id)).map((fl) => fl.id))
+  }
+  const none = answered && ids.length === 0
+  const names = usable.filter((fl) => ids.includes(fl.id)).map((fl) => fl.name)
+  const tone = answered
+    ? 'border-emerald-700/60 bg-emerald-950/20'
+    : 'border-amber-500 bg-amber-950/30 shadow-lg shadow-amber-500/10'
+  return (
+    <div className="bg-neutral-900 border border-neutral-850 rounded-2xl p-4 flex flex-col gap-3">
+      <div className="text-xs font-bold text-neutral-300 uppercase tracking-wider">
+        Pressure zoning (avoid PRVs)
+      </div>
+      <Select
+        label="Pressure strategy"
+        value={design.prvStrategy ?? 'avoid'}
+        options={PRV_STRATEGIES}
+        onChange={(v) => onChange({ ...design, prvStrategy: v })}
+      />
+      <NumField
+        label="Zone booster pump shutoff ratio"
+        value={design.zonePumpShutoffRatio ?? 1.2}
+        min={1.1}
+        step={0.01}
+        hint="1.10 - 1.40, default 1.20. Flat-curve pumps (about 1.10) give taller zones."
+        onChange={(v) =>
+          v !== undefined &&
+          onChange({ ...design, zonePumpShutoffRatio: Math.min(1.4, Math.max(1.1, v)) })
+        }
+      />
+      <div
+        id={SERVICE_FLOOR_QUESTION_ID}
+        className={`rounded-xl border-2 p-3 flex flex-col gap-2 ${tone}`}
+      >
+        <div className="flex items-start gap-2">
+          {answered ? (
+            <CheckCircle2 size={18} className="shrink-0 text-emerald-400 mt-0.5" />
+          ) : (
+            <AlertTriangle size={18} className="shrink-0 text-amber-400 mt-0.5" />
+          )}
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <span
+              className={`text-[9px] font-bold uppercase tracking-wide ${answered ? 'text-emerald-400' : 'text-amber-400'}`}
+            >
+              {answered ? 'Answered' : 'Answer required'}
+            </span>
+            <span className="text-xs font-semibold text-neutral-100 leading-snug">
+              Which floors are service / mechanical floors? (break tank + booster pumps can be
+              placed there)
+            </span>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+          {usable.map((fl) => (
+            <label
+              key={fl.id}
+              className="flex items-center gap-2 text-[11px] text-neutral-300 cursor-pointer min-w-0"
+            >
+              <input
+                type="checkbox"
+                checked={ids.includes(fl.id)}
+                onChange={(e) => toggle(fl.id, e.target.checked)}
+                className="accent-amber-500"
+              />
+              <span className="truncate">{fl.name}</span>
+              <span className="text-[9px] text-neutral-600 font-mono">
+                {fl.elevationM.toFixed(1)}
+              </span>
+            </label>
+          ))}
+        </div>
+        <label className="flex items-center gap-2 text-[11px] text-neutral-200 font-semibold cursor-pointer border-t border-neutral-800 pt-2">
+          <input
+            type="checkbox"
+            checked={none}
+            onChange={(e) => setIds(e.target.checked ? [] : null)}
+            className="accent-amber-500"
+          />
+          No service floors in this building
+        </label>
+        <div className={`text-[10px] ${answered ? 'text-emerald-300' : 'text-amber-300'}`}>
+          {!answered
+            ? 'Not answered yet - the design is calculated without service floors until you answer.'
+            : none
+              ? 'Selected: no service floors.'
+              : `Selected: ${names.join(', ')}.`}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const StandpipeDesignSection: React.FC<{
   design: StandpipeDesignInput
   onChange: (d: StandpipeDesignInput) => void
@@ -1256,6 +1381,14 @@ export const FireInputPanel: React.FC = () => {
           </div>
         )}
       </Section>
+
+      {input.standpipeDesign && input.building && (
+        <StandpipeZoningInputs
+          design={input.standpipeDesign}
+          floors={input.building.floors}
+          onChange={(d) => set({ standpipeDesign: d })}
+        />
+      )}
 
       {input.standpipeDesign && (
         <Section title="Standpipe Design">

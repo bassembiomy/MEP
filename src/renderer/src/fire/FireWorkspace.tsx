@@ -18,7 +18,7 @@ import {
 import { useFireProtectionStore, type FireView } from '../store/fireProtectionStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ErrorBoundary } from '../components/ErrorBoundary'
-import { FireInputPanel } from './FireInputPanel'
+import { FireInputPanel, SERVICE_FLOOR_QUESTION_ID } from './FireInputPanel'
 import { DrawingPreview } from './DrawingPreview'
 import { LearningPanel } from './LearningPanel'
 import {
@@ -173,6 +173,23 @@ export const FireWorkspace: React.FC = () => {
           </div>
         )}
         {header}
+        {result?.standpipe && !result.standpipe.zoning.serviceFloorsAnswered && (
+          <button
+            type="button"
+            onClick={() => {
+              const el = document.getElementById(SERVICE_FLOOR_QUESTION_ID)
+              el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            }}
+            className="flex items-center gap-3 text-left bg-amber-950/40 border-2 border-amber-500 text-amber-200 rounded-2xl px-4 py-3 cursor-pointer hover:bg-amber-950/60"
+          >
+            <AlertTriangle size={20} className="shrink-0 text-amber-400" />
+            <span className="text-xs leading-relaxed">
+              <strong className="uppercase tracking-wide">Question for you:</strong> which floors
+              are service / mechanical floors? The standpipe pressure zoning (PRV-free design)
+              depends on the answer - click to answer it in the Standpipe inputs.
+            </span>
+          </button>
+        )}
         {result && (
           <>
             <div className="flex flex-wrap items-center gap-2 border-b border-neutral-850 pb-2">

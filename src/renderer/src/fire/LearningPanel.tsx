@@ -231,7 +231,9 @@ const STEPS: LearningStep[] = [
     body: [
       'For every outlet on every floor the engine gives the static pressure (pump at churn + maximum tank head, no flow) and the residual pressure (system flowing at demand).',
       'NFPA 14 §7.2.3: where the static pressure at a 2½" hose outlet exceeds 175 psi a pressure-regulating device (PRV) is required to limit it to 175 psi. These rows are highlighted in amber; the low floors need them because they get the full pump pressure plus the height of the building.',
-      'The two topmost outlets of the governing riser are the flowing outlets (blue rows).'
+      'The two topmost outlets of the governing riser are the flowing outlets (blue rows).',
+      'Zoning study (avoid PRVs): the Standpipe tab always shows two solutions - WITHOUT PRVs (the risers are split into pressure zones, each fed by its own pump: main pumps, an express riser from the pump room, or a break tank + booster pump set on a service floor) and WITH PRVs (single zone). Pressure strategy "Avoid PRVs" selects the first. PRVs need 5-year full-flow tests (NFPA 25) and can fail, so zoning is preferred.',
+      'Service-floor question: only you know which floors are mechanical / service floors where a break tank and booster pumps can sit. Answer the amber card under the Standpipe inputs (or tick "No service floors"); until then the design is calculated without service floors. Taller zones come from flat-curve pumps - lower the zone pump shutoff ratio toward 1.10.'
     ],
     live: (r) => {
       const s = r.standpipe

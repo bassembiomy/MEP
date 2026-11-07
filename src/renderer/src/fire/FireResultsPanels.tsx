@@ -4,7 +4,11 @@ import type {
   CheckStatus,
   DesignCheck,
   FireDesignResult,
-  HydraulicNodeRow
+  FloorLevel,
+  HydraulicNodeRow,
+  StandpipeSolution,
+  StandpipeZone,
+  StandpipeZoningStudy
 } from '../engine/fireProtection/fpTypes'
 import { buildFireCalcReport } from '../engine/fireProtection/report'
 import { formatPipeSize } from '../engine/fireProtection/standards/pipeData'
@@ -303,6 +307,8 @@ export const StandpipePanel: React.FC<R> = ({ result }) => {
         <Table head={nodeHead} rows={sp.rows.map(nodeRow)} dense />
       </Card>
 
+      <StandpipeZoningPanel study={sp.zoning} floors={result.input.building?.floors ?? []} />
+
       <Card title="Standpipe checks">
         <div className="flex flex-col divide-y divide-neutral-850">
           {sp.checks.length === 0 && (
@@ -325,6 +331,259 @@ export const StandpipePanel: React.FC<R> = ({ result }) => {
     </div>
   )
 }
+
+// ───────────────────────── Standpipe zoning: with PRV vs without PRV ─────────────────────────
+
+const ZONE_FILL = ['#38bdf8', '#34d399', '#fbbf24', '#f472b6', '#a78bfa', '#fb923c']
+
+/** Zone bands against floor elevations (true levels), stations marked on the left. */
+const ZoningSchematic: React.FC<{ sol: StandpipeSolution; floors: FloorLevel[] }> = ({
+  sol,
+  floors
+}) => {
+  const sorted = [...floors].sort((a, b) => a.elevationM - b.elevationM)
+  if (sorted.length === 0) return null
+  const minE = Math.min(sorted[0].elevationM, ...sol.zones.map((z) => z.station.pumpCLElevationM))
+  const maxE = sorted[sorted.length - 1].elevationM
+  const span = Math.max(maxE - minE, 1)
+  const H = 190
+  const top = 8
+  const y = (e: number): number => top + H - ((e - minE) / span) * H
+  const labelEvery = Math.max(1, Math.ceil(sorted.length / 10))
+  return (
+    <svg
+      viewBox={`0 0 260 ${H + top * 2}`}
+      className="w-full max-w-[260px] h-auto self-center"
+      role="img"
+      aria-label={`Zone bands for the ${sol.kind === 'with-prv' ? 'with PRV' : 'without PRV'} solution`}
+    >
+      {sorted.map((fl, i) => (
+        <g key={fl.id}>
+          <line
+            x1={52}
+            x2={170}
+            y1={y(fl.elevationM)}
+            y2={y(fl.elevationM)}
+            stroke="#525252"
+            strokeWidth={0.6}
+            strokeDasharray="2 2"
+          />
+          {(i % labelEvery === 0 || i === sorted.length - 1) && (
+            <text x={48} y={y(fl.elevationM) + 3} textAnchor="end" fontSize={8} fill="#a3a3a3">
+              {fl.name.length > 8 ? fl.id : fl.name}
+            </text>
+          )}
+        </g>
+      ))}
+      {sol.zones.map((z, i) => {
+        const y1 = y(z.topOutletElevationM)
+        const y2 = y(z.bottomOutletElevationM)
+        const col = ZONE_FILL[i % ZONE_FILL.length]
+        const st = z.station
+        const yS = y(st.pumpCLElevationM)
+        return (
+          <g key={z.id}>
+            <rect
+              x={78}
+              y={y1 - 3}
+              width={64}
+              height={Math.max(y2 - y1, 0) + 6}
+              rx={3}
+              fill={col}
+              fillOpacity={z.feasible ? 0.3 : 0.15}
+              stroke={z.feasible ? col : '#f59e0b'}
+              strokeWidth={1.2}
+              strokeDasharray={z.feasible ? undefined : '3 2'}
+            />
+            <text
+              x={110}
+              y={(y1 + y2) / 2 + 3}
+              textAnchor="middle"
+              fontSize={9}
+              fontWeight={700}
+              fill="#f5f5f5"
+            >
+              {z.id}
+            </text>
+            {st.kind !== 'pump-room' && (
+              <line
+                x1={st.kind === 'express' ? 66 : 150}
+                x2={st.kind === 'express' ? 66 : 150}
+                y1={yS}
+                y2={y2}
+                stroke={col}
+                strokeWidth={2}
+              />
+            )}
+            <rect
+              x={st.kind === 'service-floor' ? 146 : 60}
+              y={yS - 4}
+              width={8}
+              height={8}
+              fill={col}
+            />
+            <text
+              x={st.kind === 'service-floor' ? 158 : 60}
+              y={st.kind === 'service-floor' ? yS + 3 : yS + 15}
+              fontSize={7.5}
+              fill="#d4d4d4"
+              textAnchor={st.kind === 'service-floor' ? 'start' : 'middle'}
+            >
+              {st.kind === 'service-floor'
+                ? 'break tank + pumps'
+                : st.kind === 'express'
+                  ? 'pump (express)'
+                  : 'main pumps'}
+            </text>
+          </g>
+        )
+      })}
+      {sol.kind === 'with-prv' && sol.prvCount > 0 && (
+        <text x={110} y={top + H + 14} textAnchor="middle" fontSize={8} fill="#f59e0b">
+          {sol.prvCount} PRV outlet(s) on the lower floors
+        </text>
+      )}
+    </svg>
+  )
+}
+
+const ZoneTable: React.FC<{ zones: StandpipeZone[]; floors: FloorLevel[] }> = ({
+  zones,
+  floors
+}) => {
+  const nm = (id: string): string => floors.find((fl) => fl.id === id)?.name ?? id
+  return (
+    <Table
+      dense
+      head={[
+        'Zone',
+        'Floors',
+        'Station',
+        'Req psi',
+        'Rated psi',
+        'Churn psi',
+        'Max static',
+        'Top resid.',
+        'Tank m³'
+      ]}
+      rows={zones.map((z) => [
+        <span key="z" className={z.feasible ? '' : 'text-amber-400'}>
+          {z.id}
+        </span>,
+        z.floorIds.length > 1
+          ? `${nm(z.floorIds[0])} - ${nm(z.floorIds[z.floorIds.length - 1])}`
+          : nm(z.floorIds[0] ?? ''),
+        z.station.kind === 'service-floor'
+          ? `Service ${nm(z.station.floorId ?? '')}`
+          : z.station.kind === 'express'
+            ? `Express ${f(z.expressRiserLengthM ?? 0, 0)} m`
+            : 'Pump room',
+        f(z.requiredPressurePsi, 0),
+        f(z.ratedNetPressurePsi, 0),
+        f(z.churnDischargePsi, 0),
+        <span key="s" className={z.maxStaticPsi > 175 ? 'text-amber-400' : ''}>
+          {f(z.maxStaticPsi, 0)}
+        </span>,
+        f(z.topResidualPsi, 0),
+        z.breakTank ? f(z.breakTank.volumeM3, 0) : '-'
+      ])}
+    />
+  )
+}
+
+const SolutionCard: React.FC<{
+  title: string
+  sol: StandpipeSolution
+  selected: boolean
+  floors: FloorLevel[]
+}> = ({ title, sol, selected, floors }) => (
+  <div
+    className={`bg-neutral-900 p-5 rounded-2xl flex flex-col gap-3 shadow-xl min-w-0 border ${selected ? 'border-emerald-600/70' : 'border-neutral-850'}`}
+  >
+    <div className="flex items-center gap-2 flex-wrap">
+      <div className="text-xs font-bold text-neutral-200 uppercase tracking-wider">{title}</div>
+      {selected && (
+        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-600/20 text-emerald-300 border border-emerald-600/50">
+          SELECTED
+        </span>
+      )}
+      <span
+        className={`ml-auto text-[9px] font-bold px-2 py-0.5 rounded-full border ${sol.feasible ? 'text-emerald-300 border-emerald-700/50' : 'text-amber-300 border-amber-600/60'}`}
+      >
+        {sol.feasible ? 'FEASIBLE' : 'NOT FEASIBLE'}
+      </span>
+    </div>
+    <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-4">
+      <KV
+        rows={[
+          ['Pressure zones', sol.zones.length],
+          ['Fire pump sets', sol.pumpSets],
+          ['PRVs', sol.prvCount],
+          ['Express risers', sol.expressRisers],
+          [
+            'Service-floor stations',
+            sol.serviceFloorStations.length
+              ? sol.serviceFloorStations
+                  .map((id) => floors.find((fl) => fl.id === id)?.name ?? id)
+                  .join(', ')
+              : 0
+          ],
+          ['Max static', `${f(sol.maxStaticPsi, 0)} psi`],
+          ['Feasible', sol.feasible ? 'Yes' : 'No']
+        ]}
+      />
+      <ZoningSchematic sol={sol} floors={floors} />
+    </div>
+    <ZoneTable zones={sol.zones} floors={floors} />
+    <ul className="list-disc pl-4 flex flex-col gap-1 text-[11px] text-neutral-400 leading-relaxed">
+      {sol.summary.map((t, i) => (
+        <li key={i}>{t}</li>
+      ))}
+    </ul>
+    {sol.suggestion && (
+      <div className="text-[11px] text-amber-200 bg-amber-950/30 border border-amber-600/50 rounded-xl px-3 py-2 leading-relaxed">
+        <strong>Suggestion:</strong> {sol.suggestion}
+      </div>
+    )}
+  </div>
+)
+
+export const StandpipeZoningPanel: React.FC<{
+  study: StandpipeZoningStudy
+  floors: FloorLevel[]
+}> = ({ study, floors }) => (
+  <div className="flex flex-col gap-3">
+    <div className="text-xs font-bold text-neutral-300 uppercase tracking-wider">
+      Standpipe zoning - with PRV vs without PRV
+    </div>
+    <div className="text-[11px] text-neutral-500">
+      Strategy:{' '}
+      {study.strategy === 'avoid' ? 'avoid PRVs (pressure zones)' : 'allow PRVs (single zone)'} ·
+      service floors:{' '}
+      {study.serviceFloorsAnswered
+        ? study.serviceFloorIds.length
+          ? study.serviceFloorIds
+              .map((id) => floors.find((fl) => fl.id === id)?.name ?? id)
+              .join(', ')
+          : 'none'
+        : 'not answered yet'}
+    </div>
+    <div className="grid grid-cols-1 2xl:grid-cols-2 gap-5">
+      <SolutionCard
+        title="Without PRV (pressure zones)"
+        sol={study.withoutPrv}
+        selected={study.selected === 'without-prv'}
+        floors={floors}
+      />
+      <SolutionCard
+        title="With PRV (single zone)"
+        sol={study.withPrv}
+        selected={study.selected === 'with-prv'}
+        floors={floors}
+      />
+    </div>
+  </div>
+)
 
 // ───────────────────────── Pumps ─────────────────────────
 
