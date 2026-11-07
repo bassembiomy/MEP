@@ -2,7 +2,7 @@
  * Fire protection engine orchestrator: demand -> pump set -> tank & sump -> pump room -> checks.
  */
 import { DEFAULT_FIRE_INPUT, SIMPLE_FIRE_INPUT } from './defaults';
-import { FireDesignInput, FireDesignResult, SprinklerDemandResult, StandpipeSystemDesign } from './fpTypes';
+import { FireDesignInput, FireDesignResult, PumpSetSelection, SprinklerDemandResult, StandpipeSystemDesign, SystemDemand } from './fpTypes';
 import { calculateSprinklerDemand, calculateSystemDemand } from './hydraulics';
 import { designExtinguishers } from './extinguisherDesigner';
 import { designPumpRoom } from './pumpRoomDesigner';
@@ -10,6 +10,7 @@ import { analyzeStandpipeOutlets, derivedSprinklerRiser, designStandpipeHydrauli
 import { selectRatedCapacity } from './standards/nfpa20';
 import { STANDPIPE_DURATION_MIN, standpipeFlowGpm } from './standards/nfpa14';
 import { selectPumpSet } from './pumpSelector';
+import { buildStandpipeZoning } from './standpipeZoning';
 import { STANDARDS_REFERENCES } from './standards/codeReferences';
 import { designTank } from './tankDesigner';
 import { applyFirePumpSupply, designSprinklerSystem } from './sprinkler/sprinklerEngine';
@@ -22,7 +23,9 @@ export { DEFAULT_FIRE_INPUT, SIMPLE_FIRE_INPUT };
 export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesignResult {
   let input = inputIn;
   let spHyd: StandpipeSystemDesign | null = null;
-  let demand;
+  let demand: SystemDemand;
+  let pumps: PumpSetSelection | undefined;
+  let zoneNote: string | null = null;
   let sprDesign: SprinklerSystemDesign | null = null;
   let sprOverride: SprinklerDemandResult | undefined;
   const sd = inputIn.sprinklerDesign;
@@ -64,20 +67,42 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
     const pumpCLStd = pumpCenterlineAbsM(inputIn, rated0);
     input = { ...inputIn, riser: derivedSprinklerRiser(inputIn, pumpCLStd), standpipeCount: locations.length };
     spHyd = designStandpipeHydraulics(input, pumpCLStd);
-    demand = calculateSystemDemand(input, {
-      sprinkler: sprOverride,
-      standpipe: {
-        applicable: true,
-        flowGpm: spHyd.demandFlowGpm,
-        residualPressurePsi: spHyd.topOutletResidualPsi,
-        pressureAtPumpDischargePsi: spHyd.pressureAtPumpDischargePsi,
-        durationMin: STANDPIPE_DURATION_MIN
+    const demandFor = (sp: StandpipeSystemDesign): SystemDemand =>
+      calculateSystemDemand(input, {
+        sprinkler: sprOverride,
+        standpipe: {
+          applicable: true,
+          flowGpm: sp.demandFlowGpm,
+          residualPressurePsi: sp.topOutletResidualPsi,
+          pressureAtPumpDischargePsi: sp.pressureAtPumpDischargePsi,
+          durationMin: STANDPIPE_DURATION_MIN
+        }
+      });
+    // pass 1: single-zone demand → pump suction pressures; pass 2: zoning (avoid PRVs) → zone 1 sizes the main pumps
+    demand = demandFor(spHyd);
+    pumps = selectPumpSet(input, demand);
+    const zoning = buildStandpipeZoning(spHyd, input, pumps);
+    spHyd = { ...spHyd, zoning };
+    const zone1 = zoning.selected === 'without-prv' ? zoning.withoutPrv.zones[0] : undefined;
+    if (zone1) {
+      spHyd = { ...spHyd, pressureAtPumpDischargePsi: zone1.requiredPressurePsi, rows: zone1.rows, governingRiserTag: zone1.governingRiserTag };
+      // the main pumps feed zone 1 only: sprinklers above it are fed by the pumps of their own zones (combined system)
+      const zFloors = inputIn.building!.floors;
+      const topFfl = zFloors.find((f) => f.id === zone1.floorIds[zone1.floorIds.length - 1])?.elevationM ?? Infinity;
+      input = { ...input, riser: derivedSprinklerRiser(inputIn, pumpCLStd, topFfl) };
+      const g = sprDesign?.governing;
+      const gFfl = g ? zFloors.find((f) => f.id === g.floorId)?.elevationM : undefined;
+      if (g && gFfl !== undefined && gFfl > topFfl + 1e-9) {
+        const zk = zoning.withoutPrv.zones.find((z) => gFfl <= (zFloors.find((f) => f.id === z.floorIds[z.floorIds.length - 1])?.elevationM ?? Infinity) + 1e-9);
+        zoneNote = `The governing sprinkler floor ${g.floorId} is in zone ${zk?.id ?? '?'}, above zone 1: the detailed sprinkler design is still used for the main pump sizing; verify it against the pump of ${zk?.id ?? 'that zone'}`;
       }
-    });
+      demand = demandFor(spHyd);
+      pumps = selectPumpSet(input, demand);
+    }
   } else {
     demand = calculateSystemDemand(input, sprOverride ? { sprinkler: sprOverride } : undefined);
   }
-  const pumps = selectPumpSet(input, demand);
+  if (!pumps) pumps = selectPumpSet(input, demand);
   const tank = designTank(input, demand, pumps);
   const room = designPumpRoom(input, pumps, tank);
   if (sprDesign && sd) {
@@ -88,6 +113,15 @@ export function designFireProtectionSystem(inputIn: FireDesignInput): FireDesign
     });
   }
   const standpipe = spHyd ? analyzeStandpipeOutlets(spHyd, input, pumps) : null;
+  if (standpipe && zoneNote) {
+    standpipe.checks.push({
+      id: 'sp-sprinkler-zone',
+      title: 'Governing sprinkler floor above zone 1',
+      reference: 'NFPA 13-2019 §19.3.3; NFPA 14-2019 §7.9 (combined system, each zone has its own pump)',
+      status: 'warn',
+      detail: zoneNote
+    });
+  }
   const extinguishers = designExtinguishers(input);
   const co2 = inputIn.co2Design ? designCo2System(inputIn.co2Design) : null;
   return {

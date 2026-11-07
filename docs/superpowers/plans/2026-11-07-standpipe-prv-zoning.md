@@ -27,7 +27,7 @@ Definitions (all elevations m, pressures psi, ft = m × 3.28084):
 - Zone requirement per riser = the existing riser calculation restricted to the band: H1 (2½" 1 ft, tee-branch +
   angle hose valve, top residual), riser segments, flows as today (k = 1 → 500 gpm; Class I/III top two 250/250;
   Class II 100), "Riser base" from the lowest zone outlet to the FFL of that outlet's floor (elbow), then the supply
-  segment to the station: horizontal = loc.horizontalRunToPumpM (pump-room / express) or 10 m (service floor), rise =
+  segment to the station: length = horizontal (loc.horizontalRunToPumpM for pump-room / express, 10 m service floor) + |zone base FFL − station CL| for express / service-floor (vertical express riser pipe; zone 1 keeps today's horizontal-only length), rise =
   (zone base FFL − station CL), main size, fittings 2 elbows + tee + gate, flow Q (full standpipe demand per zone).
   requiredPressurePsi = max over risers; governingRiserTag = argmax. Node names: zone 1 exactly as today
   (`T-H1 … T-SB`, `PD`); zone k ≥ 2: `T-Zk-H1 … T-Zk-SB`, `PD-Zk`.

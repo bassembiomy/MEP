@@ -14,7 +14,7 @@ def outlets(roof):  # (floorId, ffl, elev) bottom->top
     o=[(f,e,e+HV) for f,e in floors]
     if roof: o.append((ROOF[0],ROOF[1],ROOF[1]+HV))
     return o
-def riser_req(outs, zp, Lh):
+def riser_req(outs, zp, Lh, vert=False):
     down=list(reversed(outs)); k=len(down)
     q=[0]*k; 
     if k==1: q[0]=500
@@ -28,7 +28,7 @@ def riser_req(outs, zp, Lh):
     base=down[-1][1]
     zk=(down[-1][2]-base)*FT
     p+=hw(sumQ,ID[6])*(zk+14)+0.433*zk
-    p+=hw(Q,ID[6])*(Lh*FT+61)+0.433*(base-zp)*FT
+    p+=hw(Q,ID[6])*(Lh*FT+(abs(base-zp)*FT if vert else 0)+61)+0.433*(base-zp)*FT
     return p
 def zone_eval(i,t,station):
     kind,zp,fid=station
@@ -39,7 +39,7 @@ def zone_eval(i,t,station):
         lo=U[i][2]; hi=U[t][2]
         zo=[o for o in outs if lo-1e-9<=o[2]<=hi+1e-9]
         if not zo: continue
-        reqs.append(riser_req(zo,zp, Lh if kind!='service-floor' else SVC_LH))
+        reqs.append(riser_req(zo,zp, Lh if kind!='service-floor' else SVC_LH, kind!='pump-room'))
     req=max(reqs)
     smin= SMIN if kind!='service-floor' else 0.0
     smax= SMAX if kind!='service-floor' else SVC_SMAX

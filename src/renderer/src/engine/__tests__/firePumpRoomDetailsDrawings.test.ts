@@ -4,6 +4,12 @@
  */
 import { designFireProtectionSystem } from '../fireProtection/fireProtectionEngine';
 import { DEFAULT_FIRE_INPUT } from '../fireProtection/defaults';
+
+/** Drawing expectations pin the single-zone PRV design (170 psi pump); the zoned drawings come with the next phase. */
+const DEFAULT_ALLOW_PRV: FireDesignInput = {
+  ...DEFAULT_FIRE_INPUT,
+  standpipeDesign: { ...DEFAULT_FIRE_INPUT.standpipeDesign!, prvStrategy: 'allow' }
+};
 import { generateFireDrawings } from '../fireProtection/drawing/sheets';
 import { writeDxf } from '../fireProtection/drawing/dxfWriter';
 import { DrawEntity, Drawing, SheetInfo } from '../fireProtection/drawing/drawingTypes';
@@ -87,7 +93,7 @@ function check(input: FireDesignInput, label: string): void {
 }
 
 console.log('=== Pump room detail drawings ===');
-check(DEFAULT_FIRE_INPUT, 'default 1E+1D+1J');
-check({ ...DEFAULT_FIRE_INPUT, pumpCounts: { electric: 2, diesel: 1, jockey: 2 } }, '2E+1D+2J');
-check({ ...DEFAULT_FIRE_INPUT, tankMaterial: 'grp-sectional', tankAccess: 'side', pumpCounts: { electric: 1, diesel: 0, jockey: 1 } }, 'GRP side access 1E+1J');
+check(DEFAULT_ALLOW_PRV, 'default 1E+1D+1J');
+check({ ...DEFAULT_ALLOW_PRV, pumpCounts: { electric: 2, diesel: 1, jockey: 2 } }, '2E+1D+2J');
+check({ ...DEFAULT_ALLOW_PRV, tankMaterial: 'grp-sectional', tankAccess: 'side', pumpCounts: { electric: 1, diesel: 0, jockey: 1 } }, 'GRP side access 1E+1J');
 console.log('\nAll pump room detail drawing tests passed.');

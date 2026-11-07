@@ -31,6 +31,12 @@ const check = (checks: DesignCheck[], id: string): DesignCheck => {
   return c!;
 };
 
+/** These tests pin the classic single-zone design with PRVs (pressure zoning is covered by fireStandpipeZoning.test.ts). */
+const DEFAULT_ALLOW_PRV: FireDesignInput = {
+  ...DEFAULT_FIRE_INPUT,
+  standpipeDesign: { ...DEFAULT_FIRE_INPUT.standpipeDesign!, prvStrategy: 'allow' }
+};
+
 console.log('=== Fire Standpipe System (NFPA 14) ===');
 
 // 1. Data & standards helpers
@@ -88,7 +94,7 @@ console.log('=== Fire Standpipe System (NFPA 14) ===');
 }
 
 // 3. Engine integration (standpipe governs the pumps)
-const result = designFireProtectionSystem(DEFAULT_FIRE_INPUT);
+const result = designFireProtectionSystem(DEFAULT_ALLOW_PRV);
 {
   const sp = result.standpipe!;
   assert(!!sp, 'result.standpipe present');
@@ -144,17 +150,17 @@ const result = designFireProtectionSystem(DEFAULT_FIRE_INPUT);
 
 // 5. Negative / variant checks
 {
-  const lowRating = designFireProtectionSystem({ ...DEFAULT_FIRE_INPUT, systemComponentRatingPsi: 175 });
+  const lowRating = designFireProtectionSystem({ ...DEFAULT_ALLOW_PRV, systemComponentRatingPsi: 175 });
   assert(check(lowRating.standpipe!.checks, 'sp-components').status === 'fail', '175 psi components fail in this high-rise');
-  const badHeight: FireDesignInput = { ...DEFAULT_FIRE_INPUT, standpipeDesign: { ...DEFAULT_FIRE_INPUT.standpipeDesign!, hoseValveHeightMm: 1700 } };
+  const badHeight: FireDesignInput = { ...DEFAULT_ALLOW_PRV, standpipeDesign: { ...DEFAULT_ALLOW_PRV.standpipeDesign!, hoseValveHeightMm: 1700 } };
   assert(check(designFireProtectionSystem(badHeight).standpipe!.checks, 'sp-hose-valve-height').status === 'fail', 'hose valve above 1500 mm fails');
-  const small: FireDesignInput = { ...DEFAULT_FIRE_INPUT, standpipeDesign: { ...DEFAULT_FIRE_INPUT.standpipeDesign!, riserSizeIn: 4 } };
+  const small: FireDesignInput = { ...DEFAULT_ALLOW_PRV, standpipeDesign: { ...DEFAULT_ALLOW_PRV.standpipeDesign!, riserSizeIn: 4 } };
   assert(check(designFireProtectionSystem(small).standpipe!.checks, 'sp-riser-size').status === 'fail', '4" combined riser fails');
-  const none = designFireProtectionSystem({ ...DEFAULT_FIRE_INPUT, standpipeClass: 'none' });
+  const none = designFireProtectionSystem({ ...DEFAULT_ALLOW_PRV, standpipeClass: 'none' });
   assert(none.standpipe === null, 'no standpipe when class none');
   const simple = designFireProtectionSystem(SIMPLE_FIRE_INPUT);
   assert(simple.standpipe === null && simple.pumps.mainPumps[0].ratedNetPressurePsi === 130, 'simple path unchanged (130 psi)');
-  const one: FireDesignInput = { ...DEFAULT_FIRE_INPUT, standpipeDesign: { ...DEFAULT_FIRE_INPUT.standpipeDesign!, locations: [DEFAULT_FIRE_INPUT.standpipeDesign!.locations[0]] } };
+  const one: FireDesignInput = { ...DEFAULT_ALLOW_PRV, standpipeDesign: { ...DEFAULT_ALLOW_PRV.standpipeDesign!, locations: [DEFAULT_ALLOW_PRV.standpipeDesign!.locations[0]] } };
   const r1 = designFireProtectionSystem(one);
   assert(r1.standpipe!.demandFlowGpm === 500 && r1.standpipe!.rows[12].flowAddedGpm === 0, 'single standpipe 500 gpm');
   console.log('✓ variants');

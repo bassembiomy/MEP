@@ -1,7 +1,7 @@
 /**
  * Fixed-width (Elite-Fire style) hydraulic calculation report for the fire pump / tank design.
  */
-import { ExtinguisherAgent, FireDesignResult, HydraulicNodeRow } from './fpTypes';
+import { ExtinguisherAgent, FireDesignResult, HydraulicNodeRow, StandpipeSolution } from './fpTypes';
 import {
   FE_DEEP_B_PER_FT2,
   FE_DEEP_MAX_SURFACE_FT2,
@@ -87,6 +87,49 @@ function standpipeSection(result: FireDesignResult): string[] {
     'Standpipe checks:'
   );
   for (const c of sp.checks) L.push(`   [${c.status.toUpperCase()}] ${pad(c.id, 22)} ${c.title} - ${c.detail}`);
+  return L;
+}
+
+function zoningSolutionLines(sol: StandpipeSolution, title: string, selected: boolean): string[] {
+  const L: string[] = ['', `${title}${selected ? '   <== SELECTED' : ''}`];
+  L.push(
+    `   ${sol.zones.length} zone(s), ${sol.pumpSets} pump set(s), ${sol.prvCount} PRV(s), ${sol.expressRisers} express riser(s), ${sol.serviceFloorStations.length} service floor station(s)${sol.serviceFloorStations.length ? ' (' + sol.serviceFloorStations.join(', ') + ')' : ''}, max static ${num(sol.maxStaticPsi, 1)} psi - ${sol.feasible ? 'feasible' : 'NOT feasible without PRVs / above 350 psi'}`,
+    '   ' + pad('Zone', 6) + pad('Pump station', 26) + pad('Floors', 12) + lpad('Req psi', 9) + lpad('Rated', 14) + lpad('Churn+Suc', 10) + lpad('Max stat', 9) + lpad('Top res.', 9) + lpad('PRVs', 6) + '  Notes'
+  );
+  for (const z of sol.zones) {
+    const station =
+      z.station.kind === 'pump-room' ? 'Pump room (main pumps)' : z.station.kind === 'express' ? 'Pump room + EXPRESS riser' : `SERVICE FLOOR ${z.station.floorId}`;
+    const notes: string[] = [];
+    if (z.expressRiserLengthM !== null) notes.push(`express riser ${num(z.expressRiserLengthM, 1)} m`);
+    if (z.breakTank) notes.push(`break tank ${num(z.breakTank.volumeGal, 0)} gal (${num(z.breakTank.volumeM3, 1)} m3), NFPA 20 alt. ${num(z.breakTank.nfpa20BreakTankGal, 0)} gal`);
+    notes.push(`${z.governingRiserTag}, shutoff ${num(z.shutoffRatio * 100, 0)} %`);
+    L.push(
+      '   ' + pad(z.id, 6) + pad(station, 26) + pad(`${z.floorIds[0]}-${z.floorIds[z.floorIds.length - 1]}`, 12) + lpad(num(z.requiredPressurePsi, 1), 9) +
+        lpad(`${z.ratedFlowGpm}@${z.ratedNetPressurePsi}`, 14) + lpad(num(z.churnDischargePsi, 1), 10) + lpad(num(z.maxStaticPsi, 1), 9) +
+        lpad(num(z.topResidualPsi, 1), 9) + lpad(String(z.prvOutlets), 6) + '  ' + notes.join('; ')
+    );
+  }
+  for (const t of sol.summary) L.push(`   - ${t}`);
+  if (sol.suggestion) L.push(`   Suggestion: ${sol.suggestion}`);
+  return L;
+}
+
+function zoningSection(result: FireDesignResult): string[] {
+  const z = result.standpipe!.zoning;
+  const L: string[] = [...section('STANDPIPE PRESSURE ZONING \u2014 WITH PRV vs WITHOUT PRV')];
+  L.push(
+    'Basis: NFPA 14-2019 \u00a77.2.1 (350 psi maximum), \u00a77.2.3 (2-1/2" outlet > 175 psi static needs a pressure-regulating device), \u00a77.9 (zones, each zone needing pumps has its own pump), NFPA 20 \u00a74.31 (break tanks)',
+    `Strategy                : ${z.strategy === 'avoid' ? 'AVOID PRVs (pressure zoning)' : 'ALLOW PRVs (single zone)'}; selected solution: ${z.selected === 'with-prv' ? 'WITH PRV' : 'WITHOUT PRV'}`,
+    `Service floors          : ${z.serviceFloorsAnswered ? (z.serviceFloorIds.length ? z.serviceFloorIds.join(', ') : 'none (answered: no service floors)') : 'NOT YET ANSWERED - which floors are service floors (mechanical / technical) that can host a break tank and booster pump set? Calculated without service floors.'}`
+  );
+  L.push(...zoningSolutionLines(z.withoutPrv, 'SOLUTION WITHOUT PRV (pressure zones, express risers, service-floor booster stations)', z.selected === 'without-prv'));
+  L.push(...zoningSolutionLines(z.withPrv, 'SOLUTION WITH PRV (single zone, pressure-regulating valves)', z.selected === 'with-prv'));
+  const sel = z.selected === 'with-prv' ? z.withPrv : z.withoutPrv;
+  L.push('', `Selected solution (${z.selected === 'with-prv' ? 'WITH PRV' : 'WITHOUT PRV'}) zone calculations (governing riser, top outlet to pump discharge):`);
+  for (const zone of sel.zones) {
+    L.push('', `Zone ${zone.id} - ${zone.governingRiserTag} (${zone.station.kind}${zone.station.floorId ? ' ' + zone.station.floorId : ''})`);
+    L.push(...nodeTable(zone.rows));
+  }
   return L;
 }
 
@@ -458,7 +501,10 @@ export function buildFireCalcReport(result: FireDesignResult): string {
   );
   for (const c of ds.controls) L.push(`   - ${c}`);
 
-  if (result.standpipe) L.push(...standpipeSection(result));
+  if (result.standpipe) {
+    L.push(...standpipeSection(result));
+    L.push(...zoningSection(result));
+  }
   if (result.sprinklers) L.push(...sprinklerSection(result));
   if (result.co2) L.push(...co2Section(result));
   if (result.extinguishers) L.push(...extinguisherSection(result));
