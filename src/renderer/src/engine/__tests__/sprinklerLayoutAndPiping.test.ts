@@ -77,7 +77,7 @@ const answers = defaultSprinklerAnswers();
   const heads: PlacedSprinkler[] = o.points
     .map(([x, y]) => ({ x, y }))
     .sort((a, b) => a.y - b.y || a.x - b.x)
-    .map((p, i) => ({ tag: `S-L1-${String(i + 1).padStart(3, '0')}`, floorId: 'L1', roomId: 'R1', x: p.x, y: p.y, headTypeId: 'QR-PEN-K5.6-155', spacingSmm: 4000, spacingLmm: 4000, areaFt2: 172.2224, wallDistanceMm: 2000, node: `S-L1-${String(i + 1).padStart(3, '0')}` }));
+    .map((p, i) => ({ tag: `S-L1-${String(i + 1).padStart(3, '0')}`, floorId: 'L1', roomId: 'R1', x: p.x, y: p.y, headTypeId: 'QR-PEN-K5.6-155', spacingSmm: 4000, spacingLmm: 4000, areaFt2: 172.2224, wallDistanceMm: 2000, node: `S-L1-${String(i + 1).padStart(3, '0')}`, zoneId: 'Z1' }));
   const r = layoutFloorPiping('L1', heads, { x: -500, y: 6000 }, 'x', { hazardOf: () => 'light', schedule: 'sch40', minMainIn: 2 });
   const branch = r.pipes.filter((p) => p.kind === 'branch');
   const cm = r.pipes.filter((p) => p.kind === 'cross-main');

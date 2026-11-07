@@ -2,9 +2,11 @@ import React, { useMemo, useRef } from 'react'
 import type {
   FloorPlan,
   SprinklerFloorDesign,
-  SprinklerRoomInput
+  SprinklerRoomInput,
+  SprinklerZoneInput
 } from '../engine/fireProtection/sprinkler/sprinklerTypes'
 import { polyD, underlayPath } from './planGeometry'
+import { zoneColor, zoneIdOf } from './sprinklerAreaEditing'
 
 const PIPE_COLORS: Record<string, string> = {
   branch: '#38bdf8',
@@ -17,11 +19,12 @@ export const SprinklerPlanSvg: React.FC<{
   plan: FloorPlan | null
   rooms: SprinklerRoomInput[]
   riser: { x: number; y: number }
+  zones?: SprinklerZoneInput[]
   design?: SprinklerFloorDesign | null
   flowingTags?: string[]
   onPick?: (x: number, y: number) => void
   className?: string
-}> = ({ plan, rooms, riser, design, flowingTags, onPick, className }) => {
+}> = ({ plan, rooms, riser, zones, design, flowingTags, onPick, className }) => {
   const svgRef = useRef<SVGSVGElement>(null)
   const under = useMemo(() => underlayPath(plan), [plan])
   const box = useMemo(() => {
@@ -84,8 +87,9 @@ export const SprinklerPlanSvg: React.FC<{
           <path
             key={r.id}
             d={polyD(r.polygon, true)}
-            fill={r.omit ? 'rgba(115,115,115,0.25)' : 'rgba(234,88,12,0.10)'}
-            stroke={r.omit ? '#737373' : '#ea580c'}
+            fill={r.omit ? '#737373' : zones ? zoneColor(zones, zoneIdOf(r, zones)) : '#ea580c'}
+            fillOpacity={r.omit ? 0.25 : 0.14}
+            stroke={r.omit ? '#737373' : zones ? zoneColor(zones, zoneIdOf(r, zones)) : '#ea580c'}
             strokeWidth={1.5}
             vectorEffect="non-scaling-stroke"
           />
@@ -112,15 +116,19 @@ export const SprinklerPlanSvg: React.FC<{
             vectorEffect="non-scaling-stroke"
           />
         ))}
-        <circle
-          cx={riser.x}
-          cy={riser.y}
-          r={unit * 1.1}
-          fill="#22c55e"
-          stroke="#052e16"
-          strokeWidth={1}
-          vectorEffect="non-scaling-stroke"
-        />
+        {(zones && zones.length > 0 ? zones : [{ id: 'Z1', name: '', riser }]).map((z) => (
+          <rect
+            key={z.id}
+            x={z.riser.x - unit * 1.1}
+            y={z.riser.y - unit * 1.1}
+            width={unit * 2.2}
+            height={unit * 2.2}
+            fill={zones ? zoneColor(zones, z.id) : '#22c55e'}
+            stroke="#052e16"
+            strokeWidth={1}
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
       </g>
       {/* room names (outside the flipped group so text is upright) */}
       {rooms.map((r) => {
@@ -137,7 +145,7 @@ export const SprinklerPlanSvg: React.FC<{
             fill="#fdba74"
             style={{ pointerEvents: 'none' }}
           >
-            {r.id}
+            {zones ? r.name : r.id}
           </text>
         )
       })}

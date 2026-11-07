@@ -16,9 +16,16 @@ import {
   spacingClass,
   spareHeadCount
 } from './nfpa13Sprinkler'
-import { layoutRoomHeads, roomLayoutChecks, selectHeadType } from './headLayout'
-import type { RoomHeadLayout } from './headLayout'
-import { layoutFloorPiping } from './pipingLayout'
+import {
+  headSpecCheck,
+  layoutRoomHeads,
+  layoutSidewallHeads,
+  roomLayoutChecks,
+  selectHeadType,
+  sidewallChecks
+} from './headLayout'
+import type { RoomHeadLayout, SidewallLayout } from './headLayout'
+import { FEED_RUN_THRESHOLD_MM, layoutFloorPiping } from './pipingLayout'
 import type { FloorPiping } from './pipingLayout'
 import { distanceToPolygonEdges } from './roomDetection'
 import { buildAccessories, buildBom, spareSprinklers } from './sprinklerAccessories'
@@ -31,9 +38,12 @@ import type {
   SprinklerFloorDesign,
   SprinklerFloorInput,
   SprinklerHeadType,
+  SprinklerPipe,
   SprinklerRoomInput,
   SprinklerRoomResult,
-  SprinklerSystemDesign
+  SprinklerSystemDesign,
+  SprinklerZoneInput,
+  SprinklerZoneResult
 } from './sprinklerTypes'
 
 const MM_PER_FT = 304.8
@@ -44,23 +54,54 @@ const f1 = (v: number): string => v.toFixed(1)
 
 type Pt = [number, number]
 
+const FT2_PER_M2 = 10.7639104
+/** NFPA 13-2019 §4.4 maximum protection area per system riser on one floor, ft². */
+const ZONE_MAX_AREA_FT2 = 52000
+const ZONE_MAX_AREA_EXTRA_FT2 = 40000
+const MAX_VELOCITY_FPS = 20
+const HYDRAULIC_ITERATIONS = 500
+
 interface FloorLayoutData {
   direction: 'x' | 'y'
-  roomLayouts: { room: SprinklerRoomInput; layout: RoomHeadLayout; headType: SprinklerHeadType }[]
+  roomLayouts: {
+    room: SprinklerRoomInput
+    layout: RoomHeadLayout
+    sidewall?: SidewallLayout
+    headType: SprinklerHeadType
+  }[]
+}
+
+/** Zones of a floor: the designer's zones, or one zone 'Z1' named after the floor at the floor riser. */
+function resolveZones(floor: SprinklerFloorInput): SprinklerZoneInput[] {
+  return floor.zones && floor.zones.length > 0
+    ? floor.zones
+    : [{ id: 'Z1', name: floor.name, riser: floor.riser }]
+}
+
+function zoneOfRoom(room: SprinklerRoomInput, zones: SprinklerZoneInput[]): SprinklerZoneInput {
+  return zones.find((z) => z.id === room.zoneId) ?? zones[0]
 }
 
 function layoutFloor(
   floor: SprinklerFloorInput,
   direction: 'x' | 'y',
-  answers: SprinklerDesignInput['answers']
+  answers: SprinklerDesignInput['answers'],
+  zones: SprinklerZoneInput[]
 ): FloorLayoutData {
   const roomLayouts = floor.rooms
     .filter((r) => !r.omit)
-    .map((room) => ({
-      room,
-      layout: layoutRoomHeads(room, direction, SPACING_RULES[spacingClass(room.hazard)]),
-      headType: selectHeadType(room, floor.systemType, answers)
-    }))
+    .map((room) => {
+      const headType = selectHeadType(room, floor.systemType, answers)
+      if (headType.orientation === 'sidewall') {
+        const sidewall = layoutSidewallHeads(room, zoneOfRoom(room, zones).riser)
+        return { room, layout: sidewall, sidewall, headType }
+      }
+      return {
+        room,
+        layout: layoutRoomHeads(room, direction, SPACING_RULES[spacingClass(room.hazard)]),
+        headType
+      }
+    })
   return { direction, roomLayouts }
 }
 
@@ -107,6 +148,54 @@ function pathAlong(points: Pt[], dist: number): Pt {
   return points[0]
 }
 
+/** Node-to-pipe lookup for hydraulic sizing: a calculation row maps to the pipe joining its two nodes. */
+const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`)
+
+/** Starting sizes of hydraulic sizing: branch 1", cross main & feed 1½", riser nipple 2". */
+function hydraulicStartSizes(pipes: SprinklerPipe[]): void {
+  for (const p of pipes) {
+    if (p.kind === 'riser-nipple') p.sizeIn = 2
+    else if (p.kind === 'cross-main' || p.kind === 'feed') p.sizeIn = 1.5
+    else p.sizeIn = p.lengthM * 1000 > FEED_RUN_THRESHOLD_MM ? 1.5 : 1
+  }
+}
+
+/** A pipe is never smaller than any pipe it feeds (sizes do not increase toward the sprinklers). */
+function enforceNonIncreasing(pipes: SprinklerPipe[], fcNode: string, rnId: string): void {
+  const feeders = new Map<string, SprinklerPipe[]>() // node → pipes delivering water to it
+  for (const p of pipes) {
+    if (p.id === rnId) continue
+    if (!feeders.has(p.toNode)) feeders.set(p.toNode, [])
+    feeders.get(p.toNode)!.push(p)
+  }
+  const rn = pipes.find((p) => p.id === rnId)
+  if (rn) feeders.set(fcNode, [...(feeders.get(fcNode) ?? []), rn])
+  for (let guard = 0; guard < 1000; guard++) {
+    let changed = false
+    for (const p of pipes) {
+      if (p.id === rnId) continue
+      for (const up of feeders.get(p.fromNode) ?? []) {
+        if (up !== p && up.sizeIn < p.sizeIn) {
+          up.sizeIn = p.sizeIn
+          changed = true
+        }
+      }
+    }
+    if (!changed) break
+  }
+}
+
+interface ZoneSolution {
+  zone: SprinklerZoneInput
+  heads: PlacedSprinkler[]
+  piping: FloorPiping
+  remoteAreas: RemoteAreaResult[]
+  governing: RemoteAreaResult | null
+  short: { hazard: HazardClass; have: number; need: number }[]
+  /** Hydraulic sizing could not keep the minimum supply margin even at the largest pipe size. */
+  marginUnmet: boolean
+}
+
 function designFloor(
   floor: SprinklerFloorInput,
   input: SprinklerDesignInput,
@@ -115,13 +204,14 @@ function designFloor(
 ): SprinklerFloorDesign {
   const answers = input.answers
   const active = floor.rooms.filter((r) => !r.omit)
+  const zones = resolveZones(floor)
 
   // direction
   let direction: 'x' | 'y'
   let data: FloorLayoutData
   if (floor.branchDirection === 'auto') {
-    const dx = layoutFloor(floor, 'x', answers)
-    const dy = layoutFloor(floor, 'y', answers)
+    const dx = layoutFloor(floor, 'x', answers, zones)
+    const dy = layoutFloor(floor, 'y', answers, zones)
     const count = (d: FloorLayoutData): number =>
       d.roomLayouts.reduce((s, r) => s + r.layout.points.length, 0)
     if (count(dy) < count(dx)) {
@@ -133,17 +223,19 @@ function designFloor(
     }
   } else {
     direction = floor.branchDirection
-    data = layoutFloor(floor, direction, answers)
+    data = layoutFloor(floor, direction, answers, zones)
   }
   const swap = direction === 'y'
 
-  // heads, tags in room order then along rows
+  // heads, tags in room order then along rows (numbered floor-wide)
   const heads: PlacedSprinkler[] = []
   const rooms: SprinklerRoomResult[] = []
   const hazardByTag = new Map<string, HazardClass>()
+  const zoneOfHead = new Map<string, string>()
   let n = 0
-  for (const { room, layout, headType } of data.roomLayouts) {
+  for (const { room, layout, sidewall, headType } of data.roomLayouts) {
     if (!headTypes.some((t) => t.id === headType.id)) headTypes.push(headType)
+    const zoneId = zoneOfRoom(room, zones).id
     const rules = SPACING_RULES[spacingClass(room.hazard)]
     const pts = [...layout.points].sort((a, b) => {
       const av = swap ? a[0] : a[1]
@@ -157,6 +249,7 @@ function designFloor(
       n++
       const tag = `S-${floor.id}-${String(n).padStart(3, '0')}`
       hazardByTag.set(tag, room.hazard)
+      zoneOfHead.set(tag, zoneId)
       heads.push({
         tag,
         floorId: floor.id,
@@ -168,12 +261,17 @@ function designFloor(
         spacingLmm: layout.L,
         areaFt2,
         wallDistanceMm: distanceToPolygonEdges(x, y, room.polygon),
-        node: tag
+        node: tag,
+        zoneId
       })
     }
     let a = 0
     for (let i = 0, j = room.polygon.length - 1; i < room.polygon.length; j = i++)
       a += room.polygon[j][0] * room.polygon[i][1] - room.polygon[i][0] * room.polygon[j][1]
+    const layoutChecks = sidewall
+      ? sidewallChecks(room, sidewall)
+      : roomLayoutChecks(room, layout, rules, direction)
+    const specCheck = headSpecCheck(room, headType, floor.systemType)
     rooms.push({
       roomId: room.id,
       name: room.name,
@@ -183,74 +281,162 @@ function designFloor(
       headTypeId: headType.id,
       spacingSmm: layout.S,
       spacingLmm: layout.L,
-      maxSpacingMm: rules.maxSpacingFt * MM_PER_FT,
-      maxAreaFt2: rules.maxAreaFt2,
-      checks: roomLayoutChecks(room, layout, rules, direction)
+      maxSpacingMm: sidewall ? sidewall.maxSpacingMm : rules.maxSpacingFt * MM_PER_FT,
+      maxAreaFt2: sidewall ? sidewall.maxAreaFt2 : rules.maxAreaFt2,
+      checks: specCheck ? [...layoutChecks, specCheck] : layoutChecks
     })
   }
 
-  // piping
-  const piping: FloorPiping = layoutFloorPiping(floor.id, heads, floor.riser, direction, {
-    hazardOf: (tag) => hazardByTag.get(tag) ?? 'light',
-    schedule: answers.pipeMaterial === 'black-steel-sch10' ? 'sch10' : 'sch40',
-    minMainIn: 2
+  // hydraulic context
+  const minCeiling = active.length ? Math.min(...active.map((r) => r.ceilingHeightM)) : 3
+  const hazardOf = (tag: string): HazardClass => hazardByTag.get(tag) ?? 'light'
+  const hydraulic = answers.pipeSizing === 'hydraulic'
+  const minMargin = answers.minSupplyMarginPsi ?? 10
+  const city = answers.supply.kind === 'city'
+
+  // piping and hydraulics per zone
+  const solutions: ZoneSolution[] = zones.map((zone, zi) => {
+    const zheads = heads.filter((h) => h.zoneId === zone.id)
+    const piping: FloorPiping = layoutFloorPiping(floor.id, zheads, zone.riser, direction, {
+      hazardOf,
+      schedule: answers.pipeMaterial === 'black-steel-sch10' ? 'sch10' : 'sch40',
+      minMainIn: 2,
+      zoneId: zone.id,
+      secondaryZone: zi > 0
+    })
+    const hctx: FloorHydraulicContext = {
+      direction,
+      pipeMaterial: answers.pipeMaterial,
+      hazardOf,
+      pipeElevationM: floor.elevationM + minCeiling - 0.3,
+      buildingRiserIn: input.buildingRiserIn,
+      buildingRiserSchedule: input.buildingRiserSchedule,
+      supply: answers.supply,
+      source,
+      zoneId: zone.id
+    }
+    const hazards = HAZARD_ORDER.filter((h) => zheads.some((x) => hazardOf(x.tag) === h))
+    const sol: ZoneSolution = {
+      zone,
+      heads: zheads,
+      piping,
+      remoteAreas: [],
+      governing: null,
+      short: [],
+      marginUnmet: false
+    }
+    // one calculation of every remote area of the zone; returns the pipe ids carried by the governing area
+    const compute = (): { carried: string[]; carriedByArea: Map<RemoteAreaResult, string[]> } => {
+      sol.remoteAreas = []
+      sol.short = []
+      sol.governing = null
+      let govCarried: string[] = []
+      const carriedByArea = new Map<RemoteAreaResult, string[]>()
+      for (const hz of hazards) {
+        const out = calculateFloorDemand(
+          floor,
+          piping,
+          zheads,
+          headTypes,
+          floor.systemType,
+          hz,
+          hctx
+        )
+        if (!out) continue
+        sol.remoteAreas.push(out.result)
+        carriedByArea.set(out.result, out.carriedPipeIds)
+        if (out.candidateCount < out.requiredHeads && floor.systemType !== 'deluge')
+          sol.short.push({ hazard: hz, have: out.candidateCount, need: out.requiredHeads })
+        if (!sol.governing || out.result.pressureAtSourcePsi > sol.governing.pressureAtSourcePsi) {
+          sol.governing = out.result
+          govCarried = out.carriedPipeIds
+        }
+      }
+      return { carried: govCarried, carriedByArea }
+    }
+
+    if (!hydraulic) {
+      // pipe schedule sizes (§28.5), upsized where the city supply is short
+      for (let round = 0; round <= 6; round++) {
+        const { carried } = compute()
+        if (!sol.governing || !city || !supplyShort(sol.governing) || round === 6) break
+        for (const id of carried) {
+          const p = piping.pipes.find((q) => q.id === id)
+          if (p) p.sizeIn = upsizeOne(p.sizeIn)
+        }
+      }
+      return sol
+    }
+
+    // hydraulically calculated sizes (NFPA 13 Ch. 28)
+    const byPair = new Map(piping.pipes.map((p) => [pairKey(p.fromNode, p.toNode), p]))
+    hydraulicStartSizes(piping.pipes)
+    enforceNonIncreasing(piping.pipes, piping.fcNode, piping.rnId)
+    let calc = compute()
+    for (let it = 0; it < HYDRAULIC_ITERATIONS; it++) {
+      // (a) velocity above 20 ft/s (good practice, not an NFPA limit)
+      const fast = new Set<SprinklerPipe>()
+      for (const ra of sol.remoteAreas)
+        for (const row of ra.rows) {
+          const p = byPair.get(pairKey(row.fromNode, row.toNode))
+          if (p && row.velocityFps > MAX_VELOCITY_FPS + 1e-9 && p.sizeIn < 8) fast.add(p)
+        }
+      let changed = false
+      if (fast.size > 0) {
+        for (const p of fast) p.sizeIn = upsizeOne(p.sizeIn)
+        changed = true
+      } else if (city) {
+        // (b) supply margin below the minimum: upsize the segment with the largest friction loss on the path
+        const low = sol.remoteAreas
+          .filter((ra) => ra.marginPsi < minMargin - 1e-9)
+          .sort((a, b) => a.marginPsi - b.marginPsi)
+        for (const ra of low) {
+          let best: SprinklerPipe | null = null
+          let bestLoss = -1
+          for (const row of ra.rows) {
+            const p = byPair.get(pairKey(row.fromNode, row.toNode))
+            if (p && p.sizeIn < 8 && row.pfPsi > bestLoss) {
+              best = p
+              bestLoss = row.pfPsi
+            }
+          }
+          if (best) {
+            best.sizeIn = upsizeOne(best.sizeIn)
+            changed = true
+            break
+          }
+        }
+      }
+      if (!changed) break
+      enforceNonIncreasing(piping.pipes, piping.fcNode, piping.rnId)
+      calc = compute()
+    }
+    void calc
+    sol.marginUnmet = city && sol.remoteAreas.some((ra) => ra.marginPsi < minMargin - 1e-9)
+    return sol
   })
 
-  // hydraulics
-  const minCeiling = active.length ? Math.min(...active.map((r) => r.ceilingHeightM)) : 3
-  const hctx: FloorHydraulicContext = {
-    direction,
-    pipeMaterial: answers.pipeMaterial,
-    hazardOf: (tag) => hazardByTag.get(tag) ?? 'light',
-    pipeElevationM: floor.elevationM + minCeiling - 0.3,
-    buildingRiserIn: input.buildingRiserIn,
-    buildingRiserSchedule: input.buildingRiserSchedule,
-    supply: answers.supply,
-    source
-  }
-  const hazards = HAZARD_ORDER.filter((h) => heads.some((x) => hazardByTag.get(x.tag) === h))
-  let remoteAreas: RemoteAreaResult[] = []
+  const remoteAreas: RemoteAreaResult[] = solutions.flatMap((z) => z.remoteAreas)
   let governing: RemoteAreaResult | null = null
-  let short: { hazard: HazardClass; have: number; need: number }[] = []
-  let carried: string[] = []
-  for (let round = 0; round <= 6; round++) {
-    remoteAreas = []
-    short = []
-    governing = null
-    carried = []
-    let govCarried: string[] = []
-    for (const hz of hazards) {
-      const out = calculateFloorDemand(floor, piping, heads, headTypes, floor.systemType, hz, hctx)
-      if (!out) continue
-      remoteAreas.push(out.result)
-      if (out.candidateCount < out.requiredHeads && floor.systemType !== 'deluge')
-        short.push({ hazard: hz, have: out.candidateCount, need: out.requiredHeads })
-      if (!governing || out.result.pressureAtSourcePsi > governing.pressureAtSourcePsi) {
-        governing = out.result
-        govCarried = out.carriedPipeIds
-      }
-    }
-    carried = govCarried
+  for (const z of solutions)
     if (
-      !governing ||
-      answers.supply.kind !== 'city' ||
-      !supplyShort(governing) ||
-      round === 6
+      z.governing &&
+      (!governing || z.governing.pressureAtSourcePsi > governing.pressureAtSourcePsi)
     )
-      break
-    for (const id of carried) {
-      const p = piping.pipes.find((q) => q.id === id)
-      if (p) p.sizeIn = upsizeOne(p.sizeIn)
-    }
-  }
+      governing = z.governing
+  const short = solutions.flatMap((z) => z.short)
   const gov = governing as RemoteAreaResult | null
+  const allPipes = solutions.flatMap((z) => z.piping.pipes)
 
   // volume, hangers
   let volumeGal = 0
+  const zoneVolume = new Map<string, number>()
   const hangers: SprinklerFloorDesign['hangers'] = []
-  for (const p of piping.pipes) {
+  for (const p of allPipes) {
     const id = internalDiameterIn(p.sizeIn, p.schedule)
-    volumeGal += (((p.lengthM * FT_PER_M * 12 * Math.PI) / 4) * id * id) / 231
+    const vol = (((p.lengthM * FT_PER_M * 12 * Math.PI) / 4) * id * id) / 231
+    volumeGal += vol
+    zoneVolume.set(p.zoneId, (zoneVolume.get(p.zoneId) ?? 0) + vol)
     if (p.kind === 'riser-nipple') continue // vertical riser nipple: supported by the riser clamp, not hung
     const nh = Math.ceil(p.lengthM / hangerSpacingM(p.sizeIn, answers.pipeMaterial) - 1e-9)
     const lenMm = p.lengthM * 1000
@@ -259,6 +445,7 @@ function designFloor(
       hangers.push({ x, y, pipeId: p.id })
     }
   }
+  const maxZoneVolume = Math.max(0, ...zoneVolume.values())
 
   let inspector = { x: floor.riser.x, y: floor.riser.y }
   if (gov) {
@@ -266,9 +453,44 @@ function designFloor(
     if (rh) inspector = { x: rh.x, y: rh.y }
   }
 
+  // zone results
+  const zoneResults: SprinklerZoneResult[] = solutions.map((sol) => {
+    const zrooms = rooms.filter((r) => {
+      const input = active.find((a) => a.id === r.roomId)!
+      return zoneOfRoom(input, zones).id === sol.zone.id
+    })
+    const areaM2 = zrooms.reduce((s, r) => s + r.areaM2, 0)
+    const areaFt2 = areaM2 * FT2_PER_M2
+    const hasExtra = zrooms.some((r) => r.hazard === 'extra-1' || r.hazard === 'extra-2')
+    const maxAreaFt2 = hasExtra ? ZONE_MAX_AREA_EXTRA_FT2 : ZONE_MAX_AREA_FT2
+    return {
+      zoneId: sol.zone.id,
+      name: sol.zone.name,
+      riser: { ...sol.zone.riser },
+      controlValveTag: `ZCV-${floor.id}-${sol.zone.id}`,
+      roomIds: zrooms.map((r) => r.roomId),
+      headCount: sol.heads.length,
+      areaFt2,
+      areaM2,
+      maxAreaFt2,
+      node: sol.piping.fcNode,
+      governing: sol.governing,
+      checks: [
+        {
+          id: `spr-zone-area:${floor.id}/${sol.zone.id}`,
+          title: `Protected area per system riser — ${floor.id} ${sol.zone.id}`,
+          reference: 'NFPA 13-2019 §4.4',
+          status: areaFt2 <= maxAreaFt2 + 1e-6 ? 'pass' : 'fail',
+          detail: `Zone ${sol.zone.id} (${sol.zone.name}) ${areaFt2.toFixed(0)} ft² (${areaM2.toFixed(1)} m²) vs maximum ${maxAreaFt2.toLocaleString('en-US')} ft² per system riser${hasExtra ? ' (extra hazard)' : ''}`
+        }
+      ]
+    }
+  })
+
   const checks: DesignCheck[] = []
   const fid = floor.id
   const sys = floor.systemType
+  const maxZoneHeads = Math.max(0, ...solutions.map((z) => z.heads.length))
   if (gov) {
     checks.push({
       id: `spr-pressure-min:${fid}`,
@@ -287,10 +509,21 @@ function designFloor(
       detail: `${s.hazard}: only ${s.have} sprinklers on the floor, ${s.need} needed to fill the design area; all flow`
     })
   }
-  checks.push(supplyCheck(fid, gov, answers, !source))
+  // supply: the first zone whose governing area is short of water (city supply), else the floor's governing area
+  const shortZone = solutions.find((z) => z.governing && supplyShort(z.governing))
+  checks.push(supplyCheck(fid, shortZone?.governing ?? gov, answers, !source))
+  checks.push(
+    pipeSizingCheck(
+      fid,
+      hydraulic,
+      minMargin,
+      solutions.some((z) => z.marginUnmet)
+    )
+  )
   if (sys === 'dry') {
     const cls = gov ? spacingClass(gov.hazard) : 'light'
     const t = DRY_DELIVERY_TIME_S[cls]
+    const volumeGal = maxZoneVolume // per dry-pipe valve (zone)
     const st =
       volumeGal <= DRY_CAPACITY_NO_QOD_GAL
         ? 'pass'
@@ -315,8 +548,8 @@ function designFloor(
       id: `spr-preaction-size:${fid}`,
       title: `Preaction system size — ${fid}`,
       reference: 'NFPA 13-2019 §8.3.2.6',
-      status: heads.length <= PREACTION_MAX_CLOSED_SPRINKLERS ? 'pass' : 'fail',
-      detail: `${heads.length} closed sprinklers per preaction valve (max ${PREACTION_MAX_CLOSED_SPRINKLERS})`
+      status: maxZoneHeads <= PREACTION_MAX_CLOSED_SPRINKLERS ? 'pass' : 'fail',
+      detail: `${maxZoneHeads} closed sprinklers per preaction valve (max ${PREACTION_MAX_CLOSED_SPRINKLERS})`
     })
   }
   if (sys === 'dry' || sys === 'preaction-single' || sys === 'preaction-double') {
@@ -380,7 +613,7 @@ function designFloor(
     floorName: floor.name,
     systemType: floor.systemType,
     heads,
-    pipes: piping.pipes,
+    pipes: allPipes,
     rooms,
     riser: { ...floor.riser },
     inspectorTest: inspector,
@@ -388,7 +621,34 @@ function designFloor(
     volumeGal,
     remoteAreas,
     governing: gov,
+    zones: zoneResults,
     checks
+  }
+}
+
+function pipeSizingCheck(
+  floorId: string,
+  hydraulic: boolean,
+  minMarginPsi: number,
+  marginUnmet: boolean
+): DesignCheck {
+  const base = {
+    id: `spr-pipe-sizing:${floorId}`,
+    title: `Pipe sizing method — ${floorId}`,
+    reference: 'NFPA 13-2019 §28.5, Ch. 28'
+  }
+  if (!hydraulic)
+    return {
+      ...base,
+      status: 'pass',
+      detail: 'pipe schedule (§28.5) hydraulically verified'
+    }
+  return {
+    ...base,
+    status: marginUnmet ? 'warn' : 'pass',
+    detail: marginUnmet
+      ? `hydraulic (NFPA 13 Ch. 28): the supply margin of ${minMarginPsi} psi is not reached even at the largest pipe sizes`
+      : `hydraulic (NFPA 13 Ch. 28): smallest sizes with velocity ≤ ${MAX_VELOCITY_FPS} ft/s and supply margin ≥ ${minMarginPsi} psi`
   }
 }
 
@@ -468,7 +728,11 @@ export function designSprinklerSystem(
 
 function collectChecks(design: SprinklerSystemDesign, building: DesignCheck[]): DesignCheck[] {
   return [
-    ...design.floors.flatMap((f) => [...f.rooms.flatMap((r) => r.checks), ...f.checks]),
+    ...design.floors.flatMap((f) => [
+      ...f.rooms.flatMap((r) => r.checks),
+      ...f.zones.flatMap((z) => z.checks),
+      ...f.checks
+    ]),
     ...building
   ]
 }
@@ -488,8 +752,11 @@ export function applyFirePumpSupply(
       ra.availablePsi = availableAt(ra.flowAtSourceGpm + ra.hoseAllowanceGpm)
       ra.marginPsi = ra.availablePsi - ra.pressureAtSourcePsi
     }
+    const shortZone = f.zones.find((z) => z.governing && supplyShort(z.governing))
     f.checks = f.checks.map((c) =>
-      c.id === `spr-supply:${f.floorId}` ? supplyCheck(f.floorId, f.governing, answers, false) : c
+      c.id === `spr-supply:${f.floorId}`
+        ? supplyCheck(f.floorId, shortZone?.governing ?? f.governing, answers, false)
+        : c
     )
   }
   const building = design.checks.filter(

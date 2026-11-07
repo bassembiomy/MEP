@@ -31,10 +31,23 @@ import type {
   SprinklerDesignInput,
   SprinklerFloorInput,
   SprinklerRoomInput,
-  SprinklerSystemType
+  SprinklerSystemType,
+  SprinklerZoneInput
 } from '../engine/fireProtection/sprinkler/sprinklerTypes'
 import { StatusChip } from './FireResultsPanels'
 import { SprinklerPlanSvg } from './SprinklerPlanSvg'
+import { SprinklerPlanEditor, type PlanTool } from './SprinklerPlanEditor'
+import { AreaEditor, ZonesPanel } from './SprinklerAreaPanels'
+import {
+  ZONE_AREA_LIMIT_FT2,
+  effectiveZones,
+  headSpecLabel,
+  makeDrawnArea,
+  nextZoneId,
+  setRoomsPatch,
+  zoneColor,
+  zoneIdOf
+} from './sprinklerAreaEditing'
 import { readPlanFileAsDxf } from './sprinklerPlanFile'
 import { downloadText, safeFileName } from './download'
 import { exportDwgFromApp, type DwgExportStatus } from './dwgExport'
@@ -255,7 +268,7 @@ function runDetect(plan: FloorPlan, layers: string[], a: SprinklerAnswers): Spri
     buildingType: a.buildingType,
     ceilingHeightM: a.defaultCeilingHeightM,
     ceilingType: a.ceilingType
-  })
+  }).map((r) => ({ ...r, source: 'detected' as const }))
 }
 
 function parsePlan(
@@ -333,7 +346,9 @@ const QuestionsStep: React.FC<{ design: SprinklerDesignInput }> = ({ design }) =
   return (
     <Card title="1. Design questionnaire (NFPA 13-2019)">
       <div className="flex flex-col divide-y divide-neutral-850">
-        {QUESTIONNAIRE.map((q) => {
+        {QUESTIONNAIRE.filter(
+          (q) => (q.id as string) !== 'pipeSizing' && (q.id as string) !== 'minSupplyMarginPsi'
+        ).map((q) => {
           const v = a[q.id]
           let control: React.ReactNode
           if (q.id === 'supply') {
@@ -426,6 +441,45 @@ const QuestionsStep: React.FC<{ design: SprinklerDesignInput }> = ({ design }) =
         })}
         <div className="py-3 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_280px] gap-3 items-start">
           <div className="flex flex-col gap-1">
+            <div className="text-xs font-semibold text-neutral-200">Pipe sizing</div>
+            <div className="text-[11px] text-neutral-500 leading-relaxed">
+              Hydraulic calculation sizes every segment for the smallest pipe that keeps the supply
+              margin below. The pipe schedule starts from NFPA 13 §28.5 and is then verified
+              hydraulically (upsized where the supply is short).
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <SelectBox
+              ariaLabel="Pipe sizing"
+              value={a.pipeSizing ?? 'schedule-verified'}
+              options={[
+                {
+                  value: 'hydraulic',
+                  label: 'Hydraulic calculation (NFPA 13 Ch. 28) - recommended'
+                },
+                {
+                  value: 'schedule-verified',
+                  label: 'Pipe schedule (§28.5), hydraulically verified'
+                }
+              ]}
+              onChange={(v) => set({ pipeSizing: v })}
+            />
+            <Field
+              label="Minimum supply margin psi"
+              hint="Kept between the available supply and the demand (default 10 psi)."
+            >
+              <NumInput
+                ariaLabel="Minimum supply margin psi"
+                value={a.minSupplyMarginPsi ?? 10}
+                step={1}
+                min={0}
+                onChange={(n) => set({ minSupplyMarginPsi: n })}
+              />
+            </Field>
+          </div>
+        </div>
+        <div className="py-3 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_280px] gap-3 items-start">
+          <div className="flex flex-col gap-1">
             <div className="text-xs font-semibold text-neutral-200">Building riser</div>
             <div className="text-[11px] text-neutral-500">
               Size and schedule of the riser feeding the floor control assemblies (default 6 in Sch
@@ -470,7 +524,60 @@ const FloorEditor: React.FC<{
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const [tool, setTool] = useState<PlanTool>('select')
+  const [activeZone, setActiveZone] = useState('Z1')
+  const [selectedRaw, setSelected] = useState<string[]>([])
+  const sprinklerResult = useFireProtectionStore((st) => st.result?.sprinklers)
   if (!floor) return null
+
+  const zones = effectiveZones(floor)
+  const activeZoneId = zones.some((z) => z.id === activeZone) ? activeZone : zones[0].id
+  const selected = selectedRaw.filter((id) => floor.rooms.some((r) => r.id === id))
+  const selectedAreas = floor.rooms.filter((r) => selected.includes(r.id))
+  const zoneCounts: Record<string, number> = {}
+  for (const r of floor.rooms) {
+    const z = zoneIdOf(r, zones)
+    zoneCounts[z] = (zoneCounts[z] ?? 0) + 1
+  }
+
+  const latestRooms = (): SprinklerRoomInput[] => (currentDesign()?.floors[index] ?? floor).rooms
+  /** Replace the zones; the first zone's valve is the floor riser. */
+  const setZones = (next: SprinklerZoneInput[]): void =>
+    patchFloor({ zones: next, riser: { ...next[0].riser } })
+  const patchAreas = (ids: string[], patch: Partial<SprinklerRoomInput>): void =>
+    patchFloor({ rooms: setRoomsPatch(latestRooms(), new Set(ids), patch) })
+  const deleteAreas = (ids: string[]): void => {
+    const gone = new Set(ids)
+    patchFloor({ rooms: latestRooms().filter((r) => !gone.has(r.id)) })
+    setSelected([])
+  }
+  const createArea = (polygon: [number, number][]): void => {
+    const rooms = latestRooms()
+    const area = makeDrawnArea(polygon, rooms, answers, activeZoneId)
+    patchFloor({ rooms: [...rooms, area] })
+    setSelected([area.id])
+  }
+  const placeZcv = (x: number, y: number): void => {
+    setZones(zones.map((z) => (z.id === activeZoneId ? { ...z, riser: { x, y } } : z)))
+    setTool('select')
+  }
+  const addZone = (): void => {
+    const id = nextZoneId(zones)
+    const base = zones.find((z) => z.id === activeZoneId) ?? zones[0]
+    setZones([
+      ...zones,
+      { id, name: `Zone ${id.slice(1)}`, riser: { x: base.riser.x, y: base.riser.y + 2000 } }
+    ])
+    setActiveZone(id)
+  }
+  const autoTypeLabel = ((): string | undefined => {
+    if (selectedAreas.length !== 1) return undefined
+    const rr = sprinklerResult?.floors
+      .find((f) => f.floorId === floor.id)
+      ?.rooms.find((r) => r.roomId === selectedAreas[0].id)
+    const ht = sprinklerResult?.headTypes.find((h) => h.id === rr?.headTypeId)
+    return ht ? `${ht.description} (${ht.id})` : undefined
+  })()
 
   const patchFloor = (patch: Partial<SprinklerFloorInput>): void => {
     const d = currentDesign() ?? design
@@ -488,11 +595,16 @@ const FloorEditor: React.FC<{
       setMsg({ ok: false, text: 'Select at least one room layer.' })
       return
     }
-    const rooms = runDetect(plan, floor.roomLayers, answers)
+    const detected = runDetect(plan, floor.roomLayers, answers)
+    const rooms = [...detected, ...floor.rooms.filter((r) => r.source === 'drawn')]
     patchFloor({ rooms, systemType: recommendFloorSystem(answers, rooms) })
+    setSelected([])
     setMsg(
-      rooms.length > 0
-        ? { ok: true, text: `${rooms.length} rooms detected - review them in step 3.` }
+      detected.length > 0
+        ? {
+            ok: true,
+            text: `${detected.length} rooms detected - drawn areas were kept; review them in step 3.`
+          }
         : { ok: false, text: 'No closed polylines of at least 2 m² found on the selected layers.' }
     )
   }
@@ -515,8 +627,10 @@ const FloorEditor: React.FC<{
         roomLayers: layers,
         rooms,
         riser: defaultRiser(p),
+        zones: undefined,
         systemType: recommendFloorSystem(answers, rooms)
       })
+      setSelected([])
       setMsg({
         ok: true,
         text: `${file.name}: ${p.entities.length} entities, ${rooms.length} rooms detected.`
@@ -549,9 +663,17 @@ const FloorEditor: React.FC<{
       planUnits: units,
       rooms,
       riser: defaultRiser(r.plan),
+      zones: undefined,
       systemType: recommendFloorSystem(answers, rooms)
     })
+    setSelected([])
     setMsg({ ok: true, text: `Units changed - rooms re-detected (${rooms.length}).` })
+  }
+
+  const moveRiser = (riser: { x: number; y: number }): void => {
+    if (floor.zones && floor.zones.length > 0)
+      patchFloor({ riser, zones: floor.zones.map((z, i) => (i === 0 ? { ...z, riser } : z)) })
+    else patchFloor({ riser })
   }
 
   const toggleLayer = (name: string, on: boolean): void => {
@@ -674,19 +796,20 @@ const FloorEditor: React.FC<{
                 <NumInput
                   ariaLabel="Riser X"
                   value={floor.riser.x}
-                  onChange={(n) => patchFloor({ riser: { ...floor.riser, x: n } })}
+                  onChange={(n) => moveRiser({ ...floor.riser, x: n })}
                 />
               </Field>
               <Field label="Y">
                 <NumInput
                   ariaLabel="Riser Y"
                   value={floor.riser.y}
-                  onChange={(n) => patchFloor({ riser: { ...floor.riser, y: n } })}
+                  onChange={(n) => moveRiser({ ...floor.riser, y: n })}
                 />
               </Field>
             </div>
             <div className="text-[10px] text-neutral-600">
-              Or click the plan preview to place the riser.
+              Floor riser = zone control valve of the first zone. Use the plan tool{' '}
+              <em>Place zone control valve</em> to set it on the plan.
             </div>
           </div>
           <div className="flex flex-col gap-2">
@@ -711,16 +834,56 @@ const FloorEditor: React.FC<{
             </div>
           </div>
         </div>
-        <div className="min-w-0">
-          <SprinklerPlanSvg
+        <div className="min-w-0 flex flex-col gap-3">
+          <SprinklerPlanEditor
             plan={plan}
             rooms={floor.rooms}
-            riser={floor.riser}
-            className="h-[360px]"
-            onPick={(x, y) => patchFloor({ riser: { x, y } })}
+            zones={zones}
+            activeZoneId={activeZoneId}
+            tool={tool}
+            onToolChange={setTool}
+            selected={selected}
+            onSelect={setSelected}
+            onCreateArea={createArea}
+            onPlaceZcv={placeZcv}
+            onDeleteSelected={() => deleteAreas(selected)}
+            className="h-[460px]"
           />
-          <div className="text-[10px] text-neutral-600 mt-1">
-            {floor.rooms.length} rooms (orange) | green dot = riser | grey = architectural underlay
+          <div className="text-[10px] text-neutral-600">
+            {floor.rooms.length} areas ({floor.rooms.filter((r) => r.source === 'drawn').length}{' '}
+            drawn) | filled by zone colour with hazard label | squares = zone control valves | grey
+            = architectural underlay
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
+            <ZonesPanel
+              zones={zones}
+              activeZoneId={activeZoneId}
+              onActive={setActiveZone}
+              counts={zoneCounts}
+              selectedCount={selected.length}
+              onAdd={addZone}
+              onRename={(id, name) =>
+                setZones(zones.map((z) => (z.id === id ? { ...z, name } : z)))
+              }
+              onDelete={(id) => {
+                if ((zoneCounts[id] ?? 0) > 0 || zones.length <= 1) return
+                const next = zones.filter((z) => z.id !== id)
+                setZones(next)
+                if (activeZoneId === id) setActiveZone(next[0].id)
+              }}
+              onPlaceValve={(id) => {
+                setActiveZone(id)
+                setTool('zcv')
+              }}
+              onAssignSelected={(id) => patchAreas(selected, { zoneId: id })}
+            />
+            <AreaEditor
+              areas={selectedAreas}
+              zones={zones}
+              autoTypeLabel={autoTypeLabel}
+              onPatch={patchAreas}
+              onDelete={deleteAreas}
+            />
           </div>
         </div>
       </div>
@@ -811,6 +974,7 @@ const RoomsStep: React.FC<{
     })
   }
   const anyFreezing = floor.rooms.some((r) => r.freezing)
+  const zones = effectiveZones(floor)
   const cell = 'px-1 py-1 align-middle'
   return (
     <Card title="3. Rooms - occupancy, hazard and ceiling">
@@ -852,6 +1016,8 @@ const RoomsStep: React.FC<{
                   'Ceiling',
                   'Freezing',
                   'Heat source',
+                  'Zone',
+                  'Sprinkler type',
                   'Area m²'
                 ].map((h) => (
                   <th key={h} className="py-1.5 px-1 font-bold whitespace-nowrap">
@@ -956,6 +1122,17 @@ const RoomsStep: React.FC<{
                         onChange={(e) => patchRoom(ri, { heatSource: e.target.checked })}
                       />
                     </td>
+                    <td className={cell}>
+                      <SelectBox
+                        ariaLabel={`Zone ${r.id}`}
+                        value={zoneIdOf(r, zones)}
+                        options={zones.map((z) => ({ value: z.id, label: z.id }))}
+                        onChange={(z) => patchRoom(ri, { zoneId: z })}
+                      />
+                    </td>
+                    <td className={`${cell} text-[10px] text-neutral-400 whitespace-nowrap`}>
+                      {r.headSpec ? headSpecLabel(r.headSpec) : 'Automatic'}
+                    </td>
                     <td className={`${cell} font-mono text-neutral-400 text-right`}>
                       {f1(area, 1)}
                     </td>
@@ -967,8 +1144,9 @@ const RoomsStep: React.FC<{
         </div>
       )}
       <div className="text-[10px] text-neutral-600">
-        Hazard defaults from the occupancy (NFPA 13 Annex A.4.3). Omitting sprinklers is only
-        permitted where NFPA 13 §9.2 allows it and needs a reason.
+        Hazard defaults from the occupancy (NFPA 13 Annex A.4.3). Select the sprinkler type of an
+        area on the plan editor in step 2. Omitting sprinklers is only permitted where NFPA 13 §9.2
+        allows it and needs a reason.
       </div>
     </Card>
   )
@@ -985,6 +1163,159 @@ function polygonArea(p: [number, number][]): number {
 }
 
 // ─────────────────────────── step 4: design ───────────────────────────
+
+const ZoneAndAreaTables: React.FC<{
+  floorIn: SprinklerFloorInput
+  floorOut: NonNullable<FireDesignResult['sprinklers']>['floors'][number]
+  headTypes: NonNullable<FireDesignResult['sprinklers']>['headTypes']
+}> = ({ floorIn, floorOut, headTypes }) => {
+  const zonesIn = effectiveZones(floorIn)
+  const zonesOut = floorOut.zones ?? []
+  const th = 'py-1.5 px-2 font-bold whitespace-nowrap'
+  const td = 'py-1.5 px-2 align-top'
+  const nameOf = (id: string): string => floorIn.rooms.find((r) => r.id === id)?.name ?? id
+  return (
+    <>
+      <Card title="Zones - control valves, area and governing demand">
+        {zonesOut.length === 0 ? (
+          <div className="text-xs text-neutral-500">No zone results yet.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-[11px]" data-testid="zone-results">
+              <thead>
+                <tr className="border-b border-neutral-800 text-neutral-500 uppercase text-[9px] tracking-wide">
+                  {[
+                    'Zone',
+                    'ZCV tag',
+                    'Areas',
+                    'Heads',
+                    'Area ft² / m²',
+                    'vs limit',
+                    'Flow @ source',
+                    'Pressure @ source',
+                    'Margin'
+                  ].map((h) => (
+                    <th key={h} className={th}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {zonesOut.map((z) => {
+                  const lim = z.maxAreaFt2 || ZONE_AREA_LIMIT_FT2
+                  const pct = (z.areaFt2 / lim) * 100
+                  const g = z.governing
+                  return (
+                    <tr key={z.zoneId} className="border-b border-neutral-850">
+                      <td className={td}>
+                        <span
+                          className="inline-block w-2 h-2 rounded-sm mr-1.5"
+                          style={{ background: zoneColor(zonesIn, z.zoneId) }}
+                        />
+                        <span className="font-mono text-neutral-300">{z.zoneId}</span>{' '}
+                        <span className="text-neutral-400">{z.name}</span>
+                      </td>
+                      <td className={`${td} font-mono text-orange-400`}>{z.controlValveTag}</td>
+                      <td
+                        className={`${td} text-neutral-400`}
+                        title={z.roomIds.map(nameOf).join(', ')}
+                      >
+                        {z.roomIds.length}
+                      </td>
+                      <td className={`${td} font-mono`}>{z.headCount}</td>
+                      <td className={`${td} font-mono`}>
+                        {f1(z.areaFt2, 0)} / {f1(z.areaM2, 0)}
+                      </td>
+                      <td
+                        className={`${td} font-mono ${pct > 100 ? 'text-red-400' : 'text-emerald-400'}`}
+                      >
+                        {f1(pct, 1)} % of {lim.toLocaleString('en-US')} ft²
+                      </td>
+                      <td className={`${td} font-mono`}>
+                        {g ? `${f1(g.flowAtSourceGpm, 0)} gpm` : '-'}
+                      </td>
+                      <td className={`${td} font-mono`}>
+                        {g ? `${f1(g.pressureAtSourcePsi, 1)} psi` : '-'}
+                      </td>
+                      <td
+                        className={`${td} font-mono ${g && g.marginPsi < 0 ? 'text-red-400' : ''}`}
+                      >
+                        {g ? `${f1(g.marginPsi, 1)} psi` : '-'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      <Card title="Areas - hazard and sprinkler type">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-[11px]" data-testid="area-results">
+            <thead>
+              <tr className="border-b border-neutral-800 text-neutral-500 uppercase text-[9px] tracking-wide">
+                {[
+                  'Area',
+                  'Zone',
+                  'Hazard',
+                  'Heads',
+                  'm²',
+                  'Spacing S x L mm',
+                  'Sprinkler type',
+                  'Selection'
+                ].map((h) => (
+                  <th key={h} className={th}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {floorIn.rooms.map((r) => {
+                const rr = floorOut.rooms.find((x) => x.roomId === r.id)
+                const ht = headTypes.find((h) => h.id === rr?.headTypeId)
+                return (
+                  <tr key={r.id} className="border-b border-neutral-850">
+                    <td className={td}>
+                      <span className="font-mono text-neutral-400">{r.id}</span> {r.name}
+                    </td>
+                    <td className={`${td} font-mono`}>{zoneIdOf(r, zonesIn)}</td>
+                    <td className={td}>{HAZARD_DESIGN[r.hazard]?.label ?? r.hazard}</td>
+                    <td className={`${td} font-mono`}>{r.omit ? '-' : (rr?.headCount ?? '-')}</td>
+                    <td className={`${td} font-mono`}>{rr ? f1(rr.areaM2, 1) : '-'}</td>
+                    <td className={`${td} font-mono`}>
+                      {rr && rr.headCount > 0
+                        ? `${f1(rr.spacingSmm, 0)} x ${f1(rr.spacingLmm, 0)}`
+                        : '-'}
+                    </td>
+                    <td className={`${td} text-neutral-300`}>
+                      {r.omit
+                        ? 'Not sprinklered'
+                        : (ht?.description ??
+                          rr?.headTypeId ??
+                          (r.headSpec ? headSpecLabel(r.headSpec) : '-'))}
+                    </td>
+                    <td className={td}>
+                      {r.omit ? (
+                        '-'
+                      ) : r.headSpec ? (
+                        <span className="text-orange-400 font-bold">Designer</span>
+                      ) : (
+                        <span className="text-neutral-500">Automatic</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </>
+  )
+}
 
 const DesignStep: React.FC<{
   design: SprinklerDesignInput
@@ -1082,6 +1413,7 @@ const DesignStep: React.FC<{
                 plan={plan}
                 rooms={floorIn.rooms}
                 riser={floorOut.riser}
+                zones={effectiveZones(floorIn)}
                 design={floorOut}
                 flowingTags={g?.headsFlowing}
                 className="h-[420px]"
@@ -1135,6 +1467,9 @@ const DesignStep: React.FC<{
           </div>
         )}
       </Card>
+      {floorOut && (
+        <ZoneAndAreaTables floorIn={floorIn} floorOut={floorOut} headTypes={s.headTypes} />
+      )}
       {floorOut && (
         <Card title="Floor checks">
           {floorChecks.length > 0 ? (

@@ -47,6 +47,8 @@ export interface FloorHydraulicContext {
   buildingRiserSchedule: 'sch40' | 'sch10'
   supply: SprinklerAnswers['supply']
   source?: SourceContext
+  /** System zone being calculated (default 'Z1'). */
+  zoneId?: string
 }
 
 export interface FloorDemandOutput {
@@ -162,7 +164,8 @@ export function calculateFloorDemand(
     fittings
   })
   const nodeById = new Map(layout.nodes.map((n) => [n.id, n]))
-  const fc = nodeById.get('FC')!
+  const FC = layout.fcNode
+  const fc = nodeById.get(FC)!
   const fcV = vOf(fc.x, fc.y)
   const nodeV = (id: string): number => {
     const n = nodeById.get(id)!
@@ -217,7 +220,7 @@ export function calculateFloorDemand(
     if (!toFcLen.has(j))
       toFcLen.set(
         j,
-        cmPath(j, 'FC').reduce((s, st) => s + st.pipe.lengthM * 1000, 0)
+        cmPath(j, FC).reduce((s, st) => s + st.pipe.lengthM * 1000, 0)
       )
     return toFcLen.get(j)!
   }
@@ -358,9 +361,9 @@ export function calculateFloorDemand(
   let node = remoteArm.junction
   let p = rc.p
   let q = rc.q
-  let added = node === 'FC' ? 0 : addAt(node, p)
+  let added = node === FC ? 0 : addAt(node, p)
   q += added
-  for (const st of cmPath(node, 'FC')) {
+  for (const st of cmPath(node, FC)) {
     const row = calculatePipeSegment({
       fromNode: st.from,
       toNode: st.to,
@@ -374,17 +377,17 @@ export function calculateFloorDemand(
     carried.add(st.pipe.id)
     p = row.ptEndPsi
     node = st.to
-    added = node === 'FC' ? 0 : addAt(node, p)
+    added = node === FC ? 0 : addAt(node, p)
     q += added
   }
   // arms at FC and arms off the path join at FC
   const pFc = p
-  let joinQ = addAt('FC', pFc)
+  let joinQ = addAt(FC, pFc)
   for (const a of flowingArms) {
     if (handled.has(a.id)) continue
     handled.add(a.id)
     const ka = calcs.get(a.id)!.k
-    const path = cmPath(a.junction, 'FC')
+    const path = cmPath(a.junction, FC)
     const pfAt = (Q: number): number => {
       let s = 0
       for (const st of path) {
@@ -412,11 +415,11 @@ export function calculateFloorDemand(
   }
   q += joinQ
   const flowAtFloor = q
-  const nipple = pipeById.get('RN')!
-  carried.add('RN')
+  const nipple = pipeById.get(layout.rnId)!
+  carried.add(layout.rnId)
   const nipRow = calculatePipeSegment({
-    fromNode: 'FC',
-    toNode: 'R',
+    fromNode: FC,
+    toNode: layout.rNode,
     description: 'Floor control assembly (butterfly valve, waterflow switch) and riser nipple',
     flowAddedGpm: joinQ,
     totalFlowGpm: q,
@@ -430,7 +433,7 @@ export function calculateFloorDemand(
   if (ctx.source) {
     const rise = (ctx.pipeElevationM - ctx.source.pumpCLAbsM) * FT_PER_M
     const riserRow = calculatePipeSegment({
-      fromNode: 'R',
+      fromNode: layout.rNode,
       toNode: 'BR',
       description: 'Building riser',
       flowAddedGpm: 0,
@@ -473,6 +476,7 @@ export function calculateFloorDemand(
   }
   const result: RemoteAreaResult = {
     floorId: floor.id,
+    zoneId: ctx.zoneId ?? 'Z1',
     hazard,
     densityGpmFt2: hz.densityGpmFt2,
     designAreaFt2: designArea,

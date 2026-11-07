@@ -142,6 +142,20 @@ export function spacingClass(h: HazardClass): SpacingClass {
   return 'extra'
 }
 
+/**
+ * Standard horizontal sidewall sprinklers (NFPA 13-2019 §10.3, Table 10.3.4.2.1 / 10.3.3.2.1): maximum spacing along the
+ * wall, maximum throw (width protected from the wall) and maximum area per sprinkler. Not permitted in extra hazard.
+ */
+export const SIDEWALL_RULES: Record<
+  'light' | 'ordinary',
+  { maxSpacingFt: number; throwFt: number; maxAreaFt2: number }
+> = {
+  light: { maxSpacingFt: 14, throwFt: 14, maxAreaFt2: 196 },
+  ordinary: { maxSpacingFt: 10, throwFt: 10, maxAreaFt2: 100 }
+}
+/** Distance of a sidewall sprinkler from its wall, mm. */
+export const SIDEWALL_WALL_OFFSET_MM = 150
+
 /** Minimum distance between sprinklers, 6 ft (NFPA 13-2019 §10.2.5.3). */
 export const MIN_SPRINKLER_SPACING_MM = 1829
 /** Minimum distance from a wall, 4 in (NFPA 13-2019 §10.2.5.2.3). */

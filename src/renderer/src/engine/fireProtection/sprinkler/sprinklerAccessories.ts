@@ -40,21 +40,23 @@ export function buildAccessories(
   }
   if (floors.length === 0) return []
   const typeById = new Map(headTypes.map((t) => [t.id, t]))
-  const nipple = (f: SprinklerFloorDesign): number =>
-    f.pipes.find((p) => p.kind === 'riser-nipple')?.sizeIn ?? 2
-
-  // every floor: floor control assembly, inspector's test, auxiliary drains
-  const bySize = new Map<number, SprinklerFloorDesign[]>()
+  // every zone: zone (floor) control assembly; every floor: inspector's test, auxiliary drains
+  const bySize = new Map<number, string[]>()
   for (const f of floors) {
-    const s = nipple(f)
-    bySize.set(s, [...(bySize.get(s) ?? []), f])
+    for (const z of f.zones) {
+      const s = f.pipes.find((p) => p.kind === 'riser-nipple' && p.zoneId === z.zoneId)?.sizeIn ?? 2
+      bySize.set(s, [
+        ...(bySize.get(s) ?? []),
+        f.zones.length > 1 ? `${f.floorName} / ${z.zoneId}` : f.floorName
+      ])
+    }
   }
-  for (const [size, fs] of [...bySize.entries()].sort((a, b) => a[0] - b[0])) {
+  for (const [size, where] of [...bySize.entries()].sort((a, b) => a[0] - b[0])) {
     add(
       `Floor control assembly (supervised butterfly / OS&Y valve with tamper switch, waterflow switch, test & drain with sight glass, pressure gauge) ${formatPipeSize(size)}`,
-      fs.length,
+      where.length,
       size,
-      fs.map((f) => f.floorName).join(', '),
+      where.join(', '),
       'all',
       'NFPA 13-2019 §16.9.1, §16.9.3, §16.10.4, §16.13'
     )

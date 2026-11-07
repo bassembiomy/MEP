@@ -19,6 +19,10 @@ export interface PipingContext {
   schedule: PipeSchedule
   /** Minimum cross-main / riser-nipple size, in. */
   minMainIn: number
+  /** System zone served by this piping (default 'Z1'). */
+  zoneId?: string
+  /** Not the floor's first zone: node and pipe ids carry the zone id (FC-Z2, R-Z2, Z2-J1 …). */
+  secondaryZone?: boolean
 }
 
 export interface PipingNode {
@@ -44,6 +48,10 @@ export interface FloorPiping {
   armIds: string[]
   arms: PipingArm[]
   nodes: PipingNode[]
+  /** Zone control node ('FC' / 'FC-<zone>'), riser connection node ('R' / 'R-<zone>') and riser nipple pipe id. */
+  fcNode: string
+  rNode: string
+  rnId: string
 }
 
 const HAZARD_ORDER: HazardClass[] = ['light', 'ordinary-1', 'ordinary-2', 'extra-1', 'extra-2']
@@ -67,6 +75,12 @@ export function layoutFloorPiping(
   ctx: PipingContext
 ): FloorPiping {
   void floorId
+  const zoneId = ctx.zoneId ?? 'Z1'
+  const sec = !!ctx.secondaryZone
+  const pre = sec ? `${zoneId}-` : ''
+  const FC = sec ? `FC-${zoneId}` : 'FC'
+  const RN_NODE = sec ? `R-${zoneId}` : 'R'
+  const RN_ID = sec ? `RN-${zoneId}` : 'RN'
   const swap = direction === 'y'
   const toXY = (u: number, v: number): [number, number] => (swap ? [v, u] : [u, v])
   const ru = swap ? riser.y : riser.x
@@ -119,7 +133,8 @@ export function layoutFloorPiping(
       lengthM: len / 1000,
       fromNode: from,
       toNode: to,
-      sprinklersDownstream: count
+      sprinklersDownstream: count,
+      zoneId
     })
   }
 
@@ -129,7 +144,7 @@ export function layoutFloorPiping(
   rows.forEach((row, idx) => {
     const r = idx + 1
     const coincident = Math.abs(row.v - rv) <= 1
-    const jid = coincident ? 'FC' : `J${r}`
+    const jid = coincident ? FC : `${pre}J${r}`
     junctionIds.push(jid)
     if (!coincident) pushNode(jid, ru, row.v, 'junction')
     const east = row.heads.filter((h) => h.u >= ru).sort((a, b) => a.u - b.u)
@@ -141,7 +156,7 @@ export function layoutFloorPiping(
     ] as ['E' | 'W', typeof east][]) {
       if (!list.length) continue
       const arm: PipingArm = {
-        id: `A${r}${side}`,
+        id: `${pre}A${r}${side}`,
         row: r,
         side,
         junction: jid,
@@ -185,10 +200,10 @@ export function layoutFloorPiping(
   // cross main: junctions + FC sorted by cross-main coordinate
   type CmNode = { id: string; v: number; row: number }
   const cm: CmNode[] = rows.map((r, i) => ({ id: junctionIds[i], v: r.v, row: i }))
-  if (!cm.some((n) => n.id === 'FC')) cm.push({ id: 'FC', v: rv, row: -1 })
+  if (!cm.some((n) => n.id === FC)) cm.push({ id: FC, v: rv, row: -1 })
   cm.sort((a, b) => a.v - b.v)
-  pushNode('FC', ru, rv, 'floor-control')
-  const fcIdx = cm.findIndex((n) => n.id === 'FC')
+  pushNode(FC, ru, rv, 'floor-control')
+  const fcIdx = cm.findIndex((n) => n.id === FC)
   const headsOfRow = (row: number): string[] => (row >= 0 ? rows[row].heads.map((h) => h.tag) : [])
   let n = 0
   for (let k = 0; k < cm.length - 1; k++) {
@@ -204,7 +219,7 @@ export function layoutFloorPiping(
     )
     n++
     mkPipe(
-      `CM-${n}`,
+      `${pre}CM-${n}`,
       'cross-main',
       size,
       [toXY(ru, cm[near].v), toXY(ru, cm[far].v)],
@@ -215,7 +230,7 @@ export function layoutFloorPiping(
   }
 
   // riser nipple FC → R (same point), 1.0 m
-  pushNode('R', ru, rv, 'riser')
+  pushNode(RN_NODE, ru, rv, 'riser')
   const all = heads.map((h) => h.tag)
   const rnSize = Math.max(
     ctx.minMainIn,
@@ -223,16 +238,25 @@ export function layoutFloorPiping(
   )
   const p = toXY(ru, rv)
   pipes.push({
-    id: 'RN',
+    id: RN_ID,
     kind: 'riser-nipple',
     sizeIn: rnSize,
     schedule,
     points: [p, [p[0], p[1]]],
     lengthM: 1.0,
-    fromNode: 'FC',
-    toNode: 'R',
-    sprinklersDownstream: all.length
+    fromNode: FC,
+    toNode: RN_NODE,
+    sprinklersDownstream: all.length,
+    zoneId
   })
 
-  return { pipes, armIds: arms.map((a) => a.id), arms, nodes }
+  return {
+    pipes,
+    armIds: arms.map((a) => a.id),
+    arms,
+    nodes,
+    fcNode: FC,
+    rNode: RN_NODE,
+    rnId: RN_ID
+  }
 }

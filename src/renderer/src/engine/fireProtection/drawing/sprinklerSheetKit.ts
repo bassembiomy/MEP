@@ -153,7 +153,8 @@ export const ORIENT_LABEL: Record<SprinklerHeadType['orientation'], string> = {
   pendent: 'PENDENT',
   upright: 'UPRIGHT',
   'dry-pendent': 'DRY-PENDENT',
-  'concealed-pendent': 'CONCEALED PENDENT'
+  'concealed-pendent': 'CONCEALED PENDENT',
+  sidewall: 'SIDEWALL'
 }
 
 export const HAZARD_LABEL: Record<string, string> = {

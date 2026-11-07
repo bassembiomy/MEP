@@ -14,7 +14,13 @@ import type {
   SprinklerRoomInput,
   SprinklerSystemType
 } from './sprinklerTypes'
-import { MIN_SPRINKLER_SPACING_MM, MIN_WALL_DISTANCE_MM } from './nfpa13Sprinkler'
+import {
+  MIN_SPRINKLER_SPACING_MM,
+  MIN_WALL_DISTANCE_MM,
+  SIDEWALL_RULES,
+  SIDEWALL_WALL_OFFSET_MM,
+  spacingClass
+} from './nfpa13Sprinkler'
 import { distanceToPolygonEdges, pointInPolygon, polygonArea } from './roomDetection'
 
 const MM_PER_FT = 304.8
@@ -30,7 +36,42 @@ function kFactorOf(h: HazardClass): number {
   return 5.6
 }
 
-/** Select the sprinkler head type for a room and system type (answers reserved for future project overrides). */
+const ORIENT_CODE: Record<SprinklerOrientation, 'PEN' | 'UPR' | 'DPEN' | 'CPEN' | 'HSW'> = {
+  pendent: 'PEN',
+  upright: 'UPR',
+  'dry-pendent': 'DPEN',
+  'concealed-pendent': 'CPEN',
+  sidewall: 'HSW'
+}
+const ORIENT_TEXT: Record<SprinklerOrientation, string> = {
+  pendent: 'pendent',
+  upright: 'upright',
+  'dry-pendent': 'dry-pendent',
+  'concealed-pendent': 'concealed pendent',
+  sidewall: 'horizontal sidewall'
+}
+const BULB_COLOR: Record<number, string> = {
+  135: 'orange',
+  155: 'red',
+  175: 'yellow',
+  200: 'green',
+  286: 'blue'
+}
+
+function tempClassOf(f: number): SprinklerHeadType['tempClass'] {
+  if (f <= 170) return 'ordinary'
+  if (f <= 225) return 'intermediate'
+  return 'high'
+}
+function bulbColorOf(f: number): string {
+  if (BULB_COLOR[f]) return BULB_COLOR[f]
+  const keys = Object.keys(BULB_COLOR)
+    .map(Number)
+    .sort((a, b) => a - b)
+  return BULB_COLOR[keys.find((k) => f <= k) ?? keys[keys.length - 1]]
+}
+
+/** Select the sprinkler head type for a room and system type (a designer's `room.headSpec` overrides the automatic choice). */
 export function selectHeadType(
   room: SprinklerRoomInput,
   systemType: SprinklerSystemType,
@@ -38,8 +79,29 @@ export function selectHeadType(
 ): SprinklerHeadType {
   // Answers are applied upstream (room freezing / ceiling defaults); kept in the signature for future pipe-material rules.
   void answers
-  const k = kFactorOf(room.hazard)
   const deluge = systemType === 'deluge'
+  const spec = room.headSpec
+  if (spec) {
+    const quick = !deluge && spec.response === 'quick'
+    const code = deluge ? 'OPEN' : ORIENT_CODE[spec.orientation]
+    const tempC = Math.round(((spec.tempRatingF - 32) * 5) / 9)
+    const tempClass = tempClassOf(spec.tempRatingF)
+    const orientText = deluge
+      ? `open (deluge) ${ORIENT_TEXT[spec.orientation]}`
+      : ORIENT_TEXT[spec.orientation]
+    return {
+      id: `${quick ? 'QR' : 'SR'}-${code}-K${spec.kFactor}-${spec.tempRatingF}`,
+      description: `${quick ? 'Quick' : 'Standard'}-response ${orientText} spray sprinkler K${spec.kFactor}, ${spec.tempRatingF}°F (${tempC}°C) ${tempClass}`,
+      kFactor: spec.kFactor,
+      orientation: spec.orientation,
+      response: quick ? 'quick' : 'standard',
+      tempRatingF: spec.tempRatingF,
+      tempClass,
+      bulbColor: bulbColorOf(spec.tempRatingF),
+      open: deluge
+    }
+  }
+  const k = kFactorOf(room.hazard)
   let orientation: SprinklerOrientation
   let code: 'PEN' | 'UPR' | 'DPEN' | 'OPEN'
   if (deluge) {
@@ -74,6 +136,53 @@ export function selectHeadType(
     tempClass,
     bulbColor: intermediate ? 'green' : 'red',
     open: deluge
+  }
+}
+
+/**
+ * Compatibility of the designer-selected sprinkler type with the room and system type
+ * (`spr-head-spec:<roomId>`); undefined when the room has no designer selection.
+ */
+export function headSpecCheck(
+  room: SprinklerRoomInput,
+  head: SprinklerHeadType,
+  systemType: SprinklerSystemType
+): DesignCheck | undefined {
+  if (!room.headSpec) return undefined
+  const fails: string[] = []
+  const warns: string[] = []
+  const o = head.orientation
+  const dryLike =
+    systemType === 'dry' || systemType === 'preaction-single' || systemType === 'preaction-double'
+  if (!head.open) {
+    if (dryLike && (o === 'pendent' || o === 'concealed-pendent' || o === 'sidewall'))
+      fails.push(
+        `${ORIENT_TEXT[o]} sprinklers trap water on a ${systemType} system — use dry-pendent or upright sprinklers`
+      )
+    if (systemType === 'wet' && room.freezing && o !== 'dry-pendent')
+      fails.push('freezing room on a wet system needs dry-pendent sprinklers')
+    if (o === 'upright' && room.ceilingType === 'finished-flat')
+      warns.push(
+        'upright sprinklers under a finished flat ceiling — pendent or concealed heads are normal'
+      )
+    if (o === 'pendent' && room.ceilingType === 'exposed-structure')
+      warns.push('pendent sprinklers under exposed structure need drops from the branch lines')
+  }
+  const extra = room.hazard === 'extra-1' || room.hazard === 'extra-2'
+  if (extra && head.kFactor < 11.2)
+    warns.push(
+      `K${head.kFactor} sprinklers in extra hazard — larger orifice (K11.2 or more) normally needed for the density`
+    )
+  const status = fails.length ? 'fail' : warns.length ? 'warn' : 'pass'
+  return {
+    id: `spr-head-spec:${room.id}`,
+    title: `Sprinkler type — ${room.name}`,
+    reference: 'NFPA 13-2019 §8.2, §9.3, §9.4.2',
+    status,
+    detail:
+      status === 'pass'
+        ? `${head.description} suits the ${room.hazard} hazard area, ${room.ceilingType} ceiling and ${systemType} system`
+        : [...fails, ...warns].join('; ')
   }
 }
 
@@ -341,4 +450,116 @@ export function roomLayoutChecks(
         : `${gaps} sample points (250 mm grid) outside any protection area`
   })
   return out
+}
+
+// ─────────────────────────── Standard horizontal sidewall ───────────────────────────
+
+export interface SidewallLayout extends RoomHeadLayout {
+  maxSpacingMm: number
+  maxAreaFt2: number
+  /** Maximum throw (protected width from a wall), mm. */
+  throwMm: number
+  walls: 1 | 2
+  /** Room width exceeds twice the maximum throw. */
+  tooWide: boolean
+  /** Sidewall sprinklers are not permitted for this hazard (extra hazard). */
+  notPermitted: boolean
+  /** Sidewall sprinklers are used for ordinary hazard only where listed for it. */
+  listedOnly: boolean
+}
+
+/**
+ * Standard horizontal sidewall layout (NFPA 13-2019 §10.3): heads 150 mm from the wall (or two opposite walls) on the
+ * bbox side parallel to the longer dimension nearest the zone riser. S = spacing along the wall, L = throw (width
+ * covered from a wall).
+ */
+export function layoutSidewallHeads(
+  room: SprinklerRoomInput,
+  riser: { x: number; y: number }
+): SidewallLayout {
+  const cls = spacingClass(room.hazard)
+  const rules = SIDEWALL_RULES[cls === 'light' ? 'light' : 'ordinary']
+  const maxS = rules.maxSpacingFt * MM_PER_FT
+  const throwMm = rules.throwFt * MM_PER_FT
+  const maxAreaMm2 = (rules.maxAreaFt2 / FT2_PER_M2) * 1e6
+  const { minX, minY, maxX, maxY } = bboxOf(room.polygon)
+  const alongX = maxX - minX >= maxY - minY
+  const len = alongX ? maxX - minX : maxY - minY
+  const W = alongX ? maxY - minY : maxX - minX
+  const lo = alongX ? minY : minX
+  const hi = alongX ? maxY : maxX
+  const rv = alongX ? riser.y : riser.x
+  const eps = 1e-6
+  let L: number
+  let walls: 1 | 2
+  let tooWide = false
+  if (W <= throwMm + eps) {
+    L = W
+    walls = 1
+  } else {
+    L = W / 2
+    walls = 2
+    tooWide = W > 2 * throwMm + eps
+  }
+  const Smax = Math.min(maxS, maxAreaMm2 / L)
+  const n = Math.max(1, Math.ceil(len / Smax - eps))
+  const S = len / n
+  // wall nearest the riser (tie → lower coordinate)
+  const nearLo = Math.abs(rv - lo) <= Math.abs(rv - hi)
+  const wallCoords: number[] =
+    walls === 2
+      ? [lo + SIDEWALL_WALL_OFFSET_MM, hi - SIDEWALL_WALL_OFFSET_MM]
+      : [nearLo ? lo + SIDEWALL_WALL_OFFSET_MM : hi - SIDEWALL_WALL_OFFSET_MM]
+  const pts: Pt[] = []
+  for (const c of wallCoords)
+    for (let i = 0; i < n; i++) {
+      const u = (alongX ? minX : minY) + (i + 0.5) * S
+      const p: Pt = alongX ? [u, c] : [c, u]
+      if (pointInPolygon(p[0], p[1], room.polygon)) pts.push(p)
+    }
+  return {
+    points: pts,
+    S,
+    L,
+    maxSpacingMm: maxS,
+    maxAreaFt2: rules.maxAreaFt2,
+    throwMm,
+    walls,
+    tooWide,
+    notPermitted: cls === 'extra',
+    listedOnly: cls === 'ordinary'
+  }
+}
+
+/** `spr-sidewall:<roomId>` — standard horizontal sidewall limits (replaces the spray layout checks). */
+export function sidewallChecks(room: SprinklerRoomInput, lay: SidewallLayout): DesignCheck[] {
+  const ft = (mm: number): string => (mm / MM_PER_FT).toFixed(2)
+  const spacingOk =
+    lay.S <= lay.maxSpacingMm + 0.5 &&
+    lay.S * lay.L <= (lay.maxAreaFt2 / FT2_PER_M2) * 1e6 * (1 + 1e-6)
+  const base = `${lay.walls} wall${lay.walls > 1 ? 's' : ''}, S ${ft(lay.S)} ft along the wall × throw ${ft(lay.L)} ft (max ${ft(lay.maxSpacingMm)} ft / ${ft(lay.throwMm)} ft throw / ${lay.maxAreaFt2} ft²)`
+  let status: DesignCheck['status'] = 'pass'
+  let detail = base
+  if (lay.notPermitted) {
+    status = 'fail'
+    detail = `Standard sidewall sprinklers are not permitted in extra hazard areas; ${base}`
+  } else if (lay.tooWide) {
+    status = 'fail'
+    detail = `Room width ${ft(lay.L * 2)} ft exceeds twice the maximum throw (${ft(lay.throwMm * 2)} ft); ${base}`
+  } else if (!spacingOk) {
+    status = 'fail'
+    detail = `Spacing exceeds the sidewall limits; ${base}`
+  } else if (lay.listedOnly) {
+    status = 'warn'
+    detail = `Sidewall sprinklers in ordinary hazard only where listed for ordinary hazard; ${base}`
+  }
+  return [
+    {
+      id: `spr-sidewall:${room.id}`,
+      title: `Horizontal sidewall layout — ${room.name}`,
+      reference: 'NFPA 13-2019 §10.3, Table 10.3.4.2.1 / 10.3.3.2.1',
+      status,
+      detail
+    }
+  ]
 }
