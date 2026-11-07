@@ -259,7 +259,8 @@ export function calculateFloorDemand(
 
   // a sprinkler below an obstruction protects a small area: the ceiling sprinklers set the design area count
   const ref = remote.belowObstruction
-    ? (candidates.filter((h) => !h.belowObstruction).sort((a, b) => b.areaFt2 - a.areaFt2)[0] ?? remote)
+    ? (candidates.filter((h) => !h.belowObstruction).sort((a, b) => b.areaFt2 - a.areaFt2)[0] ??
+      remote)
     : remote
   const nRequired = Math.ceil(designArea / ref.areaFt2 - EPS)
   const nb = Math.max(

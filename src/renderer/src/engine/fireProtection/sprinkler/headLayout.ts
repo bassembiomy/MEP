@@ -315,7 +315,14 @@ function layoutAlongX(poly: Pt[], rules: SpacingRule): RoomHeadLayout {
 }
 
 /** Number of points of a 250 mm grid inside the room not covered by any head's S × L protection rectangle. */
-function coverageGaps(poly: Pt[], pts: Pt[], S: number, L: number, direction: 'x' | 'y'): number {
+function coverageGaps(
+  poly: Pt[],
+  pts: Pt[],
+  S: number,
+  L: number,
+  direction: 'x' | 'y',
+  skip?: (x: number, y: number) => boolean
+): number {
   const { minX, minY, maxX, maxY } = bboxOf(poly)
   const hx = (direction === 'x' ? S : L) / 2 + 1
   const hy = (direction === 'x' ? L : S) / 2 + 1
@@ -323,6 +330,7 @@ function coverageGaps(poly: Pt[], pts: Pt[], S: number, L: number, direction: 'x
   for (let x = minX + 125; x < maxX; x += 250)
     for (let y = minY + 125; y < maxY; y += 250) {
       if (!pointInPolygon(x, y, poly)) continue
+      if (skip && skip(x, y)) continue
       if (!pts.some((p) => Math.abs(p[0] - x) <= hx && Math.abs(p[1] - y) <= hy)) gaps++
     }
   return gaps
@@ -350,7 +358,9 @@ export function roomLayoutChecks(
   room: SprinklerRoomInput,
   layout: RoomHeadLayout,
   rules: SpacingRule,
-  direction: 'x' | 'y'
+  direction: 'x' | 'y',
+  /** Points that need no coverage (inside a deep beam that acts as a wall). */
+  skip?: (x: number, y: number) => boolean
 ): DesignCheck[] {
   const { S, L, points } = layout
   const Smax = rules.maxSpacingFt * MM_PER_FT
@@ -404,6 +414,7 @@ export function roomLayoutChecks(
         wx -= nx
         wy -= ny
       }
+      if (skip && skip(wx, wy)) continue
       samples++
       let best = Infinity
       for (const [hx, hy] of points) {
@@ -438,7 +449,7 @@ export function roomLayoutChecks(
       : 'single sprinkler'
   })
 
-  const gaps = coverageGaps(room.polygon, points, S, L, direction)
+  const gaps = coverageGaps(room.polygon, points, S, L, direction, skip)
   out.push({
     id: `spr-coverage:${room.id}`,
     title: `Coverage — ${room.name}`,

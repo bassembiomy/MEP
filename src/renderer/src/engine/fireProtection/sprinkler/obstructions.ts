@@ -124,7 +124,13 @@ export function analyseObstruction(
         wall: true,
         inactive: false
       }
-    return { ...base, rule: 'beam', requiredClearanceMm: minA * MM_PER_FT, wall: false, inactive: false }
+    return {
+      ...base,
+      rule: 'beam',
+      requiredClearanceMm: minA * MM_PER_FT,
+      wall: false,
+      inactive: false
+    }
   }
   return {
     ...base,

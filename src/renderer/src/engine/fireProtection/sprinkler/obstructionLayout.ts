@@ -121,8 +121,7 @@ function dpPlace(
   const INF = Infinity
   const cost = new Float64Array(m * N).fill(INF)
   const par = new Int32Array(m * N).fill(-1)
-  for (let j = 0; j < N; j++)
-    if (cand[j] <= lo + smax / 2 + EPS) cost[j] = (cand[j] - refs[0]) ** 2
+  for (let j = 0; j < N; j++) if (cand[j] <= lo + smax / 2 + EPS) cost[j] = (cand[j] - refs[0]) ** 2
   for (let i = 1; i < m; i++) {
     let a = 0 // first j' with cand[j'] ≥ cand[j] − smax
     let b = 0 // number of j' with cand[j'] ≤ cand[j] − min spacing
@@ -212,7 +211,9 @@ function matchOrdered(a: number[], b: number[]): [number, number][] {
   const n = s.length
   const m = l.length
   if (n === 0) return []
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(Infinity))
+  const dp: number[][] = Array.from({ length: n + 1 }, () =>
+    new Array<number>(m + 1).fill(Infinity)
+  )
   for (let j = 0; j <= m; j++) dp[0][j] = 0
   for (let i = 1; i <= n; i++)
     for (let j = i; j <= m; j++) {
@@ -235,6 +236,14 @@ function matchOrdered(a: number[], b: number[]): [number, number][] {
 
 // ─────────────────────────── Room processing ───────────────────────────
 
+/**
+ * Obstructions whose footprint divides the area into bays: walls (deep beams) and wide obstructions, under which
+ * sprinklers are installed — the ceiling sprinklers on each side are laid out as if the footprint were a wall.
+ */
+function isCut(o: { g: ObstructionGeom }): boolean {
+  return o.g.wall || o.g.rule === 'wide'
+}
+
 /** Intervals minus the cuts; a bay that touches a cut is flagged (a compartment of its own, it needs sprinklers). */
 function cutInterval(
   intervals: [number, number][],
@@ -252,9 +261,7 @@ function cutInterval(
     if (cur < b) out.push({ lo: cur, hi: b, cut: false })
   }
   for (const bay of out)
-    bay.cut = cuts.some(
-      ([c0, c1]) => Math.abs(c1 - bay.lo) < EPS || Math.abs(c0 - bay.hi) < EPS
-    )
+    bay.cut = cuts.some(([c0, c1]) => Math.abs(c1 - bay.lo) < EPS || Math.abs(c0 - bay.hi) < EPS)
   return out
 }
 
@@ -273,7 +280,9 @@ export function layoutRoomObstructions(p: RoomObsParams): RoomObsResult {
     vMin = Math.min(vMin, v)
     vMax = Math.max(vMax, v)
   }
-  const rect = Math.abs(polygonArea(poly) - (uMax - uMin) * (vMax - vMin)) <= 1e-6 * (uMax - uMin) * (vMax - vMin) + 1
+  const rect =
+    Math.abs(polygonArea(poly) - (uMax - uMin) * (vMax - vMin)) <=
+    1e-6 * (uMax - uMin) * (vMax - vMin) + 1
   const fixedRows = !!p.sidewall
 
   // obstructions in (u, v), those touching the room only; row-coordinate (parallel) ones first
@@ -328,7 +337,7 @@ export function layoutRoomObstructions(p: RoomObsParams): RoomObsResult {
   /** Bays of the row line at v: room intervals cut by the wall obstructions crossing the row. */
   const baysAtRow = (v: number): { lo: number; hi: number; cut: boolean }[] => {
     const cuts = processed
-      .filter((o) => o.g.wall && v > o.vLo + TOL_MM && v < o.vHi - TOL_MM)
+      .filter((o) => isCut(o) && v > o.vLo + TOL_MM && v < o.vHi - TOL_MM)
       .map((o) => [o.uLo, o.uHi] as [number, number])
     return cutInterval(scanIntervals(poly, v), cuts)
   }
@@ -368,12 +377,14 @@ export function layoutRoomObstructions(p: RoomObsParams): RoomObsResult {
         else {
           // across: column bay at u, cut by the wall obstructions crossing the column
           const cuts = processed
-            .filter((o) => o.g.wall && h.u > o.uLo + TOL_MM && h.u < o.uHi - TOL_MM)
+            .filter((o) => isCut(o) && h.u > o.uLo + TOL_MM && h.u < o.uHi - TOL_MM)
             .map((o) => [o.vLo, o.vHi] as [number, number])
             .sort((a, b) => a[0] - b[0])
           let cLo = vMin
           let cHi = vMax
-          const ints = scanIntervals(polyT, h.u).filter((q) => h.v >= q[0] - EPS && h.v <= q[1] + EPS)
+          const ints = scanIntervals(polyT, h.u).filter(
+            (q) => h.v >= q[0] - EPS && h.v <= q[1] + EPS
+          )
           if (ints.length) [cLo, cHi] = ints[0]
           for (const [c0, c1] of cuts) {
             if (c1 <= h.v) cLo = Math.max(cLo, c1)
@@ -424,7 +435,7 @@ export function layoutRoomObstructions(p: RoomObsParams): RoomObsResult {
     const before = snapshot()
     const rows = rowsOf()
     if (rows.length === 0) return
-    const walls = processed.filter((q) => q.parallel && q.g.wall)
+    const walls = processed.filter((q) => q.parallel && isCut(q))
     const forbids: [number, number][] = processed
       .filter((q) => q.parallel && !q.g.wall)
       .map((q) => [q.vLo - q.req + TOL_MM, q.vHi + q.req - TOL_MM] as [number, number])
@@ -441,7 +452,10 @@ export function layoutRoomObstructions(p: RoomObsParams): RoomObsResult {
       const solved = solveBay(bay.lo, bay.hi, old, bay.cut, smax, forbids, () => true)
       if (!solved) {
         ok = false
-        note(o.g.ob.id, `rows cannot be re-spaced between v = ${bay.lo.toFixed(0)} and ${bay.hi.toFixed(0)} mm`)
+        note(
+          o.g.ob.id,
+          `rows cannot be re-spaced between v = ${bay.lo.toFixed(0)} and ${bay.hi.toFixed(0)} mm`
+        )
         break
       }
       newVs.push(...solved)
@@ -499,14 +513,16 @@ export function layoutRoomObstructions(p: RoomObsParams): RoomObsResult {
     const rowL = p.sidewall ? p.sidewall.throwMm : maxSL().L
     const smax = smaxFor(rowL)
     for (const row of rows) {
-      const crossing = o.g.wall && row.v > o.vLo + TOL_MM && row.v < o.vHi - TOL_MM
+      const crossing = isCut(o) && row.v > o.vLo + TOL_MM && row.v < o.vHi - TOL_MM
       if (!crossing && !conflicts(o, row.heads)) continue
       const bays = baysAtRow(row.v)
       const forbids = zonesAtRow(row.v)
       const newUs: number[] = []
       let ok = true
       for (const bay of bays) {
-        const old = row.heads.filter((h) => h.u >= bay.lo - EPS && h.u <= bay.hi + EPS).map((h) => h.u)
+        const old = row.heads
+          .filter((h) => h.u >= bay.lo - EPS && h.u <= bay.hi + EPS)
+          .map((h) => h.u)
         const solved = solveBay(bay.lo, bay.hi, old, bay.cut, smax, forbids, (u) => {
           if (rect) return true
           const [x, y] = swap ? [row.v, u] : [u, row.v]
@@ -552,8 +568,8 @@ export function layoutRoomObstructions(p: RoomObsParams): RoomObsResult {
     processed.push(o)
     const touches = !(o.uLo >= uMax || o.uHi <= uMin || o.vLo >= vMax || o.vHi <= vMin)
     if (o.parallel) {
-      if (conflicts(o, recs) || (o.g.wall && touches)) respaceRows(o)
-    } else if (conflicts(o, recs) || (o.g.wall && touches)) respaceRowLines(o)
+      if (conflicts(o, recs) || (isCut(o) && touches)) respaceRows(o)
+    } else if (conflicts(o, recs) || (isCut(o) && touches)) respaceRowLines(o)
   }
 
   // ── sprinklers below wide obstructions ──

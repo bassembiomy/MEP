@@ -92,7 +92,12 @@ interface HeadPlan {
 function bboxOfPoly(p: Pt[]): { minX: number; minY: number; maxX: number; maxY: number } {
   const xs = p.map((q) => q[0])
   const ys = p.map((q) => q[1])
-  return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) }
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys)
+  }
 }
 
 interface FloorLayoutData {
@@ -320,9 +325,9 @@ function designFloor(
           relocatedMm: h.relocatedMm,
           recId: h.id
         }))
-        effLayout = { points: plans.map((q): Pt => [q.x, q.y]), S: obs.S, L: obs.L }
+        effLayout = { points: layout.points, S: obs.S, L: obs.L }
         if (sidewall) {
-          effSidewall = { ...sidewall, points: effLayout.points, S: obs.S, L: obs.L }
+          effSidewall = { ...sidewall, S: obs.S, L: obs.L }
           effLayout = effSidewall
         }
       }
@@ -345,6 +350,9 @@ function designFloor(
           areaFt2: areaFt2Of(b.S, b.L),
           below: b.obstructionId
         })
+    // coverage / wall / spacing checks see the ceiling sprinklers and those below obstructions
+    effLayout = { ...effLayout, points: plans.map((q): Pt => [q.x, q.y]) }
+    if (effSidewall) effSidewall = { ...effSidewall, points: effLayout.points }
     for (const q of plans) {
       n++
       const tag = `S-${floor.id}-${String(n).padStart(3, '0')}`
@@ -383,7 +391,11 @@ function designFloor(
       a += room.polygon[j][0] * room.polygon[i][1] - room.polygon[i][0] * room.polygon[j][1]
     let layoutChecks = effSidewall
       ? sidewallChecks(room, effSidewall)
-      : roomLayoutChecks(room, effLayout, rules, direction)
+      : roomLayoutChecks(room, effLayout, rules, direction, (x, y) =>
+          geoms.some(
+            (g) => g.wall && x >= g.xLo - 1 && x <= g.xHi + 1 && y >= g.yLo - 1 && y <= g.yHi + 1
+          )
+        )
     if (obs?.modified && !effSidewall) {
       // per-head protection areas S × L (NFPA 13 §10.2.4.1.1) replace the uniform area check
       const maxArea = Math.max(...plans.slice(0, ceilingCount).map((q) => q.areaFt2))
