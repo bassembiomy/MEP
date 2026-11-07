@@ -249,6 +249,41 @@ export function buildSprinklerReportHtml(
     p.push(
       `<p>Elevation ${num(input?.elevationM, 2)} m; ${f.heads.length} sprinklers; ${f.pipes.length} pipe segments; piping volume ${num(f.volumeGal, 0)} gal (${num(f.volumeGal * 3.78541, 0)} L); riser at (${num(f.riser.x, 0)}, ${num(f.riser.y, 0)}) mm; inspector's test at (${num(f.inspectorTest.x, 0)}, ${num(f.inspectorTest.y, 0)}) mm.</p>`
     )
+    // zones: zone control valves, areas, heads, area vs the NFPA 13 §4.4 limit, governing remote area per zone
+    p.push('<h3>Zones</h3>')
+    p.push(
+      table(
+        [
+          'Zone',
+          'Name',
+          'Zone control valve',
+          'Areas',
+          'Heads',
+          'Area m²',
+          'Area ft²',
+          'Limit ft² (NFPA 13 §4.4)',
+          'Area vs limit',
+          'Governing at source',
+          'Margin psi'
+        ],
+        f.zones.map((z) => [
+          z.zoneId,
+          z.name,
+          z.controlValveTag,
+          z.roomIds.map((id) => input?.rooms.find((x) => x.id === id)?.name ?? id).join(', '),
+          String(z.headCount),
+          num(z.areaM2, 0),
+          num(z.areaFt2, 0),
+          num(z.maxAreaFt2, 0),
+          `${num((z.areaFt2 / Math.max(z.maxAreaFt2, 1)) * 100, 1)} % - ${z.areaFt2 <= z.maxAreaFt2 ? 'within limit' : 'EXCEEDS LIMIT'}`,
+          z.governing
+            ? `${num(z.governing.flowAtSourceGpm, 1)} gpm @ ${num(z.governing.pressureAtSourcePsi, 1)} psi (${HAZARD_DESIGN[z.governing.hazard]?.label ?? z.governing.hazard}, ${num(z.governing.densityGpmFt2, 2)} gpm/ft² over ${num(z.governing.designAreaFt2, 0)} ft²)`
+            : '-',
+          z.governing ? num(z.governing.marginPsi, 1) : '-'
+        ])
+      )
+    )
+    p.push(checksTable(f.zones.flatMap((z) => z.checks)))
     const g = f.governing
     p.push('<h3>Remote area</h3>')
     if (g) {
@@ -352,12 +387,14 @@ export function buildSprinklerReportHtml(
     } else {
       p.push('<p>No remote area was calculated for this floor (no sprinklers).</p>')
     }
-    p.push('<h3>Rooms</h3>')
+    p.push('<h3>Protected areas (rooms)</h3>')
     p.push(
       table(
         [
-          'Room',
+          'Area',
           'Name',
+          'Source',
+          'Zone',
           'Hazard',
           'Occupancy',
           'Area m²',
@@ -378,6 +415,8 @@ export function buildSprinklerReportHtml(
           return [
             r.roomId,
             r.name,
+            occ?.source === 'drawn' ? 'Drawn by designer' : 'Detected from plan',
+            occ?.zoneId ?? f.zones[0]?.zoneId ?? '-',
             HAZARD_DESIGN[r.hazard]?.label ?? r.hazard,
             occ
               ? occ.omit
@@ -479,6 +518,56 @@ export function buildSprinklerReportHtml(
         num(f.governing?.pressureAtSourcePsi, 1),
         num(f.governing?.marginPsi, 1)
       ])
+    )
+  )
+
+  p.push('<h3>Pipe sizing method</h3>')
+  p.push(
+    `<p>${
+      design.answers.pipeSizing === 'hydraulic'
+        ? `Hydraulically calculated pipe sizes (NFPA 13-2019 Ch. 28): smallest sizes keeping at least ${num(design.answers.minSupplyMarginPsi ?? 10, 0)} psi margin below the supply and velocities within 20 ft/s.`
+        : 'Pipe schedule sizing (NFPA 13-2019 §28.5), hydraulically verified and upsized where the supply is short.'
+    }</p>`
+  )
+  p.push('<h3>Sprinkler types (designer-selected vs automatic)</h3>')
+  p.push(
+    table(
+      [
+        'Type id',
+        'Description',
+        'K',
+        'Orientation',
+        'Response',
+        'Temperature / bulb',
+        'Qty',
+        'Selection',
+        'Areas'
+      ],
+      s.headTypes.map((t) => {
+        const areas = design.floors.flatMap((fl) =>
+          fl.rooms
+            .filter((r) =>
+              s.floors.some((fd) =>
+                fd.heads.some((h) => h.roomId === r.id && h.headTypeId === t.id)
+              )
+            )
+            .map((r) => ({ r, designer: !!r.headSpec }))
+        )
+        const designer = areas.filter((a) => a.designer).length
+        return [
+          t.id,
+          t.description,
+          num(t.kFactor, 1),
+          t.orientation === 'sidewall' ? 'Horizontal sidewall' : t.orientation,
+          t.response,
+          `${t.tempRatingF} °F (${t.tempClass}, ${t.bulbColor} bulb)`,
+          String(
+            s.floors.reduce((a, fd) => a + fd.heads.filter((h) => h.headTypeId === t.id).length, 0)
+          ),
+          designer === 0 ? 'Automatic' : designer === areas.length ? 'Designer-selected' : 'Mixed',
+          areas.map((a) => `${a.r.name}${a.designer ? ' (designer)' : ' (auto)'}`).join(', ')
+        ]
+      })
     )
   )
 

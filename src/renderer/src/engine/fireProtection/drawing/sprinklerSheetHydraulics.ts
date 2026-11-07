@@ -197,10 +197,56 @@ export function drawHydraulicSheet(c: Ctx): void {
   })
   void yTop
 
+  // governing remote area of every zone (zone control valve)
+  const zoneRows: string[][] = [
+    [
+      'FLOOR',
+      'ZONE',
+      'ZCV TAG',
+      'HEADS',
+      'AREA FT2',
+      'LIMIT FT2',
+      'HAZARD',
+      'DENSITY GPM/FT2',
+      'AREA FT2 (DESIGN)',
+      'Q @ ZCV GPM',
+      'P @ ZCV PSI',
+      'Q @ SRC GPM',
+      'P @ SRC PSI',
+      'MARGIN PSI'
+    ]
+  ]
+  for (const fl of spr.floors)
+    for (const z of fl.zones) {
+      const g = z.governing
+      zoneRows.push([
+        fl.floorName.toUpperCase(),
+        `${z.zoneId} ${z.name.toUpperCase()}`,
+        z.controlValveTag,
+        String(z.headCount),
+        f(z.areaFt2, 0),
+        f(z.maxAreaFt2, 0),
+        g ? (HAZARD_LABEL[g.hazard] ?? g.hazard) : '-',
+        g ? f(g.densityGpmFt2, 2) : '-',
+        g ? f(g.designAreaFt2, 0) : '-',
+        g ? f(g.flowAtFloorGpm) : '-',
+        g ? f(g.pressureAtFloorPsi) : '-',
+        g ? f(g.flowAtSourceGpm) : '-',
+        g ? f(g.pressureAtSourcePsi) : '-',
+        g ? f(g.marginPsi) : '-'
+      ])
+    }
+  const zFit = fit(zoneRows, 2.3, leftW + 270, 'GOVERNING REMOTE AREA PER ZONE')
+  const zTop = maxBottom - 8 - sumH - 8
+  const zSize = drawTable(c, 24 + 2, zTop, zFit.cols, zoneRows, {
+    th: zFit.th,
+    title: 'GOVERNING REMOTE AREA PER ZONE',
+    alignRight: zoneRows[0].map((_, i) => i >= 3)
+  })
+
   // ───────── right column: graph + BOM ─────────
   const colX = Math.max(tableRight + 8, 596)
-  const summaryBottom =
-    maxBottom - 8 - measureTable(sumFit.cols, summaryRows, { th: sumFit.th, title: 'x' }).h
+  const summaryBottom = zTop - zSize.h
   const gx0 = colX + 22
   const gx1 = Math.min(colX + 22 + 190, FRAME.x1 - 10)
   const gy0 = 250

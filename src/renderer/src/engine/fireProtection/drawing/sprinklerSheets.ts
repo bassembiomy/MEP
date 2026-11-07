@@ -40,11 +40,23 @@ import {
   headSymbol,
   headTypeText,
   pointInPolygon,
+  zoneBandLayer,
   sizeLabel
 } from './sprinklerSheetKit'
 import { drawArchUnderlay, loadFloorPlan } from './sheetUnderlay'
 import { drawRiserSheet } from './sprinklerSheetRiser'
 import { drawHydraulicSheet } from './sprinklerSheetHydraulics'
+import {
+  drawAreaDimensions,
+  drawReducers,
+  drawZcvSymbol,
+  drawZoneBoundaries,
+  inwardNormal,
+  placeZoneLabels,
+  sizingNote,
+  sprinklerScheduleRows,
+  zoneScheduleRows
+} from './sprinklerSheetZones'
 
 export const FLOOR_SCALES = [50, 75, 100, 150, 200, 250, 500]
 /** Plan area and right-hand information panel (paper mm). */
@@ -80,6 +92,7 @@ function sprinklerContentBBox(d: FloorData): BoxMm {
   for (const h of d.fd.heads) add([h.x, h.y])
   for (const p of d.fd.pipes) p.points.forEach(add)
   add([d.fd.riser.x, d.fd.riser.y])
+  for (const z of d.fd.zones) add([z.riser.x, z.riser.y])
   add([d.fd.inspectorTest.x, d.fd.inspectorTest.y])
   if (!Number.isFinite(bb.minX)) return { minX: 0, minY: 0, maxX: 1000, maxY: 1000 }
   return bb
@@ -112,6 +125,8 @@ function floorNotes(c: Ctx, d: FloorData): string[] {
   const nipple = d.fd.pipes.find((p) => p.kind === 'riser-nipple')?.sizeIn ?? 2
   const notes: string[] = [
     'WORKING PLANS FOR APPROVAL BY THE AUTHORITY HAVING JURISDICTION (AHJ) BEFORE FABRICATION. INSTALL TO NFPA 13-2019 (INSTALLATION OF SPRINKLER SYSTEMS), NFPA 25 AND NFPA 72 AS ADOPTED BY THE AHJ.',
+    sizingNote(sd.answers.pipeSizing === 'hydraulic') +
+      '. ZONES, ZONE CONTROL VALVES AND THE ZONE SCHEDULE ARE SHOWN ON THIS SHEET; REDUCERS MARK EVERY PIPE SIZE CHANGE.',
     g
       ? `HYDRAULICALLY CALCULATED SYSTEM: ${HAZARD_LABEL[g.hazard] ?? g.hazard.toUpperCase()} HAZARD, ${f1(g.densityGpmFt2, 2)} GPM/FT2 OVER ${f1(g.designAreaFt2, 0)} FT2 (NFPA 13-2019 SEC. 19.3.3.1, 28.2). PIPE SIZES AND LENGTHS SHOWN ARE THE CALCULATED ONES (FS-601); NO CHANGE WITHOUT A NEW CALCULATION.`
       : 'HYDRAULICALLY CALCULATED SYSTEM (NFPA 13-2019 SEC. 28.2). PIPE SIZES AND LENGTHS SHOWN ARE THE CALCULATED ONES; NO CHANGE WITHOUT A NEW CALCULATION.',
@@ -223,7 +238,7 @@ const pipeLayer = (p: SprinklerPipe): string =>
       ? 'FS-PIPE-RISER'
       : 'FS-PIPE-MAIN'
 const pipeGroup = (p: SprinklerPipe): string =>
-  p.kind === 'branch' ? p.id.replace(/-\d+$/, '') : p.kind
+  p.kind === 'branch' ? p.id.replace(/-\d+$/, '') : `${p.kind}:${p.zoneId}`
 
 export function drawFloorSheet(c: Ctx, d: FloorData): void {
   const { b, sheet, r } = c
@@ -256,6 +271,7 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
 
   // ───────── room outlines ─────────
   for (const rm of fi.rooms) b.polyline('FS-ROOM', rm.polygon.map(M), true)
+  drawZoneBoundaries(c, d, M)
 
   // ───────── pipes, slope arrows, hangers ─────────
   const pipeById = new Map(fd.pipes.map((p) => [p.id, p]))
@@ -370,12 +386,20 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
   const rHead = 1.3 * S
   for (const h of fd.heads) {
     const m = M([h.x, h.y])
-    headSymbol(b, m[0], m[1], rHead, typeById.get(h.headTypeId) ?? null)
+    const ht = typeById.get(h.headTypeId) ?? null
+    let throwDir: Pt = [1, 0]
+    let reach = rHead
+    if (ht?.orientation === 'sidewall') {
+      const rp = fi.rooms.find((q) => q.id === h.roomId)
+      if (rp) throwDir = inwardNormal(rp.polygon as Pt[], [h.x, h.y])
+      reach = rHead * 4.4
+    }
+    headSymbol(b, m[0], m[1], rHead, ht, 'FS-HEAD', throwDir)
     P.addHard({
-      x0: m[0] - rHead - 0.3 * S,
-      y0: m[1] - rHead - 0.3 * S,
-      x1: m[0] + rHead + 0.3 * S,
-      y1: m[1] + rHead + 0.3 * S
+      x0: Math.min(m[0] - rHead, m[0] + throwDir[0] * reach) - 0.3 * S,
+      y0: Math.min(m[1] - rHead, m[1] + throwDir[1] * reach) - 0.3 * S,
+      x1: Math.max(m[0] + rHead, m[0] + throwDir[0] * reach) + 0.3 * S,
+      y1: Math.max(m[1] + rHead, m[1] + throwDir[1] * reach) + 0.3 * S
     })
   }
 
@@ -448,15 +472,11 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
 
   // ───────── riser / floor control assembly and inspector's test (symbols) ─────────
   const rm = M([fd.riser.x, fd.riser.y])
-  b.circle('FS-PIPE-RISER', rm[0], rm[1], 2.6 * S)
-  b.circle('FS-PIPE-RISER', rm[0], rm[1], 1.5 * S)
-  b.solid('FS-PIPE-RISER', [
-    [rm[0] - 0.7 * S, rm[1] - 0.7 * S],
-    [rm[0] + 0.7 * S, rm[1] - 0.7 * S],
-    [rm[0] + 0.7 * S, rm[1] + 0.7 * S],
-    [rm[0] - 0.7 * S, rm[1] + 0.7 * S]
-  ])
-  P.addHard({ x0: rm[0] - 3 * S, y0: rm[1] - 3 * S, x1: rm[0] + 3 * S, y1: rm[1] + 3 * S })
+  const zoneRisers = (fd.zones.length > 0 ? fd.zones.map((z) => z.riser) : [fd.riser]).map((q) =>
+    M([q.x, q.y])
+  )
+  zoneRisers.forEach((zp, zi) => drawZcvSymbol(c, zp, P, zi))
+  const reducerCount = drawReducers(c, fd, M, P)
   const it = M([fd.inspectorTest.x, fd.inspectorTest.y])
   b.circle('FS-PIPE-BRANCH', it[0], it[1], 2.2 * S)
   b.line('FS-PIPE-BRANCH', it[0] - 1.55 * S, it[1] - 1.55 * S, it[0] + 1.55 * S, it[1] + 1.55 * S)
@@ -596,6 +616,10 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
       P.text('FS-ANNO', gx, gy, 2.2, l1, { align: 'center', vAlign: 'middle' })
   }
 
+  // head-to-wall and spacing dimensions of every area (after the area names, which keep their best spot)
+  drawAreaDimensions(c, d, M, P)
+  placeZoneLabels(c, d, M, P)
+
   // ───────── pipe size labels (priority) and head tags, then segment lengths ─────────
   type PipeLabel = { pipe: SprinklerPipe; pts: Pt[]; text: string; sizeChange: boolean }
   const labels: PipeLabel[] = []
@@ -661,17 +685,29 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
   for (const lb of labels) if (lb.sizeChange) placePipeLabel(lb, true)
 
   // riser / floor control assembly callout, inspector's test, remote area, slope note (large text first)
-  const nipple = fd.pipes.find((p) => p.kind === 'riser-nipple')
-  P.callout(
-    rm,
-    [
-      'FLOOR CONTROL ASSEMBLY ' + (nipple ? sizeLabel(nipple.sizeIn) : ''),
-      'CONTROL VALVE + WATERFLOW SWITCH + GAUGE',
-      'TEST & DRAIN - SEE FS-501'
-    ],
-    2.2,
-    [180, 135, 225, 90, 270, 0]
-  )
+  zoneRisers.forEach((zp, zi) => {
+    const z = fd.zones[zi]
+    let zx = 0
+    let zn = 0
+    for (const q of z ? fi.rooms.filter((rr) => z.roomIds.includes(rr.id)) : fi.rooms)
+      for (const v of q.polygon) {
+        zx += M([v[0], v[1]])[0]
+        zn++
+      }
+    const rightSide = zn > 0 && zp[0] > zx / zn
+    const nip = fd.pipes.find((p) => p.kind === 'riser-nipple' && (!z || p.zoneId === z.zoneId))
+    const box = P.callout(
+      zp,
+      [
+        `${z ? z.controlValveTag + ' - ' : ''}ZONE CONTROL VALVE ASSEMBLY ${nip ? sizeLabel(nip.sizeIn) : ''}`,
+        'CONTROL VALVE + TAMPER SWITCH, WATERFLOW SWITCH',
+        'TEST & DRAIN - SEE FS-501'
+      ],
+      2.2,
+      rightSide ? [0, 45, 315, 90, 270, 180] : [180, 135, 225, 90, 270, 0]
+    )
+    if (!box) P.tag(zp, z ? z.controlValveTag : 'ZCV')
+  })
   P.callout(
     it,
     ['INSPECTOR\'S TEST (1" ORIFICE)', 'MOST REMOTE POINT - SEE FS-501'],
@@ -753,6 +789,15 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
     `${SYSTEM_LABEL[fd.systemType]} SYSTEM - FFL ${fi.elevationM >= 0 ? '+' : '-'}${Math.abs(fi.elevationM).toFixed(3)} M - ${totalHeads} SPRINKLERS - SCALE 1:${S}`
   )
 
+  b.text(
+    'FS-ANNO',
+    PX(c, 26),
+    PY(c, 557),
+    2.8,
+    sizingNote(r.input.sprinklerDesign!.answers.pipeSizing === 'hydraulic'),
+    { vAlign: 'middle' }
+  )
+
   let y = 582
   northArrow(b, PX(c, PANEL.x0 + 14), PY(c, y - 14))
   b.text('FS-ANNO', PX(c, PANEL.x0 + 32), PY(c, y - 6), 3.2, `${fd.floorName.toUpperCase()}`, {
@@ -779,8 +824,8 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
     const t = typeById.get(id)
     if (!t) continue
     legend.push({
-      text: `${headTypeText(t)} - ${n} PCS`,
-      draw: (x, yy) => headSymbol(b, x, yy, 1.5 * S, t)
+      text: `${t.id}: ${headTypeText(t)} - ${n} PCS`,
+      draw: (x, yy) => headSymbol(b, x - 1.5 * S, yy, 1.5 * S, t)
     })
   }
   const Lw = 1.6 * S
@@ -793,10 +838,47 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
     draw: (x, yy) => b.line('FS-PIPE-MAIN', x - 5 * S, yy, x + 5 * S, yy)
   })
   legend.push({
-    text: 'RISER NIPPLE / FLOOR CONTROL ASSEMBLY',
+    text: 'ZONE CONTROL VALVE ASSEMBLY (FLOOR CONTROL) - TAG ZCV-<FLOOR>-<ZONE>',
     draw: (x, yy) => {
       b.circle('FS-PIPE-RISER', x, yy, 2.2 * S)
       b.circle('FS-PIPE-RISER', x, yy, 1.2 * S)
+      b.solid('FS-VALV', [
+        [x - 0.8 * S, yy - 0.6 * S],
+        [x - 0.8 * S, yy + 0.6 * S],
+        [x, yy]
+      ])
+      b.solid('FS-VALV', [
+        [x + 0.8 * S, yy - 0.6 * S],
+        [x + 0.8 * S, yy + 0.6 * S],
+        [x, yy]
+      ])
+    }
+  })
+  legend.push({
+    text: `REDUCER (PIPE SIZE CHANGE, BIG END TOWARD THE LARGER PIPE) - ${reducerCount} PCS`,
+    draw: (x, yy) =>
+      b.solid('FS-PIPE-MAIN', [
+        [x + 1.6 * S, yy + 1.2 * S],
+        [x + 1.6 * S, yy - 1.2 * S],
+        [x - 1.6 * S, yy - 0.5 * S],
+        [x - 1.6 * S, yy + 0.5 * S]
+      ])
+  })
+  legend.push({
+    text: 'ZONE BOUNDARY (COLOUR PER ZONE, LAYER FS-ZONE)',
+    draw: (x, yy) => {
+      d.fd.zones.slice(0, 3).forEach((_, zi) => {
+        b.line(zoneBandLayer(zi), x - 5 * S + zi * 3.6 * S, yy, x - 2 * S + zi * 3.6 * S, yy)
+        b.line('FS-ZONE', x - 5 * S + zi * 3.6 * S, yy, x - 2 * S + zi * 3.6 * S, yy)
+      })
+    }
+  })
+  legend.push({
+    text: 'DIMENSIONS: HEAD TO WALL AND HEAD SPACING (MM, LAYER FS-DIMS)',
+    draw: (x, yy) => {
+      b.line('FS-DIMS', x - 5 * S, yy, x + 5 * S, yy)
+      b.line('FS-DIMS', x - 5 * S - 0.8 * S, yy - 0.8 * S, x - 5 * S + 0.8 * S, yy + 0.8 * S)
+      b.line('FS-DIMS', x + 5 * S - 0.8 * S, yy - 0.8 * S, x + 5 * S + 0.8 * S, yy + 0.8 * S)
     }
   })
   legend.push({
@@ -849,12 +931,40 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
   const lh = drawLegend(c, PANEL.x0, y, PANEL.x1 - PANEL.x0, legend)
   y -= lh + 3
 
+  // zone schedule and sprinkler (head type) schedule
+  const zrows = zoneScheduleRows(d)
+  const zh = fitTable(
+    c,
+    PANEL.x0,
+    y,
+    zrows,
+    2.0,
+    PANEL.x1 - PANEL.x0,
+    'ZONE SCHEDULE (AREA LIMIT PER NFPA 13 SEC. 4.4)',
+    zrows[0].map((_, i) => i === 4 || i === 5 || i === 6)
+  )
+  y -= zh.h + 3
+  const trows = sprinklerScheduleRows(d, spr.headTypes)
+  const th2 = fitTable(
+    c,
+    PANEL.x0,
+    y,
+    trows,
+    2.0,
+    PANEL.x1 - PANEL.x0,
+    'SPRINKLER SCHEDULE (TYPE, K-FACTOR, RESPONSE, TEMPERATURE / BULB, QUANTITY PER ZONE)',
+    trows[0].map((_, i) => i >= 5)
+  )
+  y -= th2.h + 3
+
   // head schedule
-  const sched: string[][] = [['ROOM', 'HAZARD', 'HEAD TYPE', 'QTY', 'S x L (M)', 'AREA M2']]
+  const sched: string[][] = [['ROOM', 'ZONE', 'HAZARD', 'HEAD TYPE', 'QTY', 'S x L (M)', 'AREA M2']]
   let sumQty = 0
   for (const rr of fd.rooms) {
+    const src = fi.rooms.find((q) => q.id === rr.roomId)
     sched.push([
-      rr.name.toUpperCase(),
+      rr.name.toUpperCase() + (src?.source === 'drawn' ? ' (DRAWN)' : ''),
+      src?.zoneId ?? fd.zones[0]?.zoneId ?? '-',
       HAZARD_LABEL[rr.hazard] ?? rr.hazard,
       rr.headTypeId,
       String(rr.headCount),
@@ -863,7 +973,7 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
     ])
     sumQty += rr.headCount
   }
-  sched.push(['TOTAL', '', '', String(sumQty), '', ''])
+  sched.push(['TOTAL', '', '', '', String(sumQty), '', ''])
   const schedTh = sched.length > 14 ? 1.8 : 2.1
   const sh = fitTable(
     c,
@@ -873,7 +983,7 @@ export function drawFloorSheet(c: Ctx, d: FloorData): void {
     schedTh,
     PANEL.x1 - PANEL.x0,
     'HEAD SCHEDULE',
-    sched[0].map((_, i) => i === 3 || i === 5)
+    sched[0].map((_, i) => i === 4 || i === 6)
   )
   y -= sh.h + 3
 

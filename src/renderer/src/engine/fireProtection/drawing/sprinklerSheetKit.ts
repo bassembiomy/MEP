@@ -23,6 +23,11 @@ const L = (
   description
 })
 
+/** AutoCAD colours of the zone colour bands (cycled when a floor has more zones). */
+export const ZONE_COLORS = [30, 192, 112, 232, 152, 72]
+/** Layer of the coloured band of zone number `i` (0-based). */
+export const zoneBandLayer = (i: number): string => `FS-ZONE-${(i % ZONE_COLORS.length) + 1}`
+
 /** Sprinkler drawing layers. The shared helpers draw on FP-* layers which are mapped 1:1 onto the FS-* twins below. */
 export const FS_LAYERS: LayerDef[] = [
   L('FS-HEAD', 1, 'CONTINUOUS', 0.35, 'Sprinkler heads'),
@@ -32,6 +37,10 @@ export const FS_LAYERS: LayerDef[] = [
   L('FS-HANG', 30, 'CONTINUOUS', 0.25, 'Hangers and sway braces'),
   L('FS-REMOTE', 6, 'DASHED', 0.35, 'Hydraulically most remote design area'),
   L('FS-ROOM', 3, 'CONTINUOUS', 0.18, 'Room outlines'),
+  L('FS-ZONE', 7, 'PHANTOM', 0.18, 'Sprinkler zone boundaries (zone control valve areas)'),
+  ...ZONE_COLORS.map((c, i) =>
+    L(`FS-ZONE-${i + 1}`, c, 'CONTINUOUS', 0.5, `Zone ${i + 1} colour band`)
+  ),
   L('FS-ANNO', 7, 'CONTINUOUS', 0.25, 'Text, tags, leaders'),
   L('FS-DIMS', 7, 'CONTINUOUS', 0.18, 'Dimensions'),
   L('FS-TBLK', 7, 'CONTINUOUS', 0.5, 'Sheet frame & title block'),
@@ -204,7 +213,9 @@ export function headSymbol(
   y: number,
   r: number,
   type: SprinklerHeadType | null,
-  layer = 'FS-HEAD'
+  layer = 'FS-HEAD',
+  /** Throw direction (unit vector, model space) of a sidewall sprinkler: away from its wall into the room. */
+  dir: Pt = [1, 0]
 ): void {
   const kind = type?.open ? 'open' : (type?.orientation ?? 'pendent')
   b.circle(layer, x, y, r)
@@ -245,6 +256,22 @@ export function headSymbol(
         ],
         true
       )
+      break
+    }
+    case 'sidewall': {
+      // chord along the wall, throw arrow pointing into the room
+      const [ux, uy] = dir
+      const vx = -uy
+      const vy = ux
+      b.line(layer, x - vx * r, y - vy * r, x + vx * r, y + vy * r)
+      const t0 = r
+      const t1 = r * 3.4
+      b.line(layer, x + ux * t0, y + uy * t0, x + ux * t1, y + uy * t1)
+      b.solid(layer, [
+        [x + ux * (t1 + r * 0.9), y + uy * (t1 + r * 0.9)],
+        [x + ux * t1 + vx * r * 0.55, y + uy * t1 + vy * r * 0.55],
+        [x + ux * t1 - vx * r * 0.55, y + uy * t1 - vy * r * 0.55]
+      ])
       break
     }
     case 'open':
